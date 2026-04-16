@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hartonomous.Core\Hartonomous.Core.csproj" />
+    <ProjectReference Include="..\Hartonomous.Engine\Hartonomous.Engine.csproj" />
+    <ProjectReference Include="..\Hartonomous.Decomposers\Hartonomous.Decomposers.csproj" />
+    <ProjectReference Include="..\Hartonomous.Analysis\Hartonomous.Analysis.csproj" />
+    <ProjectReference Include="..\Hartonomous.Recomposers\Hartonomous.Recomposers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,43 @@
+# Build outputs
+bin/
+obj/
+build/
+out/
+*.user
+*.suo
+.vs/
+.vscode/
+
+# Native build
+ext/libhartonomous/build/
+ext/libhartonomous/out/
+ext/hartonomous_pg/build/
+ext/hartonomous_pg/*.o
+ext/hartonomous_pg/*.so
+ext/hartonomous_pg/*.dll
+ext/hartonomous_pg/*.dylib
+
+# Runtime
+runtimes/
+
+# Dev
+.env
+.env.local
+*.log
+
+# Data
+data/
+pgdata/
+temp/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Tooling
+TestResults/
+coverage/
+*.nupkg
+
+# Claude Code
+.claude/

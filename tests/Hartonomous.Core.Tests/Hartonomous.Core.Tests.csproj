@@ -1,0 +1,46 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Hartonomous.Core\Hartonomous.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\ext\libhartonomous\build\bin\Release\hartonomous.dll"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\Release\hartonomous.dll')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\bin\hartonomous.dll"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\hartonomous.dll')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\libhartonomous.so"
+          Condition="Exists('..\..\ext\libhartonomous\build\libhartonomous.so')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\bin\libhartonomous.so"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\libhartonomous.so')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\libhartonomous.dylib"
+          Condition="Exists('..\..\ext\libhartonomous\build\libhartonomous.dylib')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\bin\libhartonomous.dylib"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\libhartonomous.dylib')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+</Project>

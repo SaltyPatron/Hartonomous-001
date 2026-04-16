@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.15" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hartonomous.Core\Hartonomous.Core.csproj" />
+    <ProjectReference Include="..\Hartonomous.Engine\Hartonomous.Engine.csproj" />
+    <ProjectReference Include="..\Hartonomous.Recomposers\Hartonomous.Recomposers.csproj" />
+  </ItemGroup>
+
+</Project>

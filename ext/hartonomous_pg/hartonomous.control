@@ -1,0 +1,6 @@
+comment = 'Hartonomous substrate extension — BLAKE3, S3 geometry, graph traversal'
+default_version = '1.0'
+module_pathname = '$libdir/hartonomous'
+relocatable = false
+superuser = true
+requires = 'postgis'

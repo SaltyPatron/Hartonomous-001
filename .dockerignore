@@ -1,0 +1,11 @@
+**/build/
+**/bin/
+**/obj/
+**/.vs/
+**/node_modules/
+pgdata/
+.git/
+*.user
+*.suo
+temp/
+docs/

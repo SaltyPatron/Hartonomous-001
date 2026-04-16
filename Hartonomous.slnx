@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Hartonomous.Analysis/Hartonomous.Analysis.csproj" />
+    <Project Path="src/Hartonomous.Api/Hartonomous.Api.csproj" />
+    <Project Path="src/Hartonomous.Cli/Hartonomous.Cli.csproj" />
+    <Project Path="src/Hartonomous.Core/Hartonomous.Core.csproj" />
+    <Project Path="src/Hartonomous.Decomposers/Hartonomous.Decomposers.csproj" />
+    <Project Path="src/Hartonomous.Engine/Hartonomous.Engine.csproj" />
+    <Project Path="src/Hartonomous.Recomposers/Hartonomous.Recomposers.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Hartonomous.Analysis.Tests/Hartonomous.Analysis.Tests.csproj" />
+    <Project Path="tests/Hartonomous.Api.Tests/Hartonomous.Api.Tests.csproj" />
+    <Project Path="tests/Hartonomous.Core.Tests/Hartonomous.Core.Tests.csproj" />
+    <Project Path="tests/Hartonomous.Decomposers.Tests/Hartonomous.Decomposers.Tests.csproj" />
+    <Project Path="tests/Hartonomous.Engine.Tests/Hartonomous.Engine.Tests.csproj" />
+    <Project Path="tests/Hartonomous.Integration.Tests/Hartonomous.Integration.Tests.csproj" />
+  </Folder>
+</Solution>

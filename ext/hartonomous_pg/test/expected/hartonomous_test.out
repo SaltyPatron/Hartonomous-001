@@ -1,0 +1,138 @@
+-- pg_regress test for hartonomous extension
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS hartonomous;
+-- Version
+SELECT length(hartonomous_version()) > 0 AS has_version;
+ has_version
+-------------
+ t
+(1 row)
+
+-- BLAKE3
+SELECT length(blake3_hash('\x48656c6c6f'::bytea)) AS blake3_len;
+ blake3_len
+------------
+         32
+(1 row)
+
+SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
+ blake3_text_len
+-----------------
+              32
+(1 row)
+
+SELECT blake3_hash_text('hello') = blake3_hash_text('hello') AS blake3_deterministic;
+ blake3_deterministic
+----------------------
+ t
+(1 row)
+
+SELECT blake3_hash_text('hello') != blake3_hash_text('world') AS blake3_distinct;
+ blake3_distinct
+-----------------
+ t
+(1 row)
+
+-- S3 Distance
+SELECT round(_s3_distance(
+    ARRAY[1.0, 0.0, 0.0, 0.0],
+    ARRAY[1.0, 0.0, 0.0, 0.0]
+)::numeric, 6) AS s3_self_distance;
+ s3_self_distance
+------------------
+         0.000000
+(1 row)
+
+SELECT round(_s3_distance(
+    ARRAY[1.0, 0.0, 0.0, 0.0],
+    ARRAY[-1.0, 0.0, 0.0, 0.0]
+)::numeric, 4) AS s3_antipodal;
+ s3_antipodal
+--------------
+       3.1416
+(1 row)
+
+SELECT round(_s3_distance(
+    ARRAY[1.0, 0.0, 0.0, 0.0],
+    ARRAY[0.0, 1.0, 0.0, 0.0]
+)::numeric, 4) AS s3_orthogonal;
+ s3_orthogonal
+---------------
+        1.5708
+(1 row)
+
+-- S3 Distance via geometry wrapper
+SELECT round(s3_distance(
+    ST_MakePoint(1.0, 0.0, 0.0, 0.0),
+    ST_MakePoint(0.0, 1.0, 0.0, 0.0)
+)::numeric, 4) AS s3_geom_distance;
+ s3_geom_distance
+------------------
+           1.5708
+(1 row)
+
+-- Super-Fibonacci
+SELECT array_length(_super_fibonacci_project(ARRAY[0.0, 100.0]), 1) AS superfib_dims;
+ superfib_dims
+---------------
+             4
+(1 row)
+
+-- Super-Fibonacci deterministic
+SELECT _super_fibonacci_project(ARRAY[42.0, 1000.0]) = _super_fibonacci_project(ARRAY[42.0, 1000.0]) AS superfib_deterministic;
+ superfib_deterministic
+------------------------
+ t
+(1 row)
+
+-- Hilbert index
+SELECT _hilbert_index(ARRAY[0.0, 0.0, 0.0, 0.0], 4) AS hilbert_origin;
+ hilbert_origin
+----------------
+              0
+(1 row)
+
+SELECT _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 4) AS hilbert_center;
+ hilbert_center
+----------------
+          40960
+(1 row)
+
+-- Hilbert round-trip via geometry wrapper
+SELECT hilbert_index(ST_MakePoint(0.5, 0.5, 0.5, 0.5)) AS hilbert_geom;
+ hilbert_geom
+--------------
+   2684354560
+(1 row)
+
+-- Hilbert order matters
+SELECT _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 4) != _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 8) AS hilbert_order_matters;
+ hilbert_order_matters
+-----------------------
+ t
+(1 row)
+
+-- Error cases
+DO $$
+BEGIN
+    PERFORM _s3_distance(ARRAY[1.0, 0.0], ARRAY[1.0, 0.0, 0.0, 0.0]);
+    RAISE EXCEPTION 'should have failed';
+EXCEPTION WHEN array_element_error THEN
+    RAISE NOTICE 's3_distance correctly rejects non-4D input';
+END $$;
+NOTICE:  s3_distance correctly rejects non-4D input
+DO $$
+BEGIN
+    PERFORM _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 20);
+    RAISE EXCEPTION 'should have failed';
+EXCEPTION WHEN numeric_value_out_of_range THEN
+    RAISE NOTICE 'hilbert_index correctly rejects order > 16';
+END $$;
+NOTICE:  hilbert_index correctly rejects order > 16
+-- Done
+SELECT 'all tests passed' AS result;
+     result
+-----------------
+ all tests passed
+(1 row)
+
