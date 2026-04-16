@@ -188,6 +188,23 @@ internal static class Program
                 return;
             }
 
+            // Run all dependencies first (in topological order), then the target.
+            HashSet<Phase> required = [];
+            CollectDependencies(target, required);
+
+            foreach (Phase dep in PhaseDag.TopologicalOrder())
+            {
+                if (required.Contains(dep))
+                {
+                    PhaseResult depResult = await runner.RunPhaseAsync(dep, ct);
+                    if (depResult.Status == PhaseStatus.Failed)
+                    {
+                        Console.Error.WriteLine($"Dependency {dep} failed: {depResult.ErrorMessage}");
+                        return;
+                    }
+                }
+            }
+
             PhaseResult result = await runner.RunPhaseAsync(target, ct);
             Console.WriteLine($"\n{result.Phase}: {result.Status} ({result.Elapsed.TotalSeconds:F1}s)");
             if (result.ErrorMessage is not null)

@@ -22,25 +22,5 @@
     <ProjectReference Include="..\..\src\Hartonomous.Core\Hartonomous.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="..\..\ext\libhartonomous\build\bin\Release\hartonomous.dll"
-          Condition="Exists('..\..\ext\libhartonomous\build\bin\Release\hartonomous.dll')"
-          CopyToOutputDirectory="PreserveNewest" Visible="false" />
-    <None Include="..\..\ext\libhartonomous\build\bin\hartonomous.dll"
-          Condition="Exists('..\..\ext\libhartonomous\build\bin\hartonomous.dll')"
-          CopyToOutputDirectory="PreserveNewest" Visible="false" />
-    <None Include="..\..\ext\libhartonomous\build\libhartonomous.so"
-          Condition="Exists('..\..\ext\libhartonomous\build\libhartonomous.so')"
-          CopyToOutputDirectory="PreserveNewest" Visible="false" />
-    <None Include="..\..\ext\libhartonomous\build\bin\libhartonomous.so"
-          Condition="Exists('..\..\ext\libhartonomous\build\bin\libhartonomous.so')"
-          CopyToOutputDirectory="PreserveNewest" Visible="false" />
-    <None Include="..\..\ext\libhartonomous\build\libhartonomous.dylib"
-          Condition="Exists('..\..\ext\libhartonomous\build\libhartonomous.dylib')"
-          CopyToOutputDirectory="PreserveNewest" Visible="false" />
-    <None Include="..\..\ext\libhartonomous\build\bin\libhartonomous.dylib"
-          Condition="Exists('..\..\ext\libhartonomous\build\bin\libhartonomous.dylib')"
-          CopyToOutputDirectory="PreserveNewest" Visible="false" />
-  </ItemGroup>
 
 </Project>

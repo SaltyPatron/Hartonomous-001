@@ -207,5 +207,4 @@ internal sealed class MigrationRunner
         await tx.CommitAsync(ct);
     }
 
-    private sealed record AppliedMigration(int Version, string Name, string Checksum);
 }

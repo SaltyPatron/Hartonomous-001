@@ -127,80 +127,190 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
     private async Task UpsertEntitiesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
+        if (batch.Entities.Count == 0)
+        {
+            return;
+        }
+
+        byte[][] hashes = new byte[batch.Entities.Count][];
+        int[] typeIds = new int[batch.Entities.Count];
         for (int i = 0; i < batch.Entities.Count; i++)
         {
             IngestionBatch.EntityEntry entity = batch.Entities[i];
-            int typeId = await _codeResolver.EntityTypeIdAsync(entity.EntityTypeCode, ct);
+            hashes[i] = entity.Hash;
+            typeIds[i] = await _codeResolver.EntityTypeIdAsync(entity.EntityTypeCode, ct);
+        }
 
-            await using NpgsqlCommand cmd = new(
-                "CALL substrate.upsert_entity($1, $2, NULL, NULL)", conn);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bytea, entity.Hash);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, typeId);
+        await using (NpgsqlCommand insertCmd = new(
+            "INSERT INTO substrate.entity (hash, entity_type_id) " +
+            "SELECT * FROM unnest($1::bytea[], $2::int[]) " +
+            "ON CONFLICT (hash, entity_type_id) DO NOTHING", conn))
+        {
+            insertCmd.Parameters.AddWithValue(hashes);
+            insertCmd.Parameters.AddWithValue(typeIds);
+            await insertCmd.ExecuteNonQueryAsync(ct);
+        }
 
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            if (await reader.ReadAsync(ct))
-            {
-                long entityId = reader.GetInt64(0);
-                batch.RemapHandle(i, entityId);
-            }
+        await using NpgsqlCommand selectCmd = new(
+            "SELECT e.id, t.ord FROM " +
+            "unnest($1::bytea[], $2::int[]) WITH ORDINALITY AS t(hash, entity_type_id, ord) " +
+            "JOIN substrate.entity e ON e.hash = t.hash AND e.entity_type_id = t.entity_type_id", conn);
+        selectCmd.Parameters.AddWithValue(hashes);
+        selectCmd.Parameters.AddWithValue(typeIds);
+
+        await using NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            long entityId = reader.GetInt64(0);
+            int ordinal = (int)reader.GetInt64(1) - 1;
+            batch.RemapHandle(ordinal, entityId);
         }
     }
 
     private async Task CreateEdgesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
-        foreach (IngestionBatch.EdgeEntry edge in batch.Edges)
+        if (batch.Edges.Count == 0)
         {
-            int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
-            int provenanceId = await _codeResolver.ProvenanceIdAsync(edge.ProvenanceCode, ct);
+            return;
+        }
+
+        byte[][] edgeHashes = new byte[batch.Edges.Count][];
+        int[] edgeTypeIds = new int[batch.Edges.Count];
+        int[] provenanceIds = new int[batch.Edges.Count];
+        long[][] allMemberEntityIds = new long[batch.Edges.Count][];
+        int[][] allMemberRoleIds = new int[batch.Edges.Count][];
+
+        for (int i = 0; i < batch.Edges.Count; i++)
+        {
+            IngestionBatch.EdgeEntry edge = batch.Edges[i];
+            edgeTypeIds[i] = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
+            provenanceIds[i] = await _codeResolver.ProvenanceIdAsync(edge.ProvenanceCode, ct);
 
             long[] memberEntityIds = new long[edge.Members.Length];
             int[] memberRoleIds = new int[edge.Members.Length];
-
-            for (int i = 0; i < edge.Members.Length; i++)
+            for (int j = 0; j < edge.Members.Length; j++)
             {
-                memberEntityIds[i] = batch.ResolveHandleOrExisting(
-                    edge.Members[i].Handle, edge.Members[i].ExistingEntityId);
-                memberRoleIds[i] = await _codeResolver.EdgeRoleIdAsync(edge.Members[i].RoleCode, ct);
+                memberEntityIds[j] = batch.ResolveHandleOrExisting(
+                    edge.Members[j].Handle, edge.Members[j].ExistingEntityId);
+                memberRoleIds[j] = await _codeResolver.EdgeRoleIdAsync(edge.Members[j].RoleCode, ct);
             }
 
-            byte[] edgeHash = ComputeEdgeHash(edgeTypeId, memberEntityIds);
+            allMemberEntityIds[i] = memberEntityIds;
+            allMemberRoleIds[i] = memberRoleIds;
+            edgeHashes[i] = ComputeEdgeHash(edgeTypeIds[i], memberEntityIds);
+        }
 
-            await using NpgsqlCommand cmd = new(
-                "CALL substrate.create_edge(NULL, NULL, $1, $2, $3, NULL, $4, $5)", conn);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bytea, edgeHash);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, edgeTypeId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, provenanceId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Bigint, memberEntityIds);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, memberRoleIds);
+        await using (NpgsqlCommand insertCmd = new(
+            "INSERT INTO substrate.edge (hash, edge_type_id, provenance_id) " +
+            "SELECT * FROM unnest($1::bytea[], $2::int[], $3::int[]) " +
+            "ON CONFLICT (hash, edge_type_id) DO NOTHING", conn))
+        {
+            insertCmd.Parameters.AddWithValue(edgeHashes);
+            insertCmd.Parameters.AddWithValue(edgeTypeIds);
+            insertCmd.Parameters.AddWithValue(provenanceIds);
+            await insertCmd.ExecuteNonQueryAsync(ct);
+        }
 
-            await cmd.ExecuteNonQueryAsync(ct);
+        await using NpgsqlCommand selectCmd = new(
+            "SELECT e.id, t.ord FROM " +
+            "unnest($1::bytea[], $2::int[]) WITH ORDINALITY AS t(hash, edge_type_id, ord) " +
+            "JOIN substrate.edge e ON e.hash = t.hash AND e.edge_type_id = t.edge_type_id", conn);
+        selectCmd.Parameters.AddWithValue(edgeHashes);
+        selectCmd.Parameters.AddWithValue(edgeTypeIds);
+
+        long[] resolvedEdgeIds = new long[batch.Edges.Count];
+        await using (NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                long edgeId = reader.GetInt64(0);
+                int ordinal = (int)reader.GetInt64(1) - 1;
+                resolvedEdgeIds[ordinal] = edgeId;
+            }
+        }
+
+        List<long> memberEdgeIds = [];
+        List<long> memberEntityIdList = [];
+        List<int> memberRoleIdList = [];
+        for (int i = 0; i < batch.Edges.Count; i++)
+        {
+            for (int j = 0; j < allMemberEntityIds[i].Length; j++)
+            {
+                memberEdgeIds.Add(resolvedEdgeIds[i]);
+                memberEntityIdList.Add(allMemberEntityIds[i][j]);
+                memberRoleIdList.Add(allMemberRoleIds[i][j]);
+            }
+        }
+
+        if (memberEdgeIds.Count > 0)
+        {
+            await using NpgsqlCommand memberCmd = new(
+                "INSERT INTO substrate.edge_member (edge_id, entity_id, edge_role_id) " +
+                "SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::int[]) " +
+                "ON CONFLICT DO NOTHING", conn);
+            memberCmd.Parameters.AddWithValue(memberEdgeIds.ToArray());
+            memberCmd.Parameters.AddWithValue(memberEntityIdList.ToArray());
+            memberCmd.Parameters.AddWithValue(memberRoleIdList.ToArray());
+            await memberCmd.ExecuteNonQueryAsync(ct);
         }
     }
 
     private static async Task PopulateJunctionsAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
+        if (batch.Junctions.Count == 0)
+        {
+            return;
+        }
+
+        Dictionary<string, List<IngestionBatch.JunctionEntry>> grouped = new(StringComparer.Ordinal);
         foreach (IngestionBatch.JunctionEntry junction in batch.Junctions)
         {
-            long entityId = batch.ResolveHandle(junction.Entity);
-            string table = junction.JunctionTable;
+            if (!grouped.TryGetValue(junction.JunctionTable, out List<IngestionBatch.JunctionEntry>? list))
+            {
+                list = [];
+                grouped[junction.JunctionTable] = list;
+            }
+            list.Add(junction);
+        }
 
-            if (junction.Mu.HasValue)
+        foreach (KeyValuePair<string, List<IngestionBatch.JunctionEntry>> kv in grouped)
+        {
+            string table = kv.Key;
+            string refCol = GetJunctionRefColumn(table);
+            List<IngestionBatch.JunctionEntry> entries = kv.Value;
+
+            long[] entityIds = new long[entries.Count];
+            int[] refIds = new int[entries.Count];
+            double?[] mus = new double?[entries.Count];
+            bool hasMu = false;
+
+            for (int i = 0; i < entries.Count; i++)
+            {
+                entityIds[i] = batch.ResolveHandle(entries[i].Entity);
+                refIds[i] = entries[i].ReferenceId;
+                mus[i] = entries[i].Mu;
+                hasMu |= entries[i].Mu.HasValue;
+            }
+
+            if (hasMu)
             {
                 await using NpgsqlCommand cmd = new(
-                    $"INSERT INTO substrate.{table} (entity_id, {GetJunctionRefColumn(table)}, mu) " +
-                    $"VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", conn);
-                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bigint, entityId);
-                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, junction.ReferenceId);
-                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Double, junction.Mu.Value);
+                    $"INSERT INTO substrate.{table} (entity_id, {refCol}, mu) " +
+                    $"SELECT * FROM unnest($1::bigint[], $2::int[], $3::float8[]) " +
+                    $"ON CONFLICT DO NOTHING", conn);
+                cmd.Parameters.AddWithValue(entityIds);
+                cmd.Parameters.AddWithValue(refIds);
+                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Double, mus);
                 await cmd.ExecuteNonQueryAsync(ct);
             }
             else
             {
                 await using NpgsqlCommand cmd = new(
-                    $"INSERT INTO substrate.{table} (entity_id, {GetJunctionRefColumn(table)}) " +
-                    $"VALUES ($1, $2) ON CONFLICT DO NOTHING", conn);
-                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bigint, entityId);
-                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, junction.ReferenceId);
+                    $"INSERT INTO substrate.{table} (entity_id, {refCol}) " +
+                    $"SELECT * FROM unnest($1::bigint[], $2::int[]) " +
+                    $"ON CONFLICT DO NOTHING", conn);
+                cmd.Parameters.AddWithValue(entityIds);
+                cmd.Parameters.AddWithValue(refIds);
                 await cmd.ExecuteNonQueryAsync(ct);
             }
         }
@@ -208,51 +318,92 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
     private async Task CreatePhysicalitiesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
-        foreach (IngestionBatch.PhysicalityEntry phys in batch.Physicalities)
+        if (batch.Physicalities.Count == 0)
         {
-            long entityId = batch.ResolveHandle(phys.Entity);
-            int typeId = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
-
-            await using NpgsqlCommand cmd = new(
-                "CALL substrate.create_physicality($1, $2, ST_GeomFromWKB($3, 4326), NULL)", conn);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bigint, entityId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, typeId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bytea, phys.GeomWkb);
-            await cmd.ExecuteNonQueryAsync(ct);
+            return;
         }
+
+        long[] entityIds = new long[batch.Physicalities.Count];
+        int[] typeIds = new int[batch.Physicalities.Count];
+        byte[][] geomWkbs = new byte[batch.Physicalities.Count][];
+
+        for (int i = 0; i < batch.Physicalities.Count; i++)
+        {
+            IngestionBatch.PhysicalityEntry phys = batch.Physicalities[i];
+            entityIds[i] = batch.ResolveHandle(phys.Entity);
+            typeIds[i] = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
+            geomWkbs[i] = phys.GeomWkb;
+        }
+
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.physicality (entity_id, physicality_type_id, geom) " +
+            "SELECT e, t, ST_GeomFromWKB(g, 4326) " +
+            "FROM unnest($1::bigint[], $2::int[], $3::bytea[]) AS t(e, t, g)", conn);
+        cmd.Parameters.AddWithValue(entityIds);
+        cmd.Parameters.AddWithValue(typeIds);
+        cmd.Parameters.AddWithValue(geomWkbs);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task CreateSequencesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
-        foreach (IngestionBatch.SequenceEntry seq in batch.Sequences)
+        if (batch.Sequences.Count == 0)
         {
-            long parentId = batch.ResolveHandle(seq.Parent);
-            long childId = batch.ResolveHandle(seq.Child);
-
-            await using NpgsqlCommand cmd = new(
-                "CALL substrate.create_sequence($1, $2, $3, $4)", conn);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bigint, parentId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bigint, childId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, seq.Position);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, seq.Count);
-            await cmd.ExecuteNonQueryAsync(ct);
+            return;
         }
+
+        long[] parentIds = new long[batch.Sequences.Count];
+        long[] childIds = new long[batch.Sequences.Count];
+        int[] positions = new int[batch.Sequences.Count];
+        int[] counts = new int[batch.Sequences.Count];
+
+        for (int i = 0; i < batch.Sequences.Count; i++)
+        {
+            IngestionBatch.SequenceEntry seq = batch.Sequences[i];
+            parentIds[i] = batch.ResolveHandle(seq.Parent);
+            childIds[i] = batch.ResolveHandle(seq.Child);
+            positions[i] = seq.Position;
+            counts[i] = seq.Count;
+        }
+
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.sequence (parent_id, child_id, ordinal_position, rle_count) " +
+            "SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::int[], $4::int[])", conn);
+        cmd.Parameters.AddWithValue(parentIds);
+        cmd.Parameters.AddWithValue(childIds);
+        cmd.Parameters.AddWithValue(positions);
+        cmd.Parameters.AddWithValue(counts);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private async Task InitializeSignificanceAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
-        foreach (IngestionBatch.SignificanceEntry sig in batch.Significances)
+        if (batch.Significances.Count == 0)
         {
-            long entityId = batch.ResolveHandle(sig.Entity);
-            int contextId = await _codeResolver.SignificanceContextIdAsync(sig.ContextTypeCode, ct);
-
-            await using NpgsqlCommand cmd = new(
-                "CALL substrate.initialize_significance($1, NULL, $2, $3)", conn);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Bigint, entityId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, contextId);
-            cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Double, sig.InitialMu);
-            await cmd.ExecuteNonQueryAsync(ct);
+            return;
         }
+
+        long[] entityIds = new long[batch.Significances.Count];
+        int[] contextIds = new int[batch.Significances.Count];
+        double[] mus = new double[batch.Significances.Count];
+
+        for (int i = 0; i < batch.Significances.Count; i++)
+        {
+            IngestionBatch.SignificanceEntry sig = batch.Significances[i];
+            entityIds[i] = batch.ResolveHandle(sig.Entity);
+            contextIds[i] = await _codeResolver.SignificanceContextIdAsync(sig.ContextTypeCode, ct);
+            mus[i] = sig.InitialMu;
+        }
+
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.significance (entity_id, edge_id, context_type_id, mu, sigma, volatility, games) " +
+            "SELECT e, NULL, c, m, 350.0, 0.06, 0 " +
+            "FROM unnest($1::bigint[], $2::int[], $3::float8[]) AS t(e, c, m) " +
+            "ON CONFLICT DO NOTHING", conn);
+        cmd.Parameters.AddWithValue(entityIds);
+        cmd.Parameters.AddWithValue(contextIds);
+        cmd.Parameters.AddWithValue(mus);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private static byte[][] HashesToByteArrays(IReadOnlyList<byte[]> hashes)
