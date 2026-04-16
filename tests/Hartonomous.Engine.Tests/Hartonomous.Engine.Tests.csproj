@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
@@ -20,6 +21,21 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Hartonomous.Engine\Hartonomous.Engine.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\ext\libhartonomous\build\bin\Release\hartonomous.dll"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\Release\hartonomous.dll')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\bin\hartonomous.dll"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\hartonomous.dll')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\libhartonomous.so"
+          Condition="Exists('..\..\ext\libhartonomous\build\libhartonomous.so')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\..\ext\libhartonomous\build\bin\libhartonomous.so"
+          Condition="Exists('..\..\ext\libhartonomous\build\bin\libhartonomous.so')"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
 </Project>
