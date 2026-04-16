@@ -11,4 +11,6 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)native-dll.targets" />
 </Project>

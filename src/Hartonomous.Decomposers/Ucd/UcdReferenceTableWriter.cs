@@ -22,20 +22,25 @@ internal sealed class UcdReferenceTableWriter
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
 
-        // General categories have group_code and description that we derive from the code.
+        string[] codeArr = new string[codes.Count];
+        string[] groupArr = new string[codes.Count];
+        string[] descArr = new string[codes.Count];
+        int i = 0;
         foreach (string code in codes)
         {
-            string groupCode = code.Length > 0 ? code[..1] : "C";
-            string description = GetGeneralCategoryDescription(code);
-
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.general_category (code, group_code, description) " +
-                "VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING", conn);
-            cmd.Parameters.AddWithValue(code);
-            cmd.Parameters.AddWithValue(groupCode);
-            cmd.Parameters.AddWithValue(description);
-            await cmd.ExecuteNonQueryAsync(ct);
+            codeArr[i] = code;
+            groupArr[i] = code.Length > 0 ? code[..1] : "C";
+            descArr[i] = GetGeneralCategoryDescription(code);
+            i++;
         }
+
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.general_category (code, group_code, description) " +
+            "SELECT * FROM unnest($1, $2, $3) ON CONFLICT (code) DO NOTHING", conn);
+        cmd.Parameters.AddWithValue(codeArr);
+        cmd.Parameters.AddWithValue(groupArr);
+        cmd.Parameters.AddWithValue(descArr);
+        await cmd.ExecuteNonQueryAsync(ct);
 
         return await LoadCodeMapAsync(conn, "substrate.general_category", ct);
     }
@@ -45,13 +50,11 @@ internal sealed class UcdReferenceTableWriter
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
 
-        foreach (string code in codes)
-        {
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.script (code) VALUES ($1) ON CONFLICT (code) DO NOTHING", conn);
-            cmd.Parameters.AddWithValue(code);
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
+        string[] codeArr = [.. codes];
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.script (code) SELECT * FROM unnest($1) ON CONFLICT (code) DO NOTHING", conn);
+        cmd.Parameters.AddWithValue(codeArr);
+        await cmd.ExecuteNonQueryAsync(ct);
 
         return await LoadCodeMapAsync(conn, "substrate.script", ct);
     }
@@ -61,16 +64,25 @@ internal sealed class UcdReferenceTableWriter
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
 
+        string[] codeArr = new string[blocks.Count];
+        int[] startArr = new int[blocks.Count];
+        int[] endArr = new int[blocks.Count];
+        int i = 0;
         foreach (KeyValuePair<string, (int RangeStart, int RangeEnd)> kv in blocks)
         {
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.block (code, range_start, range_end) " +
-                "VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING", conn);
-            cmd.Parameters.AddWithValue(kv.Key);
-            cmd.Parameters.AddWithValue(kv.Value.RangeStart);
-            cmd.Parameters.AddWithValue(kv.Value.RangeEnd);
-            await cmd.ExecuteNonQueryAsync(ct);
+            codeArr[i] = kv.Key;
+            startArr[i] = kv.Value.RangeStart;
+            endArr[i] = kv.Value.RangeEnd;
+            i++;
         }
+
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.block (code, range_start, range_end) " +
+            "SELECT * FROM unnest($1, $2, $3) ON CONFLICT (code) DO NOTHING", conn);
+        cmd.Parameters.AddWithValue(codeArr);
+        cmd.Parameters.AddWithValue(startArr);
+        cmd.Parameters.AddWithValue(endArr);
+        await cmd.ExecuteNonQueryAsync(ct);
 
         return await LoadCodeMapAsync(conn, "substrate.block", ct);
     }
@@ -80,15 +92,22 @@ internal sealed class UcdReferenceTableWriter
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
 
+        string[] codeArr = new string[properties.Count];
+        string[] catArr = new string[properties.Count];
+        int i = 0;
         foreach ((string code, string category) in properties)
         {
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.break_property (code, category) " +
-                "VALUES ($1, $2) ON CONFLICT (code, category) DO NOTHING", conn);
-            cmd.Parameters.AddWithValue(code);
-            cmd.Parameters.AddWithValue(category);
-            await cmd.ExecuteNonQueryAsync(ct);
+            codeArr[i] = code;
+            catArr[i] = category;
+            i++;
         }
+
+        await using NpgsqlCommand cmd = new(
+            "INSERT INTO substrate.break_property (code, category) " +
+            "SELECT * FROM unnest($1, $2) ON CONFLICT (code, category) DO NOTHING", conn);
+        cmd.Parameters.AddWithValue(codeArr);
+        cmd.Parameters.AddWithValue(catArr);
+        await cmd.ExecuteNonQueryAsync(ct);
 
         Dictionary<(string, string), int> result = new();
         await using NpgsqlCommand loadCmd = new(
@@ -208,12 +227,3 @@ internal sealed class UcdReferenceTableWriter
     }
 }
 
-internal readonly record struct CodepointPropertyRow(
-    long EntityId,
-    int GeneralCategoryId,
-    int ScriptId,
-    int BlockId,
-    int? GcbId,
-    int? WbId,
-    int? SbId,
-    int? LbId);
