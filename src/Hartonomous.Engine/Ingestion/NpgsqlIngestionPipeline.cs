@@ -344,6 +344,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         long[] entityIds = new long[batch.Physicalities.Count];
         int[] typeIds = new int[batch.Physicalities.Count];
         byte[][] geomWkbs = new byte[batch.Physicalities.Count][];
+        byte[][] contentHashes = new byte[batch.Physicalities.Count][];
 
         for (int i = 0; i < batch.Physicalities.Count; i++)
         {
@@ -351,15 +352,18 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             entityIds[i] = batch.ResolveHandle(phys.Entity);
             typeIds[i] = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
             geomWkbs[i] = phys.GeomWkb;
+            contentHashes[i] = Hartonomous.Core.Compute.Common.Blake3.Hash(phys.GeomWkb);
         }
 
         await using NpgsqlCommand cmd = new(
-            "INSERT INTO substrate.physicality (entity_id, physicality_type_id, geom) " +
-            "SELECT e, t, ST_GeomFromWKB(g, 4326) " +
-            "FROM unnest($1::bigint[], $2::int[], $3::bytea[]) AS t(e, t, g)", conn);
+            "INSERT INTO substrate.physicality (entity_id, physicality_type_id, geom, content_hash) " +
+            "SELECT e, t, ST_GeomFromWKB(g, 4326), h " +
+            "FROM unnest($1::bigint[], $2::int[], $3::bytea[], $4::bytea[]) AS t(e, t, g, h) " +
+            "ON CONFLICT (entity_id, physicality_type_id, content_hash) DO NOTHING", conn);
         cmd.Parameters.AddWithValue(entityIds);
         cmd.Parameters.AddWithValue(typeIds);
         cmd.Parameters.AddWithValue(geomWkbs);
+        cmd.Parameters.AddWithValue(contentHashes);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 

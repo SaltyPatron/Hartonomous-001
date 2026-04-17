@@ -26,6 +26,32 @@ extern "C" {
 
 HARTONOMOUS_API const char* hartonomous_version(void);
 
+/* ── Runtime information ──────────────────────────────────────
+ *
+ * Populated by hartonomous_runtime_info(). Lets callers assert at runtime
+ * that the intended acceleration is actually linked in — MKL version + max
+ * threads, OpenMP max threads, the CBWR branch the library resolved to for
+ * MKL strict reproducibility. No allocation; caller owns the struct.
+ *
+ * Fields:
+ *   has_mkl           — 1 if MKL is linked (always 1 in this build), else 0.
+ *   mkl_version       — MKL version string from mkl_get_version_string(),
+ *                       NUL-terminated.
+ *   mkl_max_threads   — mkl_get_max_threads().
+ *   omp_max_threads   — omp_get_max_threads().
+ *   cbwr_branch       — mkl_cbwr_get() — the active conditional-bitwise-
+ *                       reproducibility branch. Non-negative on success.
+ */
+typedef struct hartonomous_runtime_info {
+    int  has_mkl;
+    char mkl_version[128];
+    int  mkl_max_threads;
+    int  omp_max_threads;
+    int  cbwr_branch;
+} hartonomous_runtime_info_t;
+
+HARTONOMOUS_API void hartonomous_runtime_info(hartonomous_runtime_info_t* out);
+
 /*
  * BLAKE3 one-shot hash. Computes a 32-byte digest over `len` bytes at `data`.
  * `out` must point to at least HARTONOMOUS_HASH_LEN (32) bytes.
@@ -258,6 +284,21 @@ HARTONOMOUS_API int hartonomous_blake3_merkle(
     const uint8_t* child_hashes, size_t child_count,
     uint8_t output[HARTONOMOUS_HASH_LEN]
 );
+
+/* ── MKL sparse inspector-executor probes (diagnostic) ───────
+ *
+ * Each probe invokes ONE more MKL sparse call than the previous one, on a
+ * fixed 3x3 identity. Used from managed code to localize which MKL sparse
+ * entry point is the source of a test-host crash. Stack-only; no heap, no
+ * Lanczos, no confounding factors.
+ *
+ * Return: 0 on success; negative MKL-status-encoded value on failure.
+ */
+HARTONOMOUS_API int hartonomous_probe_sparse_create_destroy(void);
+HARTONOMOUS_API int hartonomous_probe_sparse_set_hint(void);
+HARTONOMOUS_API int hartonomous_probe_sparse_optimize(void);
+HARTONOMOUS_API int hartonomous_probe_sparse_mv(void);
+HARTONOMOUS_API int hartonomous_probe_sparse_mv_loop(int32_t iters);
 
 #ifdef __cplusplus
 }

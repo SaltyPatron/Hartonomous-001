@@ -124,6 +124,25 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                             position++;
                         }
 
+                        // Emit contour trajectory physicality over the lemma's codepoint positions.
+                        List<(double X, double Y, double Z, double M)> vertices =
+                            PhysicalityEmitter.SurfaceFormVertices(normalizedWord);
+                        if (vertices.Count >= 2)
+                        {
+                            batch.AddPhysicality(
+                                lemmaEntity,
+                                "contour",
+                                PhysicalityEmitter.LineStringZmWkb(vertices));
+                        }
+                        else if (vertices.Count == 1)
+                        {
+                            (double x, double y, double z, double m) = vertices[0];
+                            batch.AddPhysicality(
+                                lemmaEntity,
+                                "s3_position",
+                                PhysicalityEmitter.PointZmWkb(x, y, z, m));
+                        }
+
                         entityCount++;
                     }
 

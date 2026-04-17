@@ -4,9 +4,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <mkl.h>
+#include <mkl_cblas.h>
+#include <mkl_spblas.h>
+
 #include "hartonomous.h"
 
-/* xorshift64 PRNG. State must be non-zero. */
+/*
+ * Symmetric sparse Lanczos eigensolver — top-k Ritz pairs with full
+ * re-orthogonalization.
+ *
+ * Heavy ops routed through MKL:
+ *   - CSR matvec via mkl_sparse_d_mv (inspector-executor API)
+ *   - dot/axpy/nrm via cblas_ddot/daxpy/dnrm2
+ * Reduction order is pinned via CBWR=AUTO,STRICT (set globally in gemm.c) so
+ * output is bit-reproducible across runs in the same ISA class.
+ */
+
 static uint64_t xs64(uint64_t* state) {
     uint64_t x = *state;
     x ^= x << 13;
@@ -16,37 +30,15 @@ static uint64_t xs64(uint64_t* state) {
     return x;
 }
 
-/* Uniform double in [-1, 1]. */
 static double rand_unit(uint64_t* state) {
     uint64_t r = xs64(state) >> 11;
     double u = (double)r / (double)(1ULL << 53);
     return 2.0 * u - 1.0;
 }
 
-/* y = A*x for symmetric CSR A. */
-static void csr_matvec(
-    int64_t n,
-    const int64_t* row_ptr,
-    const int64_t* col_idx,
-    const double* values,
-    const double* x,
-    double* y
-) {
-    for (int64_t i = 0; i < n; ++i) {
-        double s = 0.0;
-        int64_t a = row_ptr[i], b = row_ptr[i + 1];
-        for (int64_t p = a; p < b; ++p) {
-            s += values[p] * x[col_idx[p]];
-        }
-        y[i] = s;
-    }
-}
-
-/* Symmetric Jacobi eigendecomposition for small dense matrices.
- * a (in/out) — n×n row-major symmetric. On exit: diagonal holds eigenvalues,
- *   off-diagonal entries are ~0.
+/* Symmetric Jacobi eigendecomposition for the small tridiagonal projection.
+ * a (in/out) — n×n row-major symmetric. On exit: diagonal holds eigenvalues.
  * v (out)    — n×n row-major; columns are eigenvectors.
- * Sweep order is fixed (p ascending, then q ascending) for determinism.
  */
 static int jacobi_eig(int64_t n, double* a, double* v) {
     for (int64_t i = 0; i < n; ++i)
@@ -137,50 +129,75 @@ int hartonomous_sparse_sym_eigs_f64(
         return -9;
     }
 
-    uint64_t state = seed ? seed : 0x9E3779B97F4A7C15ULL;
-    double norm0 = 0.0;
-    for (int64_t i = 0; i < n; ++i) {
-        double r = rand_unit(&state);
-        V[i] = r;
-        norm0 += r * r;
-    }
-    norm0 = sqrt(norm0);
-    if (norm0 == 0.0) {
+    /* Build an inspector-executor CSR handle. MKL stores row indices as
+     * MKL_INT — copy int64 inputs down. */
+    MKL_INT* mkl_row_ptr = (MKL_INT*)malloc((size_t)(n + 1) * sizeof(MKL_INT));
+    MKL_INT* mkl_col_idx = (MKL_INT*)malloc((size_t)nnz * sizeof(MKL_INT));
+    if (!mkl_row_ptr || !mkl_col_idx) {
         free(V); free(alpha); free(beta); free(w);
+        free(mkl_row_ptr); free(mkl_col_idx);
+        return -9;
+    }
+    for (int64_t i = 0; i <= n; ++i) mkl_row_ptr[i] = (MKL_INT)row_ptr[i];
+    for (int64_t i = 0; i < nnz; ++i) mkl_col_idx[i] = (MKL_INT)col_idx[i];
+
+    sparse_matrix_t A;
+    sparse_status_t st = mkl_sparse_d_create_csr(
+        &A, SPARSE_INDEX_BASE_ZERO, (MKL_INT)n, (MKL_INT)n,
+        mkl_row_ptr, mkl_row_ptr + 1, mkl_col_idx, (double*)values);
+    if (st != SPARSE_STATUS_SUCCESS) {
+        free(V); free(alpha); free(beta); free(w);
+        free(mkl_row_ptr); free(mkl_col_idx);
+        return -9;
+    }
+    struct matrix_descr descr;
+    descr.type = SPARSE_MATRIX_TYPE_SYMMETRIC;
+    descr.mode = SPARSE_FILL_MODE_UPPER;
+    descr.diag = SPARSE_DIAG_NON_UNIT;
+    mkl_sparse_set_mv_hint(A, SPARSE_OPERATION_NON_TRANSPOSE, descr, (MKL_INT)max_iter);
+    mkl_sparse_optimize(A);
+
+    uint64_t state = seed ? seed : 0x9E3779B97F4A7C15ULL;
+    for (int64_t i = 0; i < n; ++i) V[i] = rand_unit(&state);
+    double norm0 = cblas_dnrm2((MKL_INT)n, V, 1);
+    if (norm0 == 0.0) {
+        mkl_sparse_destroy(A);
+        free(V); free(alpha); free(beta); free(w);
+        free(mkl_row_ptr); free(mkl_col_idx);
         return -6;
     }
-    double inv0 = 1.0 / norm0;
-    for (int64_t i = 0; i < n; ++i) V[i] *= inv0;
+    cblas_dscal((MKL_INT)n, 1.0 / norm0, V, 1);
 
     int64_t actual = m;
     for (int64_t j = 0; j < m; ++j) {
-        const double* vj = V + j * n;
+        double* vj = V + j * n;
 
-        csr_matvec(n, row_ptr, col_idx, values, vj, w);
+        /* w = A · vj */
+        mkl_sparse_d_mv(
+            SPARSE_OPERATION_NON_TRANSPOSE, 1.0, A, descr,
+            vj, 0.0, w);
 
+        /* w -= beta_j · v_{j-1} */
         if (j > 0) {
-            const double* vjm1 = V + (j - 1) * n;
-            double bj = beta[j];
-            for (int64_t i = 0; i < n; ++i) w[i] -= bj * vjm1[i];
+            double* vjm1 = V + (j - 1) * n;
+            cblas_daxpy((MKL_INT)n, -beta[j], vjm1, 1, w, 1);
         }
 
-        double a = 0.0;
-        for (int64_t i = 0; i < n; ++i) a += w[i] * vj[i];
+        /* alpha_j = <w, vj>; w -= alpha_j · vj */
+        double a = cblas_ddot((MKL_INT)n, w, 1, vj, 1);
         alpha[j] = a;
-        for (int64_t i = 0; i < n; ++i) w[i] -= a * vj[i];
+        cblas_daxpy((MKL_INT)n, -a, vj, 1, w, 1);
 
+        /* Full re-orthogonalization against V[0..j]. */
         for (int64_t s = 0; s <= j; ++s) {
-            const double* vs = V + s * n;
-            double dot = 0.0;
-            for (int64_t i = 0; i < n; ++i) dot += w[i] * vs[i];
+            double* vs = V + s * n;
+            double dot = cblas_ddot((MKL_INT)n, w, 1, vs, 1);
             if (dot != 0.0) {
-                for (int64_t i = 0; i < n; ++i) w[i] -= dot * vs[i];
+                cblas_daxpy((MKL_INT)n, -dot, vs, 1, w, 1);
             }
         }
 
-        double bnorm = 0.0;
-        for (int64_t i = 0; i < n; ++i) bnorm += w[i] * w[i];
-        bnorm = sqrt(bnorm);
+        double bnorm = cblas_dnrm2((MKL_INT)n, w, 1);
         beta[j + 1] = bnorm;
 
         if (bnorm < 1e-12) {
@@ -188,11 +205,15 @@ int hartonomous_sparse_sym_eigs_f64(
             break;
         }
         if (j + 1 < m) {
-            double inv = 1.0 / bnorm;
             double* vjp1 = V + (j + 1) * n;
-            for (int64_t i = 0; i < n; ++i) vjp1[i] = w[i] * inv;
+            cblas_dcopy((MKL_INT)n, w, 1, vjp1, 1);
+            cblas_dscal((MKL_INT)n, 1.0 / bnorm, vjp1, 1);
         }
     }
+
+    mkl_sparse_destroy(A);
+    free(mkl_row_ptr);
+    free(mkl_col_idx);
 
     int64_t mm = actual;
     *out_iters = mm;
@@ -244,17 +265,26 @@ int hartonomous_sparse_sym_eigs_f64(
     for (int64_t e = 0; e < want; ++e) {
         int64_t col = order[e];
         eigenvalues[e] = T[col * mm + col];
-        for (int64_t i = 0; i < n; ++i) {
-            double s = 0.0;
-            for (int64_t r = 0; r < mm; ++r) {
-                s += V[r * n + i] * S[r * mm + col];
-            }
-            eigenvectors[e * n + i] = s;
+        /* eigenvec[e] = V^T · S[:,col], shape (n,).  V is (m × n) row-major;
+         * so V^T is (n × m). cblas_dgemv treats V as (m × n) row-major and
+         * with CblasTrans gives y = V^T · x = sum_r V[r,:] * S[r,col]. */
+        double* Svec = (double*)malloc((size_t)mm * sizeof(double));
+        if (!Svec) {
+            free(order); free(V); free(alpha); free(beta); free(w); free(T); free(S);
+            return -9;
         }
+        for (int64_t r = 0; r < mm; ++r) Svec[r] = S[r * mm + col];
+        cblas_dgemv(
+            CblasRowMajor, CblasTrans,
+            (MKL_INT)mm, (MKL_INT)n,
+            1.0, V, (MKL_INT)n,
+            Svec, 1,
+            0.0, eigenvectors + e * n, 1);
+        free(Svec);
     }
     for (int64_t e = want; e < k; ++e) {
         eigenvalues[e] = 0.0;
-        for (int64_t i = 0; i < n; ++i) eigenvectors[e * n + i] = 0.0;
+        memset(eigenvectors + e * n, 0, (size_t)n * sizeof(double));
     }
 
     free(order); free(V); free(alpha); free(beta); free(w); free(T); free(S);

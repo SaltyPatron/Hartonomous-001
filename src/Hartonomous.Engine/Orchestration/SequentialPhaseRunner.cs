@@ -9,6 +9,8 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace Hartonomous.Engine.Orchestration;
 
@@ -18,18 +20,21 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
     private readonly IIngestionPipeline _pipeline;
     private readonly IProgressReporter _reporter;
     private readonly ILogger<SequentialPhaseRunner> _logger;
+    private readonly NpgsqlDataSource? _dataSource;
     private readonly Dictionary<Phase, PhaseStatus> _status = [];
 
     public SequentialPhaseRunner(
         IReadOnlyDictionary<Phase, IReadOnlyList<IDecomposer>> decomposers,
         IIngestionPipeline pipeline,
         IProgressReporter reporter,
-        ILogger<SequentialPhaseRunner> logger)
+        ILogger<SequentialPhaseRunner> logger,
+        NpgsqlDataSource? dataSource = null)
     {
         _decomposers = decomposers;
         _pipeline = pipeline;
         _reporter = reporter;
         _logger = logger;
+        _dataSource = dataSource;
 
         foreach (Phase phase in Enum.GetValues<Phase>())
         {
@@ -37,16 +42,73 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
         }
     }
 
-    public void MarkAllCompleted()
+    /// <summary>
+    /// Read <c>monitor.phase_status</c> and populate the in-memory status map.
+    /// Without this, every invocation starts from <c>NotStarted</c> and re-runs
+    /// every dependency phase on whatever <c>SourceDirectory</c> was passed —
+    /// which is wrong when you're running just one phase against a specific
+    /// per-phase input (e.g. ModelDecomp against a model snapshot while UCD is
+    /// already completed against the Unicode drop). No-op if no data source
+    /// was supplied (backwards-compatible for tests that pass fakes).
+    /// </summary>
+    public async Task HydrateStatusAsync(CancellationToken ct)
+    {
+        if (_dataSource is null)
+        {
+            return;
+        }
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new(
+            "SELECT phase_code, status FROM monitor.phase_status", conn);
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string code = reader.GetString(0);
+            string status = reader.GetString(1);
+            if (!Enum.TryParse<Phase>(code, ignoreCase: true, out Phase phase))
+            {
+                continue;
+            }
+            _status[phase] = status switch
+            {
+                "completed" => PhaseStatus.Completed,
+                "running"   => PhaseStatus.InProgress,
+                "failed"    => PhaseStatus.Failed,
+                _           => PhaseStatus.NotStarted,
+            };
+        }
+    }
+
+    /// <summary>
+    /// Mark every phase other than <paramref name="target"/> as Completed in
+    /// memory. Used to bypass dependency checks when the caller wants to run a
+    /// single phase against phase-specific input and doesn't want the runner to
+    /// re-execute (or refuse) on account of unmet deps. <paramref name="target"/>
+    /// itself is left at its hydrated status so it is not short-circuited.
+    /// </summary>
+    public void MarkAllCompletedExcept(Phase target)
     {
         foreach (Phase phase in Enum.GetValues<Phase>())
         {
-            _status[phase] = PhaseStatus.Completed;
+            if (phase != target)
+            {
+                _status[phase] = PhaseStatus.Completed;
+            }
         }
     }
 
     public async Task<PhaseResult> RunPhaseAsync(Phase phase, CancellationToken ct)
     {
+        // Already-completed phases short-circuit. Without this, invoking a
+        // single phase re-runs every predecessor against whatever the current
+        // SourceDirectory happens to be — catastrophic when the caller passed
+        // a model-specific path but the UCD phase wants the Unicode drop.
+        if (_status.GetValueOrDefault(phase) == PhaseStatus.Completed)
+        {
+            Log.PhaseAlreadyCompleted(_logger, phase);
+            return new PhaseResult(phase, PhaseStatus.Completed, TimeSpan.Zero, null);
+        }
+
         IReadOnlyList<Phase> deps = PhaseDag.GetDependencies(phase);
         foreach (Phase dep in deps)
         {
@@ -60,6 +122,7 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
 
         _status[phase] = PhaseStatus.InProgress;
         Stopwatch sw = Stopwatch.StartNew();
+        await PersistStatusAsync(phase, "running", errorMessage: null, ct);
 
         Log.PhaseStarted(_logger, phase);
 
@@ -67,6 +130,7 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
         {
             Log.PhaseNoDecomposers(_logger, phase);
             _status[phase] = PhaseStatus.Completed;
+            await PersistStatusAsync(phase, "completed", errorMessage: null, ct);
             return new PhaseResult(phase, PhaseStatus.Completed, sw.Elapsed, null);
         }
 
@@ -80,15 +144,32 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             }
 
             _status[phase] = PhaseStatus.Completed;
+            await PersistStatusAsync(phase, "completed", errorMessage: null, ct);
             Log.PhaseCompleted(_logger, phase, sw.Elapsed);
             return new PhaseResult(phase, PhaseStatus.Completed, sw.Elapsed, null);
         }
         catch (Exception ex) // BOUNDARY: phase runner converts decomposer failures to PhaseResult
         {
             _status[phase] = PhaseStatus.Failed;
+            await PersistStatusAsync(phase, "failed", errorMessage: ex.Message, ct);
             Log.PhaseFailed(_logger, phase, ex);
             return new PhaseResult(phase, PhaseStatus.Failed, sw.Elapsed, ex.Message);
         }
+    }
+
+    private async Task PersistStatusAsync(Phase phase, string status, string? errorMessage, CancellationToken ct)
+    {
+        if (_dataSource is null)
+        {
+            return;
+        }
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new(
+            "CALL monitor.update_phase_status($1, $2, $3)", conn);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, phase.ToString());
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, status);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)errorMessage ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<IReadOnlyList<PhaseResult>> RunAllAsync(CancellationToken ct)
@@ -135,6 +216,9 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
 
         [LoggerMessage(Level = LogLevel.Warning, Message = "Phase {Phase} has no registered decomposers — marking complete")]
         public static partial void PhaseNoDecomposers(ILogger logger, Phase phase);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Phase {Phase} already completed — skipping (use reset to rerun)")]
+        public static partial void PhaseAlreadyCompleted(ILogger logger, Phase phase);
 
         [LoggerMessage(Level = LogLevel.Error, Message = "Dependency {Dependency} not met for phase {Phase}")]
         public static partial void DependencyNotMet(ILogger logger, Phase phase, Phase dependency);

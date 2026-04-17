@@ -40,7 +40,15 @@ set(MKL_THREADING intel_thread CACHE STRING "" FORCE)    # iomp5 — determinist
 set(MKL_LINK dynamic CACHE STRING "" FORCE)
 find_package(MKL CONFIG REQUIRED)
 
-find_package(OpenMP REQUIRED)
+# Use MSVC's LLVM-based OpenMP runtime — OpenMP 4.5+ supports int64_t loop
+# counters (classic /openmp is stuck at 2.0 and rejects signed long long).
+# We bypass find_package(OpenMP) because its probe emits plain /openmp.
+if(MSVC)
+    set(HARTONOMOUS_OPENMP_FLAGS "/openmp:llvm")
+else()
+    find_package(OpenMP REQUIRED)
+    set(HARTONOMOUS_OPENMP_FLAGS "${OpenMP_C_FLAGS}")
+endif()
 
 include(FetchContent)
 
@@ -57,6 +65,7 @@ FetchContent_MakeAvailable(blake3)
 
 set(HARTONOMOUS_SOURCES
     src/version.c
+    src/runtime_info.c
     src/hash.c
     src/s3_geometry.c
     src/super_fibonacci.c
@@ -65,6 +74,7 @@ set(HARTONOMOUS_SOURCES
     src/gemm.c
     src/knn.c
     src/sparse_eigs.c
+    src/sparse_probe.c
     src/gram_schmidt.c
     src/merkle.c
 )
@@ -89,17 +99,19 @@ target_link_libraries(hartonomous
     PRIVATE
         blake3
         MKL::MKL
-        OpenMP::OpenMP_C
 )
+if(NOT MSVC)
+    target_link_libraries(hartonomous PRIVATE OpenMP::OpenMP_C)
+endif()
 
 target_compile_definitions(hartonomous PRIVATE HARTONOMOUS_BUILD)
 
 # AVX-512 for tensor_decode SIMD fast paths on the 14900KS target.
 # x86-64-v4 (AVX-512F+BW+CD+DQ+VL) covers the intrinsics we use.
 if(MSVC)
-    target_compile_options(hartonomous PRIVATE /W4 /permissive- /utf-8 /arch:AVX2)
+    target_compile_options(hartonomous PRIVATE /W4 /permissive- /utf-8 /arch:AVX2 ${HARTONOMOUS_OPENMP_FLAGS})
 else()
-    target_compile_options(hartonomous PRIVATE -Wall -Wextra -Wpedantic -mavx2 -mfma)
+    target_compile_options(hartonomous PRIVATE -Wall -Wextra -Wpedantic -mavx2 -mfma ${HARTONOMOUS_OPENMP_FLAGS})
 endif()
 
 set_target_properties(hartonomous PROPERTIES

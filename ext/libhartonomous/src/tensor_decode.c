@@ -1,6 +1,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <omp.h>
+#if defined(__AVX2__) || defined(_MSC_VER)
+#include <immintrin.h>
+#endif
+
 #include "hartonomous.h"
 
 /* dtype enum mirrors hartonomous.h documentation. */
@@ -11,8 +16,8 @@ enum {
     HTNS_DTYPE_BOOL = 12
 };
 
-/* IEEE 754 binary16 → binary64. Lossless: every f16 value is exactly representable in f64. */
-static double f16_to_f64(uint16_t bits) {
+/* IEEE 754 binary16 → binary64. Lossless. */
+static inline double f16_to_f64(uint16_t bits) {
     uint32_t sign = (uint32_t)(bits >> 15) & 0x1u;
     uint32_t exp  = (uint32_t)(bits >> 10) & 0x1Fu;
     uint32_t frac = (uint32_t)(bits) & 0x3FFu;
@@ -21,7 +26,6 @@ static double f16_to_f64(uint16_t bits) {
         if (frac == 0) {
             f32_bits = sign << 31;
         } else {
-            /* Subnormal: shift mantissa until leading 1, adjust exponent. */
             int e = -14;
             while ((frac & 0x400u) == 0) { frac <<= 1; e -= 1; }
             frac &= 0x3FFu;
@@ -38,12 +42,27 @@ static double f16_to_f64(uint16_t bits) {
 }
 
 /* bfloat16 → binary64. bf16 layout = high 16 bits of f32. */
-static double bf16_to_f64(uint16_t bits) {
+static inline double bf16_to_f64_scalar(uint16_t bits) {
     uint32_t f32_bits = (uint32_t)bits << 16;
     float f;
     memcpy(&f, &f32_bits, sizeof f);
     return (double)f;
 }
+
+/* AVX2 BF16→F64 kernel: widen 8 bf16 values to 8 f64 per iteration.
+ * bf16 → f32 by left-shifting 16 bits; f32 → f64 via _mm256_cvtps_pd (4 at a time). */
+#if defined(__AVX2__) || defined(_MSC_VER)
+static inline void bf16_to_f64_block8(const uint16_t* src, double* dst) {
+    __m128i u16 = _mm_loadu_si128((const __m128i*)src);          /* 8× u16 */
+    __m256i u32 = _mm256_cvtepu16_epi32(u16);                     /* 8× u32 */
+    __m256i shifted = _mm256_slli_epi32(u32, 16);                 /* 8× f32 bits */
+    __m256 f32 = _mm256_castsi256_ps(shifted);
+    __m128 lo = _mm256_castps256_ps128(f32);
+    __m128 hi = _mm256_extractf128_ps(f32, 1);
+    _mm256_storeu_pd(dst + 0, _mm256_cvtps_pd(lo));
+    _mm256_storeu_pd(dst + 4, _mm256_cvtps_pd(hi));
+}
+#endif
 
 int hartonomous_tensor_decode_f64(
     const void* src, size_t src_bytes,
@@ -74,7 +93,9 @@ int hartonomous_tensor_decode_f64(
             break;
         }
         case HTNS_DTYPE_F32: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 float f;
                 memcpy(&f, p + i * 4, 4);
                 dst[i] = (double)f;
@@ -82,7 +103,9 @@ int hartonomous_tensor_decode_f64(
             break;
         }
         case HTNS_DTYPE_F16: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 uint16_t bits;
                 memcpy(&bits, p + i * 2, 2);
                 dst[i] = f16_to_f64(bits);
@@ -90,53 +113,86 @@ int hartonomous_tensor_decode_f64(
             break;
         }
         case HTNS_DTYPE_BF16: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+#if defined(__AVX2__) || defined(_MSC_VER)
+            const uint16_t* s16 = (const uint16_t*)p;
+            int64_t blocks = dst_count / 8;
+            int64_t b;
+            #pragma omp parallel for schedule(static) private(b)
+            for (b = 0; b < blocks; ++b) {
+                bf16_to_f64_block8(s16 + b * 8, dst + b * 8);
+            }
+            for (int64_t i = blocks * 8; i < dst_count; ++i) {
+                uint16_t bits;
+                memcpy(&bits, s16 + i, 2);
+                dst[i] = bf16_to_f64_scalar(bits);
+            }
+#else
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 uint16_t bits;
                 memcpy(&bits, p + i * 2, 2);
-                dst[i] = bf16_to_f64(bits);
+                dst[i] = bf16_to_f64_scalar(bits);
             }
+#endif
             break;
         }
         case HTNS_DTYPE_I8: {
-            for (int64_t i = 0; i < dst_count; ++i) dst[i] = (double)(int8_t)p[i];
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) dst[i] = (double)(int8_t)p[i];
             break;
         }
         case HTNS_DTYPE_U8: case HTNS_DTYPE_BOOL: {
-            for (int64_t i = 0; i < dst_count; ++i) dst[i] = (double)p[i];
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) dst[i] = (double)p[i];
             break;
         }
         case HTNS_DTYPE_I16: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 int16_t v; memcpy(&v, p + i * 2, 2); dst[i] = (double)v;
             }
             break;
         }
         case HTNS_DTYPE_U16: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 uint16_t v; memcpy(&v, p + i * 2, 2); dst[i] = (double)v;
             }
             break;
         }
         case HTNS_DTYPE_I32: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 int32_t v; memcpy(&v, p + i * 4, 4); dst[i] = (double)v;
             }
             break;
         }
         case HTNS_DTYPE_U32: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 uint32_t v; memcpy(&v, p + i * 4, 4); dst[i] = (double)v;
             }
             break;
         }
         case HTNS_DTYPE_I64: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 int64_t v; memcpy(&v, p + i * 8, 8); dst[i] = (double)v;
             }
             break;
         }
         case HTNS_DTYPE_U64: {
-            for (int64_t i = 0; i < dst_count; ++i) {
+            int64_t i;
+            #pragma omp parallel for schedule(static) private(i)
+            for (i = 0; i < dst_count; ++i) {
                 uint64_t v; memcpy(&v, p + i * 8, 8); dst[i] = (double)v;
             }
             break;

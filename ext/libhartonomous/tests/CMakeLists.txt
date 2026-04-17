@@ -12,6 +12,12 @@ add_executable(hartonomous_tests
     test_s3.cc
     test_super_fibonacci.cc
     test_hilbert.cc
+    test_gemm.cc
+    test_knn.cc
+    test_sparse_eigs.cc
+    test_tensor_decode.cc
+    test_gram_schmidt.cc
+    test_merkle.cc
 )
 
 target_link_libraries(hartonomous_tests

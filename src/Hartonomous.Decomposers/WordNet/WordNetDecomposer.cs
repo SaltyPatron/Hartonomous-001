@@ -123,11 +123,18 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 string udPos = WordNetParser.PosCharToUdPos(pos);
                 synsetPosEntries.Add((synsetKey, udPos));
 
+                // Collect per-lemma vertex lists so the synset itself can emit a
+                // MULTILINESTRINGZM trajectory that unions every member spelling.
+                List<IReadOnlyList<(double X, double Y, double Z, double M)>> synsetMemberContours = new();
+
                 // Lemmas in this synset.
                 foreach (SynsetWord word in synset.Words)
                 {
                     string normalizedWord = word.Word.ToLowerInvariant();
                     string lemmaKey = normalizedWord;
+
+                    List<(double, double, double, double)> lemmaVertices =
+                        PhysicalityEmitter.SurfaceFormVertices(normalizedWord);
 
                     if (!lemmaToHash.ContainsKey(lemmaKey))
                     {
@@ -136,7 +143,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                         EntityHandle lemmaEntity = batch.AddEntity(lemmaHash, "lemma");
                         batch.AddSignificance(lemmaEntity, "source_authority", TrustPriorMu);
 
-                        // Compose lemma from codepoints.
+                        // Compose lemma from codepoints AND emit trajectory physicality.
                         int position = 0;
                         foreach (Rune rune in normalizedWord.EnumerateRunes())
                         {
@@ -146,8 +153,57 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                             position++;
                         }
 
+                        if (lemmaVertices.Count >= 2)
+                        {
+                            batch.AddPhysicality(
+                                lemmaEntity,
+                                "contour",
+                                PhysicalityEmitter.LineStringZmWkb(lemmaVertices));
+                        }
+                        else if (lemmaVertices.Count == 1)
+                        {
+                            (double x, double y, double z, double m) = lemmaVertices[0];
+                            batch.AddPhysicality(
+                                lemmaEntity,
+                                "s3_position",
+                                PhysicalityEmitter.PointZmWkb(x, y, z, m));
+                        }
+
                         entityCount++;
                         lemmaPosEntries.Add((lemmaKey, udPos));
+                    }
+
+                    if (lemmaVertices.Count > 0)
+                    {
+                        synsetMemberContours.Add(lemmaVertices);
+                    }
+                }
+
+                // Synset physicality = MULTILINESTRINGZM over member lemma trajectories.
+                // Each linestring component needs >= 2 vertices; single-codepoint members are
+                // replaced by a degenerate 2-vertex line at the same point so multi-linestring
+                // topology stays well-formed.
+                if (synsetMemberContours.Count > 0)
+                {
+                    List<IReadOnlyList<(double X, double Y, double Z, double M)>> wellFormed =
+                        new(synsetMemberContours.Count);
+                    foreach (IReadOnlyList<(double X, double Y, double Z, double M)> m in synsetMemberContours)
+                    {
+                        if (m.Count >= 2)
+                        {
+                            wellFormed.Add(m);
+                        }
+                        else if (m.Count == 1)
+                        {
+                            wellFormed.Add(new[] { m[0], m[0] });
+                        }
+                    }
+                    if (wellFormed.Count > 0)
+                    {
+                        batch.AddPhysicality(
+                            synsetEntity,
+                            "contour",
+                            PhysicalityEmitter.MultiLineStringZmWkb(wellFormed));
                     }
                 }
 
@@ -173,6 +229,29 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 double mu = si.TagCount > 0 ? TrustPriorMu + (si.TagCount * 10.0) : TrustPriorMu;
                 batch.AddSignificance(senseEntity, "lexical_disambiguation", mu);
                 entityCount++;
+
+                // word_sense trajectory = the spelling of its lemma (the part of the sense key
+                // before the first '%'). Same geometric trajectory as the underlying lemma but
+                // attached as an independent physicality on the sense entity.
+                int pctIdx = si.SenseKey.IndexOf('%');
+                string senseLemma = pctIdx > 0 ? si.SenseKey[..pctIdx] : si.SenseKey;
+                List<(double, double, double, double)> senseVertices =
+                    PhysicalityEmitter.SurfaceFormVertices(senseLemma);
+                if (senseVertices.Count >= 2)
+                {
+                    batch.AddPhysicality(
+                        senseEntity,
+                        "contour",
+                        PhysicalityEmitter.LineStringZmWkb(senseVertices));
+                }
+                else if (senseVertices.Count == 1)
+                {
+                    (double x, double y, double z, double m) = senseVertices[0];
+                    batch.AddPhysicality(
+                        senseEntity,
+                        "s3_position",
+                        PhysicalityEmitter.PointZmWkb(x, y, z, m));
+                }
 
                 if (batch.EntityCount >= BatchSize)
                 {
@@ -203,6 +282,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                         position++;
                     }
 
+                    EmitLemmaPhysicality(batch, entity, inflKey);
                     entityCount++;
                 }
 
@@ -224,6 +304,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                             position++;
                         }
 
+                        EmitLemmaPhysicality(batch, entity, baseKey);
                         entityCount++;
                     }
                 }
@@ -244,6 +325,26 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 frameIdToHash[vs.Id] = hash;
                 EntityHandle entity = batch.AddEntity(hash, "text_composition");
                 batch.AddSignificance(entity, "source_authority", TrustPriorMu);
+
+                // text_composition trajectory = contour through every codepoint of the template.
+                List<(double, double, double, double)> frameVertices =
+                    PhysicalityEmitter.SurfaceFormVertices(vs.Template);
+                if (frameVertices.Count >= 2)
+                {
+                    batch.AddPhysicality(
+                        entity,
+                        "contour",
+                        PhysicalityEmitter.LineStringZmWkb(frameVertices));
+                }
+                else if (frameVertices.Count == 1)
+                {
+                    (double x, double y, double z, double m) = frameVertices[0];
+                    batch.AddPhysicality(
+                        entity,
+                        "s3_position",
+                        PhysicalityEmitter.PointZmWkb(x, y, z, m));
+                }
+
                 entityCount++;
             }
 
@@ -545,6 +646,21 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         finally
         {
             await refWriter.DisposeAsync();
+        }
+    }
+
+    private static void EmitLemmaPhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
+    {
+        List<(double X, double Y, double Z, double M)> vertices =
+            PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
+        if (vertices.Count >= 2)
+        {
+            batch.AddPhysicality(entity, "contour", PhysicalityEmitter.LineStringZmWkb(vertices));
+        }
+        else if (vertices.Count == 1)
+        {
+            (double x, double y, double z, double m) = vertices[0];
+            batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
         }
     }
 

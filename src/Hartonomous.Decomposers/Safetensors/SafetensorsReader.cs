@@ -15,7 +15,7 @@ public static class SafetensorsReader
     /// holding the full tensor in memory. Updates the hasher only — caller is
     /// responsible for having already fed the canonical (dtype, shape) prefix.
     /// </summary>
-    public static void StreamHash(SafetensorsTensorInfo info, ref Blake3Hasher hasher)
+    public static void StreamHash(SafetensorsTensorInfo info, Blake3Hasher hasher)
     {
         long totalBytes = info.EndByte - info.BeginByte;
         if (totalBytes < 0)
@@ -44,7 +44,7 @@ public static class SafetensorsReader
     /// decoded doubles). Caller feeds the canonical prefix into the hasher first.
     /// </summary>
     public static void StreamHashAndDecode(
-        SafetensorsTensorInfo info, ref Blake3Hasher hasher, double[] result)
+        SafetensorsTensorInfo info, Blake3Hasher hasher, double[] result)
     {
         long numElements = info.ElementCount;
         if (numElements > int.MaxValue || numElements > result.Length)
@@ -135,6 +135,49 @@ public static class SafetensorsReader
         }
 
         return tensors;
+    }
+
+    /// <summary>
+    /// Stream the tensor's bytes as f64 chunks without ever materializing the
+    /// whole tensor in memory. The same chunk buffer is reused across all
+    /// invocations of <paramref name="onChunk"/>; callers that need to retain
+    /// values must copy. Used by per-tensor statistics passes that must apply
+    /// to tensors larger than int.MaxValue elements (e.g. multi-GB FFN weights).
+    /// </summary>
+    public static void StreamDecode(
+        SafetensorsTensorInfo info, Action<ReadOnlySpan<double>> onChunk)
+    {
+        long numElements = info.ElementCount;
+        if (numElements <= 0)
+        {
+            return;
+        }
+        int bpe = info.BytesPerElement;
+        long totalBytes = info.EndByte - info.BeginByte;
+        if (totalBytes != numElements * bpe)
+        {
+            throw new InvalidDataException(
+                $"Tensor {info.Name} size mismatch: {totalBytes} bytes vs expected {numElements * bpe}");
+        }
+
+        using FileStream fs = File.OpenRead(info.FilePath);
+        fs.Seek(info.BeginByte, SeekOrigin.Begin);
+
+        int maxElementsPerChunk = StreamingChunkBytes / bpe;
+        byte[] byteBuf = new byte[maxElementsPerChunk * bpe];
+        double[] doubleBuf = new double[maxElementsPerChunk];
+        long elementOffset = 0;
+        long bytesRemaining = totalBytes;
+        while (bytesRemaining > 0)
+        {
+            int elementsThisChunk = (int)Math.Min(numElements - elementOffset, maxElementsPerChunk);
+            int bytesThisChunk = elementsThisChunk * bpe;
+            fs.ReadExactly(byteBuf, 0, bytesThisChunk);
+            DecodeChunk(byteBuf.AsSpan(0, bytesThisChunk), info.Dtype, doubleBuf.AsSpan(0, elementsThisChunk));
+            onChunk(doubleBuf.AsSpan(0, elementsThisChunk));
+            elementOffset += elementsThisChunk;
+            bytesRemaining -= bytesThisChunk;
+        }
     }
 
     public static double[] ReadTensorAsDouble(SafetensorsTensorInfo info)

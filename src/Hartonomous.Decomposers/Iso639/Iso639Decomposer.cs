@@ -103,6 +103,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                     position++;
                 }
 
+                EmitNamePhysicality(batch, nameEntity, rec.RefName);
                 entityCount++;
 
                 if (batch.EntityCount >= BatchSize)
@@ -153,6 +154,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                         pos++;
                     }
 
+                    EmitNamePhysicality(batch, altEntity, entry.PrintName);
                     entityCount++;
                 }
 
@@ -169,6 +171,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                         pos++;
                     }
 
+                    EmitNamePhysicality(batch, altEntity, entry.InvertedName);
                     entityCount++;
                 }
 
@@ -352,6 +355,21 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 CurrentFile = "iso-639-3",
                 CurrentBatch = batchNum,
             }, ct);
+    }
+
+    private static void EmitNamePhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
+    {
+        List<(double X, double Y, double Z, double M)> vertices =
+            PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
+        if (vertices.Count >= 2)
+        {
+            batch.AddPhysicality(entity, "contour", PhysicalityEmitter.LineStringZmWkb(vertices));
+        }
+        else if (vertices.Count == 1)
+        {
+            (double x, double y, double z, double m) = vertices[0];
+            batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
+        }
     }
 
     internal static byte[] HashCodepoint(int cpValue)

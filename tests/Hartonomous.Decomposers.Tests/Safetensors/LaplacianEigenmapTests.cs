@@ -233,6 +233,33 @@ public sealed class LaplacianEigenmapTests
     }
 
     /// <summary>
+    /// MiniLM position_embeddings shape exactly: n=512, d=384, k=10, Lanczos k=4, maxIter=80.
+    /// The STATUS_STACK_BUFFER_OVERRUN repro point from the real ingest. Native gtest for the
+    /// same KNN→normalized-Laplacian→Lanczos chain passes at n=30522, so the failure surface
+    /// is either this smaller shape or the C#/native boundary.
+    /// </summary>
+    [Fact]
+    public void Project_MiniLmPositionEmbeddingShape_DoesNotCrash()
+    {
+        const int n = 512;
+        const int d = 384;
+        double[] rows = new double[(long)n * d];
+        Random rng = new(0xDEADBEEF);
+        for (int i = 0; i < rows.Length; i++)
+        {
+            rows[i] = (rng.NextDouble() - 0.5) * 0.1;
+        }
+
+        (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
+            rows, n, d,
+            new LaplacianEigenmap.Options(K: 10, LanczosSteps: 80, Seed: 42));
+
+        Assert.Equal(n, x.Length);
+        Assert.Equal(n, y.Length);
+        Assert.Equal(n, z.Length);
+    }
+
+    /// <summary>
     /// Gram-Schmidt must produce unit-norm rows with pairwise orthogonal dot products.
     /// </summary>
     [Fact]

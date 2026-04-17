@@ -2,19 +2,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <mkl_cblas.h>
+
 #include "hartonomous.h"
 
 /*
  * Modified Gram-Schmidt orthonormalization on `k` row vectors of length `n`.
- * Row stride is `ld` doubles. Operates in-place. Deterministic ordering:
- * row 0 is normalized first, row i is then orthogonalized against rows 0..i-1
- * in increasing index order, then normalized.
+ * Row stride is `ld` doubles. Operates in-place. MKL Level-1 BLAS backs the
+ * dot / axpy / nrm2 inner ops for AVX-512 throughput and deterministic
+ * reduction order under CBWR=AUTO,STRICT.
  *
- * If a row reduces to (numerically) zero norm during orthogonalization, it is
- * left as zeros and the next row continues — the caller can detect rank
- * deficiency by inspecting the output. We do not return an error for this
- * since for Lanczos basis vectors a zero residual means convergence, not
- * failure.
+ * Zero-norm rows are left as zeros and the loop continues — for Lanczos basis
+ * vectors a zero residual is convergence, not failure.
  */
 int hartonomous_gram_schmidt_f64(
     int64_t k, int64_t n,
@@ -30,21 +29,18 @@ int hartonomous_gram_schmidt_f64(
 
         for (int64_t j = 0; j < i; ++j) {
             const double* vj = vectors + j * ld;
-            double dot = 0.0;
-            for (int64_t t = 0; t < n; ++t) dot += vi[t] * vj[t];
+            double dot = cblas_ddot((MKL_INT)n, vi, 1, vj, 1);
             if (dot != 0.0) {
-                for (int64_t t = 0; t < n; ++t) vi[t] -= dot * vj[t];
+                cblas_daxpy((MKL_INT)n, -dot, vj, 1, vi, 1);
             }
         }
 
-        double norm2 = 0.0;
-        for (int64_t t = 0; t < n; ++t) norm2 += vi[t] * vi[t];
-        if (norm2 <= tiny) {
+        double nrm = cblas_dnrm2((MKL_INT)n, vi, 1);
+        if (nrm * nrm <= tiny) {
             for (int64_t t = 0; t < n; ++t) vi[t] = 0.0;
             continue;
         }
-        double inv = 1.0 / sqrt(norm2);
-        for (int64_t t = 0; t < n; ++t) vi[t] *= inv;
+        cblas_dscal((MKL_INT)n, 1.0 / nrm, vi, 1);
     }
 
     return 0;

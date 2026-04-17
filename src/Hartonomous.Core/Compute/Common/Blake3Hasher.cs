@@ -9,13 +9,13 @@ namespace Hartonomous.Core.Compute.Common;
 /// 32-byte buffer. Lets large tensors (multi-GB) be hashed without ever
 /// allocating a buffer that holds the full content. Not thread-safe.
 /// </summary>
-public ref struct Blake3Hasher
+public sealed class Blake3Hasher
 {
     // Matches hartonomous_blake3_state._opaque size. Heap-allocated once per
     // hasher so the pointer we hand the native layer is stable across multiple
-    // Update/Finalize calls (a stack fixed-size buffer inside a ref struct
-    // field cannot be addressed without pinning via `fixed`, which must wrap
-    // every use — the indirection here is a one-time 2 KiB alloc per model).
+    // Update/Finalize calls. Sealed class rather than ref struct because
+    // long-lived builders (CanonicalSignatureBuilder) hold a hasher as a field
+    // across arbitrary calls — ref-struct fields on normal classes are illegal.
     private const int StateSize = 2048;
     private readonly byte[] _state;
 

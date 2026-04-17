@@ -7,6 +7,24 @@ internal static partial class NativeCompute
 {
     private const string Library = "hartonomous";
 
+    /// <summary>
+    /// Native runtime info block. Matches the layout of
+    /// <c>hartonomous_runtime_info_t</c> in <c>hartonomous.h</c>. Any change
+    /// there must change this type in lockstep.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct RuntimeInfoBlock
+    {
+        public int HasMkl;
+        public fixed byte MklVersion[128];
+        public int MklMaxThreads;
+        public int OmpMaxThreads;
+        public int CbwrBranch;
+    }
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_runtime_info")]
+    internal static unsafe partial void RuntimeInfo(RuntimeInfoBlock* outInfo);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_blake3")]
     internal static partial void Blake3(
         ReadOnlySpan<byte> data, nuint len, Span<byte> outHash);

@@ -16,6 +16,7 @@ using Hartonomous.Decomposers.WordNet;
 using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Orchestration;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using NpgsqlTypes;
 
 namespace Hartonomous.Cli;
@@ -27,6 +28,7 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        PrepareNativeLoadPath();
         RootCommand root = new("Hartonomous CLI");
 
         Command migrate = BuildMigrateCommand();
@@ -42,6 +44,27 @@ internal static class Program
         root.AddCommand(status);
 
         return await root.InvokeAsync(args);
+    }
+
+    private static void PrepareNativeLoadPath()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        string? oneApi = Environment.GetEnvironmentVariable("ONEAPI_ROOT")
+                      ?? (Directory.Exists(@"C:\Program Files (x86)\Intel\oneAPI")
+                          ? @"C:\Program Files (x86)\Intel\oneAPI"
+                          : null);
+        if (oneApi is null)
+        {
+            return;
+        }
+        string mklBin = Path.Combine(oneApi, "mkl", "latest", "bin");
+        string cmpBin = Path.Combine(oneApi, "compiler", "latest", "bin");
+        string tbbBin = Path.Combine(oneApi, "tbb", "latest", "bin");
+        string current = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        Environment.SetEnvironmentVariable("PATH", $"{mklBin};{cmpBin};{tbbBin};{current}");
     }
 
     private static string DefaultConnectionString()
@@ -215,13 +238,18 @@ internal static class Program
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>()),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory),
             ],
         };
 
         await using NpgsqlIngestionPipeline pipeline = new(conn, logFactory.CreateLogger<NpgsqlIngestionPipeline>());
         ConsoleProgressReporter reporter = new();
-        SequentialPhaseRunner runner = new(decomposers, pipeline, reporter, logFactory.CreateLogger<SequentialPhaseRunner>());
+        await using NpgsqlDataSource phaseDs = NpgsqlDataSource.Create(conn);
+        SequentialPhaseRunner runner = new(
+            decomposers, pipeline, reporter,
+            logFactory.CreateLogger<SequentialPhaseRunner>(),
+            phaseDs);
+        await runner.HydrateStatusAsync(ct);
 
         if (phaseStr is not null)
         {
@@ -233,7 +261,7 @@ internal static class Program
 
             if (skipDeps)
             {
-                runner.MarkAllCompleted();
+                runner.MarkAllCompletedExcept(target);
             }
             else
             {

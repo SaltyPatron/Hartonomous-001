@@ -96,6 +96,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             int batchNum = 0;
 
             IIngestionBatch batch = pipeline.CreateBatch();
+            HashSet<ulong> ceHashesEmittedPhysicality = [];
 
             foreach (CodepointRecord cp in allCodepoints)
             {
@@ -127,6 +128,14 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     edgeCount++;
                 }
 
+                // Every codepoint gets an S3 position, derived directly from its Unicode scalar
+                // value via Super-Fibonacci over the full 0..0x10FFFF code space. Adjacent code
+                // points are adjacent on S3 — block/script locality is preserved geometrically.
+                {
+                    (double x, double y, double z, double m) = PhysicalityEmitter.CodepointS3Position(cp.Value);
+                    batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
+                }
+
                 if (collationMap.TryGetValue(cp.Value, out CollationWeight weights))
                 {
                     byte[] ceHash = HashCollationElement(weights);
@@ -135,13 +144,20 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                         [new EdgeMemberSpec(entity, null, "source", 0),
                          new EdgeMemberSpec(ceEntity, null, "target", 1)]);
                     edgeCount++;
-                }
 
-                if (ucaSortedCps.TryGetValue(cp.Value, out int ucaIndex))
-                {
-                    (double x, double y, double z, double m) = SuperFibonacciS3.Project(ucaIndex, totalUcaEntries);
-                    byte[] wkb = PointZMToWkb(x, y, z, m);
-                    batch.AddPhysicality(entity, "s3_position", wkb);
+                    // Collation element physicality is emitted once per unique CE hash, not per
+                    // codepoint that resolves to it — otherwise thousands of codepoints sharing
+                    // a CE would each emit redundant rows. UCA sort index is the CE's geometric
+                    // identity. ceHash collapsed to a ulong is a fast in-batch guard; the DB
+                    // unique constraint is the cross-batch/run safety net.
+                    ulong ceKey = BitConverter.ToUInt64(ceHash, 0);
+                    if (ceHashesEmittedPhysicality.Add(ceKey) &&
+                        ucaSortedCps.TryGetValue(cp.Value, out int ucaIndex))
+                    {
+                        (double cx, double cy, double cz, double cm) =
+                            PhysicalityEmitter.SuperFibonacciS3(ucaIndex, totalUcaEntries);
+                        batch.AddPhysicality(ceEntity, "s3_position", PhysicalityEmitter.PointZmWkb(cx, cy, cz, cm));
+                    }
                 }
 
                 entityCount++;
