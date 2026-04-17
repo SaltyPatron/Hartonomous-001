@@ -8,7 +8,11 @@ using System.Threading.Tasks;
 using Hartonomous.Cli.Migrations;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Decomposers.Iso639;
 using Hartonomous.Decomposers.Ucd;
+using Hartonomous.Decomposers.Omw;
+using Hartonomous.Decomposers.Safetensors;
+using Hartonomous.Decomposers.WordNet;
 using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Orchestration;
 using Microsoft.Extensions.Logging;
@@ -117,15 +121,21 @@ internal static class Program
             description: "Npgsql connection string.");
         Option<string> sourceOpt = new(
             aliases: ["--source", "-s"],
-            getDefaultValue: () => @"D:\Models\UCD\Public\UCD\latest",
-            description: "Source data root directory for decomposers.");
+            getDefaultValue: () => @"D:\Models",
+            description: "Root directory containing all source data (UCD, ISO639, etc.).");
+
+        Option<bool> skipDepsOpt = new(
+            aliases: ["--skip-deps"],
+            getDefaultValue: () => false,
+            description: "Skip dependency phases (assume they already ran).");
 
         Command run = new("run", "Execute phases in dependency order.");
         run.AddOption(phaseOpt);
         run.AddOption(dryRunOpt);
         run.AddOption(connOpt2);
         run.AddOption(sourceOpt);
-        run.SetHandler(async (string? phaseStr, bool dryRun, string conn, string source) =>
+        run.AddOption(skipDepsOpt);
+        run.SetHandler(async (string? phaseStr, bool dryRun, string conn, string source, bool skipDeps) =>
         {
             if (dryRun)
             {
@@ -133,8 +143,8 @@ internal static class Program
                 return;
             }
 
-            await RunPhasesAsync(phaseStr, conn, source, CancellationToken.None);
-        }, phaseOpt, dryRunOpt, connOpt2, sourceOpt);
+            await RunPhasesAsync(phaseStr, conn, source, skipDeps, CancellationToken.None);
+        }, phaseOpt, dryRunOpt, connOpt2, sourceOpt, skipDepsOpt);
 
         Command statusCmd = new("status", "Show the status of all phases.");
         statusCmd.SetHandler(() =>
@@ -156,7 +166,7 @@ internal static class Program
         return phases;
     }
 
-    private static async Task RunPhasesAsync(string? phaseStr, string conn, string sourceRoot, CancellationToken ct)
+    private static async Task RunPhasesAsync(string? phaseStr, string conn, string sourceRoot, bool skipDeps, CancellationToken ct)
     {
         using ILoggerFactory logFactory = LoggerFactory.Create(builder =>
         {
@@ -164,16 +174,49 @@ internal static class Program
             builder.SetMinimumLevel(LogLevel.Information);
         });
 
-        DecomposerConfig config = new()
+        DecomposerConfig ucdConfig = new()
         {
-            SourceDirectory = sourceRoot,
+            SourceDirectory = Path.Combine(sourceRoot, "UCD", "Public", "UCD", "latest"),
             ConnectionString = conn,
         };
 
-        // Register all available decomposers.
+        DecomposerConfig iso639Config = new()
+        {
+            SourceDirectory = Path.Combine(sourceRoot, "ISO639"),
+            ConnectionString = conn,
+        };
+
+        DecomposerConfig wordnetConfig = new()
+        {
+            SourceDirectory = Path.Combine(sourceRoot, "princeton-wordnet", "WordNet-3.0", "dict"),
+            ConnectionString = conn,
+        };
+
+        DecomposerConfig omwConfig = new()
+        {
+            SourceDirectory = Path.Combine(sourceRoot, "omw"),
+            ConnectionString = conn,
+        };
+
+        DecomposerConfig modelConfig = new()
+        {
+            SourceDirectory = ResolveModelSource(sourceRoot),
+            ConnectionString = conn,
+        };
+
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
-            [Phase.UcdUca] = [new UcdUcaDecomposer(config, logFactory.CreateLogger<UcdUcaDecomposer>())],
+            [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>())],
+            [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>())],
+            [Phase.WordNetOmw] =
+            [
+                new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>()),
+                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>()),
+            ],
+            [Phase.ModelDecomp] =
+            [
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>()),
+            ],
         };
 
         await using NpgsqlIngestionPipeline pipeline = new(conn, logFactory.CreateLogger<NpgsqlIngestionPipeline>());
@@ -188,19 +231,25 @@ internal static class Program
                 return;
             }
 
-            // Run all dependencies first (in topological order), then the target.
-            HashSet<Phase> required = [];
-            CollectDependencies(target, required);
-
-            foreach (Phase dep in PhaseDag.TopologicalOrder())
+            if (skipDeps)
             {
-                if (required.Contains(dep))
+                runner.MarkAllCompleted();
+            }
+            else
+            {
+                HashSet<Phase> required = [];
+                CollectDependencies(target, required);
+
+                foreach (Phase dep in PhaseDag.TopologicalOrder())
                 {
-                    PhaseResult depResult = await runner.RunPhaseAsync(dep, ct);
-                    if (depResult.Status == PhaseStatus.Failed)
+                    if (required.Contains(dep))
                     {
-                        Console.Error.WriteLine($"Dependency {dep} failed: {depResult.ErrorMessage}");
-                        return;
+                        PhaseResult depResult = await runner.RunPhaseAsync(dep, ct);
+                        if (depResult.Status == PhaseStatus.Failed)
+                        {
+                            Console.Error.WriteLine($"Dependency {dep} failed: {depResult.ErrorMessage}");
+                            return;
+                        }
                     }
                 }
             }
@@ -276,6 +325,21 @@ internal static class Program
                 Console.WriteLine($"{step++,-6}{p,-25}{depStr,-40}");
             }
         }
+    }
+
+    /// <summary>
+    /// Lets <c>--source</c> be a Models root (full ingest), a hub dir, a single
+    /// <c>models--{publisher}--{name}</c> dir, or a single snapshot dir — without
+    /// requiring callers to copy files into a staging location for smoke runs.
+    /// </summary>
+    private static string ResolveModelSource(string source)
+    {
+        string hubChild = Path.Combine(source, "hub");
+        if (Directory.Exists(hubChild))
+        {
+            return hubChild;
+        }
+        return source;
     }
 
     private static void CollectDependencies(Phase phase, HashSet<Phase> collected)

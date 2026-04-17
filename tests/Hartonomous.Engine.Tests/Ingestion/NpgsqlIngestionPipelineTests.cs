@@ -1,3 +1,4 @@
+using Hartonomous.Core;
 using Hartonomous.Engine.Ingestion;
 
 namespace Hartonomous.Engine.Tests.Ingestion;
@@ -37,7 +38,7 @@ public sealed class NpgsqlIngestionPipelineTests
         byte[] a = [1, 2, 3, 4];
         byte[] b = [1, 2, 3, 4];
 
-        IEqualityComparer<byte[]> comparer = GetByteArrayComparer();
+        var comparer = ByteArrayEqualityComparer.Instance;
         Assert.True(comparer.Equals(a, b));
         Assert.Equal(comparer.GetHashCode(a), comparer.GetHashCode(b));
     }
@@ -48,7 +49,7 @@ public sealed class NpgsqlIngestionPipelineTests
         byte[] a = [1, 2, 3, 4];
         byte[] b = [1, 2, 3, 5];
 
-        IEqualityComparer<byte[]> comparer = GetByteArrayComparer();
+        var comparer = ByteArrayEqualityComparer.Instance;
         Assert.False(comparer.Equals(a, b));
     }
 
@@ -56,14 +57,14 @@ public sealed class NpgsqlIngestionPipelineTests
     public void ByteArrayComparer_SameReference_AreEqual()
     {
         byte[] a = [1, 2, 3];
-        IEqualityComparer<byte[]> comparer = GetByteArrayComparer();
+        var comparer = ByteArrayEqualityComparer.Instance;
         Assert.True(comparer.Equals(a, a));
     }
 
     [Fact]
     public void ByteArrayComparer_NullHandling()
     {
-        IEqualityComparer<byte[]> comparer = GetByteArrayComparer();
+        var comparer = ByteArrayEqualityComparer.Instance;
         Assert.False(comparer.Equals(null, [1]));
         Assert.False(comparer.Equals([1], null));
         Assert.True(comparer.Equals(null, null));
@@ -72,14 +73,14 @@ public sealed class NpgsqlIngestionPipelineTests
     [Fact]
     public void ByteArrayComparer_EmptyArrays_AreEqual()
     {
-        IEqualityComparer<byte[]> comparer = GetByteArrayComparer();
+        var comparer = ByteArrayEqualityComparer.Instance;
         Assert.True(comparer.Equals([], []));
     }
 
     [Fact]
     public void ByteArrayComparer_WorksInDictionary()
     {
-        IEqualityComparer<byte[]> comparer = GetByteArrayComparer();
+        var comparer = ByteArrayEqualityComparer.Instance;
         Dictionary<byte[], long> dict = new(comparer);
 
         byte[] key = [0xDE, 0xAD, 0xBE, 0xEF];
@@ -147,16 +148,6 @@ public sealed class NpgsqlIngestionPipelineTests
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
             throw; // unreachable
         }
-    }
-
-    private static IEqualityComparer<byte[]> GetByteArrayComparer()
-    {
-        System.Type comparerType = typeof(NpgsqlIngestionPipeline)
-            .GetNestedType("ByteArrayComparer",
-                System.Reflection.BindingFlags.NonPublic)!;
-        System.Reflection.FieldInfo instanceField = comparerType
-            .GetField("Instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)!;
-        return (IEqualityComparer<byte[]>)instanceField.GetValue(null)!;
     }
 
     private static byte[] InvokeComputeEdgeHash(int edgeTypeId, long[] memberEntityIds)

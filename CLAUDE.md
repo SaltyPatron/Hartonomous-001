@@ -94,3 +94,25 @@ Junction table names are validated against an allowlist. Never interpolate user-
 - P/Invoke declarations live in `Hartonomous.Core/Native/`.
 - Native DLL copy rules are centralized in `native-dll.targets` (imported by `Directory.Build.props`).
 - BLAKE3 is the only hash function. All content hashing goes through `Blake3Native.Blake3()`.
+- Entity hashes are computed over **content only** — never over position, ordinal, filename, tensor-name, line number, or any other placement metadata. Placement lives on edges (`has_source`, sequence position, `in_model`, etc.), never in the hash. Same content in two different places is one entity with two edges, not two entities.
+
+## Compute Facade
+
+All numerical compute for ingestion and inference goes through a single C# facade rooted at `Hartonomous.Core.Compute.*`. The facade is the ONLY caller of the native compute library. No other project references MKL, Eigen, Spectra, or any other compute dependency directly.
+
+- `Hartonomous.Core.Compute.Ingestion.*` — exact primitives used during decomposition (SVD, Lanczos eigensolve, sparse matvec, chunked GEMM, k-NN construction, tensor dtype decode).
+- `Hartonomous.Core.Compute.Inference.*` — exact primitives used during query traversal (S3 distance, Fréchet distance extensions, Voronoi cell operations).
+- `Hartonomous.Core.Compute.Common.*` — primitives used by both (BLAKE3, Super-Fibonacci S3 projection, Hilbert index, Gram-Schmidt, orthonormalization, deterministic top-k with stable tie-break).
+
+Decomposers, analysis passes, recomposers, and the engine call into the facade by name. They do not import `Microsoft.ML.OnnxRuntime`, `MKL.NET`, `Eigen.NET`, or any transitive native binding. If a primitive doesn't exist in the facade yet, add it there — don't bypass.
+
+## Determinism & Exact Math
+
+Every ingestion-time computation must be bitwise-reproducible across repeated runs on the same input.
+
+- **No approximation methods.** No HNSW, no pgvector ANN, no random projection, no LSH, no Nyström, no randomized SVD, no stochastic trace estimation, no sampling-based inference on content. These are conventional tradeoffs the substrate rejects.
+- **No quantization, no normalization of content values.** Tensor dtypes are decoded losslessly (BF16 → F32 → F64 as needed for internal precision, never compressed).
+- **MKL `CBWR=AUTO,STRICT`** enforced at process start — guarantees identical reduction order across repeated runs within an ISA class.
+- **All PRNG usage takes a fixed seed** that is either spec-defined or stored on the decomposer config. Lanczos starting vectors, Super-Fibonacci offsets, any seeded numerical procedure — seeds are declared.
+- **Sparsity is not approximation.** It is honest recording: relationships that don't exist are not stored; gradient jitter in AI model decomposition (which encodes no knowledge, per Lottery Ticket) is not stored. Sparsity never deletes content — for text/audio/image/video the bytes ARE content and are preserved; for AI models the weight *patterns* are content and are preserved, the jitter is not.
+- **Law #6 is absolute.** Same input + same decomposer version = same substrate state, byte for byte. If a computation can't satisfy this, it is defective and must be fixed before it runs in production.

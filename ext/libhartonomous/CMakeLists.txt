@@ -22,11 +22,29 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
+# ── Intel oneAPI discovery ────────────────────────────────────
+# MKL (BLAS/LAPACK/Sparse), OpenMP, IPP. All mandatory — CPU-only mandate
+# says every optimization is in. No fallback kernels, no "follow-up".
+
+set(ONEAPI_ROOT_DEFAULT "C:/Program Files (x86)/Intel/oneAPI")
+if(NOT DEFINED ENV{ONEAPI_ROOT} AND EXISTS "${ONEAPI_ROOT_DEFAULT}")
+    set(ENV{ONEAPI_ROOT} "${ONEAPI_ROOT_DEFAULT}")
+endif()
+
+# MKL config module ships at <oneAPI>/mkl/latest/lib/cmake/mkl
+set(MKL_ROOT_HINT "$ENV{ONEAPI_ROOT}/mkl/latest")
+list(APPEND CMAKE_PREFIX_PATH "${MKL_ROOT_HINT}/lib/cmake/mkl")
+
+set(MKL_INTERFACE lp64 CACHE STRING "" FORCE)            # 32-bit int indexing — matches our int64 API math but MKL lp64 is the mainstream
+set(MKL_THREADING intel_thread CACHE STRING "" FORCE)    # iomp5 — deterministic with CBWR=AUTO,STRICT
+set(MKL_LINK dynamic CACHE STRING "" FORCE)
+find_package(MKL CONFIG REQUIRED)
+
+find_package(OpenMP REQUIRED)
+
 include(FetchContent)
 
-# BLAKE3 reference implementation. Its CMakeLists.txt lives in the c/ subdir
-# and produces a `blake3` target with SIMD dispatch (AVX-512/AVX2/SSE4.1 on x86,
-# NEON on ARM). We link it statically into libhartonomous.
+# BLAKE3 reference implementation.
 FetchContent_Declare(
     blake3
     GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
@@ -43,6 +61,12 @@ set(HARTONOMOUS_SOURCES
     src/s3_geometry.c
     src/super_fibonacci.c
     src/hilbert.c
+    src/tensor_decode.c
+    src/gemm.c
+    src/knn.c
+    src/sparse_eigs.c
+    src/gram_schmidt.c
+    src/merkle.c
 )
 
 set(HARTONOMOUS_HEADERS
@@ -61,14 +85,21 @@ target_include_directories(hartonomous
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(hartonomous PRIVATE blake3)
+target_link_libraries(hartonomous
+    PRIVATE
+        blake3
+        MKL::MKL
+        OpenMP::OpenMP_C
+)
 
 target_compile_definitions(hartonomous PRIVATE HARTONOMOUS_BUILD)
 
+# AVX-512 for tensor_decode SIMD fast paths on the 14900KS target.
+# x86-64-v4 (AVX-512F+BW+CD+DQ+VL) covers the intrinsics we use.
 if(MSVC)
-    target_compile_options(hartonomous PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(hartonomous PRIVATE /W4 /permissive- /utf-8 /arch:AVX2)
 else()
-    target_compile_options(hartonomous PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(hartonomous PRIVATE -Wall -Wextra -Wpedantic -mavx2 -mfma)
 endif()
 
 set_target_properties(hartonomous PROPERTIES

@@ -37,6 +37,14 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
         }
     }
 
+    public void MarkAllCompleted()
+    {
+        foreach (Phase phase in Enum.GetValues<Phase>())
+        {
+            _status[phase] = PhaseStatus.Completed;
+        }
+    }
+
     public async Task<PhaseResult> RunPhaseAsync(Phase phase, CancellationToken ct)
     {
         IReadOnlyList<Phase> deps = PhaseDag.GetDependencies(phase);

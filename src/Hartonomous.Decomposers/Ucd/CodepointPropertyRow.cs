@@ -8,4 +8,10 @@ internal readonly record struct CodepointPropertyRow(
     int? GcbId,
     int? WbId,
     int? SbId,
-    int? LbId);
+    int? LbId,
+    bool IsExtendedPictographic,
+    short Ccc,
+    string? DecompositionType,
+    int[]? DecompositionMapping,
+    int? SimpleCaseFold,
+    int[]? FullCaseFold);

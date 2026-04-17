@@ -1,8 +1,8 @@
 using System.Text;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Errors;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
-using Hartonomous.Core.Native;
 using Hartonomous.Core.Orchestration;
 using Microsoft.Extensions.Logging;
 
@@ -54,24 +54,19 @@ public abstract partial class BaseDecomposer : IDecomposer
 
     protected abstract IReadOnlyList<string> GetSourcePaths();
 
-    protected static byte[] ComputeHash(ReadOnlySpan<byte> content)
-    {
-        Span<byte> hash = stackalloc byte[Blake3Native.HashLen];
-        Blake3Native.Blake3(content, (nuint)content.Length, hash);
-        return hash.ToArray();
-    }
+    protected static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
 
     protected static byte[] ComputeHash(string content)
-        => ComputeHash(Encoding.UTF8.GetBytes(content).AsSpan());
+        => Blake3.Hash(Encoding.UTF8.GetBytes(content).AsSpan());
 
     protected static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes)
     {
-        byte[] concat = new byte[childHashes.Length * 32];
+        byte[] concat = new byte[childHashes.Length * Blake3.HashLen];
         for (int i = 0; i < childHashes.Length; i++)
         {
-            childHashes[i].CopyTo(concat.AsSpan(i * 32));
+            childHashes[i].CopyTo(concat.AsSpan(i * Blake3.HashLen));
         }
-        return ComputeHash(concat.AsSpan());
+        return Merkle.Hash(concat.AsSpan());
     }
 
     protected static byte[] ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<byte[]> participantHashes)

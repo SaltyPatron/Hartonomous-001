@@ -1,6 +1,23 @@
 # Native Build System
 
-**Status**: ✅ Complete
+**Status**: 🔶 Partially superseded by `compute-library.md`
+
+This document is the stable, shared-scaffolding half of the native build:
+PGXS extension, CMake layout, CTest wiring, platform matrix, packaging. It
+pre-dates the two-artifact split (`hartonomous_ingest` + `hartonomous_query`).
+For anything touching the ingest artifact — MKL/TBB/TCM/oneDPL link order,
+Intel icx compiler selection, determinism flags, CBWR/ISA enforcement, and
+the oneAPI component inventory — **`compute-library.md` is authoritative**.
+
+Differences at a glance:
+
+| Area | This doc says | Authoritative source |
+|---|---|---|
+| Number of native artifacts | 1 (`libhartonomous`) | **Two** — `hartonomous_ingest` (MKL ILP64 + TBB) and `hartonomous_query` (MKL-free). See `compute-library.md` § *Two-artifact split*. |
+| SIMD ceiling | AVX-512/AVX2/SSE4.1 | AVX-512 **removed** — the deployment target (14900KS) has AVX-512 fused off at microcode. Ceiling is AVX2 + FMA3 + AVX-VNNI + BMI2. See `compute-library.md` § *ISA dispatch*. |
+| C/C++ dependencies | BLAKE3 only | Ingest artifact additionally depends on MKL 2025.3+, TBB, TCM (`tbbmalloc`), oneDPL, Eigen, Spectra. Query artifact still BLAKE3 only. See `compute-library.md` § *Intel oneAPI component inventory*. |
+| Primary compiler | MSVC 17 2022 / GCC / Clang | Ingest artifact preferred compiler is Intel **icx**; query artifact stays on MSVC/GCC/Clang. See `compute-library.md` § *Intel toolchain*. |
+| Generator | Visual Studio 17 2022 | Visual Studio 18 2026 is the current dev toolchain; VS 17 2022 is still a supported fallback. |
 
 How the C/C++ components are built, tested, and packaged for both PostgreSQL and .NET consumption.
 
@@ -155,11 +172,11 @@ SHAREDIR = $(shell $(PG_CONFIG) --sharedir)
 
 ## Platform Matrix
 
-| Platform | Architecture | SIMD | Status |
+| Platform | Architecture | SIMD ceiling | Status |
 |----------|-------------|------|--------|
-| Windows x64 | AMD64 | AVX-512/AVX2/SSE4.1 | Primary development |
-| Linux x86_64 | AMD64 | AVX-512/AVX2/SSE4.1 | Primary deployment |
-| macOS ARM64 | AArch64 | NEON | Development (if needed) |
+| Windows x64 | AMD64 | AVX2 + FMA3 + AVX-VNNI + BMI2 | Primary development (14900KS, AVX-512 fused off at microcode) |
+| Linux x86_64 | AMD64 | AVX2 + FMA3 + AVX-VNNI + BMI2 | Primary deployment |
+| macOS ARM64 | AArch64 | NEON | Development (if needed) — scalar fallbacks acceptable |
 
 No cross-compilation. Each platform builds natively on that platform.
 
@@ -169,23 +186,40 @@ No cross-compilation. Each platform builds natively on that platform.
 
 | Target | Output | Consumer |
 |--------|--------|----------|
-| `libhartonomous.dll` / `.so` | Shared library | C# via P/Invoke |
-| `hartonomous.so` / `.dll` (PG) | PostgreSQL loadable module | PostgreSQL `LOAD` / `CREATE EXTENSION` |
+| `hartonomous_ingest.dll` / `.so` | Ingest artifact — MKL ILP64 + TBB + TCM + Eigen + Spectra + oneDPL + BLAKE3; all ingestion-time compute | `Hartonomous.Core.Compute.Ingestion.*` via P/Invoke |
+| `hartonomous_query.dll` / `.so` | Query artifact — scalar math + SIMD intrinsics only; no MKL, no TBB | `Hartonomous.Core.Compute.Inference.*` via P/Invoke; statically linked into PG extension |
+| `hartonomous.so` / `.dll` (PG) | PostgreSQL loadable module — statically links the query artifact's objects | PostgreSQL `LOAD` / `CREATE EXTENSION` |
 | `hartonomous_tests` | Test executable | CTest / developer |
 
 ---
 
 ## Dependencies
 
+**Query artifact** (`hartonomous_query`) — no external deps beyond the system:
+
 | Dependency | How Obtained | Version |
 |-----------|-------------|---------|
 | BLAKE3 C reference | Vendored in `src/blake3/` | Pinned commit from BLAKE3 repo |
-| PostgreSQL server headers | System package (`postgresql-server-dev-17`) or installer | 17+ |
-| PostGIS headers | System package or source build | 3.5+ (for geometry type definitions) |
+| PostgreSQL server headers | System package (`postgresql-server-dev-18`) or installer | 18+ |
+| PostGIS headers | System package or source build | 3.5+ |
 | Google Test | System package or `FetchContent` in CMake | 1.14+ |
 | CMake | System install | 3.25+ |
 
-No other C/C++ dependencies. BLAKE3 is the only external code, and it's vendored.
+**Ingest artifact** (`hartonomous_ingest`) — Intel oneAPI stack is load-bearing:
+
+| Dependency | How Obtained | Version |
+|-----------|-------------|---------|
+| Intel MKL (ILP64 + TBB threading layer) | Intel oneAPI Base Toolkit — `C:\Program Files (x86)\Intel\oneAPI\mkl\latest\` on Windows; `/opt/intel/oneapi/mkl/latest/` on Linux | 2025.3+ |
+| Intel TBB | Intel oneAPI Base Toolkit | Matches MKL release |
+| Intel TCM (`tbbmalloc`) | Intel oneAPI Base Toolkit | Matches MKL release |
+| oneDPL | Intel oneAPI Base Toolkit (header-only) | Matches MKL release |
+| Intel icx compiler | Intel oneAPI HPC Toolkit (preferred) | Matches oneAPI release |
+| Eigen | Vendored header-only | 3.4+ |
+| Spectra | Vendored header-only | 1.0+ |
+
+The ingest artifact's CMake configuration, link line, and determinism flags are specified in `compute-library.md` § *Build configuration* and § *MKL linkage — TBB threading layer*. CI must verify the cross-artifact audit from `compute-library.md` § *Test matrix* — the query artifact must contain zero MKL / TBB / Eigen / Spectra symbols.
+
+The `hartonomous_query` artifact and the PG extension deliberately do NOT depend on any Intel oneAPI component — they must install on a plain system without Intel redistributables. This is a hard constraint, both for PG backend safety and for the decentralized-substrate roadmap (a contributor's laptop running the substrate for usage credits must not need Intel MKL installed).
 
 ---
 

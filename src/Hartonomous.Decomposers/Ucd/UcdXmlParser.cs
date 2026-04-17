@@ -169,6 +169,7 @@ internal static class UcdXmlParser
             SimpleLowercase = ParseCpAttr(attrs, "slc"),
             SimpleTitlecase = ParseCpAttr(attrs, "stc"),
             SimpleCaseFolding = ParseCpAttr(attrs, "scf"),
+            FullCaseFolding = ParseCpListAttr(attrs, "cf"),
             DecompositionType = GetAttrOrNull(attrs, "dt"),
             DecompositionMapping = ParseCpListAttr(attrs, "dm"),
             CanonicalCombiningClass = int.TryParse(GetAttr(attrs, "ccc", "0"), out int ccc) ? ccc : 0,

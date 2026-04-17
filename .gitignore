@@ -39,5 +39,10 @@ TestResults/
 coverage/
 *.nupkg
 
+# Ops-script outputs
+logs/
+reports/
+artifacts/
+
 # Claude Code
 .claude/

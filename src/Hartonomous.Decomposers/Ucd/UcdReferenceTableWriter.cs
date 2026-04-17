@@ -130,44 +130,86 @@ internal sealed class UcdReferenceTableWriter
 
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
 
-        // Batch insert using unnest for performance.
-        long[] entityIds = new long[rows.Count];
-        int[] gcIds = new int[rows.Count];
-        int[] scriptIds = new int[rows.Count];
-        int[] blockIds = new int[rows.Count];
-        int?[] gcbIds = new int?[rows.Count];
-        int?[] wbIds = new int?[rows.Count];
-        int?[] sbIds = new int?[rows.Count];
-        int?[] lbIds = new int?[rows.Count];
+        // Binary COPY — supports per-row variable-length arrays (decomposition_mapping,
+        // full_case_fold) which unnest cannot express without rectangular 2D arrays.
+        const string copyCommand =
+            "COPY substrate.codepoint_property " +
+            "(entity_id, general_category_id, script_id, block_id, gcb_id, wb_id, sb_id, lb_id, " +
+            " is_extended_pictographic, ccc, decomposition_type, decomposition_mapping, " +
+            " simple_case_fold, full_case_fold) " +
+            "FROM STDIN (FORMAT binary)";
 
-        for (int i = 0; i < rows.Count; i++)
+        await using (NpgsqlBinaryImporter importer = await conn.BeginBinaryImportAsync(copyCommand, ct))
         {
-            entityIds[i] = rows[i].EntityId;
-            gcIds[i] = rows[i].GeneralCategoryId;
-            scriptIds[i] = rows[i].ScriptId;
-            blockIds[i] = rows[i].BlockId;
-            gcbIds[i] = rows[i].GcbId;
-            wbIds[i] = rows[i].WbId;
-            sbIds[i] = rows[i].SbId;
-            lbIds[i] = rows[i].LbId;
+            foreach (CodepointPropertyRow row in rows)
+            {
+                await importer.StartRowAsync(ct);
+                await importer.WriteAsync(row.EntityId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
+                await importer.WriteAsync(row.GeneralCategoryId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                await importer.WriteAsync(row.ScriptId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                await importer.WriteAsync(row.BlockId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                await WriteNullableInt(importer, row.GcbId, ct);
+                await WriteNullableInt(importer, row.WbId, ct);
+                await WriteNullableInt(importer, row.SbId, ct);
+                await WriteNullableInt(importer, row.LbId, ct);
+                await importer.WriteAsync(row.IsExtendedPictographic, NpgsqlTypes.NpgsqlDbType.Boolean, ct);
+                await importer.WriteAsync(row.Ccc, NpgsqlTypes.NpgsqlDbType.Smallint, ct);
+                if (row.DecompositionType is null)
+                {
+                    await importer.WriteNullAsync(ct);
+                }
+                else
+                {
+                    await importer.WriteAsync(row.DecompositionType, NpgsqlTypes.NpgsqlDbType.Text, ct);
+                }
+                if (row.DecompositionMapping is null)
+                {
+                    await importer.WriteNullAsync(ct);
+                }
+                else
+                {
+                    await importer.WriteAsync(row.DecompositionMapping,
+                        NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                }
+                await WriteNullableInt(importer, row.SimpleCaseFold, ct);
+                if (row.FullCaseFold is null)
+                {
+                    await importer.WriteNullAsync(ct);
+                }
+                else
+                {
+                    await importer.WriteAsync(row.FullCaseFold,
+                        NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                }
+            }
+            await importer.CompleteAsync(ct);
         }
+    }
 
+    private static async Task WriteNullableInt(NpgsqlBinaryImporter importer, int? value, CancellationToken ct)
+    {
+        if (value is null)
+        {
+            await importer.WriteNullAsync(ct);
+        }
+        else
+        {
+            await importer.WriteAsync(value.Value, NpgsqlTypes.NpgsqlDbType.Integer, ct);
+        }
+    }
+
+    public async Task<HashSet<long>> LoadCodepointPropertyEntityIdsAsync(CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        HashSet<long> ids = new();
         await using NpgsqlCommand cmd = new(
-            "INSERT INTO substrate.codepoint_property " +
-            "(entity_id, general_category_id, script_id, block_id, gcb_id, wb_id, sb_id, lb_id) " +
-            "SELECT * FROM unnest($1, $2, $3, $4, $5, $6, $7, $8) " +
-            "ON CONFLICT (entity_id) DO NOTHING", conn);
-
-        cmd.Parameters.AddWithValue(entityIds);
-        cmd.Parameters.AddWithValue(gcIds);
-        cmd.Parameters.AddWithValue(scriptIds);
-        cmd.Parameters.AddWithValue(blockIds);
-        cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, gcbIds);
-        cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, wbIds);
-        cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, sbIds);
-        cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer, lbIds);
-
-        await cmd.ExecuteNonQueryAsync(ct);
+            "SELECT entity_id FROM substrate.codepoint_property", conn);
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            ids.Add(reader.GetInt64(0));
+        }
+        return ids;
     }
 
     public async ValueTask DisposeAsync()

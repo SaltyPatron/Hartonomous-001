@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using Hartonomous.Core;
 using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Engine.Ingestion;
@@ -21,6 +22,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     private long _physicalitiesSubmitted;
     private long _sequencesSubmitted;
     private long _significanceInitialized;
+    private long _entityModelSourcesLinked;
     private long _batchesCommitted;
     private long _batchesFailed;
     private TimeSpan _totalCommitTime;
@@ -41,6 +43,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         PhysicalitiesSubmitted = _physicalitiesSubmitted,
         SequencesSubmitted = _sequencesSubmitted,
         SignificanceInitialized = _significanceInitialized,
+        EntityModelSourcesLinked = _entityModelSourcesLinked,
         BatchesCommitted = _batchesCommitted,
         BatchesFailed = _batchesFailed,
         TotalCommitTime = _totalCommitTime,
@@ -71,6 +74,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await CreatePhysicalitiesAsync(conn, b, ct);
             await CreateSequencesAsync(conn, b, ct);
             await InitializeSignificanceAsync(conn, b, ct);
+            await LinkEntityModelSourcesAsync(conn, b, ct);
 
             await tx.CommitAsync(ct);
 
@@ -80,6 +84,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             Interlocked.Add(ref _physicalitiesSubmitted, b.Physicalities.Count);
             Interlocked.Add(ref _sequencesSubmitted, b.Sequences.Count);
             Interlocked.Add(ref _significanceInitialized, b.Significances.Count);
+            Interlocked.Add(ref _entityModelSourcesLinked, b.EntityModelSources.Count);
             Interlocked.Increment(ref _batchesCommitted);
 
             Log.BatchCommitted(_logger, b.EntityCount, b.EdgeCount, sw.Elapsed);
@@ -99,24 +104,37 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     public async Task<IReadOnlyDictionary<byte[], long>> ResolveEntityIdsAsync(
         IReadOnlyList<byte[]> hashes, CancellationToken ct)
     {
-        Dictionary<byte[], long> result = new(ByteArrayComparer.Instance);
+        Dictionary<byte[], long> result = new(ByteArrayEqualityComparer.Instance);
         if (hashes.Count == 0)
         {
             return result;
         }
 
+        const int chunkSize = 50_000;
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT hash, id FROM substrate.entity WHERE hash = ANY($1)", conn);
-        cmd.Parameters.AddWithValue(HashesToByteArrays(hashes));
 
-        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        for (int offset = 0; offset < hashes.Count; offset += chunkSize)
         {
-            byte[] hash = (byte[])reader[0];
-            long id = reader.GetInt64(1);
-            result[hash] = id;
+            int count = Math.Min(chunkSize, hashes.Count - offset);
+            byte[][] chunk = new byte[count][];
+            for (int i = 0; i < count; i++)
+            {
+                chunk[i] = hashes[offset + i];
+            }
+
+            await using NpgsqlCommand cmd = new(
+                "SELECT hash, id FROM substrate.entity WHERE hash = ANY($1)", conn);
+            cmd.Parameters.AddWithValue(chunk);
+
+            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                byte[] hash = (byte[])reader[0];
+                long id = reader.GetInt64(1);
+                result[hash] = id;
+            }
         }
+
         return result;
     }
 
@@ -376,6 +394,33 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    private async Task LinkEntityModelSourcesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
+    {
+        if (batch.EntityModelSources.Count == 0)
+        {
+            return;
+        }
+
+        long[] entityIds = new long[batch.EntityModelSources.Count];
+        int[] entityTypeIds = new int[batch.EntityModelSources.Count];
+        long[] sourceIds = new long[batch.EntityModelSources.Count];
+        for (int i = 0; i < batch.EntityModelSources.Count; i++)
+        {
+            IngestionBatch.EntityModelSourceEntry link = batch.EntityModelSources[i];
+            entityIds[i] = batch.ResolveHandle(link.Entity);
+            string typeCode = batch.Entities[link.Entity.BatchIndex].EntityTypeCode;
+            entityTypeIds[i] = await _codeResolver.EntityTypeIdAsync(typeCode, ct);
+            sourceIds[i] = link.ModelSourceId;
+        }
+
+        await using NpgsqlCommand cmd = new(
+            "SELECT substrate.link_entity_model_sources($1, $2, $3)", conn);
+        cmd.Parameters.AddWithValue(entityIds);
+        cmd.Parameters.AddWithValue(entityTypeIds);
+        cmd.Parameters.AddWithValue(sourceIds);
+        await cmd.ExecuteScalarAsync(ct);
+    }
+
     private async Task InitializeSignificanceAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
         if (batch.Significances.Count == 0)
@@ -424,9 +469,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         {
             BitConverter.TryWriteBytes(buffer.AsSpan(4 + (i * 8), 8), memberEntityIds[i]);
         }
-        byte[] hash = new byte[32];
-        Hartonomous.Core.Native.Blake3Native.Blake3(buffer, (nuint)buffer.Length, hash);
-        return hash;
+        return Hartonomous.Core.Compute.Common.Blake3.Hash(buffer);
     }
 
     private static readonly HashSet<string> AllowedJunctionTables = new(StringComparer.OrdinalIgnoreCase)
@@ -454,38 +497,6 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             "pattern_deprel" => "deprel_id",
             _ => throw new ArgumentException($"Unknown junction table: '{table}'")
         };
-    }
-
-    private sealed class ByteArrayComparer : IEqualityComparer<byte[]>
-    {
-        public static readonly ByteArrayComparer Instance = new();
-
-        public bool Equals(byte[]? x, byte[]? y)
-        {
-            if (ReferenceEquals(x, y))
-            {
-                return true;
-            }
-            if (x is null || y is null)
-            {
-                return false;
-            }
-            return x.AsSpan().SequenceEqual(y);
-        }
-
-        public int GetHashCode(byte[] obj)
-        {
-            unchecked
-            {
-                int hash = 17;
-                int len = Math.Min(obj.Length, 8);
-                for (int i = 0; i < len; i++)
-                {
-                    hash = (hash * 31) + obj[i];
-                }
-                return hash;
-            }
-        }
     }
 
     private static partial class Log

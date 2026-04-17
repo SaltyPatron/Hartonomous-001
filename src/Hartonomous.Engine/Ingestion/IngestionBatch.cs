@@ -12,6 +12,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     private readonly List<PhysicalityEntry> _physicalities = [];
     private readonly List<SequenceEntry> _sequences = [];
     private readonly List<SignificanceEntry> _significances = [];
+    private readonly List<EntityModelSourceEntry> _entityModelSources = [];
     private readonly Dictionary<int, long> _handleToEntityId = [];
 
     public int EntityCount => _entities.Count;
@@ -23,6 +24,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     public IReadOnlyList<PhysicalityEntry> Physicalities => _physicalities;
     public IReadOnlyList<SequenceEntry> Sequences => _sequences;
     public IReadOnlyList<SignificanceEntry> Significances => _significances;
+    public IReadOnlyList<EntityModelSourceEntry> EntityModelSources => _entityModelSources;
 
     public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
     {
@@ -54,6 +56,11 @@ internal sealed class IngestionBatch : IIngestionBatch
     public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu)
     {
         _significances.Add(new SignificanceEntry(entity, contextTypeCode, initialMu));
+    }
+
+    public void AddEntityModelSource(EntityHandle entity, long modelSourceId)
+    {
+        _entityModelSources.Add(new EntityModelSourceEntry(entity, modelSourceId));
     }
 
     public void RemapHandle(int batchIndex, long entityId)
@@ -94,4 +101,5 @@ internal sealed class IngestionBatch : IIngestionBatch
     internal readonly record struct PhysicalityEntry(EntityHandle Entity, string PhysicalityTypeCode, byte[] GeomWkb);
     internal readonly record struct SequenceEntry(EntityHandle Parent, EntityHandle Child, int Position, int Count);
     internal readonly record struct SignificanceEntry(EntityHandle Entity, string ContextTypeCode, double InitialMu);
+    internal readonly record struct EntityModelSourceEntry(EntityHandle Entity, long ModelSourceId);
 }

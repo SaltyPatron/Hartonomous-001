@@ -30,6 +30,7 @@ internal sealed class CodepointRecord
     public int? SimpleLowercase { get; init; }
     public int? SimpleTitlecase { get; init; }
     public int? SimpleCaseFolding { get; init; }
+    public int[]? FullCaseFolding { get; init; }
 
     // Normalization
     public string? DecompositionType { get; init; }

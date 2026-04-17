@@ -187,9 +187,14 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             IReadOnlyDictionary<byte[], long> entityIdMap =
                 await pipeline.ResolveEntityIdsAsync(allHashes, ct);
 
+            HashSet<long> existingPropertyEntityIds = await refWriter.LoadCodepointPropertyEntityIdsAsync(ct);
+            Log.ExistingPropertyRows(Logger, existingPropertyEntityIds.Count);
+
             List<CodepointPropertyRow> propertyRows = new(allCodepoints.Count);
+            HashSet<long> seenEntityIds = new(allCodepoints.Count);
             int resolved = 0;
             int unresolved = 0;
+            int duplicates = 0;
 
             foreach (CodepointRecord cp in allCodepoints)
             {
@@ -202,6 +207,12 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 if (!entityIdMap.TryGetValue(hash, out long entityId))
                 {
                     unresolved++;
+                    continue;
+                }
+
+                if (existingPropertyEntityIds.Contains(entityId) || !seenEntityIds.Add(entityId))
+                {
+                    duplicates++;
                     continue;
                 }
 
@@ -229,8 +240,31 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 int? sbId = ResolveBreakProperty(breakIds, cp.SentenceBreak, "SB");
                 int? lbId = ResolveBreakProperty(breakIds, cp.LineBreak, "LB");
 
+                int[]? fullFold = cp.FullCaseFolding;
+                // Treat identity folds as no-fold so the column stays NULL.
+                if (fullFold is { Length: 1 } && fullFold[0] == cp.Value)
+                {
+                    fullFold = null;
+                }
+                int? simpleFold = cp.SimpleCaseFolding;
+                if (simpleFold.HasValue && simpleFold.Value == cp.Value)
+                {
+                    simpleFold = null;
+                }
+                int[]? decompMap = cp.DecompositionMapping;
+                if (decompMap is { Length: 1 } && decompMap[0] == cp.Value)
+                {
+                    decompMap = null;
+                }
+
                 propertyRows.Add(new CodepointPropertyRow(
-                    entityId, gcId, scriptId, blockId, gcbId, wbId, sbId, lbId));
+                    entityId, gcId, scriptId, blockId, gcbId, wbId, sbId, lbId,
+                    cp.IsExtendedPictographic,
+                    (short)cp.CanonicalCombiningClass,
+                    cp.DecompositionType,
+                    decompMap,
+                    simpleFold,
+                    fullFold));
                 resolved++;
             }
 
@@ -252,7 +286,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 }, ct);
             }
 
-            Log.JunctionTablesWritten(Logger, resolved, unresolved);
+            Log.JunctionTablesWritten(Logger, resolved, unresolved, duplicates);
         }
         finally
         {
@@ -330,8 +364,11 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
         [LoggerMessage(Level = LogLevel.Information, Message = "Resolving entity IDs for junction table population")]
         public static partial void ResolvingEntityIds(ILogger logger);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Junction tables written: {Resolved} resolved, {Unresolved} unresolved")]
-        public static partial void JunctionTablesWritten(ILogger logger, int resolved, int unresolved);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Existing codepoint_property rows: {Count} (will be skipped)")]
+        public static partial void ExistingPropertyRows(ILogger logger, int count);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Junction tables written: {Resolved} resolved, {Unresolved} unresolved, {Duplicates} duplicates skipped")]
+        public static partial void JunctionTablesWritten(ILogger logger, int resolved, int unresolved, int duplicates);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "UCD/UCA decomposition complete: {Entities} entities, {Edges} edges total")]
         public static partial void DecompositionComplete(ILogger logger, long entities, long edges);

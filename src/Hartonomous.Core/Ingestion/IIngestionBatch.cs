@@ -33,6 +33,15 @@ public interface IIngestionBatch
         string contextTypeCode,
         double initialMu);
 
+    /// <summary>
+    /// Record that <paramref name="entity"/> was observed in the given model_source.
+    /// Per-model identity (registry, publisher, slug, revision) is captured in the
+    /// model_source row; this method links the entity to that row via the
+    /// substrate.entity_model_source junction. Same entity hash appearing in N models =
+    /// one entity, N junction rows.
+    /// </summary>
+    void AddEntityModelSource(EntityHandle entity, long modelSourceId);
+
     int EntityCount { get; }
 
     int EdgeCount { get; }

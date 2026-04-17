@@ -4,13 +4,61 @@
 
 - **Decomposer class**: `SafetensorsDecomposer` extends `BaseDecomposer`
 - **Source path**: `D:\Models\hub\` (HuggingFace cache structure)
-- **Trust prior**: Varies per model (set from model reputation, benchmark results, publisher credibility)
+- **Trust prior**: Provenance-based (publisher identity, not benchmark score). A model from Anthropic, Meta, Google, Mistral, etc. is a known corpus; its trust prior reflects who produced it, not how it scored on leaderboards. Benchmarks reflect task-specific performance under a specific evaluation harness — they do not measure whether a model's internal representations carry truth. Trust priors only seed the Glicko-2 mu; inference-time arena competition adjusts from there.
 - **Provenance**: Per-model: `huggingface/{org}/{model}/{snapshot_hash}`
 - **Dependency**: Phase 2d (core seed type system must be in place -- model knowledge maps onto lexical/syntactic/semantic types from UCD, ISO 639, WordNet, and UD). Phase 1 for core algebra. Phase 3 runs BEFORE Wiktionary/Tatoeba (Phases 2e/2f) so model-derived edges establish higher-trust patterns first.
 
 ## What This Decomposer Creates
 
 Explicit typed semantic edges extracted from neural network weights. Each significant learned relationship in a model becomes an edge in the substrate with the weight magnitude as initial significance rating. The substrate REPLACES the model for inference — no need to run the original model after decompilation.
+
+## Two-Track Ingestion Model
+
+Not every tensor is the same kind of object. Token/positional embedding matrices encode spatial knowledge (what is near what in learned concept space). Transformation weights encode functional rules (how inputs map to outputs). These two kinds of tensors demand two different ingestion tracks.
+
+### Track 1 — Embeddings ingested wholesale
+
+For any tensor whose role is a lookup-table-style embedding (`TOKEN_EMBEDDING`, `POSITION_EMBEDDING`, `POSITION_EMBEDDING_2D`, `TOKEN_TYPE_EMBEDDING`, codebook embeddings in audio codecs, object-query embeddings in detection heads, image-position embeddings in vision encoders):
+
+1. Read the full `[vocab_size, hidden_dim]` (or `[num_tokens, dim]`) matrix.
+2. Build a k-nearest-neighbor graph over rows in the model's native hidden-dim space (cosine or dot-product similarity; `k` is per-model, default 64).
+3. Compute the graph Laplacian; take the top 3 non-trivial eigenvectors (eigenvectors 2, 3, 4 — skip the trivial constant eigenvector).
+4. Apply Gram-Schmidt orthonormalization to guarantee an orthogonal 3-frame.
+5. Each row becomes a 4D coordinate: `(eig2, eig3, eig4, m)` where `m` is the row-norm reflecting "energy" in the original embedding (or a learned scalar; spec defers to implementation).
+6. Store one `physicality` row per embedding row with `physicality_type='embedding_firefly'`, `geom=POINTZM(eig2, eig3, eig4, m)`.
+
+Each embedding row is a **firefly**: a point in 4D concept-space whose position encodes the model's learned "where this token sits relative to every other token." **No sparsity filter on Track 1.** We take the model's embedding matrix as-is because it encodes non-local structure and there is no row-wise magnitude criterion that distinguishes signal from noise. The full geometry is the signal.
+
+Why 4D: see `docs/specs/engine/embedding-physicality.md`. Borsuk-Ulam guarantees that at N=4 we can always find a Voronoi consensus cell between any two models' firefly arrangements of the same token. Fewer dimensions break antipodal uniqueness; more dimensions add coordinates without adding distinguishing power for the relations we care about.
+
+### Track 2 — Transformation weights functionally sparsity-filtered
+
+For any tensor whose role is a transformation (`ATTENTION_QUERY/KEY/VALUE/OUTPUT`, `FFN_GATE/UP/DOWN`, `MOE_EXPERT_*`, `MOE_ROUTER`, `MOE_SHARED_EXPERT`, `CONV_KERNEL`, `CROSS_ATTENTION`, `VISION_FEATURE`, `VISION_PROJECTION`, `MODALITY_PROJECTION`, `CLASS_HEAD`, `BBOX_HEAD`, `AUDIO_CODEC_ENCODER/DECODER`, `LORA_*`, etc.):
+
+1. Classify the tensor's role from its name pattern per the architecture's classification rules (below).
+2. Run role-specific analysis passes (SVD, eigenvalue, attention-archetype detection, MoE routing statistics, codebook utilization, etc.).
+3. Apply a **functional sparsity filter** — not magnitude thresholding. The filter is activation-based, in the spirit of the Lottery Ticket Hypothesis: a weight is significant if it participates in an activation pathway that produces a non-zero downstream response on representative inputs. For attention heads: weights that consistently activate together on structural boundaries form an attention archetype and are kept. For FFN layers: weight clusters that co-fire on held-out activation probes are kept. Weights that never participate in any activated pathway are pruned.
+4. Keep patterns above the functional threshold as explicit typed edges in the substrate (`edge_type='encodes_attention_archetype'`, `encodes_ffn_neuron`, `encodes_moe_route`, etc.). Each kept pattern gets an initial `significance.mu` derived from its activation strength.
+5. Discard weights below the functional threshold. These are gradient-descent jitter — they exist because training required them for convergence, not because they encode content.
+
+Track 2 is why the substrate's exported model is denser than any single source model: only functionally participating weights survive ingestion.
+
+### Why these tracks differ
+
+- **Track 1 (wholesale)**: embeddings are atomic reference frames. You cannot prune rows from a `[vocab_size, dim]` matrix without losing tokens. Every row is a lookup key, and every row's position in learned space is information. Laplacian+GSO projects all rows into the substrate's shared 4D physicality while preserving local geometric structure.
+- **Track 2 (filtered)**: transformation matrices are ensembles of learned rules. Most rows/columns encode gradient noise or redundant copies of the same rule. Functional sparsity prunes the redundancy and keeps the rules as typed edges.
+
+## Assimilation, not competition, at ingest
+
+Every model's edges and fireflies enter the substrate unconditionally at ingestion. There is **no arena at ingest**. No model is refused entry, no edge is rejected for contradiction, no firefly is filtered because it disagrees with a higher-trust model.
+
+What matters at ingest is provenance and content-addressing:
+
+- **Provenance seeds the prior.** Each model's trust prior sets the initial `significance.mu` for edges and fireflies it contributes. An Anthropic model's edge starts at `mu=M_anthropic_prior`; a Meta model's edge at `mu=M_meta_prior`; a community-finetuned model at `mu=M_community_prior`. These are seed values, not final ratings.
+- **Content-addressing deduplicates.** BLAKE3 of an extracted pattern is identical whether the pattern came from model A or model B. Same content → same entity → one row. Repeated ingestion does not duplicate — it **corroborates**: each re-ingestion is a new comparison event that tightens the Glicko-2 `sigma` on the shared entity. Tension (disagreement in position/value) between contributors is recorded on the significance row, not silenced.
+- **The arena is at inference, not ingestion.** When a query traverses the substrate and encounters two edges that disagree (e.g., two models' attention archetypes classify the same token differently), the arena fires at that moment — not when the models were loaded. Comparison events update Glicko-2 at inference, feeding the accumulated evidence back into the ratings.
+
+Consequence: ingesting a junk model does not corrupt the substrate. Its edges enter with a low trust prior, receive corroboration only from other junk models (if any), and never accumulate enough evidence to win arena competitions against well-provenanced content. Its fireflies sit at low-density positions in 4D and lose Voronoi cell adjudication to denser cluster centers.
 
 ## Target Format
 
@@ -185,6 +233,65 @@ Nested config: perception.encoder (Conformer), perception.modality_adapter, LLM 
 - Identity connector
 - Qwen LLM with LoRA adapters
 
+#### YOLO-family (`.pt` PyTorch format)
+YOLO weights ship as `.pt` files (pickled PyTorch state dicts), not `.safetensors`. Decomposer treats `.pt` as a first-class input: uses a pickle-safe parser (`torch.load(weights_only=True)` equivalent) that walks the tensor dict without executing arbitrary code.
+- `model.N.conv.weight` (where N is a layer index) -> `CONV_KERNEL`
+- `model.N.bn.{weight,bias,running_mean,running_var}` -> `BATCH_NORM`
+- `model.N.cv1/cv2/cv3.*` (CSP bottleneck blocks) -> `CONV_KERNEL`
+- `model.N.m.N.*` (C2f/C3 module) -> `CONV_KERNEL`
+- Detection head: `model.N.cv2.*` (box regression) -> `BBOX_HEAD`; `model.N.cv3.*` (class prediction) -> `CLASS_HEAD`; `model.N.dfl.conv.weight` (distribution focal loss) -> `LOGIT_HEAD`
+- Anchor tensors (`model.N.anchors`) -> `ANCHOR_GRID` (reference table row, not a decomposed tensor)
+
+### Consolidated Tensor Role Coverage
+
+Every tensor encountered across the architectures above resolves to one of these roles. Rows marked Track 1 go through wholesale embedding ingestion (Laplacian+GSO→4D firefly physicality). Rows marked Track 2 go through functional-sparsity filtering. Rows marked Reference are metadata (dtype, shape, layer index, etc.) stored as junction/reference-table values, not as decomposed weights.
+
+| Role | Track | A dimension | B dimension | Emitted edge types | Sparsity mechanism |
+|------|-------|-------------|-------------|--------------------|--------------------|
+| TOKEN_EMBEDDING | 1 | token | hidden | — (rows become fireflies) | none — wholesale |
+| TOKEN_TYPE_EMBEDDING | 1 | segment | hidden | — | none |
+| POSITION_EMBEDDING | 1 | position | hidden | — | none |
+| POSITION_EMBEDDING_2D | 1 | (row, col) | hidden | — | none |
+| ROPE_FREQ | 1 | position | frequency | — | none (tiny tensor) |
+| VQ_CODEBOOK | 1 | codebook entry | hidden | — (codebook entries become fireflies) | none |
+| OBJECT_QUERY | 1 | query slot | hidden | — | none |
+| ANCHOR_GRID | Reference | — | — | — | — |
+| ATTENTION_QUERY | 2 | hidden_in | head·dim | `encodes_attention_archetype` | functional (per-head activation-based) |
+| ATTENTION_KEY | 2 | hidden_in | head·dim | `encodes_attention_archetype` | functional |
+| ATTENTION_VALUE | 2 | hidden_in | head·dim | `encodes_attention_archetype` | functional |
+| ATTENTION_OUTPUT | 2 | head·dim | hidden_out | `encodes_attention_output` | functional |
+| CROSS_ATTENTION | 2 | hidden_in | hidden_out | `encodes_cross_attention` | functional |
+| FFN_GATE | 2 | hidden | intermediate | `encodes_ffn_gate` | functional (neuron-co-activation) |
+| FFN_UP | 2 | hidden | intermediate | `encodes_ffn_neuron` | functional |
+| FFN_DOWN | 2 | intermediate | hidden | `encodes_ffn_neuron` | functional |
+| MOE_ROUTER | 2 | hidden | num_experts | `encodes_moe_route` | routing-statistics-based (keep experts with non-trivial utilization) |
+| MOE_EXPERT_GATE | 2 | hidden | intermediate | `encodes_moe_expert` | functional, per expert |
+| MOE_EXPERT_UP | 2 | hidden | intermediate | `encodes_moe_expert` | functional |
+| MOE_EXPERT_DOWN | 2 | intermediate | hidden | `encodes_moe_expert` | functional |
+| MOE_SHARED_EXPERT | 2 | hidden | intermediate | `encodes_moe_shared` | functional |
+| LAYER_NORM | Reference | — | — | — (stored as scale/bias reference rows) | — |
+| BATCH_NORM | Reference | — | — | — | — |
+| RMS_NORM | Reference | — | — | — | — |
+| LOGIT_HEAD | 2 | hidden | vocab | `encodes_logit_projection` | functional (top-k coherent projection rows) |
+| CLASS_HEAD | 2 | hidden | num_classes | `encodes_class_prediction` | functional |
+| BBOX_HEAD | 2 | hidden | 4 (or 4·bins) | `encodes_bbox_prediction` | functional |
+| CONV_KERNEL | 2 | (in_c, kh, kw) | out_c | `encodes_conv_filter` | functional (channel-activation-based) |
+| DIFFUSION_BLOCK | 2 | variable | variable | `encodes_diffusion_transformer_block` | functional (timestep-conditioned activation) |
+| VAE_BLOCK | 2 | latent/image dims | image/latent dims | `encodes_vae_block` | functional |
+| CONFORMER_LAYER | 2 | time×hidden | time×hidden | `encodes_conformer_block` | functional |
+| MEL_FILTERBANK | Reference | — | — | — (stored as fixed filter-table row) | — |
+| AUDIO_CODEC_ENCODER | 2 | waveform | latent | `encodes_audio_codec_enc` | functional |
+| AUDIO_CODEC_DECODER | 2 | latent | waveform | `encodes_audio_codec_dec` | functional |
+| VISION_FEATURE | 2 | patches | hidden | `encodes_vision_feature` | functional |
+| VISION_PROJECTION | 2 | hidden_vision | hidden_text | `encodes_vision_projection` | functional |
+| MODALITY_PROJECTION | 2 | hidden_src | hidden_dst | `encodes_modality_projection` | functional |
+| LORA_A | 2 | hidden | rank | `encodes_lora_adapter` | functional (rank-limited already; keep all) |
+| LORA_B | 2 | rank | hidden | `encodes_lora_adapter` | functional |
+| CODEBOOK_SCALE | Reference | — | — | — | — |
+| FP8_SCALE | Reference | — | — | — | — |
+
+Any tensor whose name does not match a pattern from any architecture's classification rules is logged as `UNKNOWN` and the decomposer halts for that model (fail-loud, Substrate Law #13). Unknown tensors are a spec gap to fix, not a run-through case.
+
 ## Entity Model
 
 ### Architecture Entity
@@ -258,10 +365,10 @@ edge(type='in_vocabulary', source=token_15234, target=qwen2.5-coder-3b-instruct)
    i. Drop near-zero-significance patterns (sparsity law).
    j. Submit through centralized ingestion pipeline.
 
-3. **Cross-model analysis**:
-   - When multiple models encode similar patterns, corroborate.
-   - When they contradict, enter arena.
-   - Model provenance and benchmark reputation set initial trust prior.
+3. **Cross-model behavior (by content-addressing, deferred to inference)**:
+   - When multiple models encode the same pattern, content-addressing produces the same BLAKE3 hash and therefore the same entity row. Repeated ingestion corroborates: each contributor is a comparison event that tightens `sigma` on the shared significance record. No per-model duplicates.
+   - When models contradict, both edges coexist in the substrate. Arena comparison happens at inference, not at ingest. The query decides which edge to traverse based on accumulated Glicko-2 `mu`.
+   - Provenance (publisher identity) sets the initial trust prior. Benchmark scores are not consulted — they measure task performance, not representational truth.
 
 ## Analysis Passes (per architecture type)
 
@@ -306,8 +413,8 @@ The substrate discards all of it at ingestion:
 
 - **Near-zero weights are gone.** SVD decomposes weight matrices; singular values below the significance threshold are discarded (Substrate Law #11). The gradient jitter that made training converge is not semantic — it never enters the substrate.
 - **Redundant encodings are gone.** If 14 attention heads all learned "subject-verb agreement" with slightly different noise profiles, content-addressable hashing (Substrate Law #1) stores that pattern once. One entity. One set of edges.
-- **Hallucinations are gone.** Every model-derived edge competes in the arena against authoritative seeds — UCD, UD, WordNet. An edge encoding "the sky is green" loses against the structural ground truth. Its significance drops. It falls below the export threshold.
-- **Structural misalignment is gone.** The model's learned patterns are aligned against universal grammar (UD), character identity (UCD), and semantic ontology (WordNet). Warped neural intuition gets straightened against the substrate's structural backbone.
+- **Hallucinations are bounded, not pre-filtered.** At ingest, every model-derived edge enters unconditionally (assimilation). At inference, when a query traverses an edge encoding "the sky is green" and compares it against structural ground truth from UCD/UD/WordNet, the arena fires — the hallucination loses Glicko-2 updates. Over many inference comparisons its significance falls below the export threshold and it stops being traversed. The substrate does not need to know in advance which edges are hallucinations; it lets accumulated evidence decide.
+- **Structural alignment emerges through traversal.** Model-derived patterns live alongside UCD, UD, and WordNet in the same graph. During inference, traversal ordered by significance naturally prefers the authoritative patterns when they exist. The model's warped neural intuition does not get "straightened" at ingest — it gets *outvoted* over time by converging evidence from higher-trust sources.
 
 The exported model is denser because it contains only the semantic signal. The same knowledge in fewer parameters, with no noise floor, no hallucination residue, and no redundant weight copies. This is not an optimization pass bolted onto the side — it is the natural consequence of what decomposition, deduplication, significance rating, and structural alignment do to any content that enters the substrate. Models just happen to benefit dramatically because they carry so much dead weight.
 

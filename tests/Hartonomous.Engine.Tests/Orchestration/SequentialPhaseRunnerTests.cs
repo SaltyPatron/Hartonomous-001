@@ -287,6 +287,7 @@ public sealed class SequentialPhaseRunnerTests
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }
         public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1) { }
         public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu) { }
+        public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }
     }
 
     private sealed class FakeReporter : IProgressReporter
