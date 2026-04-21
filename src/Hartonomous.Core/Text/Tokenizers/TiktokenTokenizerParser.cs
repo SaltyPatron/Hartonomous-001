@@ -44,7 +44,7 @@ public static class TiktokenTokenizerParser
             {
                 tokenBytes = Convert.FromBase64String(b64);
             }
-            catch (FormatException)
+            catch (FormatException) // BOUNDARY: malformed base64 line in vendor tiktoken file — skip and keep parsing the rest of the vocab.
             {
                 continue;
             }

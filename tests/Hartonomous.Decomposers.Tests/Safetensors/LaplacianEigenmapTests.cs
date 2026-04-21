@@ -47,9 +47,18 @@ public sealed class LaplacianEigenmapTests
             }
         }
 
+        // LanczosSteps = n. Lanczos with a single starting vector collapses
+        // degenerate eigenvalues to multiplicity 1 early in the Krylov iteration;
+        // recovery of the full c-dimensional eigenspace at λ = 1 (where c is the
+        // number of connected components) happens only via round-off reinjection
+        // during full re-orthogonalization and needs on the order of n iterations
+        // on a disconnected graph. Production connected-graph workloads (trained
+        // embeddings) have multiplicity 1 at λ = 1 and converge in O(k) steps, so
+        // the spec default of 80 is fine there. This test deliberately constructs
+        // a 4-component graph, so budget accordingly.
         (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
             rows, n, d,
-            new LaplacianEigenmap.Options(K: 6, LanczosSteps: 32, Seed: 42));
+            new LaplacianEigenmapOptions(K: 6, LanczosSteps: n, Seed: 42));
 
         Assert.Equal(n, x.Length);
         Assert.Equal(n, y.Length);
@@ -122,7 +131,7 @@ public sealed class LaplacianEigenmapTests
         // needs two independent buffers.
         double[] rows2 = (double[])rows1.Clone();
 
-        var opts = new LaplacianEigenmap.Options(K: 5, LanczosSteps: 24, Seed: 99);
+        var opts = new LaplacianEigenmapOptions(K: 5, LanczosSteps: 24, Seed: 99);
         (double[] x1, double[] y1, double[] z1) = LaplacianEigenmap.Project(rows1, nRows, nCols, opts);
         (double[] x2, double[] y2, double[] z2) = LaplacianEigenmap.Project(rows2, nRows, nCols, opts);
 
@@ -184,8 +193,11 @@ public sealed class LaplacianEigenmapTests
     [Fact]
     public void SparseSymEigs_TridiagonalMatrix_RecoversChebyshevSpectrum()
     {
+        // API convention: upper-triangle-only CSR (j >= i). Per row i, store
+        // the diagonal 2.0 and the right off-diagonal -1.0 (if any). The left
+        // off-diagonal is implied by symmetry and supplied by the kernel.
         const long n = 20;
-        long nnz = n + 2 * (n - 1);
+        long nnz = n + (n - 1);
         long[] rowPtr = new long[n + 1];
         long[] colIdx = new long[nnz];
         double[] values = new double[nnz];
@@ -194,12 +206,6 @@ public sealed class LaplacianEigenmapTests
         for (long i = 0; i < n; i++)
         {
             rowPtr[i] = idx;
-            if (i > 0)
-            {
-                colIdx[idx] = i - 1;
-                values[idx] = -1.0;
-                idx++;
-            }
             colIdx[idx] = i;
             values[idx] = 2.0;
             idx++;
@@ -244,7 +250,7 @@ public sealed class LaplacianEigenmapTests
         const int n = 512;
         const int d = 384;
         double[] rows = new double[(long)n * d];
-        Random rng = new(0xDEADBEEF);
+        Random rng = new(unchecked((int)0xDEADBEEF));
         for (int i = 0; i < rows.Length; i++)
         {
             rows[i] = (rng.NextDouble() - 0.5) * 0.1;
@@ -252,7 +258,7 @@ public sealed class LaplacianEigenmapTests
 
         (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
             rows, n, d,
-            new LaplacianEigenmap.Options(K: 10, LanczosSteps: 80, Seed: 42));
+            new LaplacianEigenmapOptions(K: 10, LanczosSteps: 80, Seed: 42));
 
         Assert.Equal(n, x.Length);
         Assert.Equal(n, y.Length);

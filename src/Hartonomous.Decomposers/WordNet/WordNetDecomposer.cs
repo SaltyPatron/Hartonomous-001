@@ -5,6 +5,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core;
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -24,12 +26,23 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
     private readonly string _dictDir;
     private readonly string _connectionString;
+    private readonly IReferenceDataReader? _referenceDataReader;
+    private readonly IJunctionWriter? _junctionWriter;
+    private readonly IReferenceDataWriter? _referenceDataWriter;
 
-    public WordNetDecomposer(DecomposerConfig config, ILogger<WordNetDecomposer> logger)
+    public WordNetDecomposer(
+        DecomposerConfig config,
+        ILogger<WordNetDecomposer> logger,
+        IReferenceDataReader? referenceDataReader = null,
+        IJunctionWriter? junctionWriter = null,
+        IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _dictDir = config.SourceDirectory;
         _connectionString = config.ConnectionString;
+        _referenceDataReader = referenceDataReader;
+        _junctionWriter = junctionWriter;
+        _referenceDataWriter = referenceDataWriter;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() =>
@@ -75,7 +88,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
         Log.Parsed(Logger, allSynsets.Count, senseIndex.Count, morphExceptions.Count);
 
-        WordNetReferenceTableWriter refWriter = new(_connectionString);
+        WordNetReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             // ── Load reference data ──
@@ -108,17 +121,43 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             List<(string SynsetKey, string UdPos)> synsetPosEntries = new(allSynsets.Count);
             List<(string LemmaKey, string UdPos)> lemmaPosEntries = new(200_000);
 
+            // Track gloss/example text_composition hashes for edge creation after ID resolution.
+            List<(string SynsetKey, byte[] GlossHash)> glossEntries = new(allSynsets.Count);
+            List<(string SynsetKey, byte[] ExampleHash)> exampleEntries = new(allSynsets.Count * 2);
+
             foreach ((SynsetRecord synset, char pos) in allSynsets)
             {
                 ct.ThrowIfCancellationRequested();
 
                 string synsetKey = $"{synset.Offset}:{pos}";
-                byte[] synsetHash = ComputeHash($"synset_{synset.Offset:D8}_{pos}");
+                string synsetCode = $"{synset.Offset:D8}-{pos}";
+                byte[] synsetHash = ComputeHash(synsetCode);
                 synsetKeyToHash[synsetKey] = synsetHash;
 
                 EntityHandle synsetEntity = batch.AddEntity(synsetHash, "synset");
                 batch.AddSignificance(synsetEntity, "source_authority", TrustPriorMu);
                 entityCount++;
+
+                // Decompose gloss into definition + examples → text_composition entities.
+                (string definition, List<string> examples) = WordNetParser.ParseGloss(synset.Gloss);
+
+                if (definition.Length > 0)
+                {
+                    (EntityHandle glossEntity, byte[] glossHash) = EmitWordFormMerkle(batch, definition, "text_composition");
+                    batch.AddSignificance(glossEntity, "source_authority", TrustPriorMu);
+                    EmitContourPhysicality(batch, glossEntity, definition);
+                    glossEntries.Add((synsetKey, glossHash));
+                    entityCount++;
+                }
+
+                foreach (string example in examples)
+                {
+                    (EntityHandle exampleEntity, byte[] exampleHash) = EmitWordFormMerkle(batch, example, "text_composition");
+                    batch.AddSignificance(exampleEntity, "source_authority", TrustPriorMu);
+                    EmitContourPhysicality(batch, exampleEntity, example);
+                    exampleEntries.Add((synsetKey, exampleHash));
+                    entityCount++;
+                }
 
                 string udPos = WordNetParser.PosCharToUdPos(pos);
                 synsetPosEntries.Add((synsetKey, udPos));
@@ -130,28 +169,16 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 // Lemmas in this synset.
                 foreach (SynsetWord word in synset.Words)
                 {
-                    string normalizedWord = word.Word.ToLowerInvariant();
-                    string lemmaKey = normalizedWord;
+                    string lemmaKey = word.Word;
 
                     List<(double, double, double, double)> lemmaVertices =
-                        PhysicalityEmitter.SurfaceFormVertices(normalizedWord);
+                        PhysicalityEmitter.SurfaceFormVertices(lemmaKey);
 
                     if (!lemmaToHash.ContainsKey(lemmaKey))
                     {
-                        byte[] lemmaHash = ComputeHash(normalizedWord);
+                        (EntityHandle lemmaEntity, byte[] lemmaHash) = EmitWordFormMerkle(batch, lemmaKey, "lemma");
                         lemmaToHash[lemmaKey] = lemmaHash;
-                        EntityHandle lemmaEntity = batch.AddEntity(lemmaHash, "lemma");
                         batch.AddSignificance(lemmaEntity, "source_authority", TrustPriorMu);
-
-                        // Compose lemma from codepoints AND emit trajectory physicality.
-                        int position = 0;
-                        foreach (Rune rune in normalizedWord.EnumerateRunes())
-                        {
-                            byte[] cpHash = Iso639Decomposer.HashCodepoint(rune.Value);
-                            EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
-                            batch.AddSequence(lemmaEntity, cpHandle, position, 1);
-                            position++;
-                        }
 
                         if (lemmaVertices.Count >= 2)
                         {
@@ -170,8 +197,11 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                         }
 
                         entityCount++;
-                        lemmaPosEntries.Add((lemmaKey, udPos));
                     }
+
+                    // Record POS evidence for EVERY synset this lemma appears in,
+                    // not just the first. "rake" as noun AND verb both accumulate.
+                    lemmaPosEntries.Add((lemmaKey, udPos));
 
                     if (lemmaVertices.Count > 0)
                     {
@@ -210,20 +240,28 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 if (batch.EntityCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
 
             // Word sense entities from index.sense.
-            Dictionary<string, int> senseKeyToTagCount = new(senseIndex.Count, StringComparer.Ordinal);
             foreach (SenseIndexEntry si in senseIndex)
             {
                 ct.ThrowIfCancellationRequested();
 
-                byte[] senseHash = ComputeHash($"ws_{si.SenseKey}");
+                // Word sense identity = Merkle(lemma_hash, synset_hash).
+                // The sense key encodes the lemma (before '%') and synset offset + pos.
+                int pctSense = si.SenseKey.IndexOf('%');
+                string senseLemmaStr = pctSense > 0 ? si.SenseKey[..pctSense] : si.SenseKey;
+                char sensePos = WordNetParser.SsTypeToPos(ParseSsTypeFromSenseKey(si.SenseKey));
+                string senseSynKey = $"{si.SynsetOffset}:{sensePos}";
+                byte[] senseLemmaHash = ComputeWordFormHash(senseLemmaStr);
+                byte[] senseSynHash = synsetKeyToHash.TryGetValue(senseSynKey, out byte[]? existingSynHash)
+                    ? existingSynHash
+                    : ComputeHash(""); // fallback — should not happen
+                byte[] senseHash = ComputeMerkleHash(new[] { senseLemmaHash, senseSynHash }.AsSpan());
                 senseKeyToHash[si.SenseKey] = senseHash;
-                senseKeyToTagCount[si.SenseKey] = si.TagCount;
 
                 EntityHandle senseEntity = batch.AddEntity(senseHash, "word_sense");
                 double mu = si.TagCount > 0 ? TrustPriorMu + (si.TagCount * 10.0) : TrustPriorMu;
@@ -233,8 +271,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 // word_sense trajectory = the spelling of its lemma (the part of the sense key
                 // before the first '%'). Same geometric trajectory as the underlying lemma but
                 // attached as an independent physicality on the sense entity.
-                int pctIdx = si.SenseKey.IndexOf('%');
-                string senseLemma = pctIdx > 0 ? si.SenseKey[..pctIdx] : si.SenseKey;
+                string senseLemma = senseLemmaStr;
                 List<(double, double, double, double)> senseVertices =
                     PhysicalityEmitter.SurfaceFormVertices(senseLemma);
                 if (senseVertices.Count >= 2)
@@ -256,7 +293,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 if (batch.EntityCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -266,45 +303,27 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             {
                 ct.ThrowIfCancellationRequested();
 
-                string inflKey = exc.InflectedForm.ToLowerInvariant();
+                string inflKey = exc.InflectedForm;
                 if (!lemmaToHash.ContainsKey(inflKey))
                 {
-                    byte[] hash = ComputeHash(inflKey);
+                    (EntityHandle entity, byte[] hash) = EmitWordFormMerkle(batch, inflKey, "lemma");
                     lemmaToHash[inflKey] = hash;
-                    EntityHandle entity = batch.AddEntity(hash, "lemma");
                     batch.AddSignificance(entity, "source_authority", TrustPriorMu);
 
-                    int position = 0;
-                    foreach (Rune rune in inflKey.EnumerateRunes())
-                    {
-                        byte[] cpHash = Iso639Decomposer.HashCodepoint(rune.Value);
-                        batch.AddSequence(entity, batch.AddEntity(cpHash, "codepoint"), position, 1);
-                        position++;
-                    }
-
-                    EmitLemmaPhysicality(batch, entity, inflKey);
+                    EmitContourPhysicality(batch, entity, inflKey);
                     entityCount++;
                 }
 
                 foreach (string baseForm in exc.BaseForms)
                 {
-                    string baseKey = baseForm.ToLowerInvariant();
+                    string baseKey = baseForm;
                     if (!lemmaToHash.ContainsKey(baseKey))
                     {
-                        byte[] hash = ComputeHash(baseKey);
+                        (EntityHandle entity, byte[] hash) = EmitWordFormMerkle(batch, baseKey, "lemma");
                         lemmaToHash[baseKey] = hash;
-                        EntityHandle entity = batch.AddEntity(hash, "lemma");
                         batch.AddSignificance(entity, "source_authority", TrustPriorMu);
 
-                        int position = 0;
-                        foreach (Rune rune in baseKey.EnumerateRunes())
-                        {
-                            byte[] cpHash = Iso639Decomposer.HashCodepoint(rune.Value);
-                            batch.AddSequence(entity, batch.AddEntity(cpHash, "codepoint"), position, 1);
-                            position++;
-                        }
-
-                        EmitLemmaPhysicality(batch, entity, baseKey);
+                        EmitContourPhysicality(batch, entity, baseKey);
                         entityCount++;
                     }
                 }
@@ -312,7 +331,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 if (batch.EntityCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -321,7 +340,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             Dictionary<int, byte[]> frameIdToHash = new(verbSentences.Count);
             foreach (VerbSentence vs in verbSentences)
             {
-                byte[] hash = ComputeHash($"verb_frame_{vs.Id}");
+                byte[] hash = ComputeHash(vs.Template);
                 frameIdToHash[vs.Id] = hash;
                 EntityHandle entity = batch.AddEntity(hash, "text_composition");
                 batch.AddSignificance(entity, "source_authority", TrustPriorMu);
@@ -352,7 +371,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             if (batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
             }
 
             Log.EntitiesCreated(Logger, entityCount, batchNum);
@@ -363,6 +382,8 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             foreach (byte[] h in lemmaToHash.Values) { allHashes.Add(h); }
             foreach (byte[] h in senseKeyToHash.Values) { allHashes.Add(h); }
             foreach (byte[] h in frameIdToHash.Values) { allHashes.Add(h); }
+            foreach ((_, byte[] h) in glossEntries) { allHashes.Add(h); }
+            foreach ((_, byte[] h) in exampleEntries) { allHashes.Add(h); }
 
             IReadOnlyDictionary<byte[], long> entityIdMap =
                 await pipeline.ResolveEntityIdsAsync([.. allHashes], ct);
@@ -489,13 +510,13 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                     if (batch.EdgeCount >= BatchSize)
                     {
                         batchNum++;
-                        await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                        await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
                         batch = pipeline.CreateBatch();
                     }
                 }
             }
 
-            // ── Step 7: in_synset edges (word_sense → synset) and has_word edges (synset → lemma) ──
+            // ── Step 7: has_sense edges (lemma → synset) ──
             foreach ((SynsetRecord synset, char pos) in allSynsets)
             {
                 ct.ThrowIfCancellationRequested();
@@ -509,18 +530,18 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
                 foreach (SynsetWord word in synset.Words)
                 {
-                    string lemmaKey = word.Word.ToLowerInvariant();
+                    string lemmaKey = word.Word;
                     if (!lemmaToHash.TryGetValue(lemmaKey, out byte[]? lemmaHash) ||
                         !entityIdMap.TryGetValue(lemmaHash, out long lemmaId))
                     {
                         continue;
                     }
 
-                    // has_word: synset → lemma
-                    batch.AddEdge("has_word", ProvenanceCode,
+                    // has_sense: lemma → synset (schema edge type id=1).
+                    batch.AddEdge("has_sense", ProvenanceCode,
                     [
-                        new EdgeMemberSpec(null, synsetId, "source", 0),
-                        new EdgeMemberSpec(null, lemmaId, "target", 1),
+                        new EdgeMemberSpec(null, lemmaId, "source", 0),
+                        new EdgeMemberSpec(null, synsetId, "target", 1),
                     ]);
                     edgeCount++;
                 }
@@ -528,39 +549,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 if (batch.EdgeCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // in_synset: word_sense → synset
-            foreach (SenseIndexEntry si in senseIndex)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                char ssType = ParseSsTypeFromSenseKey(si.SenseKey);
-                char pos = WordNetParser.SsTypeToPos(ssType);
-                string synsetKey = $"{si.SynsetOffset}:{pos}";
-
-                if (!senseKeyToHash.TryGetValue(si.SenseKey, out byte[]? wsHash) ||
-                    !entityIdMap.TryGetValue(wsHash, out long wsId) ||
-                    !synsetKeyToHash.TryGetValue(synsetKey, out byte[]? synsetHash) ||
-                    !entityIdMap.TryGetValue(synsetHash, out long synsetId))
-                {
-                    continue;
-                }
-
-                batch.AddEdge("in_synset", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(null, wsId, "source", 0),
-                    new EdgeMemberSpec(null, synsetId, "target", 1),
-                ]);
-                edgeCount++;
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -570,7 +559,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             {
                 ct.ThrowIfCancellationRequested();
 
-                string inflKey = exc.InflectedForm.ToLowerInvariant();
+                string inflKey = exc.InflectedForm;
                 if (!lemmaToHash.TryGetValue(inflKey, out byte[]? inflHash) ||
                     !entityIdMap.TryGetValue(inflHash, out long inflId))
                 {
@@ -579,7 +568,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
                 foreach (string baseForm in exc.BaseForms)
                 {
-                    string baseKey = baseForm.ToLowerInvariant();
+                    string baseKey = baseForm;
                     if (!lemmaToHash.TryGetValue(baseKey, out byte[]? baseHash) ||
                         !entityIdMap.TryGetValue(baseHash, out long baseId))
                     {
@@ -597,7 +586,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 if (batch.EdgeCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -634,11 +623,61 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 }
             }
 
+            // ── Step 10: has_gloss edges (synset → text_composition) ──
+            foreach ((string synsetKey, byte[] glossHash) in glossEntries)
+            {
+                if (!synsetKeyToHash.TryGetValue(synsetKey, out byte[]? synsetHash2) ||
+                    !entityIdMap.TryGetValue(synsetHash2, out long synsetId) ||
+                    !entityIdMap.TryGetValue(glossHash, out long glossId))
+                {
+                    continue;
+                }
+
+                batch.AddEdge("has_gloss", ProvenanceCode,
+                [
+                    new EdgeMemberSpec(null, synsetId, "source", 0),
+                    new EdgeMemberSpec(null, glossId, "target", 1),
+                ]);
+                edgeCount++;
+
+                if (batch.EdgeCount >= BatchSize)
+                {
+                    batchNum++;
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
+                    batch = pipeline.CreateBatch();
+                }
+            }
+
+            // ── Step 11: has_example edges (synset → text_composition) ──
+            foreach ((string synsetKey, byte[] exampleHash) in exampleEntries)
+            {
+                if (!synsetKeyToHash.TryGetValue(synsetKey, out byte[]? synsetHash3) ||
+                    !entityIdMap.TryGetValue(synsetHash3, out long synsetId) ||
+                    !entityIdMap.TryGetValue(exampleHash, out long exampleId))
+                {
+                    continue;
+                }
+
+                batch.AddEdge("has_example", ProvenanceCode,
+                [
+                    new EdgeMemberSpec(null, synsetId, "source", 0),
+                    new EdgeMemberSpec(null, exampleId, "target", 1),
+                ]);
+                edgeCount++;
+
+                if (batch.EdgeCount >= BatchSize)
+                {
+                    batchNum++;
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
+                    batch = pipeline.CreateBatch();
+                }
+            }
+
             // Submit final batch.
             if (batch.EdgeCount > 0 || batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
             }
 
             Log.DecompositionComplete(Logger, entityCount, edgeCount, allSynsets.Count);
@@ -646,21 +685,6 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         finally
         {
             await refWriter.DisposeAsync();
-        }
-    }
-
-    private static void EmitLemmaPhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
-    {
-        List<(double X, double Y, double Z, double M)> vertices =
-            PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
-        if (vertices.Count >= 2)
-        {
-            batch.AddPhysicality(entity, "contour", PhysicalityEmitter.LineStringZmWkb(vertices));
-        }
-        else if (vertices.Count == 1)
-        {
-            (double x, double y, double z, double m) = vertices[0];
-            batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
         }
     }
 
@@ -702,23 +726,6 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         44 => "adj.ppl",
         _ => "unknown",
     };
-
-    private async Task SubmitBatchAsync(
-        IIngestionPipeline pipeline, IProgressReporter reporter,
-        IIngestionBatch batch, long entityCount, long edgeCount, int batchNum,
-        CancellationToken ct)
-    {
-        await SubmitAndReportAsync(pipeline, reporter, batch,
-            new ProgressSnapshot
-            {
-                DecomposerCode = ProvenanceCode,
-                CurrentPhase = "ingestion",
-                EntitiesCreated = entityCount,
-                EdgesCreated = edgeCount,
-                CurrentFile = "wordnet-3.0",
-                CurrentBatch = batchNum,
-            }, ct);
-    }
 
     private static partial class Log
     {

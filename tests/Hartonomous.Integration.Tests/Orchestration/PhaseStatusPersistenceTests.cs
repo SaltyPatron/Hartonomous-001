@@ -6,6 +6,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Orchestration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -47,7 +48,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
             new FakePipeline(),
             new FakeReporter(),
             NullLogger<SequentialPhaseRunner>.Instance,
-            _ds);
+            new NpgsqlSessionStore(_ds));
 
         await runner.HydrateStatusAsync(CancellationToken.None);
         PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
@@ -70,7 +71,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
             new FakePipeline(),
             new FakeReporter(),
             NullLogger<SequentialPhaseRunner>.Instance,
-            _ds);
+            new NpgsqlSessionStore(_ds));
 
         await runner.HydrateStatusAsync(CancellationToken.None);
         PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
@@ -90,7 +91,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
             new FakePipeline(),
             new FakeReporter(),
             NullLogger<SequentialPhaseRunner>.Instance,
-            _ds);
+            new NpgsqlSessionStore(_ds));
         await first.HydrateStatusAsync(CancellationToken.None);
         await first.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
 
@@ -106,7 +107,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
             new FakePipeline(),
             new FakeReporter(),
             NullLogger<SequentialPhaseRunner>.Instance,
-            _ds);
+            new NpgsqlSessionStore(_ds));
         await second.HydrateStatusAsync(CancellationToken.None);
         PhaseResult result = await second.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
 
@@ -162,6 +163,8 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public Task<IReadOnlyDictionary<byte[], long>> ResolveEntityIdsAsync(
             IReadOnlyList<byte[]> hashes, CancellationToken ct) =>
             Task.FromResult<IReadOnlyDictionary<byte[], long>>(new Dictionary<byte[], long>());
+
+        public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

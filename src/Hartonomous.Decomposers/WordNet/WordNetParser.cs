@@ -51,7 +51,7 @@ internal static class WordNetParser
         List<SynsetWord> words = new(wordCount);
         for (int w = 0; w < wordCount; w++)
         {
-            string word = tokens[i++].Replace('_', ' ');
+            string word = tokens[i++];
             int lexId = int.Parse(tokens[i++], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
             words.Add(new SynsetWord(word, lexId));
         }
@@ -133,11 +133,11 @@ internal static class WordNetParser
                 continue;
             }
 
-            string inflected = parts[0].Replace('_', ' ');
+            string inflected = parts[0];
             List<string> bases = new(parts.Length - 1);
             for (int i = 1; i < parts.Length; i++)
             {
-                bases.Add(parts[i].Replace('_', ' '));
+                bases.Add(parts[i]);
             }
 
             exceptions.Add(new MorphException(inflected, bases, pos));
@@ -247,6 +247,38 @@ internal static class WordNetParser
         'r' => 'r',
         _ => ssType,
     };
+
+    /// <summary>
+    /// Splits a WordNet gloss string into (definition, examples).
+    /// Format: "definition text; \"example one\"; \"example two\""
+    /// Examples are delimited by "; \"" and end with "\"".
+    /// </summary>
+    public static (string Definition, List<string> Examples) ParseGloss(string gloss)
+    {
+        // Find the first occurrence of "; \"" which marks the boundary between
+        // definition and examples.
+        int exampleStart = gloss.IndexOf("; \"", StringComparison.Ordinal);
+        if (exampleStart < 0)
+        {
+            return (gloss.Trim(), []);
+        }
+
+        string definition = gloss[..exampleStart].Trim();
+        string remainder = gloss[(exampleStart + 2)..]; // skip "; "
+
+        List<string> examples = [];
+        // Split on "; " to get individual quoted examples.
+        foreach (string part in remainder.Split("\"; \"", StringSplitOptions.RemoveEmptyEntries))
+        {
+            string trimmed = part.Trim().Trim('"').Trim();
+            if (trimmed.Length > 0)
+            {
+                examples.Add(trimmed);
+            }
+        }
+
+        return (definition, examples);
+    }
 
     public static string PosCharToUdPos(char pos) => pos switch
     {

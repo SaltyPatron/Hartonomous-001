@@ -74,7 +74,6 @@ set(HARTONOMOUS_SOURCES
     src/gemm.c
     src/knn.c
     src/sparse_eigs.c
-    src/sparse_probe.c
     src/gram_schmidt.c
     src/merkle.c
 )

@@ -41,7 +41,7 @@ services.AddOptions<DatabaseOptions>()
 ### Configuration Sources (Precedence)
 
 1. Command-line arguments (highest)
-2. Environment variables (`HTNS_DATABASE__CONNECTIONSTRING`)
+2. Environment variables (`HARTONOMOUS_DB`)
 3. `appsettings.{Environment}.json`
 4. `appsettings.json` (lowest)
 

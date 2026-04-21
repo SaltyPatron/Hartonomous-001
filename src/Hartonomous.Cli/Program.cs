@@ -6,18 +6,26 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Cli.Migrations;
+using Hartonomous.Core;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Decomposers.Iso639;
 using Hartonomous.Decomposers.Ucd;
 using Hartonomous.Decomposers.Omw;
 using Hartonomous.Decomposers.Safetensors;
+using Hartonomous.Decomposers.Tatoeba;
+using Hartonomous.Decomposers.Text;
+using Hartonomous.Decomposers.Ud;
+using Hartonomous.Decomposers.Wiktionary;
 using Hartonomous.Decomposers.WordNet;
+using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Orchestration;
+using Hartonomous.Engine.Text;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using NpgsqlTypes;
 
 namespace Hartonomous.Cli;
 
@@ -92,7 +100,8 @@ internal static class Program
         Command up = new("up", "Apply all unapplied migrations.");
         up.SetHandler(async (string conn, string dir) =>
         {
-            MigrationRunner runner = new(conn, dir);
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            MigrationRunner runner = new(new NpgsqlMigrationStore(ds), dir);
             await runner.UpAsync(CancellationToken.None);
         }, connOpt, dirOpt);
 
@@ -101,14 +110,16 @@ internal static class Program
         down.AddArgument(stepsArg);
         down.SetHandler(async (string conn, string dir, int steps) =>
         {
-            MigrationRunner runner = new(conn, dir);
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            MigrationRunner runner = new(new NpgsqlMigrationStore(ds), dir);
             await runner.DownAsync(steps, CancellationToken.None);
         }, connOpt, dirOpt, stepsArg);
 
         Command status = new("status", "Show applied vs pending migrations and detect checksum drift.");
         status.SetHandler(async (string conn, string dir) =>
         {
-            MigrationRunner runner = new(conn, dir);
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            MigrationRunner runner = new(new NpgsqlMigrationStore(ds), dir);
             await runner.StatusAsync(CancellationToken.None);
         }, connOpt, dirOpt);
 
@@ -221,34 +232,101 @@ internal static class Program
             ConnectionString = conn,
         };
 
+        DecomposerConfig udConfig = new()
+        {
+            SourceDirectory = Path.Combine(sourceRoot, "ud-treebanks", "ud-treebanks-v2.17"),
+            ConnectionString = conn,
+        };
+
         DecomposerConfig modelConfig = new()
         {
             SourceDirectory = ResolveModelSource(sourceRoot),
             ConnectionString = conn,
         };
 
+        DecomposerConfig wiktionaryConfig = new()
+        {
+            SourceDirectory = Path.Combine(sourceRoot, "wiktionary", "raw-wiktextract-data.jsonl"),
+            ConnectionString = conn,
+        };
+
+        DecomposerConfig tatoebaConfig = new()
+        {
+            SourceDirectory = Path.Combine(sourceRoot, "tatoeba"),
+            ConnectionString = conn,
+        };
+
+        // TextDecomp: point at the test_data/text directory. Each .txt file is a document.
+        string textSourceDir = Path.Combine(sourceRoot, "test_data", "text");
+
+        await using NpgsqlDataSource phaseDs = NpgsqlDataSource.Create(conn);
+        NpgsqlReferenceDataReader refDataReader = new(phaseDs);
+        NpgsqlJunctionWriter junctionWriter = new(phaseDs);
+        NpgsqlReferenceDataWriter refDataWriter = new(phaseDs);
+
+        // Build per-file text decomposers if the directory exists.
+        List<IDecomposer> textDecomposers = [];
+        string[] textFiles = Directory.Exists(textSourceDir)
+            ? [.. Directory.EnumerateFiles(textSourceDir, "*.txt")]
+            : [];
+        if (textFiles.Length > 0)
+        {
+            HashSet<int> textCodepoints = await CollectDistinctCodepointsAsync(textFiles, ct);
+            NpgsqlCodepointPropertiesCache cpProps = await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
+                conn,
+                textCodepoints,
+                logFactory.CreateLogger<NpgsqlCodepointPropertiesCache>(),
+                ct);
+
+            foreach (string txtFile in textFiles)
+            {
+                DecomposerConfig textConfig = new()
+                {
+                    SourceDirectory = txtFile,
+                    ConnectionString = conn,
+                };
+                textDecomposers.Add(new TextDecomposer(
+                    textConfig,
+                    logFactory.CreateLogger<TextDecomposer>(),
+                    cpProps,
+                    refDataReader, junctionWriter, refDataWriter));
+            }
+        }
+
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
-            [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>())],
-            [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>())],
+            [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>(), refDataReader, junctionWriter, refDataWriter)],
+            [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [
-                new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>()),
-                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>()),
+                new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+            ],
+            [Phase.UniversalDeps] =
+            [
+                new UdDecomposer(udConfig, logFactory.CreateLogger<UdDecomposer>(), refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter),
             ],
+            [Phase.Wiktionary] =
+            [
+                new WiktionaryDecomposer(wiktionaryConfig, logFactory.CreateLogger<WiktionaryDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+            ],
+            [Phase.Tatoeba] =
+            [
+                new TatoebaDecomposer(tatoebaConfig, logFactory.CreateLogger<TatoebaDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+            ],
+            [Phase.TextDecomp] = textDecomposers,
         };
-
-        await using NpgsqlIngestionPipeline pipeline = new(conn, logFactory.CreateLogger<NpgsqlIngestionPipeline>());
+        await using NpgsqlIngestionPipeline pipeline = new(conn, refDataReader, logFactory.CreateLogger<NpgsqlIngestionPipeline>());
         ConsoleProgressReporter reporter = new();
-        await using NpgsqlDataSource phaseDs = NpgsqlDataSource.Create(conn);
+        NpgsqlSessionStore sessionStore = new(phaseDs);
         SequentialPhaseRunner runner = new(
             decomposers, pipeline, reporter,
             logFactory.CreateLogger<SequentialPhaseRunner>(),
-            phaseDs);
+            sessionStore);
         await runner.HydrateStatusAsync(ct);
 
         if (phaseStr is not null)
@@ -305,6 +383,31 @@ internal static class Program
         }
 
         Console.WriteLine($"\nPipeline stats: {pipeline.Stats.EntitiesSubmitted:N0} entities, {pipeline.Stats.EdgesSubmitted:N0} edges, {pipeline.Stats.BatchesCommitted:N0} batches committed");
+    }
+
+    private static async Task<HashSet<int>> CollectDistinctCodepointsAsync(
+        IEnumerable<string> textFiles,
+        CancellationToken ct)
+    {
+        HashSet<int> codepoints = [];
+        foreach (string textFile in textFiles)
+        {
+            byte[] utf8Bytes = await File.ReadAllBytesAsync(textFile, ct);
+            int idx = 0;
+            while (idx < utf8Bytes.Length)
+            {
+                (int cp, int consumed) = Utf8.DecodeOne(utf8Bytes.AsSpan(idx));
+                if (consumed == 0)
+                {
+                    break;
+                }
+
+                codepoints.Add(cp);
+                idx += consumed;
+            }
+        }
+
+        return codepoints;
     }
 
     private static void PrintDryRun(string? phaseFilter)
@@ -399,46 +502,38 @@ internal static class Program
         create.SetHandler(async (string conn, string desc, string? phase) =>
         {
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync();
-            await using Npgsql.NpgsqlCommand cmd = new("SELECT monitor.create_session($1, $2)", c);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Text, desc);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Text,
-                (object?)phase ?? DBNull.Value);
-            object? result = await cmd.ExecuteScalarAsync();
-            Console.WriteLine($"Session created: {result}");
+            NpgsqlSessionStore store = new(ds);
+            long id = await store.CreateSessionAsync(phase ?? string.Empty, desc, CancellationToken.None);
+            Console.WriteLine($"Session created: {id}");
         }, connOpt, descArg, phaseOpt);
 
         Command close = new("close", "Close the active session and capture significance snapshot.");
         close.SetHandler(async (string conn) =>
         {
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync();
-            await using Npgsql.NpgsqlCommand cmd = new("SELECT monitor.close_session()", c);
-            object? result = await cmd.ExecuteScalarAsync();
-            Console.WriteLine($"Session closed: {result}");
+            NpgsqlSessionStore store = new(ds);
+            bool closed = await store.CloseSessionAsync(CancellationToken.None);
+            Console.WriteLine($"Session closed: {closed}");
         }, connOpt);
 
         Command list = new("list", "List all sessions.");
         list.SetHandler(async (string conn) =>
         {
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync();
-            await using Npgsql.NpgsqlCommand cmd = new(
-                "SELECT session_id, description, phase_code, status, created_at, closed_at " +
-                "FROM monitor.session ORDER BY session_id", c);
-            await using Npgsql.NpgsqlDataReader reader = await cmd.ExecuteReaderAsync();
+            NpgsqlSessionStore store = new(ds);
+            IReadOnlyList<SessionSummary> sessions = await store.ListSessionsAsync(CancellationToken.None);
 
             Console.WriteLine($"{"ID",-5}{"Description",-35}{"Phase",-20}{"Status",-10}{"Created",-25}{"Closed",-25}");
             Console.WriteLine(new string('-', 120));
-            while (await reader.ReadAsync())
+            foreach (SessionSummary s in sessions)
             {
                 Console.WriteLine(
-                    $"{reader.GetInt64(0),-5}" +
-                    $"{reader.GetString(1),-35}" +
-                    $"{(reader.IsDBNull(2) ? "-" : reader.GetString(2)),-20}" +
-                    $"{reader.GetString(3),-10}" +
-                    $"{reader.GetDateTime(4).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),-25}" +
-                    $"{(reader.IsDBNull(5) ? "-" : reader.GetDateTime(5).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)),-25}");
+                    $"{s.SessionId,-5}" +
+                    $"{s.Description,-35}" +
+                    $"{(string.IsNullOrEmpty(s.PhaseCode) ? "-" : s.PhaseCode),-20}" +
+                    $"{s.Status,-10}" +
+                    $"{s.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),-25}" +
+                    $"{(s.ClosedAt.HasValue ? s.ClosedAt.Value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "-"),-25}");
             }
         }, connOpt);
 
@@ -448,10 +543,8 @@ internal static class Program
         archive.SetHandler(async (string conn, long id) =>
         {
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync();
-            await using Npgsql.NpgsqlCommand cmd = new("CALL monitor.archive_session($1)", c);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, id);
-            await cmd.ExecuteNonQueryAsync();
+            NpgsqlSessionStore store = new(ds);
+            await store.ArchiveSessionAsync(id, CancellationToken.None);
             Console.WriteLine($"Session {id} archived.");
         }, connOpt, archiveIdArg);
 
@@ -461,41 +554,21 @@ internal static class Program
         show.SetHandler(async (string conn, long id) =>
         {
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync();
-
-            await using (Npgsql.NpgsqlCommand cmd = new(
-                "SELECT description, phase_code, status, created_at, closed_at FROM monitor.session WHERE session_id = $1", c))
+            NpgsqlSessionStore store = new(ds);
+            SessionDetail? detail = await store.GetSessionDetailAsync(id, CancellationToken.None);
+            if (detail is null)
             {
-                cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, id);
-                await using Npgsql.NpgsqlDataReader reader = await cmd.ExecuteReaderAsync();
-                if (await reader.ReadAsync())
-                {
-                    Console.WriteLine($"Session {id}: {reader.GetString(0)}");
-                    Console.WriteLine($"  Phase: {(reader.IsDBNull(1) ? "-" : reader.GetString(1))}");
-                    Console.WriteLine($"  Status: {reader.GetString(2)}");
-                    Console.WriteLine($"  Created: {reader.GetDateTime(3):yyyy-MM-dd HH:mm:ss}");
-                    Console.WriteLine($"  Closed: {(reader.IsDBNull(4) ? "-" : reader.GetDateTime(4).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))}");
-                }
-                else
-                {
-                    Console.Error.WriteLine($"Session {id} not found.");
-                    return;
-                }
+                Console.Error.WriteLine($"Session {id} not found.");
+                return;
             }
 
-            await using (Npgsql.NpgsqlCommand cmd2 = new(
-                "SELECT COUNT(*) FROM monitor.comparison_event WHERE session_id = $1", c))
-            {
-                cmd2.Parameters.AddWithValue(NpgsqlDbType.Bigint, id);
-                Console.WriteLine($"  Comparison events: {await cmd2.ExecuteScalarAsync()}");
-            }
-
-            await using (Npgsql.NpgsqlCommand cmd3 = new(
-                "SELECT COUNT(*) FROM monitor.significance_snapshot WHERE session_id = $1", c))
-            {
-                cmd3.Parameters.AddWithValue(NpgsqlDbType.Bigint, id);
-                Console.WriteLine($"  Snapshot rows: {await cmd3.ExecuteScalarAsync()}");
-            }
+            Console.WriteLine($"Session {id}: {detail.Description}");
+            Console.WriteLine($"  Phase: {(string.IsNullOrEmpty(detail.PhaseCode) ? "-" : detail.PhaseCode)}");
+            Console.WriteLine($"  Status: {detail.Status}");
+            Console.WriteLine($"  Created: {detail.CreatedAt:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine($"  Closed: {(detail.ClosedAt.HasValue ? detail.ClosedAt.Value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "-")}");
+            Console.WriteLine($"  Comparison events: {detail.ComparisonEventCount}");
+            Console.WriteLine($"  Snapshot rows: {detail.SignificanceSnapshotCount}");
         }, connOpt, showIdArg);
 
         session.AddCommand(create);
@@ -521,69 +594,53 @@ internal static class Program
         status.SetHandler(async (string conn, bool snapshot) =>
         {
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync();
+            NpgsqlSessionStore store = new(ds);
 
             if (snapshot)
             {
-                await using Npgsql.NpgsqlCommand snap = new("CALL monitor.snapshot_health()", c);
-                await snap.ExecuteNonQueryAsync();
+                await store.SnapshotHealthAsync(CancellationToken.None);
                 Console.WriteLine("Health snapshot captured.");
                 Console.WriteLine();
             }
 
             Console.WriteLine("=== Phase Overview ===");
-            await using (Npgsql.NpgsqlCommand cmd = new(
-                "SELECT phase_code, status, entity_count, edge_count, " +
-                "EXTRACT(EPOCH FROM (completed_at - started_at))::int AS duration_s " +
-                "FROM monitor.phase_status ORDER BY started_at NULLS LAST", c))
+            IReadOnlyList<PhaseStatusRow> phases = await store.GetPhaseStatusOverviewAsync(CancellationToken.None);
+            Console.WriteLine($"{"Phase",-25}{"Status",-15}{"Entities",-12}{"Edges",-12}{"Duration(s)",-12}");
+            Console.WriteLine(new string('-', 76));
+            foreach (PhaseStatusRow p in phases)
             {
-                await using Npgsql.NpgsqlDataReader reader = await cmd.ExecuteReaderAsync();
-                Console.WriteLine($"{"Phase",-25}{"Status",-15}{"Entities",-12}{"Edges",-12}{"Duration(s)",-12}");
-                Console.WriteLine(new string('-', 76));
-                while (await reader.ReadAsync())
-                {
-                    Console.WriteLine(
-                        $"{reader.GetString(0),-25}" +
-                        $"{reader.GetString(1),-15}" +
-                        $"{reader.GetInt64(2),-12}" +
-                        $"{reader.GetInt64(3),-12}" +
-                        $"{(reader.IsDBNull(4) ? "-" : reader.GetInt32(4).ToString(CultureInfo.InvariantCulture)),-12}");
-                }
+                Console.WriteLine(
+                    $"{p.PhaseCode,-25}" +
+                    $"{p.Status,-15}" +
+                    $"{p.EntityCount,-12}" +
+                    $"{p.EdgeCount,-12}" +
+                    $"{(p.DurationSeconds.HasValue ? p.DurationSeconds.Value.ToString(CultureInfo.InvariantCulture) : "-"),-12}");
             }
 
             Console.WriteLine();
             Console.WriteLine("=== Substrate Totals ===");
-            await using (Npgsql.NpgsqlCommand cmd = new(
-                "SELECT total_entities, total_edges, total_physicalities, total_significance_records " +
-                "FROM monitor.substrate_dashboard", c))
+            SubstrateTotals? totals = await store.GetSubstrateTotalsAsync(CancellationToken.None);
+            if (totals is not null)
             {
-                await using Npgsql.NpgsqlDataReader reader = await cmd.ExecuteReaderAsync();
-                if (await reader.ReadAsync())
-                {
-                    Console.WriteLine($"  Entities:     {reader.GetInt64(0):N0}");
-                    Console.WriteLine($"  Edges:        {reader.GetInt64(1):N0}");
-                    Console.WriteLine($"  Physicalities:{reader.GetInt64(2):N0}");
-                    Console.WriteLine($"  Significance: {reader.GetInt64(3):N0}");
-                }
+                Console.WriteLine($"  Entities:     {totals.TotalEntities:N0}");
+                Console.WriteLine($"  Edges:        {totals.TotalEdges:N0}");
+                Console.WriteLine($"  Physicalities:{totals.TotalPhysicalities:N0}");
+                Console.WriteLine($"  Significance: {totals.TotalSignificanceRecords:N0}");
             }
 
             Console.WriteLine();
             Console.WriteLine("=== Active Runs ===");
-            await using (Npgsql.NpgsqlCommand cmd = new(
-                "SELECT decomposer_code, phase_code, batch_number, entities_ingested, started_at " +
-                "FROM monitor.v_active_runs", c))
+            IReadOnlyList<ActiveRunRow> runs = await store.GetActiveRunsAsync(CancellationToken.None);
+            if (runs.Count == 0)
             {
-                await using Npgsql.NpgsqlDataReader reader = await cmd.ExecuteReaderAsync();
-                bool any = false;
-                while (await reader.ReadAsync())
+                Console.WriteLine("  (none)");
+            }
+            else
+            {
+                foreach (ActiveRunRow r in runs)
                 {
-                    any = true;
-                    Console.WriteLine($"  {reader.GetString(0)} ({reader.GetString(1)}) " +
-                        $"batch {reader.GetInt32(2)}: {reader.GetInt64(3)} entities");
-                }
-                if (!any)
-                {
-                    Console.WriteLine("  (none)");
+                    Console.WriteLine($"  {r.DecomposerCode} ({r.PhaseCode}) " +
+                        $"batch {r.BatchNumber}: {r.EntitiesIngested} entities");
                 }
             }
         }, connOpt, snapshotOpt);

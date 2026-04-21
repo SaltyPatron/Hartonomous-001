@@ -30,11 +30,7 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         ILogger<NpgsqlCodepointPropertiesCache> logger,
         CancellationToken ct)
     {
-        NpgsqlCodepointPropertiesCache cache = new();
-        for (int i = 0; i < Size; i++)
-        {
-            cache._simpleFold[i] = i;
-        }
+        NpgsqlCodepointPropertiesCache cache = CreateEmpty();
 
         Log.Loading(logger);
 
@@ -43,24 +39,74 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
 
         Dictionary<int, string> breakCodeByEntityIsolate = await LoadBreakPropertyNamesAsync(conn, ct);
 
-        await using NpgsqlCommand cmd = new(
-            "SELECT e.signature[17:20], cp.gcb_id, cp.wb_id, cp.sb_id, cp.lb_id, " +
+        int loaded = await LoadRowsAsync(cache, conn, breakCodeByEntityIsolate, codepoints: null, ct);
+
+        Log.Loaded(logger, loaded);
+        return cache;
+    }
+
+    public static async Task<NpgsqlCodepointPropertiesCache> LoadForCodepointsAsync(
+        string connectionString,
+        IReadOnlyCollection<int> codepoints,
+        ILogger<NpgsqlCodepointPropertiesCache> logger,
+        CancellationToken ct)
+    {
+        NpgsqlCodepointPropertiesCache cache = CreateEmpty();
+        if (codepoints.Count == 0)
+        {
+            Log.LoadedSubset(logger, 0, 0);
+            return cache;
+        }
+
+        Log.LoadingSubset(logger, codepoints.Count);
+
+        await using NpgsqlDataSource ds = NpgsqlDataSource.Create(connectionString);
+        await using NpgsqlConnection conn = await ds.OpenConnectionAsync(ct);
+
+        Dictionary<int, string> breakCodeByEntityIsolate = await LoadBreakPropertyNamesAsync(conn, ct);
+        int loaded = await LoadRowsAsync(cache, conn, breakCodeByEntityIsolate, codepoints, ct);
+
+        Log.LoadedSubset(logger, loaded, codepoints.Count);
+        return cache;
+    }
+
+    private static NpgsqlCodepointPropertiesCache CreateEmpty()
+    {
+        NpgsqlCodepointPropertiesCache cache = new();
+        for (int i = 0; i < Size; i++)
+        {
+            cache._simpleFold[i] = i;
+        }
+
+        return cache;
+    }
+
+    private static async Task<int> LoadRowsAsync(
+        NpgsqlCodepointPropertiesCache cache,
+        NpgsqlConnection conn,
+        Dictionary<int, string> breakCodeByEntityIsolate,
+        IReadOnlyCollection<int>? codepoints,
+        CancellationToken ct)
+    {
+        string sql =
+            "SELECT cp.codepoint_value, cp.gcb_id, cp.wb_id, cp.sb_id, cp.lb_id, " +
             "       cp.is_extended_pictographic, cp.simple_case_fold, cp.full_case_fold " +
             "FROM substrate.codepoint_property cp " +
-            "JOIN substrate.entity e ON e.id = cp.entity_id " +
-            "WHERE e.kind_code = 'codepoint'", conn);
+            "WHERE cp.codepoint_value IS NOT NULL";
+
+        await using NpgsqlCommand cmd = new(codepoints is null ? sql : sql + " AND cp.codepoint_value = ANY($1)", conn);
+        if (codepoints is not null)
+        {
+            int[] requested = [.. codepoints];
+            cmd.Parameters.AddWithValue(requested);
+        }
         cmd.CommandTimeout = 300;
 
         int loaded = 0;
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
-            byte[] last4 = (byte[])reader.GetValue(0);
-            if (last4.Length < 4)
-            {
-                continue;
-            }
-            int cp = (last4[0] << 24) | (last4[1] << 16) | (last4[2] << 8) | last4[3];
+            int cp = reader.GetInt32(0);
             if ((uint)cp > MaxCodepoint)
             {
                 continue;
@@ -89,8 +135,7 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
             loaded++;
         }
 
-        Log.Loaded(logger, loaded);
-        return cache;
+        return loaded;
     }
 
     private static async Task<Dictionary<int, string>> LoadBreakPropertyNamesAsync(
@@ -249,20 +294,33 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         "CR" => WordBreak.CR,
         "LF" => WordBreak.LF,
         "Newline" => WordBreak.Newline,
+        "NL" => WordBreak.Newline,
         "Extend" => WordBreak.Extend,
         "ZWJ" => WordBreak.ZWJ,
         "Regional_Indicator" => WordBreak.RegionalIndicator,
+        "RI" => WordBreak.RegionalIndicator,
         "Format" => WordBreak.Format,
+        "FO" => WordBreak.Format,
         "Katakana" => WordBreak.Katakana,
+        "KA" => WordBreak.Katakana,
         "Hebrew_Letter" => WordBreak.HebrewLetter,
+        "HL" => WordBreak.HebrewLetter,
         "ALetter" => WordBreak.ALetter,
+        "LE" => WordBreak.ALetter,
         "Single_Quote" => WordBreak.SingleQuote,
+        "SQ" => WordBreak.SingleQuote,
         "Double_Quote" => WordBreak.DoubleQuote,
+        "DQ" => WordBreak.DoubleQuote,
         "MidNumLet" => WordBreak.MidNumLet,
+        "MB" => WordBreak.MidNumLet,
         "MidLetter" => WordBreak.MidLetter,
+        "ML" => WordBreak.MidLetter,
         "MidNum" => WordBreak.MidNum,
+        "MN" => WordBreak.MidNum,
         "Numeric" => WordBreak.Numeric,
+        "NU" => WordBreak.Numeric,
         "ExtendNumLet" => WordBreak.ExtendNumLet,
+        "EX" => WordBreak.ExtendNumLet,
         "WSegSpace" => WordBreak.WSegSpace,
         _ => WordBreak.Other,
     };
@@ -342,7 +400,13 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         [LoggerMessage(Level = LogLevel.Information, Message = "Loading codepoint properties from substrate…")]
         public static partial void Loading(ILogger logger);
 
+        [LoggerMessage(Level = LogLevel.Information, Message = "Loading codepoint properties for {RequestedCount} distinct codepoints…")]
+        public static partial void LoadingSubset(ILogger logger, int requestedCount);
+
         [LoggerMessage(Level = LogLevel.Information, Message = "Loaded {Count} codepoint property rows into cache")]
         public static partial void Loaded(ILogger logger, int count);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Loaded {Count} codepoint property rows into subset cache from {RequestedCount} requested codepoints")]
+        public static partial void LoadedSubset(ILogger logger, int count, int requestedCount);
     }
 }

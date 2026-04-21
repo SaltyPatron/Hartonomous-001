@@ -18,9 +18,11 @@ Master table of contents and completion tracker. Every document in the project i
 |-----|--------|-------------|
 | [architecture.md](architecture.md) | ✅ | Authoritative architecture reference. What this replaces (8 paradigm breaks), the Knowledge Demon (Laplace's Demon analogy), what this is NOT (anti-pattern-matching). Schema, substrate laws, cost model, scale, concurrency, monitoring concepts, technology stack (incl. Tree-sitter, Content Is Code), file layout conventions. |
 | [type-system.md](type-system.md) | ✅ | Complete classification vocabulary. All reference tables, all values, domain/range constraints, junction table inventory. |
-| [standards/](standards/README.md) | ✅ | Engineering standards (8 sub-documents). DI patterns, interface-first design, no-duplication rules, module registration, configuration, error handling, async patterns, testing, SQL/C#/C++ naming conventions, logging, generics, immutability, ingestion pipeline. The quality bar all code must meet. |
+| [standards/](standards/README.md) | ✅ | Engineering standards (9 sub-documents). DI patterns, interface-first design, no-duplication rules, module registration, configuration, error handling, async patterns, testing, SQL/C#/C++ naming conventions, logging, generics, immutability, ingestion pipeline, and shared AI agent workflow enforcement. The quality bar all code must meet. |
+| [standards/ai-agent-workflows.md](standards/ai-agent-workflows.md) | ✅ | Shared Claude Code and Copilot workflow scaffolding. Exactness rules, semantic regression cases, finish-work expectations, hooks, prompts, and agent roles. |
 | [flow-inventory.md](flow-inventory.md) | ✅ | Complete flow inventory. 34 cataloged database operation flows (seed ingestion, runtime ingestion, inference, significance/arena, monitoring, recomposition). Every chain of operations from trigger to final state. |
 | [glossary.md](glossary.md) | ✅ | Centralized term definitions. Every domain-specific term used across all docs. |
+| [build-plan.md](build-plan.md) | ✅ | Implementation build plan. Phase-ordered work breakdown with dependencies and completion tracking. |
 
 ---
 
@@ -119,6 +121,7 @@ These define the PostgreSQL extension and shared native library: function signat
 | [specs/native/shared-library.md](specs/native/shared-library.md) | ✅ | libhartonomous shared library. Full C API header (hartonomous.h), memory contract, SIMD dispatch (AVX-512/AVX2/SSE4.1/NEON), P/Invoke surface for C#, static linking for PG extension vs dynamic linking for .NET. |
 | [specs/native/compute-library.md](specs/native/compute-library.md) | 🔜 | Ingestion-time numerical compute (MKL + Eigen + Spectra + BLAKE3). C ABI for SVD, sparse Lanczos eigensolve, chunked GEMM, sparse matvec, exact k-NN graph, tensor dtype decode. Two-artifact split (ILP64 ingest vs LP64 query). ISA ceiling AVX2+FMA3+AVX-VNNI+BMI2 (14900KS — no AVX-512). Determinism contract (MKL_CBWR=AUTO,STRICT, fixed seeds, no prohibited approximations). |
 | [specs/native/build-system.md](specs/native/build-system.md) | ✅ | CMake for shared library, PGXS Makefile for PG extension. Platform matrix (Windows x64, Linux x86_64, macOS ARM64). SIMD compile flags, Google Test integration, packaging for NuGet and PostgreSQL. |
+| [specs/native/4d-type-and-index.md](specs/native/4d-type-and-index.md) | ✅ | 4D PostGIS type and GiST index internals. POINTZM/LINESTRINGZM usage, Hilbert curve indexing, Fréchet distance operator, spatial query patterns. |
 
 ---
 
@@ -138,16 +141,16 @@ These define operational concerns: monitoring schema, configuration, deployment,
 
 ## Completion Summary
 
-| Category | Total Docs | Complete | Partial | Missing |
-|----------|-----------|----------|---------|---------|
-| Foundation | 5 | 5 | 0 | 0 |
-| Domain — Decomposers | 8 | 8 | 0 | 0 |
-| Domain — Engine | 5 | 5 | 0 | 0 |
-| Domain — Modalities | 4 | 4 | 0 | 0 |
-| Implementation — SQL | 10 | 10 | 0 | 0 |
-| Implementation — C# | 10 | 10 | 0 | 0 |
-| Implementation — C/C++ | 3 | 3 | 0 | 0 |
-| Implementation — Operations | 5 | 5 | 0 | 0 |
-| **Total** | **50** | **50** | **0** | **0** |
+| Category | Total Docs | Complete | Planned |
+|----------|-----------|----------|---------|
+| Foundation | 7 | 7 | 0 |
+| Domain — Decomposers | 10 | 8 | 2 |
+| Domain — Engine | 5 | 5 | 0 |
+| Domain — Modalities | 4 | 4 | 0 |
+| Implementation — SQL | 10 | 10 | 0 |
+| Implementation — C# | 11 | 10 | 1 |
+| Implementation — C/C++ | 4 | 3 | 1 |
+| Implementation — Operations | 5 | 5 | 0 |
+| **Total** | **56** | **52** | **4** |
 
-All 50 documentation artifacts are complete.
+52 of 56 documentation artifacts are complete. 4 are planned (🔜).

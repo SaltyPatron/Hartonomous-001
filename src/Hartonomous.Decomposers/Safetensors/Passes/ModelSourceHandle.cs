@@ -12,4 +12,5 @@ public sealed record ModelSourceHandle(
     string ModelSlug,
     byte[] Revision,
     string RevisionHex,
-    string ModelId);
+    string ModelId,
+    string ModelDirectory);

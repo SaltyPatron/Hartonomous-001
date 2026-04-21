@@ -5,6 +5,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core;
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -26,12 +28,23 @@ public sealed partial class OmwDecomposer : BaseDecomposer
 
     private readonly string _sourceDir;
     private readonly string _connectionString;
+    private readonly IReferenceDataReader? _referenceDataReader;
+    private readonly IJunctionWriter? _junctionWriter;
+    private readonly IReferenceDataWriter? _referenceDataWriter;
 
-    public OmwDecomposer(DecomposerConfig config, ILogger<OmwDecomposer> logger)
+    public OmwDecomposer(
+        DecomposerConfig config,
+        ILogger<OmwDecomposer> logger,
+        IReferenceDataReader? referenceDataReader = null,
+        IJunctionWriter? junctionWriter = null,
+        IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
         _connectionString = config.ConnectionString;
+        _referenceDataReader = referenceDataReader;
+        _junctionWriter = junctionWriter;
+        _referenceDataWriter = referenceDataWriter;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() =>
@@ -52,11 +65,14 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         // Synset keys are "offset:pos" — we need to resolve synsetCode "XXXXXXXX-p" to the hash.
         // Build lookup: "XXXXXXXX-p" → byte[] hash (matching WordNet decomposer's hashing).
         // Also load language code → id map for entity_language junctions.
-        OmwReferenceTableWriter refWriter = new(_connectionString);
+        OmwReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             Dictionary<string, int> langIdMap = await refWriter.LoadLanguageCodeMapAsync(ct);
             Log.LanguagesLoaded(Logger, langIdMap.Count);
+
+            // Load synset glosses so we can compute the same content-based hash that WordNet produced.
+            Dictionary<string, string> synsetGlossMap = await refWriter.LoadSynsetGlossMapAsync(ct);
 
             long entityCount = 0;
             long edgeCount = 0;
@@ -95,53 +111,25 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                     }
 
                     // Compute synset hash matching WordNet decomposer convention.
-                    // SynsetCode format: "XXXXXXXX-p" → "synset_XXXXXXXX_p"
-                    byte[]? synsetHash = ParseSynsetHash(entry.SynsetCode);
+                    // SynsetCode format: "XXXXXXXX-p" — look up gloss and hash that.
+                    byte[]? synsetHash = ParseSynsetHash(entry.SynsetCode, synsetGlossMap);
                     if (synsetHash is null)
                     {
                         continue;
                     }
 
                     // Compute lemma hash.
-                    string normalizedWord = entry.Word.ToLowerInvariant();
-                    string lemmaKey = $"{normalizedWord}:{langCode}";
+                    string lemmaWord = entry.Word;
+                    string lemmaKey = $"{lemmaWord}:{langCode}";
 
                     if (!lemmaKeyToHash.TryGetValue(lemmaKey, out byte[]? lemmaHash))
                     {
-                        lemmaHash = ComputeHash(normalizedWord);
+                        (EntityHandle lemmaEntity, byte[] mHash) = EmitWordFormMerkle(batch, lemmaWord, "lemma");
+                        lemmaHash = mHash;
                         lemmaKeyToHash[lemmaKey] = lemmaHash;
-
-                        EntityHandle lemmaEntity = batch.AddEntity(lemmaHash, "lemma");
                         batch.AddSignificance(lemmaEntity, "source_authority", trustMu);
 
-                        // Compose lemma from codepoints.
-                        int position = 0;
-                        foreach (Rune rune in normalizedWord.EnumerateRunes())
-                        {
-                            byte[] cpHash = Iso639Decomposer.HashCodepoint(rune.Value);
-                            EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
-                            batch.AddSequence(lemmaEntity, cpHandle, position, 1);
-                            position++;
-                        }
-
-                        // Emit contour trajectory physicality over the lemma's codepoint positions.
-                        List<(double X, double Y, double Z, double M)> vertices =
-                            PhysicalityEmitter.SurfaceFormVertices(normalizedWord);
-                        if (vertices.Count >= 2)
-                        {
-                            batch.AddPhysicality(
-                                lemmaEntity,
-                                "contour",
-                                PhysicalityEmitter.LineStringZmWkb(vertices));
-                        }
-                        else if (vertices.Count == 1)
-                        {
-                            (double x, double y, double z, double m) = vertices[0];
-                            batch.AddPhysicality(
-                                lemmaEntity,
-                                "s3_position",
-                                PhysicalityEmitter.PointZmWkb(x, y, z, m));
-                        }
+                        EmitContourPhysicality(batch, lemmaEntity, lemmaWord);
 
                         entityCount++;
                     }
@@ -159,7 +147,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                     if (batch.EntityCount >= BatchSize)
                     {
                         batchNum++;
-                        await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                        await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
                         batch = pipeline.CreateBatch();
                     }
                 }
@@ -175,7 +163,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             if (batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
             }
 
             Log.EntitiesCreated(Logger, entityCount, batchNum, filesProcessed);
@@ -225,7 +213,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                 if (batch.EdgeCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -233,7 +221,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             if (batch.EdgeCount > 0 || batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
             }
 
             Log.EdgesCreated(Logger, edgeCount);
@@ -265,24 +253,14 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         }
     }
 
-    private static byte[]? ParseSynsetHash(string synsetCode)
+    private static byte[]? ParseSynsetHash(string synsetCode, Dictionary<string, string> glossMap)
     {
-        // Format: "XXXXXXXX-p" where X is digits and p is pos char.
-        int dashIdx = synsetCode.IndexOf('-');
-        if (dashIdx < 0 || dashIdx + 1 >= synsetCode.Length)
+        // Look up the gloss for this synset code and hash it (matching WordNet's content-based hash).
+        if (glossMap.TryGetValue(synsetCode, out string? gloss))
         {
-            return null;
+            return ComputeHash(gloss);
         }
-
-        string offsetStr = synsetCode[..dashIdx];
-        char pos = synsetCode[dashIdx + 1];
-
-        if (!int.TryParse(offsetStr, System.Globalization.CultureInfo.InvariantCulture, out int offset))
-        {
-            return null;
-        }
-
-        return ComputeHash($"synset_{offset:D8}_{pos}");
+        return null;
     }
 
     private static double GetTrustMu(OmwSourceTier tier) => tier switch
@@ -292,23 +270,6 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         OmwSourceTier.Wiktionary => WiktTrustMu,
         _ => WiktTrustMu,
     };
-
-    private async Task SubmitBatchAsync(
-        IIngestionPipeline pipeline, IProgressReporter reporter,
-        IIngestionBatch batch, long entityCount, long edgeCount, int batchNum,
-        CancellationToken ct)
-    {
-        await SubmitAndReportAsync(pipeline, reporter, batch,
-            new ProgressSnapshot
-            {
-                DecomposerCode = ProvenanceCode,
-                CurrentPhase = "ingestion",
-                EntitiesCreated = entityCount,
-                EdgesCreated = edgeCount,
-                CurrentFile = "omw",
-                CurrentBatch = batchNum,
-            }, ct);
-    }
 
     private static partial class Log
     {

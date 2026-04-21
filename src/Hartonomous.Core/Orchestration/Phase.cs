@@ -10,6 +10,7 @@ public enum Phase
     ModelDecomp,
     Wiktionary,
     Tatoeba,
+    TextDecomp,
     SignificanceField,
     InferenceEngine,
     Validation

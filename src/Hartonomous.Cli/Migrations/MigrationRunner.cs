@@ -1,18 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Npgsql;
+using Hartonomous.Core.Data;
 
 namespace Hartonomous.Cli.Migrations;
 
 internal sealed class MigrationRunner
 {
-    private readonly string _connectionString;
+    private readonly IMigrationStore _store;
     private readonly string _migrationsDir;
 
-    public MigrationRunner(string connectionString, string migrationsDir)
+    public MigrationRunner(IMigrationStore store, string migrationsDir)
     {
-        _connectionString = connectionString;
+        _store = store;
         _migrationsDir = migrationsDir;
     }
 
@@ -20,10 +20,7 @@ internal sealed class MigrationRunner
     {
         IReadOnlyList<Migration> migrations = Migration.Discover(_migrationsDir);
 
-        await using NpgsqlConnection conn = new(_connectionString);
-        await conn.OpenAsync(ct);
-
-        IReadOnlyDictionary<int, AppliedMigration> applied = await LoadAppliedIfExistsAsync(conn, ct);
+        IReadOnlyDictionary<int, AppliedMigrationRecord> applied = await _store.GetAppliedMigrationsAsync(ct);
         AssertNoDriftOrGap(migrations, applied);
 
         int appliedCount = 0;
@@ -33,7 +30,9 @@ internal sealed class MigrationRunner
             {
                 continue;
             }
-            await ApplyOneAsync(conn, m, ct);
+            string sql = m.ReadUp();
+            string checksum = m.UpChecksum();
+            await _store.ApplyMigrationAsync(sql, m.Version, m.Name, checksum, ct);
             appliedCount++;
             Console.WriteLine($"Applied {m.Version:D4} {m.Name}");
         }
@@ -59,12 +58,10 @@ internal sealed class MigrationRunner
             byVersion[m.Version] = m;
         }
 
-        await using NpgsqlConnection conn = new(_connectionString);
-        await conn.OpenAsync(ct);
-
-        List<AppliedMigration> appliedList = (await LoadAppliedAsync(conn, ct)).Values.OrderByDescending(a => a.Version).ToList();
+        IReadOnlyDictionary<int, AppliedMigrationRecord> applied = await _store.GetAppliedMigrationsAsync(ct);
+        List<AppliedMigrationRecord> appliedList = applied.Values.OrderByDescending(a => a.Version).ToList();
         int rolledBack = 0;
-        foreach (AppliedMigration a in appliedList)
+        foreach (AppliedMigrationRecord a in appliedList)
         {
             if (rolledBack >= steps)
             {
@@ -75,7 +72,8 @@ internal sealed class MigrationRunner
                 throw new InvalidOperationException(
                     $"Applied migration {a.Version:D4} '{a.Name}' has no matching files on disk.");
             }
-            await RollbackOneAsync(conn, m, ct);
+            string sql = m.ReadDown();
+            await _store.RollbackMigrationAsync(sql, m.Version, ct);
             rolledBack++;
             Console.WriteLine($"Rolled back {m.Version:D4} {m.Name}");
         }
@@ -89,63 +87,25 @@ internal sealed class MigrationRunner
     public async Task StatusAsync(CancellationToken ct)
     {
         IReadOnlyList<Migration> migrations = Migration.Discover(_migrationsDir);
-        await using NpgsqlConnection conn = new(_connectionString);
-        await conn.OpenAsync(ct);
-        IReadOnlyDictionary<int, AppliedMigration> applied = await LoadAppliedIfExistsAsync(conn, ct);
+        IReadOnlyDictionary<int, AppliedMigrationRecord> applied = await _store.GetAppliedMigrationsAsync(ct);
 
         Console.WriteLine($"{"Version",-10}{"Name",-40}{"Applied",-10}{"Checksum OK",-14}");
         foreach (Migration m in migrations)
         {
-            string label = applied.TryGetValue(m.Version, out AppliedMigration? a) ? "yes" : "no";
+            string label = applied.TryGetValue(m.Version, out AppliedMigrationRecord? a) ? "yes" : "no";
             string checksumOk = a is null ? "-" : (a.Checksum == m.UpChecksum() ? "yes" : "DRIFT");
             Console.WriteLine($"{m.Version:D4}      {m.Name,-40}{label,-10}{checksumOk,-14}");
         }
     }
 
-    private static async Task<IReadOnlyDictionary<int, AppliedMigration>> LoadAppliedIfExistsAsync(
-        NpgsqlConnection conn, CancellationToken ct)
-    {
-        if (!await SchemaVersionExistsAsync(conn, ct))
-        {
-            return new Dictionary<int, AppliedMigration>();
-        }
-        return await LoadAppliedAsync(conn, ct);
-    }
-
-    private static async Task<bool> SchemaVersionExistsAsync(NpgsqlConnection conn, CancellationToken ct)
-    {
-        const string sql = @"
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'substrate' AND table_name = 'schema_version'
-            )";
-        await using NpgsqlCommand cmd = new(sql, conn);
-        object? result = await cmd.ExecuteScalarAsync(ct);
-        return result is bool b && b;
-    }
-
-    private static async Task<IReadOnlyDictionary<int, AppliedMigration>> LoadAppliedAsync(
-        NpgsqlConnection conn, CancellationToken ct)
-    {
-        Dictionary<int, AppliedMigration> applied = new();
-        const string sql = "SELECT version, name, checksum FROM substrate.schema_version ORDER BY version";
-        await using NpgsqlCommand cmd = new(sql, conn);
-        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            applied.Add(reader.GetInt32(0), new AppliedMigration(reader.GetInt32(0), reader.GetString(1), reader.GetString(2)));
-        }
-        return applied;
-    }
-
-    private static void AssertNoDriftOrGap(IReadOnlyList<Migration> migrations, IReadOnlyDictionary<int, AppliedMigration> applied)
+    private static void AssertNoDriftOrGap(IReadOnlyList<Migration> migrations, IReadOnlyDictionary<int, AppliedMigrationRecord> applied)
     {
         Dictionary<int, Migration> byVersion = new();
         foreach (Migration m in migrations)
         {
             byVersion[m.Version] = m;
         }
-        foreach (AppliedMigration a in applied.Values)
+        foreach (AppliedMigrationRecord a in applied.Values)
         {
             if (!byVersion.TryGetValue(a.Version, out Migration? m))
             {
@@ -160,51 +120,4 @@ internal sealed class MigrationRunner
             }
         }
     }
-
-    private static async Task ApplyOneAsync(NpgsqlConnection conn, Migration m, CancellationToken ct)
-    {
-        string sql = m.ReadUp();
-        string checksum = m.UpChecksum();
-
-        await using NpgsqlTransaction tx = await conn.BeginTransactionAsync(ct);
-        await using (NpgsqlCommand cmd = new(sql, conn, tx))
-        {
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        const string insertSql = @"
-            INSERT INTO substrate.schema_version (version, name, checksum)
-            VALUES (@v, @n, @c)";
-        await using (NpgsqlCommand cmd = new(insertSql, conn, tx))
-        {
-            cmd.Parameters.AddWithValue("v", m.Version);
-            cmd.Parameters.AddWithValue("n", m.Name);
-            cmd.Parameters.AddWithValue("c", checksum);
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        await tx.CommitAsync(ct);
-    }
-
-    private static async Task RollbackOneAsync(NpgsqlConnection conn, Migration m, CancellationToken ct)
-    {
-        string sql = m.ReadDown();
-
-        await using NpgsqlTransaction tx = await conn.BeginTransactionAsync(ct);
-        await using (NpgsqlCommand cmd = new(sql, conn, tx))
-        {
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        if (m.Version > 1)
-        {
-            const string deleteSql = "DELETE FROM substrate.schema_version WHERE version = @v";
-            await using NpgsqlCommand cmd = new(deleteSql, conn, tx);
-            cmd.Parameters.AddWithValue("v", m.Version);
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        await tx.CommitAsync(ct);
-    }
-
 }

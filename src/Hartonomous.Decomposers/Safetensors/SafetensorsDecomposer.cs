@@ -1,4 +1,5 @@
 using Hartonomous.Core.Compute;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -32,16 +33,28 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private readonly string _hubRoot;
     private readonly string _connectionString;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IModelPassCheckpointStore? _checkpointStore;
+    private readonly IReferenceDataReader? _referenceDataReader;
+    private readonly IJunctionWriter? _junctionWriter;
+    private readonly IReferenceDataWriter? _referenceDataWriter;
 
     public SafetensorsDecomposer(
         DecomposerConfig config,
         ILogger<SafetensorsDecomposer> logger,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        IModelPassCheckpointStore? checkpointStore = null,
+        IReferenceDataReader? referenceDataReader = null,
+        IJunctionWriter? junctionWriter = null,
+        IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;
         _connectionString = config.ConnectionString;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+        _checkpointStore = checkpointStore;
+        _referenceDataReader = referenceDataReader;
+        _junctionWriter = junctionWriter;
+        _referenceDataWriter = referenceDataWriter;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() => [_hubRoot];
@@ -62,14 +75,17 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         // Postgres as the pipeline but needs its own connection pool for the
         // checkpoint store too — share one NpgsqlDataSource across both.
         await using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(_connectionString);
-        SafetensorsReferenceTableWriter refWriter = new(_connectionString);
+        SafetensorsReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
 
         try
         {
             int hfRegistryId = await refWriter.EnsureModelRegistryAsync(
                 HuggingFaceRegistryCode, HuggingFaceRegistryDisplay, ct);
 
-            ModelPassCheckpointStore checkpointStore = new(dataSource);
+            IModelPassCheckpointStore checkpointStore = _checkpointStore
+                ?? throw new InvalidOperationException(
+                    $"No {nameof(IModelPassCheckpointStore)} was injected. "
+                    + "Pass one via the constructor from the composition root.");
             IReadOnlyList<IModelAnalysisPass> passes = BuildPassSet();
             ModelPassOrchestrator orchestrator = new(
                 compute: ComputeFacade.Instance,
@@ -99,12 +115,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 {
                     await orchestrator.RunAsync(model, modelSourceId, modelIdx, models.Count, ct);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException) // BOUNDARY: per-model failure isolation — orchestrator persisted an in-flight checkpoint; remaining models must still process.
                 {
-                    // Per-model failure isolation: a single bad model must not halt
-                    // the rest of the hub. The orchestrator has already recorded the
-                    // in-flight checkpoint for the failing pass, so a re-run will
-                    // resume at the right place.
                     Log.ModelFailed(Logger, ex, model.ModelId, modelIdx, models.Count);
                 }
             }

@@ -4,6 +4,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core;
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -22,12 +24,23 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
     private readonly string _sourceDir;
     private readonly string _connectionString;
+    private readonly IReferenceDataReader? _referenceDataReader;
+    private readonly IJunctionWriter? _junctionWriter;
+    private readonly IReferenceDataWriter? _referenceDataWriter;
 
-    public Iso639Decomposer(DecomposerConfig config, ILogger<Iso639Decomposer> logger)
+    public Iso639Decomposer(
+        DecomposerConfig config,
+        ILogger<Iso639Decomposer> logger,
+        IReferenceDataReader? referenceDataReader = null,
+        IJunctionWriter? junctionWriter = null,
+        IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
         _connectionString = config.ConnectionString;
+        _referenceDataReader = referenceDataReader;
+        _junctionWriter = junctionWriter;
+        _referenceDataWriter = referenceDataWriter;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() =>
@@ -56,7 +69,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
         List<RetirementRecord> retirements = Iso639Parser.ParseRetirements(retirePath);
         Log.Parsed(Logger, languages.Count, macroMappings.Count, nameIndex.Count, retirements.Count);
 
-        Iso639ReferenceTableWriter refWriter = new(_connectionString);
+        Iso639ReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             // ── Step 1: Populate language reference table ──
@@ -103,13 +116,13 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                     position++;
                 }
 
-                EmitNamePhysicality(batch, nameEntity, rec.RefName);
+                EmitContourPhysicality(batch, nameEntity, rec.RefName);
                 entityCount++;
 
                 if (batch.EntityCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -154,7 +167,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                         pos++;
                     }
 
-                    EmitNamePhysicality(batch, altEntity, entry.PrintName);
+                    EmitContourPhysicality(batch, altEntity, entry.PrintName);
                     entityCount++;
                 }
 
@@ -171,14 +184,14 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                         pos++;
                     }
 
-                    EmitNamePhysicality(batch, altEntity, entry.InvertedName);
+                    EmitContourPhysicality(batch, altEntity, entry.InvertedName);
                     entityCount++;
                 }
 
                 if (batch.EntityCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -187,7 +200,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             if (batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
             }
 
             Log.EntitiesCreated(Logger, entityCount, batchNum);
@@ -256,7 +269,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 if (batch.EdgeCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -288,7 +301,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 if (batch.EdgeCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -329,7 +342,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             if (batch.EdgeCount > 0 || batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitBatchAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, ct);
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
             }
 
             Log.DecompositionComplete(Logger, entityCount, edgeCount, fkUpdates.Count);
@@ -338,48 +351,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
         {
             await refWriter.DisposeAsync();
         }
-    }
-
-    private async Task SubmitBatchAsync(
-        IIngestionPipeline pipeline, IProgressReporter reporter,
-        IIngestionBatch batch, long entityCount, long edgeCount, int batchNum,
-        CancellationToken ct)
-    {
-        await SubmitAndReportAsync(pipeline, reporter, batch,
-            new ProgressSnapshot
-            {
-                DecomposerCode = ProvenanceCode,
-                CurrentPhase = "ingestion",
-                EntitiesCreated = entityCount,
-                EdgesCreated = edgeCount,
-                CurrentFile = "iso-639-3",
-                CurrentBatch = batchNum,
-            }, ct);
-    }
-
-    private static void EmitNamePhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
-    {
-        List<(double X, double Y, double Z, double M)> vertices =
-            PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
-        if (vertices.Count >= 2)
-        {
-            batch.AddPhysicality(entity, "contour", PhysicalityEmitter.LineStringZmWkb(vertices));
-        }
-        else if (vertices.Count == 1)
-        {
-            (double x, double y, double z, double m) = vertices[0];
-            batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
-        }
-    }
-
-    internal static byte[] HashCodepoint(int cpValue)
-    {
-        byte[] cpBytes = new byte[4];
-        cpBytes[0] = (byte)(cpValue >> 24);
-        cpBytes[1] = (byte)(cpValue >> 16);
-        cpBytes[2] = (byte)(cpValue >> 8);
-        cpBytes[3] = (byte)cpValue;
-        return ComputeHash(cpBytes.AsSpan());
     }
 
     private static bool SequenceEqual(byte[] a, byte[] b)

@@ -35,12 +35,12 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
     private const int MaxFireflyRows = 50_000;
 
     private readonly ILogger _logger;
-    private readonly LaplacianEigenmap.Options _baseOptions;
+    private readonly LaplacianEigenmapOptions _baseOptions;
 
-    public EmbeddingFireflyPass(ILogger logger, LaplacianEigenmap.Options? options = null)
+    public EmbeddingFireflyPass(ILogger logger, LaplacianEigenmapOptions? options = null)
     {
         _logger = logger;
-        _baseOptions = options ?? LaplacianEigenmap.Options.Default;
+        _baseOptions = options ?? LaplacianEigenmapOptions.Default;
     }
 
     public async Task RunAsync(ModelPassContext context, IPassSession session, CancellationToken ct)
@@ -80,7 +80,7 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
             // Same tensor content + same model + same pass → same seed.
             ulong tensorSeed = baseSeed ^ BitConverter.ToUInt64(t.ContentHash, 0);
             int seed = (int)(tensorSeed & 0x7FFFFFFF);
-            LaplacianEigenmap.Options opts = _baseOptions with { Seed = seed };
+            LaplacianEigenmapOptions opts = _baseOptions with { Seed = seed };
 
             (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
                 flat, rows, cols, opts,

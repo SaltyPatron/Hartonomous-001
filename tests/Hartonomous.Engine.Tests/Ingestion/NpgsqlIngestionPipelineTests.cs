@@ -10,7 +10,6 @@ public sealed class NpgsqlIngestionPipelineTests
     [InlineData("entity_sense", "sense_id")]
     [InlineData("entity_language", "language_id")]
     [InlineData("entity_morph_feature", "morph_feature_id")]
-    [InlineData("codepoint_property", "property_id")]
     [InlineData("model_architecture_class", "architecture_class_id")]
     [InlineData("tensor_tensor_role", "tensor_role_id")]
     [InlineData("pattern_deprel", "deprel_id")]
@@ -24,6 +23,12 @@ public sealed class NpgsqlIngestionPipelineTests
     public void GetJunctionRefColumn_UnknownTable_Throws()
     {
         Assert.Throws<ArgumentException>(() => InvokeGetJunctionRefColumn("nonexistent_table"));
+    }
+
+    [Fact]
+    public void GetJunctionRefColumn_WideTable_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => InvokeGetJunctionRefColumn("codepoint_property"));
     }
 
     [Fact]

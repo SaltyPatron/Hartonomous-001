@@ -12,8 +12,9 @@ public static class PhaseDag
         [Phase.ModelDecomp] = [Phase.UniversalDeps],
         [Phase.Wiktionary] = [Phase.ModelDecomp],
         [Phase.Tatoeba] = [Phase.Wiktionary],
+        [Phase.TextDecomp] = [Phase.UcdUca],
         [Phase.SignificanceField] = [Phase.CoreAlgebra],
-        [Phase.InferenceEngine] = [Phase.Tatoeba, Phase.ModelDecomp, Phase.SignificanceField],
+        [Phase.InferenceEngine] = [Phase.Tatoeba, Phase.ModelDecomp, Phase.TextDecomp, Phase.SignificanceField],
         [Phase.Validation] = [Phase.InferenceEngine],
     };
 

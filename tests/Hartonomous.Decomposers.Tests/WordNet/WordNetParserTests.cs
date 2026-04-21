@@ -60,7 +60,7 @@ public sealed class WordNetParserTests : IDisposable
         Assert.Single(result);
         Assert.Equal(2, result[0].Words.Count);
         Assert.Equal("object", result[0].Words[0].Word);
-        Assert.Equal("physical object", result[0].Words[1].Word);
+        Assert.Equal("physical_object", result[0].Words[1].Word);
     }
 
     [Fact]
@@ -174,5 +174,46 @@ public sealed class WordNetParserTests : IDisposable
         Assert.Equal("ADJ", WordNetParser.PosCharToUdPos('a'));
         Assert.Equal("ADJ", WordNetParser.PosCharToUdPos('s'));
         Assert.Equal("ADV", WordNetParser.PosCharToUdPos('r'));
+    }
+
+    [Fact]
+    public void ParseGloss_DefinitionOnly()
+    {
+        (string def, List<string> examples) = WordNetParser.ParseGloss("that which is perceived or known");
+
+        Assert.Equal("that which is perceived or known", def);
+        Assert.Empty(examples);
+    }
+
+    [Fact]
+    public void ParseGloss_DefinitionWithOneExample()
+    {
+        (string def, List<string> examples) = WordNetParser.ParseGloss(
+            "a person who is of equal standing with another; \"he was combative toward his peers\"");
+
+        Assert.Equal("a person who is of equal standing with another", def);
+        Assert.Single(examples);
+        Assert.Equal("he was combative toward his peers", examples[0]);
+    }
+
+    [Fact]
+    public void ParseGloss_DefinitionWithMultipleExamples()
+    {
+        (string def, List<string> examples) = WordNetParser.ParseGloss(
+            "an upward slope; \"the survey showed a steep grade\"; \"the car climbed the gradient\"");
+
+        Assert.Equal("an upward slope", def);
+        Assert.Equal(2, examples.Count);
+        Assert.Equal("the survey showed a steep grade", examples[0]);
+        Assert.Equal("the car climbed the gradient", examples[1]);
+    }
+
+    [Fact]
+    public void ParseGloss_EmptyGloss()
+    {
+        (string def, List<string> examples) = WordNetParser.ParseGloss("");
+
+        Assert.Equal("", def);
+        Assert.Empty(examples);
     }
 }

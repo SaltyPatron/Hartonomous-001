@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using Hartonomous.Core.Compute;
 using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Microsoft.Extensions.Logging;
@@ -103,7 +104,13 @@ internal sealed partial class ModelPassOrchestrator
             {
                 passSw.Stop();
                 // Best-effort flush of whatever the pass managed to add before the throw.
-                try { await session.FlushAsync(ct); } catch { /* the original exception is more important */ }
+                try
+                {
+                    await session.FlushAsync(ct);
+                }
+                catch // BOUNDARY: best-effort flush during outer-exception handling; the pass already failed and the original throw below wins.
+                {
+                }
                 await _checkpointStore.MarkInFlightAsync(
                     modelSourceId, pass.PassId, session.EntitiesCreated, session.EdgesCreated,
                     lastError: ex.ToString(), ct);
@@ -203,7 +210,8 @@ internal sealed partial class ModelPassOrchestrator
         }
 
         ModelSourceHandle sourceHandle = new(
-            modelSourceId, model.PublisherSlug, model.ModelSlug, model.Revision, model.RevisionHex, model.ModelId);
+            modelSourceId, model.PublisherSlug, model.ModelSlug, model.Revision, model.RevisionHex, model.ModelId,
+            Path.GetDirectoryName(model.ConfigPath)!);
         string checkpointKey = $"model_source:{modelSourceId}";
 
         return new ModelPassContext(

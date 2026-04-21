@@ -1,5 +1,4 @@
-using Npgsql;
-using NpgsqlTypes;
+using Hartonomous.Core.Data;
 
 namespace Hartonomous.Decomposers.Safetensors;
 
@@ -10,65 +9,24 @@ namespace Hartonomous.Decomposers.Safetensors;
 /// </summary>
 internal sealed class SafetensorsReferenceTableWriter : BaseReferenceTableWriter
 {
-    public SafetensorsReferenceTableWriter(string connectionString) : base(connectionString)
+    public SafetensorsReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter) : base(connectionString, reader, junctionWriter, referenceDataWriter)
     {
     }
 
-    public async Task<Dictionary<string, int>> LoadTensorRoleMapAsync(CancellationToken ct)
-    {
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct);
-        Dictionary<string, int> map = new(64, StringComparer.Ordinal);
-        await using NpgsqlCommand cmd = new(
-            "SELECT id, code FROM substrate.tensor_role", conn);
-        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            map[reader.GetString(1)] = reader.GetInt32(0);
-        }
-        return map;
-    }
+    public Task<Dictionary<string, int>> LoadTensorRoleMapAsync(CancellationToken ct) =>
+        LoadCodeMapAsync("substrate.tensor_role", 64, ct);
 
-    public async Task<int> EnsureArchitectureClassAsync(string code, CancellationToken ct)
-    {
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_architecture_class($1)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, code);
-        return (int)(await cmd.ExecuteScalarAsync(ct))!;
-    }
+    public Task<int> EnsureArchitectureClassAsync(string code, CancellationToken ct) =>
+        EnsureArchitectureClassCoreAsync(code, ct);
 
-    public async Task<int> EnsureModelRegistryAsync(string code, string displayName, CancellationToken ct)
-    {
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_registry($1, $2)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, code);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, displayName);
-        return (int)(await cmd.ExecuteScalarAsync(ct))!;
-    }
+    public Task<int> EnsureModelRegistryAsync(string code, string displayName, CancellationToken ct) =>
+        EnsureModelRegistryCoreAsync(code, displayName, ct);
 
-    public async Task<int> EnsureModelPublisherAsync(
-        int registryId, string slug, string? displayName, CancellationToken ct)
-    {
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_publisher($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, registryId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, slug);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, (object?)displayName ?? DBNull.Value);
-        return (int)(await cmd.ExecuteScalarAsync(ct))!;
-    }
+    public Task<int> EnsureModelPublisherAsync(
+        int registryId, string slug, string? displayName, CancellationToken ct) =>
+        EnsureModelPublisherCoreAsync(registryId, slug, displayName, ct);
 
-    public async Task<long> EnsureModelSourceAsync(
-        int registryId, int publisherId, string modelSlug, byte[] revision, CancellationToken ct)
-    {
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_source($1, $2, $3, $4)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, registryId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, publisherId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, modelSlug);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Bytea, revision);
-        return (long)(await cmd.ExecuteScalarAsync(ct))!;
-    }
+    public Task<long> EnsureModelSourceAsync(
+        int registryId, int publisherId, string modelSlug, byte[] revision, CancellationToken ct) =>
+        EnsureModelSourceCoreAsync(registryId, publisherId, modelSlug, revision, ct);
 }

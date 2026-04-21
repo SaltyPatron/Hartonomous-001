@@ -6,7 +6,6 @@
 
 #include <mkl.h>
 #include <mkl_cblas.h>
-#include <mkl_spblas.h>
 
 #include "hartonomous.h"
 
@@ -14,12 +13,60 @@
  * Symmetric sparse Lanczos eigensolver — top-k Ritz pairs with full
  * re-orthogonalization.
  *
- * Heavy ops routed through MKL:
- *   - CSR matvec via mkl_sparse_d_mv (inspector-executor API)
- *   - dot/axpy/nrm via cblas_ddot/daxpy/dnrm2
- * Reduction order is pinned via CBWR=AUTO,STRICT (set globally in gemm.c) so
- * output is bit-reproducible across runs in the same ISA class.
+ * API convention: caller stores the **upper triangle (including diagonal)** of
+ * a symmetric matrix in CSR (row_ptr, col_idx, values). Callers that produce
+ * full symmetric CSR (e.g. hartonomous_knn_cosine_graph_f64) must drop the
+ * j < i entries before passing here.
+ *
+ * Heavy ops:
+ *   - CSR matvec: hand-rolled symmetric-upper-CSR kernel below. Does NOT use
+ *     the MKL sparse inspector-executor API (mkl_sparse_*) — that API has
+ *     documented crashes on Windows with 64-bit indices in oneMKL 2025.x and
+ *     in processes hosting MKL through a late-load / multi-OMP path (e.g.
+ *     .NET testhost.exe). The kernel iterates upper entries, fuses the
+ *     symmetric transpose contribution inline, and pins reduction order to
+ *     (row_ptr, col_idx) for Law #6 determinism.
+ *   - dot/axpy/nrm via cblas_ddot/daxpy/dnrm2 — proven reliable through the
+ *     dense BLAS DLLs (mkl_intel_lp64/mkl_intel_thread/mkl_core).
+ * CBWR=AUTO,STRICT is set globally in gemm.c; dense BLAS output is thus
+ * bit-reproducible across runs in the same ISA class.
  */
+
+/*
+ * Symmetric upper-CSR matrix-vector multiply: y = A * x where A is symmetric
+ * and (row_ptr, col_idx, values) stores only the upper triangle (j >= i). For
+ * each stored (i, j, v):
+ *   - diagonal (j == i): y[i] += v * x[i]
+ *   - off-diag (j >  i): y[i] += v * x[j]   (upper contribution)
+ *                        y[j] += v * x[i]   (symmetric transpose contribution)
+ */
+static void sym_upper_csr_mv_f64(
+    int64_t n,
+    const int64_t* row_ptr,
+    const int64_t* col_idx,
+    const double*  values,
+    const double*  x,
+    double* y
+) {
+    memset(y, 0, (size_t)n * sizeof(double));
+    for (int64_t i = 0; i < n; ++i) {
+        double yi = 0.0;
+        const double xi = x[i];
+        const int64_t r0 = row_ptr[i];
+        const int64_t r1 = row_ptr[i + 1];
+        for (int64_t p = r0; p < r1; ++p) {
+            const int64_t j = col_idx[p];
+            const double  v = values[p];
+            if (j == i) {
+                yi += v * xi;
+            } else {
+                yi   += v * x[j];
+                y[j] += v * xi;
+            }
+        }
+        y[i] += yi;
+    }
+}
 
 static uint64_t xs64(uint64_t* state) {
     uint64_t x = *state;
@@ -129,41 +176,11 @@ int hartonomous_sparse_sym_eigs_f64(
         return -9;
     }
 
-    /* Build an inspector-executor CSR handle. MKL stores row indices as
-     * MKL_INT — copy int64 inputs down. */
-    MKL_INT* mkl_row_ptr = (MKL_INT*)malloc((size_t)(n + 1) * sizeof(MKL_INT));
-    MKL_INT* mkl_col_idx = (MKL_INT*)malloc((size_t)nnz * sizeof(MKL_INT));
-    if (!mkl_row_ptr || !mkl_col_idx) {
-        free(V); free(alpha); free(beta); free(w);
-        free(mkl_row_ptr); free(mkl_col_idx);
-        return -9;
-    }
-    for (int64_t i = 0; i <= n; ++i) mkl_row_ptr[i] = (MKL_INT)row_ptr[i];
-    for (int64_t i = 0; i < nnz; ++i) mkl_col_idx[i] = (MKL_INT)col_idx[i];
-
-    sparse_matrix_t A;
-    sparse_status_t st = mkl_sparse_d_create_csr(
-        &A, SPARSE_INDEX_BASE_ZERO, (MKL_INT)n, (MKL_INT)n,
-        mkl_row_ptr, mkl_row_ptr + 1, mkl_col_idx, (double*)values);
-    if (st != SPARSE_STATUS_SUCCESS) {
-        free(V); free(alpha); free(beta); free(w);
-        free(mkl_row_ptr); free(mkl_col_idx);
-        return -9;
-    }
-    struct matrix_descr descr;
-    descr.type = SPARSE_MATRIX_TYPE_SYMMETRIC;
-    descr.mode = SPARSE_FILL_MODE_UPPER;
-    descr.diag = SPARSE_DIAG_NON_UNIT;
-    mkl_sparse_set_mv_hint(A, SPARSE_OPERATION_NON_TRANSPOSE, descr, (MKL_INT)max_iter);
-    mkl_sparse_optimize(A);
-
     uint64_t state = seed ? seed : 0x9E3779B97F4A7C15ULL;
     for (int64_t i = 0; i < n; ++i) V[i] = rand_unit(&state);
     double norm0 = cblas_dnrm2((MKL_INT)n, V, 1);
     if (norm0 == 0.0) {
-        mkl_sparse_destroy(A);
         free(V); free(alpha); free(beta); free(w);
-        free(mkl_row_ptr); free(mkl_col_idx);
         return -6;
     }
     cblas_dscal((MKL_INT)n, 1.0 / norm0, V, 1);
@@ -172,10 +189,8 @@ int hartonomous_sparse_sym_eigs_f64(
     for (int64_t j = 0; j < m; ++j) {
         double* vj = V + j * n;
 
-        /* w = A · vj */
-        mkl_sparse_d_mv(
-            SPARSE_OPERATION_NON_TRANSPOSE, 1.0, A, descr,
-            vj, 0.0, w);
+        /* w = A · vj  (hand-rolled symmetric upper-CSR kernel) */
+        sym_upper_csr_mv_f64(n, row_ptr, col_idx, values, vj, w);
 
         /* w -= beta_j · v_{j-1} */
         if (j > 0) {
@@ -210,10 +225,6 @@ int hartonomous_sparse_sym_eigs_f64(
             cblas_dscal((MKL_INT)n, 1.0 / bnorm, vjp1, 1);
         }
     }
-
-    mkl_sparse_destroy(A);
-    free(mkl_row_ptr);
-    free(mkl_col_idx);
 
     int64_t mm = actual;
     *out_iters = mm;

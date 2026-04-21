@@ -285,21 +285,6 @@ HARTONOMOUS_API int hartonomous_blake3_merkle(
     uint8_t output[HARTONOMOUS_HASH_LEN]
 );
 
-/* ── MKL sparse inspector-executor probes (diagnostic) ───────
- *
- * Each probe invokes ONE more MKL sparse call than the previous one, on a
- * fixed 3x3 identity. Used from managed code to localize which MKL sparse
- * entry point is the source of a test-host crash. Stack-only; no heap, no
- * Lanczos, no confounding factors.
- *
- * Return: 0 on success; negative MKL-status-encoded value on failure.
- */
-HARTONOMOUS_API int hartonomous_probe_sparse_create_destroy(void);
-HARTONOMOUS_API int hartonomous_probe_sparse_set_hint(void);
-HARTONOMOUS_API int hartonomous_probe_sparse_optimize(void);
-HARTONOMOUS_API int hartonomous_probe_sparse_mv(void);
-HARTONOMOUS_API int hartonomous_probe_sparse_mv_loop(int32_t iters);
-
 #ifdef __cplusplus
 }
 #endif

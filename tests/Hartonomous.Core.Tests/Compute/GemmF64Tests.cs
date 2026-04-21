@@ -102,10 +102,10 @@ public sealed class GemmF64Tests
     public void RejectsBadArgs()
     {
         double[] dummy = new double[4];
-        Assert.Throws<ComputeException>(() =>
+        Assert.ThrowsAny<ComputeException>(() =>
             Gemm.F64(TransposeOp.None, TransposeOp.None,
                 0, 4, 4, 1.0, dummy, 4, dummy, 4, 0.0, dummy, 4));
-        Assert.Throws<ComputeException>(() =>
+        Assert.ThrowsAny<ComputeException>(() =>
             Gemm.F64(TransposeOp.None, TransposeOp.None,
                 4, 4, 4, 1.0, dummy, 0, dummy, 4, 0.0, dummy, 4));
     }

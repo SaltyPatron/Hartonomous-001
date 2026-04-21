@@ -65,11 +65,12 @@ public sealed partial class GlickoSignificanceUpdater : ISignificanceUpdater
         int contextId = await ResolveContextIdAsync(conn, contextCode, ct);
 
         await using NpgsqlCommand cmd = new(
-            "DELETE FROM substrate.significance WHERE context_type_id = $1 AND mu < $2", conn);
+            "SELECT substrate.prune_significance($1, $2)", conn);
         cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Integer, contextId);
         cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Double, muThreshold);
 
-        int deleted = await cmd.ExecuteNonQueryAsync(ct);
+        object? result = await cmd.ExecuteScalarAsync(ct);
+        int deleted = result is int d ? d : 0;
 
         Log.PruneCompleted(_logger, contextCode, muThreshold, deleted);
         return deleted;
@@ -78,7 +79,7 @@ public sealed partial class GlickoSignificanceUpdater : ISignificanceUpdater
     private static async Task<int> ResolveContextIdAsync(NpgsqlConnection conn, string code, CancellationToken ct)
     {
         await using NpgsqlCommand cmd = new(
-            "SELECT id FROM substrate.significance_context WHERE code = $1", conn);
+            "SELECT substrate.resolve_context_id($1)", conn);
         cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Varchar, code);
 
         object? result = await cmd.ExecuteScalarAsync(ct);

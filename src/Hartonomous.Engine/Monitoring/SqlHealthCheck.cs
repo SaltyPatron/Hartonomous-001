@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
@@ -19,46 +20,41 @@ public sealed class SqlHealthCheck : IHealthCheck
     public async Task<SubstrateHealth> GetHealthAsync(CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new("SELECT substrate.health_summary()", conn);
+        object? result = await cmd.ExecuteScalarAsync(ct);
 
-        long totalEntities = await ScalarLongAsync(conn, "SELECT COUNT(*) FROM substrate.entity", ct);
-        long totalEdges = await ScalarLongAsync(conn, "SELECT COUNT(*) FROM substrate.edge", ct);
+        if (result is not string json)
+        {
+            return new SubstrateHealth();
+        }
+
+        JsonElement root = JsonSerializer.Deserialize<JsonElement>(json);
 
         Dictionary<string, long> byType = [];
-        await using (NpgsqlCommand cmd = new(
-            "SELECT et.code, COUNT(*) FROM substrate.entity e " +
-            "JOIN substrate.entity_type et ON et.id = e.entity_type_id " +
-            "GROUP BY et.code ORDER BY COUNT(*) DESC LIMIT 20", conn))
+        if (root.TryGetProperty("entitiesByType", out JsonElement ebt))
         {
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
+            foreach (JsonProperty prop in ebt.EnumerateObject())
             {
-                byType[reader.GetString(0)] = reader.GetInt64(1);
+                byType[prop.Name] = prop.Value.GetInt64();
             }
         }
 
         Dictionary<string, double> muByArena = [];
-        await using (NpgsqlCommand cmd = new(
-            "SELECT sc.code, AVG(s.mu) FROM substrate.significance s " +
-            "JOIN substrate.significance_context sc ON sc.id = s.context_type_id " +
-            "GROUP BY sc.code", conn))
+        if (root.TryGetProperty("meanMuByArena", out JsonElement mma))
         {
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
+            foreach (JsonProperty prop in mma.EnumerateObject())
             {
-                muByArena[reader.GetString(0)] = reader.GetDouble(1);
+                muByArena[prop.Name] = prop.Value.GetDouble();
             }
         }
 
-        long storageBytes = await ScalarLongAsync(conn,
-            "SELECT pg_database_size(current_database())", ct);
-
         return new SubstrateHealth
         {
-            TotalEntities = totalEntities,
-            TotalEdges = totalEdges,
+            TotalEntities = root.TryGetProperty("totalEntities", out JsonElement te) ? te.GetInt64() : 0,
+            TotalEdges = root.TryGetProperty("totalEdges", out JsonElement tedge) ? tedge.GetInt64() : 0,
             EntitiesByType = byType,
             MeanMuByArena = muByArena,
-            StorageSizeBytes = storageBytes,
+            StorageSizeBytes = root.TryGetProperty("storageSizeBytes", out JsonElement ss) ? ss.GetInt64() : 0,
         };
     }
 
@@ -67,12 +63,9 @@ public sealed class SqlHealthCheck : IHealthCheck
         List<IngestionStatus> results = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(
-            "SELECT decomposer_code, " +
-            "SUM(entities_ingested), SUM(edges_created), " +
-            "SUM(entities_ingested) / GREATEST(EXTRACT(EPOCH FROM (MAX(completed_at) - MIN(started_at))), 1), " +
-            "bool_or(status = 'running' AND started_at < now() - interval '5 minutes'), " +
-            "MAX(completed_at) " +
-            "FROM monitor.ingestion_progress GROUP BY decomposer_code", conn);
+            "SELECT decomposer_code, entities_created, edges_created, " +
+            "entities_per_second, is_stuck, last_report " +
+            "FROM substrate.ingestion_summary()", conn);
 
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -89,12 +82,5 @@ public sealed class SqlHealthCheck : IHealthCheck
         }
 
         return results;
-    }
-
-    private static async Task<long> ScalarLongAsync(NpgsqlConnection conn, string sql, CancellationToken ct)
-    {
-        await using NpgsqlCommand cmd = new(sql, conn);
-        object? result = await cmd.ExecuteScalarAsync(ct);
-        return result is long l ? l : 0;
     }
 }

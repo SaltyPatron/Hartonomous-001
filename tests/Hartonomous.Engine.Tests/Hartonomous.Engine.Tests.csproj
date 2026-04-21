@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Hartonomous.Engine\Hartonomous.Engine.csproj" />
+    <ProjectReference Include="..\..\src\Hartonomous.Recomposers\Hartonomous.Recomposers.csproj" />
   </ItemGroup>
 
 

@@ -119,13 +119,13 @@ public sealed class InterfaceShapeTests
     }
 
     [Fact]
-    public void Phase_HasAllElevenMembers()
+    public void Phase_HasAllTwelveMembers()
     {
         string[] expected = new[]
         {
             "CoreAlgebra", "UcdUca", "Iso639", "WordNetOmw", "UniversalDeps",
-            "ModelDecomp", "Wiktionary", "Tatoeba", "SignificanceField",
-            "InferenceEngine", "Validation",
+            "ModelDecomp", "Wiktionary", "Tatoeba", "TextDecomp",
+            "SignificanceField", "InferenceEngine", "Validation",
         };
         Assert.Equal(expected.OrderBy(x => x), Enum.GetNames<Phase>().OrderBy(x => x));
     }

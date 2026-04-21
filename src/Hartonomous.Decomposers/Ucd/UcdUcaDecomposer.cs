@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -16,12 +18,23 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
 
     private readonly string _sourceDir;
     private readonly string _connectionString;
+    private readonly IReferenceDataReader? _referenceDataReader;
+    private readonly IJunctionWriter? _junctionWriter;
+    private readonly IReferenceDataWriter? _referenceDataWriter;
 
-    public UcdUcaDecomposer(DecomposerConfig config, ILogger<UcdUcaDecomposer> logger)
+    public UcdUcaDecomposer(
+        DecomposerConfig config,
+        ILogger<UcdUcaDecomposer> logger,
+        IReferenceDataReader? referenceDataReader = null,
+        IJunctionWriter? junctionWriter = null,
+        IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
         _connectionString = config.ConnectionString;
+        _referenceDataReader = referenceDataReader;
+        _junctionWriter = junctionWriter;
+        _referenceDataWriter = referenceDataWriter;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() =>
@@ -65,7 +78,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             refCollector.Scripts.Count, refCollector.Blocks.Count);
 
         // ── Phase 3: Populate reference tables ──
-        UcdReferenceTableWriter refWriter = new(_connectionString);
+        UcdReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             Dictionary<string, int> gcIds = await refWriter.PopulateGeneralCategoriesAsync(
@@ -165,16 +178,8 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 if (batch.EntityCount >= BatchSize)
                 {
                     batchNum++;
-                    await SubmitAndReportAsync(pipeline, reporter, batch,
-                        new ProgressSnapshot
-                        {
-                            DecomposerCode = ProvenanceCode,
-                            CurrentPhase = "entities",
-                            EntitiesCreated = entityCount,
-                            EdgesCreated = edgeCount,
-                            CurrentFile = "ucd.all.grouped.xml",
-                            CurrentBatch = batchNum,
-                        }, ct);
+                    await ReportProgressAsync(pipeline, reporter, batch,
+                        entityCount, edgeCount, batchNum, "ucd.all.grouped.xml", ct, "entities");
                     batch = pipeline.CreateBatch();
                 }
             }
@@ -182,16 +187,8 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             if (batch.EntityCount > 0)
             {
                 batchNum++;
-                await SubmitAndReportAsync(pipeline, reporter, batch,
-                    new ProgressSnapshot
-                    {
-                        DecomposerCode = ProvenanceCode,
-                        CurrentPhase = "entities",
-                        EntitiesCreated = entityCount,
-                        EdgesCreated = edgeCount,
-                        CurrentFile = "ucd.all.grouped.xml",
-                        CurrentBatch = batchNum,
-                    }, ct);
+                await ReportProgressAsync(pipeline, reporter, batch,
+                    entityCount, edgeCount, batchNum, "ucd.all.grouped.xml", ct, "entities");
             }
 
             Log.EntitiesCreated(Logger, entityCount, edgeCount, batchNum);
@@ -274,7 +271,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 }
 
                 propertyRows.Add(new CodepointPropertyRow(
-                    entityId, gcId, scriptId, blockId, gcbId, wbId, sbId, lbId,
+                    entityId, cp.Value, gcId, scriptId, blockId, gcbId, wbId, sbId, lbId,
                     cp.IsExtendedPictographic,
                     (short)cp.CanonicalCombiningClass,
                     cp.DecompositionType,
@@ -323,15 +320,6 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
         return breakIds.TryGetValue((code, category), out int id) ? id : null;
     }
 
-    private static byte[] HashCodepoint(int cpValue)
-    {
-        byte[] cpBytes = new byte[4];
-        cpBytes[0] = (byte)(cpValue >> 24);
-        cpBytes[1] = (byte)(cpValue >> 16);
-        cpBytes[2] = (byte)(cpValue >> 8);
-        cpBytes[3] = (byte)cpValue;
-        return ComputeHash(cpBytes.AsSpan());
-    }
 
     private static byte[] HashCollationElement(CollationWeight weights)
     {

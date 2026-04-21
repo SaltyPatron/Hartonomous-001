@@ -93,7 +93,7 @@ public sealed class HashFunctionTests
     {
         System.Reflection.MethodInfo method = typeof(UcdUcaDecomposer)
             .GetMethod("HashCodepoint",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy)!;
         return (byte[])method.Invoke(null, [cpValue])!;
     }
 
@@ -101,7 +101,7 @@ public sealed class HashFunctionTests
     {
         System.Reflection.MethodInfo method = typeof(UcdUcaDecomposer)
             .GetMethod("HashCollationElement",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy)!;
         return (byte[])method.Invoke(null, [weights])!;
     }
 }

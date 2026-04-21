@@ -94,12 +94,4 @@ internal sealed class IngestionBatch : IIngestionBatch
     {
         return _entities[batchIndex].Hash;
     }
-
-    internal readonly record struct EntityEntry(byte[] Hash, string EntityTypeCode);
-    internal readonly record struct EdgeEntry(string EdgeTypeCode, string ProvenanceCode, EdgeMemberSpec[] Members);
-    internal readonly record struct JunctionEntry(string JunctionTable, EntityHandle Entity, int ReferenceId, double? Mu);
-    internal readonly record struct PhysicalityEntry(EntityHandle Entity, string PhysicalityTypeCode, byte[] GeomWkb);
-    internal readonly record struct SequenceEntry(EntityHandle Parent, EntityHandle Child, int Position, int Count);
-    internal readonly record struct SignificanceEntry(EntityHandle Entity, string ContextTypeCode, double InitialMu);
-    internal readonly record struct EntityModelSourceEntry(EntityHandle Entity, long ModelSourceId);
 }

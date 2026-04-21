@@ -160,7 +160,11 @@ pg_neighbors(PG_FUNCTION_ARGS)
 
             ret = SPI_execute_plan(plan, args, nulls, true, 0);
             if (ret != SPI_OK_SELECT)
+            {
+                if (SPI_tuptable != NULL)
+                    SPI_freetuptable(SPI_tuptable);
                 continue;
+            }
 
             for (row = 0; row < (int)SPI_processed && num_results < max_results; row++)
             {
@@ -215,6 +219,13 @@ pg_neighbors(PG_FUNCTION_ARGS)
                     queue_tail++;
                 }
             }
+
+            /* Release tuptable memory before next SPI_execute_plan. Without this,
+             * the SPI procedure context accumulates one tuptable per iteration and
+             * exhausts memory when the BFS touches thousands of nodes (high-degree
+             * seeds at max_hops >= 2). */
+            if (SPI_tuptable != NULL)
+                SPI_freetuptable(SPI_tuptable);
         }
 
         SPI_finish();
@@ -382,6 +393,10 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         int32           arena_id;
         int32           max_depth;
         int32           max_results_arg;
+        int32           edge_type_filter;
+        bool            edge_type_filter_is_null;
+        double          p_min_mu;
+        bool            p_min_mu_is_null;
         AstarHeap       heap;
         HTAB           *best_costs;
         HASHCTL         hctl;
@@ -389,7 +404,7 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         int             num_results, results_cap;
         SPIPlanPtr      nbr_plan;
         SPIPlanPtr      sig_plan;
-        Oid             argtypes_nbr[1];
+        Oid             argtypes_nbr[2];
         Oid             argtypes_sig[2];
 
         funcctx = SRF_FIRSTCALL_INIT();
@@ -400,6 +415,34 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         arena_id = PG_GETARG_INT32(2);
         max_depth = PG_ARGISNULL(3) ? 5 : PG_GETARG_INT32(3);
         max_results_arg = PG_ARGISNULL(4) ? 100 : PG_GETARG_INT32(4);
+
+        /* edge_type_filter: optional int — restrict traversal to edges of a single type
+         * (inference.md Step 1.1 "follow edges of relevant types via edge.edge_type_id").
+         * NULL = no edge-type filter (all edge types traversable). */
+        if (PG_NARGS() > 5 && !PG_ARGISNULL(5))
+        {
+            edge_type_filter = PG_GETARG_INT32(5);
+            edge_type_filter_is_null = false;
+        }
+        else
+        {
+            edge_type_filter = 0;
+            edge_type_filter_is_null = true;
+        }
+
+        /* p_min_mu: optional double — significance threshold (inference.md Step 1.3
+         * "Connected entities above the significance threshold (p_min_mu)"). Edges with
+         * arena mu below this are not traversed. NULL = no threshold (all edges). */
+        if (PG_NARGS() > 6 && !PG_ARGISNULL(6))
+        {
+            p_min_mu = PG_GETARG_FLOAT8(6);
+            p_min_mu_is_null = false;
+        }
+        else
+        {
+            p_min_mu = 0.0;
+            p_min_mu_is_null = true;
+        }
 
         if (max_depth < 1) max_depth = 1;
         if (max_depth > 10) max_depth = 10;
@@ -443,21 +486,11 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
 
         SPI_connect();
 
+        /* Neighbor query: typed-edge filter per inference.md Step 1.1. $2 is the edge-type
+         * filter (NULL = no filter). The entity_type_id of the neighbor is required for the
+         * target-type match downstream. */
         argtypes_nbr[0] = INT8OID;
-        nbr_plan = SPI_prepare(
-            "SELECT em2.entity_id, em1.edge_id, e.entity_type_id_target "
-            "FROM substrate.edge_member em1 "
-            "JOIN substrate.edge e ON e.id = em1.edge_id "
-            "JOIN substrate.edge_member em2 ON em2.edge_id = em1.edge_id "
-            "  AND em2.entity_id != $1 "
-            "WHERE em1.entity_id = $1",
-            1, argtypes_nbr
-        );
-
-        /* entity_type_id_target doesn't exist — use a join to entity */
-        if (nbr_plan)
-            SPI_freeplan(nbr_plan);
-
+        argtypes_nbr[1] = INT4OID;
         nbr_plan = SPI_prepare(
             "SELECT em2.entity_id, em1.edge_id, ent.entity_type_id "
             "FROM substrate.edge_member em1 "
@@ -465,8 +498,9 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             "JOIN substrate.edge_member em2 ON em2.edge_id = em1.edge_id "
             "  AND em2.entity_id != $1 "
             "JOIN substrate.entity ent ON ent.id = em2.entity_id "
-            "WHERE em1.entity_id = $1",
-            1, argtypes_nbr
+            "WHERE em1.entity_id = $1 "
+            "  AND ($2::int IS NULL OR e.edge_type_id = $2)",
+            2, argtypes_nbr
         );
 
         argtypes_sig[0] = INT8OID;
@@ -491,62 +525,77 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             if (found && ce->best_cost < cur.cost)
                 continue;
 
-            if (cur.depth > 0)
-            {
-                /* Check if this entity matches target type */
-                /* We got entity_type_id from the neighbor query — check inline below */
-            }
-
             if (cur.depth >= max_depth)
                 continue;
 
             args[0] = Int64GetDatum(cur.entity_id);
             nulls_arr[0] = ' ';
+            args[1] = Int32GetDatum(edge_type_filter);
+            nulls_arr[1] = edge_type_filter_is_null ? 'n' : ' ';
 
             ret = SPI_execute_plan(nbr_plan, args, nulls_arr, true, 0);
             if (ret != SPI_OK_SELECT)
-                continue;
-
-            for (row = 0; row < (int)SPI_processed; row++)
             {
-                HeapTuple   tuple = SPI_tuptable->vals[row];
-                TupleDesc   spi_tupdesc = SPI_tuptable->tupdesc;
-                bool        isnull;
-                int64       nbr_id, nbr_edge_id;
-                int32       nbr_type_id;
-                double      edge_mu, edge_cost, new_cost;
-                CostEntry  *nbr_ce;
-                AstarNode   next;
-                int         i;
+                if (SPI_tuptable != NULL)
+                    SPI_freetuptable(SPI_tuptable);
+                continue;
+            }
 
-                nbr_id = DatumGetInt64(SPI_getbinval(tuple, spi_tupdesc, 1, &isnull));
-                if (isnull) continue;
-                nbr_edge_id = DatumGetInt64(SPI_getbinval(tuple, spi_tupdesc, 2, &isnull));
-                if (isnull) continue;
-                nbr_type_id = DatumGetInt32(SPI_getbinval(tuple, spi_tupdesc, 3, &isnull));
-                if (isnull) continue;
+            {
+                SPITupleTable *nbr_tuptable = SPI_tuptable;
+                uint64         nbr_processed = SPI_processed;
 
-                /* Get significance for this edge in the arena */
+                for (row = 0; row < (int)nbr_processed; row++)
                 {
-                    Datum sig_args[2];
-                    char sig_nulls[2] = {' ', ' '};
-                    int sig_ret;
+                    HeapTuple   tuple = nbr_tuptable->vals[row];
+                    TupleDesc   spi_tupdesc = nbr_tuptable->tupdesc;
+                    bool        isnull;
+                    int64       nbr_id, nbr_edge_id;
+                    int32       nbr_type_id;
+                    double      edge_mu, edge_cost, new_cost;
+                    CostEntry  *nbr_ce;
+                    AstarNode   next;
+                    int         i;
 
-                    sig_args[0] = Int64GetDatum(nbr_edge_id);
-                    sig_args[1] = Int32GetDatum(arena_id);
-                    sig_ret = SPI_execute_plan(sig_plan, sig_args, sig_nulls, true, 1);
+                    nbr_id = DatumGetInt64(SPI_getbinval(tuple, spi_tupdesc, 1, &isnull));
+                    if (isnull) continue;
+                    nbr_edge_id = DatumGetInt64(SPI_getbinval(tuple, spi_tupdesc, 2, &isnull));
+                    if (isnull) continue;
+                    nbr_type_id = DatumGetInt32(SPI_getbinval(tuple, spi_tupdesc, 3, &isnull));
+                    if (isnull) continue;
 
-                    if (sig_ret == SPI_OK_SELECT && SPI_processed > 0)
+                    /* Get significance for this edge in the arena.
+                     * SPI_execute_plan here mutates SPI_tuptable — read value, then free
+                     * immediately so the BFS/A* outer loop doesn't accumulate sig-query
+                     * tuptables across thousands of neighbor hops. */
                     {
-                        edge_mu = DatumGetFloat8(
-                            SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull));
-                        if (isnull) edge_mu = 1500.0;
+                        Datum sig_args[2];
+                        char sig_nulls[2] = {' ', ' '};
+                        int sig_ret;
+
+                        sig_args[0] = Int64GetDatum(nbr_edge_id);
+                        sig_args[1] = Int32GetDatum(arena_id);
+                        sig_ret = SPI_execute_plan(sig_plan, sig_args, sig_nulls, true, 1);
+
+                        if (sig_ret == SPI_OK_SELECT && SPI_processed > 0)
+                        {
+                            edge_mu = DatumGetFloat8(
+                                SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull));
+                            if (isnull) edge_mu = 1500.0;
+                        }
+                        else
+                        {
+                            edge_mu = 1500.0;
+                        }
+                        if (SPI_tuptable != NULL)
+                            SPI_freetuptable(SPI_tuptable);
                     }
-                    else
-                    {
-                        edge_mu = 1500.0;
-                    }
-                }
+
+                /* Significance threshold prune: inference.md Step 1.3 — entities below
+                 * p_min_mu do not enter the candidate pool. Applied to edge mu (the
+                 * Glicko-2 rating of this specific relationship in this arena). */
+                if (!p_min_mu_is_null && edge_mu < p_min_mu)
+                    continue;
 
                 edge_cost = 1.0 / edge_mu;
                 new_cost = cur.cost + edge_cost;
@@ -595,6 +644,12 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                         }
                     }
                 }
+                }
+
+                /* Release neighbor tuptable before the next while-iteration pops another node.
+                 * Without this free the SPI procedure context accumulates one tuptable per
+                 * A*-hop; at high-degree seeds the process segfaults from exhaustion. */
+                SPI_freetuptable(nbr_tuptable);
             }
         }
 

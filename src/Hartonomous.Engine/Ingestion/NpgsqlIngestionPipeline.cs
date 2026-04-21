@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Hartonomous.Core;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Engine.Ingestion;
@@ -27,11 +28,11 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     private long _batchesFailed;
     private TimeSpan _totalCommitTime;
 
-    public NpgsqlIngestionPipeline(string connectionString, ILogger<NpgsqlIngestionPipeline> logger)
+    public NpgsqlIngestionPipeline(string connectionString, IReferenceDataReader referenceDataReader, ILogger<NpgsqlIngestionPipeline> logger)
     {
         NpgsqlDataSourceBuilder builder = new(connectionString);
         _dataSource = builder.Build();
-        _codeResolver = new CodeResolver(_dataSource);
+        _codeResolver = new CodeResolver(referenceDataReader);
         _logger = logger;
     }
 
@@ -154,7 +155,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         int[] typeIds = new int[batch.Entities.Count];
         for (int i = 0; i < batch.Entities.Count; i++)
         {
-            IngestionBatch.EntityEntry entity = batch.Entities[i];
+            EntityEntry entity = batch.Entities[i];
             hashes[i] = entity.Hash;
             typeIds[i] = await _codeResolver.EntityTypeIdAsync(entity.EntityTypeCode, ct);
         }
@@ -200,7 +201,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         for (int i = 0; i < batch.Edges.Count; i++)
         {
-            IngestionBatch.EdgeEntry edge = batch.Edges[i];
+            EdgeEntry edge = batch.Edges[i];
             edgeTypeIds[i] = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
             provenanceIds[i] = await _codeResolver.ProvenanceIdAsync(edge.ProvenanceCode, ct);
 
@@ -280,10 +281,10 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             return;
         }
 
-        Dictionary<string, List<IngestionBatch.JunctionEntry>> grouped = new(StringComparer.Ordinal);
-        foreach (IngestionBatch.JunctionEntry junction in batch.Junctions)
+        Dictionary<string, List<JunctionEntry>> grouped = new(StringComparer.Ordinal);
+        foreach (JunctionEntry junction in batch.Junctions)
         {
-            if (!grouped.TryGetValue(junction.JunctionTable, out List<IngestionBatch.JunctionEntry>? list))
+            if (!grouped.TryGetValue(junction.JunctionTable, out List<JunctionEntry>? list))
             {
                 list = [];
                 grouped[junction.JunctionTable] = list;
@@ -291,11 +292,11 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             list.Add(junction);
         }
 
-        foreach (KeyValuePair<string, List<IngestionBatch.JunctionEntry>> kv in grouped)
+        foreach (KeyValuePair<string, List<JunctionEntry>> kv in grouped)
         {
             string table = kv.Key;
             string refCol = GetJunctionRefColumn(table);
-            List<IngestionBatch.JunctionEntry> entries = kv.Value;
+            List<JunctionEntry> entries = kv.Value;
 
             long[] entityIds = new long[entries.Count];
             int[] refIds = new int[entries.Count];
@@ -348,7 +349,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         for (int i = 0; i < batch.Physicalities.Count; i++)
         {
-            IngestionBatch.PhysicalityEntry phys = batch.Physicalities[i];
+            PhysicalityEntry phys = batch.Physicalities[i];
             entityIds[i] = batch.ResolveHandle(phys.Entity);
             typeIds[i] = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
             geomWkbs[i] = phys.GeomWkb;
@@ -381,7 +382,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         for (int i = 0; i < batch.Sequences.Count; i++)
         {
-            IngestionBatch.SequenceEntry seq = batch.Sequences[i];
+            SequenceEntry seq = batch.Sequences[i];
             parentIds[i] = batch.ResolveHandle(seq.Parent);
             childIds[i] = batch.ResolveHandle(seq.Child);
             positions[i] = seq.Position;
@@ -390,7 +391,8 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         await using NpgsqlCommand cmd = new(
             "INSERT INTO substrate.sequence (parent_id, child_id, ordinal_position, rle_count) " +
-            "SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::int[], $4::int[])", conn);
+            "SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::int[], $4::int[]) " +
+            "ON CONFLICT (parent_id, ordinal_position) DO NOTHING", conn);
         cmd.Parameters.AddWithValue(parentIds);
         cmd.Parameters.AddWithValue(childIds);
         cmd.Parameters.AddWithValue(positions);
@@ -410,7 +412,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         long[] sourceIds = new long[batch.EntityModelSources.Count];
         for (int i = 0; i < batch.EntityModelSources.Count; i++)
         {
-            IngestionBatch.EntityModelSourceEntry link = batch.EntityModelSources[i];
+            EntityModelSourceEntry link = batch.EntityModelSources[i];
             entityIds[i] = batch.ResolveHandle(link.Entity);
             string typeCode = batch.Entities[link.Entity.BatchIndex].EntityTypeCode;
             entityTypeIds[i] = await _codeResolver.EntityTypeIdAsync(typeCode, ct);
@@ -438,7 +440,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         for (int i = 0; i < batch.Significances.Count; i++)
         {
-            IngestionBatch.SignificanceEntry sig = batch.Significances[i];
+            SignificanceEntry sig = batch.Significances[i];
             entityIds[i] = batch.ResolveHandle(sig.Entity);
             contextIds[i] = await _codeResolver.SignificanceContextIdAsync(sig.ContextTypeCode, ct);
             mus[i] = sig.InitialMu;
@@ -465,6 +467,19 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         return result;
     }
 
+    public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new("SELECT substrate.populate_edge_trajectories()", conn);
+        cmd.CommandTimeout = 600;
+        object? result = await cmd.ExecuteScalarAsync(ct);
+        long updated = result is long l ? l : 0;
+        if (updated > 0)
+        {
+            Log.EdgeTrajectoriesPopulated(_logger, updated);
+        }
+    }
+
     private static byte[] ComputeEdgeHash(int edgeTypeId, long[] memberEntityIds)
     {
         byte[] buffer = new byte[4 + (memberEntityIds.Length * 8)];
@@ -479,7 +494,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     private static readonly HashSet<string> AllowedJunctionTables = new(StringComparer.OrdinalIgnoreCase)
     {
         "entity_pos", "entity_sense", "entity_language", "entity_morph_feature",
-        "codepoint_property", "model_architecture_class", "tensor_tensor_role", "pattern_deprel"
+        "model_architecture_class", "tensor_tensor_role", "pattern_deprel"
     };
 
     private static string GetJunctionRefColumn(string table)
@@ -495,7 +510,6 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             "entity_sense" => "sense_id",
             "entity_language" => "language_id",
             "entity_morph_feature" => "morph_feature_id",
-            "codepoint_property" => "property_id",
             "model_architecture_class" => "architecture_class_id",
             "tensor_tensor_role" => "tensor_role_id",
             "pattern_deprel" => "deprel_id",
@@ -507,6 +521,9 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     {
         [LoggerMessage(Level = LogLevel.Information, Message = "Batch committed: {EntityCount} entities, {EdgeCount} edges in {Elapsed}")]
         public static partial void BatchCommitted(ILogger logger, int entityCount, int edgeCount, TimeSpan elapsed);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Edge trajectories populated: {Count} edges updated")]
+        public static partial void EdgeTrajectoriesPopulated(ILogger logger, long count);
 
         [LoggerMessage(Level = LogLevel.Error, Message = "Batch failed: {EntityCount} entities")]
         public static partial void BatchFailed(ILogger logger, int entityCount, Exception ex);

@@ -1,6 +1,6 @@
 namespace Hartonomous.Core.Text.Segmentation;
 
-internal static class Utf8
+public static class Utf8
 {
     /// <summary>
     /// Decode one codepoint from <paramref name="bytes"/> starting at index 0.
@@ -8,7 +8,7 @@ internal static class Utf8
     /// Unicode 15 §3.9 "Best Practice for U+FFFD Substitution") and the number
     /// of bytes consumed (always ≥ 1 so the caller can advance).
     /// </summary>
-    internal static (int Codepoint, int BytesConsumed) DecodeOne(ReadOnlySpan<byte> bytes)
+    public static (int Codepoint, int BytesConsumed) DecodeOne(ReadOnlySpan<byte> bytes)
     {
         if (bytes.IsEmpty)
         {

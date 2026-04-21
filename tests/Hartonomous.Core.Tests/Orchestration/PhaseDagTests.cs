@@ -20,12 +20,13 @@ public sealed class PhaseDagTests
     }
 
     [Fact]
-    public void GetDependencies_InferenceEngine_HasThreeDependencies()
+    public void GetDependencies_InferenceEngine_HasFourDependencies()
     {
         IReadOnlyList<Phase> deps = PhaseDag.GetDependencies(Phase.InferenceEngine);
-        Assert.Equal(3, deps.Count);
+        Assert.Equal(4, deps.Count);
         Assert.Contains(Phase.Tatoeba, deps);
         Assert.Contains(Phase.ModelDecomp, deps);
+        Assert.Contains(Phase.TextDecomp, deps);
         Assert.Contains(Phase.SignificanceField, deps);
     }
 

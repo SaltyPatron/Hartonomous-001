@@ -205,6 +205,166 @@ public sealed class ConcurrencyTests
         });
     }
 
+    [Fact]
+    public void S3Distance_ConcurrentCalls_SameInputs_ByteIdenticalOutput()
+    {
+        // Two unit 4-vectors on S^3; geodesic distance.
+        double[] p = [0.5, 0.5, 0.5, 0.5];
+        double[] q = [0.8660254037844386, 0.5, 0.0, 0.0];
+        double reference = S3Geometry.Distance(p, q);
+        long refBits = BitConverter.DoubleToInt64Bits(reference);
+
+        Parallel.For(0, Threads, _ =>
+        {
+            for (int c = 0; c < CallsPerThread; c++)
+            {
+                double d = S3Geometry.Distance(p, q);
+                Assert.Equal(refBits, BitConverter.DoubleToInt64Bits(d));
+            }
+        });
+    }
+
+    [Fact]
+    public void S3Centroid_ConcurrentCalls_SameInputs_ByteIdenticalOutput()
+    {
+        // 4 unit 4-vectors spread across the 3-sphere.
+        double[] points = new double[16];
+        double[] tmp = new double[4];
+        for (int i = 0; i < 4; i++)
+        {
+            double[] prm = [i, 4.0];
+            SuperFibonacci.Project(prm, tmp);
+            for (int j = 0; j < 4; j++)
+            {
+                points[i * 4 + j] = tmp[j];
+            }
+        }
+
+        double[] reference = new double[4];
+        S3Geometry.Centroid(points, 4, reference);
+        string refHex = Hex(ToBytes(reference));
+
+        Parallel.For(0, Threads, _ =>
+        {
+            double[] c = new double[4];
+            S3Geometry.Centroid(points, 4, c);
+            Assert.Equal(refHex, Hex(ToBytes(c)));
+        });
+    }
+
+    [Fact]
+    public void SuperFibonacci_ConcurrentCalls_SameIndex_ByteIdenticalOutput()
+    {
+        double[] parameters = [17, 256.0];
+        double[] reference = new double[4];
+        SuperFibonacci.Project(parameters, reference);
+        string refHex = Hex(ToBytes(reference));
+
+        Parallel.For(0, Threads, _ =>
+        {
+            double[] q = new double[4];
+            SuperFibonacci.Project(parameters, q);
+            Assert.Equal(refHex, Hex(ToBytes(q)));
+        });
+    }
+
+    [Fact]
+    public void Hilbert_ConcurrentCalls_RoundTrip_Stable()
+    {
+        // Forward then inverse per thread; each thread computes its own point
+        // from a seeded RNG and asserts round-trip stability.
+        Parallel.For(0, Threads, threadIdx =>
+        {
+            Random rng = new(threadIdx * 17 + 5);
+            for (int c = 0; c < CallsPerThread; c++)
+            {
+                double[] p = [rng.NextDouble(), rng.NextDouble(), rng.NextDouble(), rng.NextDouble()];
+                ulong idx1 = Hilbert.Index(p, 10);
+                ulong idx2 = Hilbert.Index(p, 10);
+                Assert.Equal(idx1, idx2);
+
+                double[] back = new double[4];
+                Hilbert.Inverse(idx1, 10, back);
+                double[] back2 = new double[4];
+                Hilbert.Inverse(idx1, 10, back2);
+                for (int j = 0; j < 4; j++)
+                {
+                    Assert.Equal(back[j], back2[j]);
+                }
+            }
+        });
+    }
+
+    [Fact]
+    public void Blake3Hasher_IncrementalConcurrentCalls_MatchOneShot()
+    {
+        byte[] input = new byte[1 << 14];
+        Random rng = new(7);
+        rng.NextBytes(input);
+        byte[] reference = Blake3.Hash(input);
+        string refHex = Hex(reference);
+
+        Parallel.For(0, Threads, _ =>
+        {
+            // Each thread has its own Blake3Hasher (not thread-safe per the
+            // xmldoc). Concurrency test verifies that creating + using many
+            // hashers in parallel doesn't crash or race on native-side state.
+            Blake3Hasher h = Blake3Hasher.Create();
+            int pos = 0;
+            while (pos < input.Length)
+            {
+                int chunk = Math.Min(347, input.Length - pos);
+                h.Update(input.AsSpan(pos, chunk));
+                pos += chunk;
+            }
+            byte[] out32 = h.Finalize();
+            Assert.Equal(refHex, Hex(out32));
+        });
+    }
+
+    [Fact]
+    public void TensorDecode_ConcurrentCalls_SameInputs_ByteIdenticalOutput()
+    {
+        // F32 → F64 widening, 1024 elements.
+        const int count = 1024;
+        byte[] src = new byte[count * 4];
+        Random rng = new(41);
+        for (int i = 0; i < count; i++)
+        {
+            float v = (float)(rng.NextDouble() * 2 - 1);
+            BitConverter.GetBytes(v).CopyTo(src, i * 4);
+        }
+
+        double[] reference = new double[count];
+        TensorDecode.ToF64(src, TensorDtype.F32, reference);
+        string refHex = Hex(ToBytes(reference));
+
+        Parallel.For(0, Threads, _ =>
+        {
+            double[] dst = new double[count];
+            TensorDecode.ToF64(src, TensorDtype.F32, dst);
+            Assert.Equal(refHex, Hex(ToBytes(dst)));
+        });
+    }
+
+    [Fact]
+    public void RuntimeInfo_ConcurrentQueries_ReturnSameSnapshot()
+    {
+        RuntimeInfoSnapshot reference = RuntimeInfo.Query();
+        Parallel.For(0, Threads, _ =>
+        {
+            for (int c = 0; c < CallsPerThread; c++)
+            {
+                RuntimeInfoSnapshot info = RuntimeInfo.Query();
+                Assert.Equal(reference.HasMkl, info.HasMkl);
+                Assert.Equal(reference.MklVersion, info.MklVersion);
+                Assert.Equal(reference.MklMaxThreads, info.MklMaxThreads);
+                Assert.Equal(reference.OmpMaxThreads, info.OmpMaxThreads);
+                Assert.Equal(reference.CbwrBranch, info.CbwrBranch);
+            }
+        });
+    }
+
     /// <summary>
     /// Mixed-workload stress: every facade entry point hammered concurrently
     /// in one test. Surfaces any global mutable state inside the native layer

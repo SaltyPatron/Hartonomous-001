@@ -2,10 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace Hartonomous.Decomposers;
+namespace Hartonomous.Core.Compute.Common;
 
 /// <summary>
-/// Shared physicality geometry for decomposers:
+/// Shared physicality geometry for decomposers and recomposers:
 /// <list type="bullet">
 ///   <item>Super-Fibonacci S3 projection keyed by Unicode codepoint (universal frame).</item>
 ///   <item>WKB writers for POINTZM, LINESTRINGZM, MULTILINESTRINGZM.</item>
@@ -15,7 +15,7 @@ namespace Hartonomous.Decomposers;
 /// entities (lemma, word_sense, synset, language_name, text_composition, bpe_token) are trajectories
 /// through those positions in surface-form order.
 /// </summary>
-internal static class PhysicalityEmitter
+public static class PhysicalityEmitter
 {
     public const int UnicodeCodepointSpace = 0x110000;
 

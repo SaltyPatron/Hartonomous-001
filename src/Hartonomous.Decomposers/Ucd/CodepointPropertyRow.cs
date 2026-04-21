@@ -2,6 +2,7 @@ namespace Hartonomous.Decomposers.Ucd;
 
 internal readonly record struct CodepointPropertyRow(
     long EntityId,
+    int CodepointValue,
     int GeneralCategoryId,
     int ScriptId,
     int BlockId,

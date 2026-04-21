@@ -274,6 +274,8 @@ public sealed class SequentialPhaseRunnerTests
             return Task.FromResult(empty);
         }
 
+        public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

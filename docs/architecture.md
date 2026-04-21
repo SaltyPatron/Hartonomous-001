@@ -6,7 +6,7 @@ This document is the authoritative architecture reference. Individual decomposer
 
 A PostgreSQL database that IS an AI model. Not a database backing an AI. The database itself.
 
-- **Engine**: PostgreSQL + PostGIS on `localhost:5432`, user `postgres`, password `postgres`. No environment variables. No configuration indirection. One connection path.
+- **Engine**: PostgreSQL + PostGIS. Connection string from CLI arguments, `HARTONOMOUS_DB` environment variable, or the compiled default (`localhost:5433`, user `hartonomous`). See `docs/standards/configuration-and-errors.md` for the full precedence chain.
 - **Architecture**: centralized stored procedures, functions, views, custom types, domains. SQL orchestrates all operations. Extensions handle compute-intensive work. Client handles presentation.
 - **Training** = `INSERT/UPDATE` with typed semantic edge extraction at ingestion time.
 - **Pruning** = `DELETE` with policy governance.
@@ -133,7 +133,7 @@ Classical algorithms (FFT, SVD, edge detection, spectral analysis) are used free
 10. **Runtime**: CPU/index/pathing first. GPU/ANN are optional accelerators, never requirements.
 11. **Sparsity**: near-zero-significance edges are not stored. Policy-governed, auditable.
 12. **Semantic fidelity**: no flattening. No lazy n-ary grouping without proper semantic extraction. Every composition must carry correct edges. Fail explicitly if unable.
-13. **Fail loud**: no error swallowing. No silent failures. No fallback continuations. No graceful degradation. No partial results. No retry logic. Every operation succeeds completely or fails explicitly with full diagnostic context. A failure during seed ingestion means the substrate's initial state is broken. A failure in significance computation means ELO ratings are muddied. A failure anywhere means everything downstream is wrong. The only acceptable response to failure is: stop, report exactly what broke and why, fix it, then re-run from the last known-good state. If storage fills up, that is a defect in capacity planning — halt, do not attempt to continue. If source data is missing, that is a defect in deployment — halt, do not attempt to continue.
+13. **Fail loud**: no error swallowing. No silent failures. No fallback continuations. No graceful degradation. No partial results. Every operation succeeds completely or fails explicitly with full diagnostic context. The only retry-eligible errors are transient infrastructure failures (database connection timeout, deadlock); these retry at the pipeline level with bounded attempts, not inside individual operations. A failure during seed ingestion means the substrate's initial state is broken. A failure in significance computation means ELO ratings are muddied. A failure anywhere means everything downstream is wrong. The only acceptable response to failure is: stop, report exactly what broke and why, fix it, then re-run from the last known-good state. If storage fills up, that is a defect in capacity planning — halt, do not attempt to continue. If source data is missing, that is a defect in deployment — halt, do not attempt to continue.
 
 ## Core Algebra
 

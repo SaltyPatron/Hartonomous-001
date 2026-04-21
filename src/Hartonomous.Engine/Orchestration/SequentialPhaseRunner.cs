@@ -5,12 +5,11 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace Hartonomous.Engine.Orchestration;
 
@@ -20,7 +19,7 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
     private readonly IIngestionPipeline _pipeline;
     private readonly IProgressReporter _reporter;
     private readonly ILogger<SequentialPhaseRunner> _logger;
-    private readonly NpgsqlDataSource? _dataSource;
+    private readonly ISessionStore? _sessionStore;
     private readonly Dictionary<Phase, PhaseStatus> _status = [];
 
     public SequentialPhaseRunner(
@@ -28,13 +27,13 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
         IIngestionPipeline pipeline,
         IProgressReporter reporter,
         ILogger<SequentialPhaseRunner> logger,
-        NpgsqlDataSource? dataSource = null)
+        ISessionStore? sessionStore = null)
     {
         _decomposers = decomposers;
         _pipeline = pipeline;
         _reporter = reporter;
         _logger = logger;
-        _dataSource = dataSource;
+        _sessionStore = sessionStore;
 
         foreach (Phase phase in Enum.GetValues<Phase>())
         {
@@ -53,23 +52,18 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
     /// </summary>
     public async Task HydrateStatusAsync(CancellationToken ct)
     {
-        if (_dataSource is null)
+        if (_sessionStore is null)
         {
             return;
         }
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT phase_code, status FROM monitor.phase_status", conn);
-        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        IReadOnlyDictionary<string, string> map = await _sessionStore.GetPhaseStatusMapAsync(ct);
+        foreach (KeyValuePair<string, string> entry in map)
         {
-            string code = reader.GetString(0);
-            string status = reader.GetString(1);
-            if (!Enum.TryParse<Phase>(code, ignoreCase: true, out Phase phase))
+            if (!Enum.TryParse<Phase>(entry.Key, ignoreCase: true, out Phase phase))
             {
                 continue;
             }
-            _status[phase] = status switch
+            _status[phase] = entry.Value switch
             {
                 "completed" => PhaseStatus.Completed,
                 "running"   => PhaseStatus.InProgress,
@@ -143,6 +137,9 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
                 Log.DecomposerCompleted(_logger, decomposer.DisplayName, phase);
             }
 
+            // Populate edge trajectories once per phase (not per-batch).
+            await _pipeline.PopulateEdgeTrajectoriesAsync(ct);
+
             _status[phase] = PhaseStatus.Completed;
             await PersistStatusAsync(phase, "completed", errorMessage: null, ct);
             Log.PhaseCompleted(_logger, phase, sw.Elapsed);
@@ -159,17 +156,11 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
 
     private async Task PersistStatusAsync(Phase phase, string status, string? errorMessage, CancellationToken ct)
     {
-        if (_dataSource is null)
+        if (_sessionStore is null)
         {
             return;
         }
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "CALL monitor.update_phase_status($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, phase.ToString());
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, status);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)errorMessage ?? DBNull.Value);
-        await cmd.ExecuteNonQueryAsync(ct);
+        await _sessionStore.UpdatePhaseStatusAsync(phase.ToString(), status, errorMessage, ct);
     }
 
     public async Task<IReadOnlyList<PhaseResult>> RunAllAsync(CancellationToken ct)

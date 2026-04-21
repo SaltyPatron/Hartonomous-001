@@ -18,3 +18,4 @@ The file layout conventions (one-file-per-object, directory structures) are in [
 | [native.md](native.md) | C/C++ flat C API, memory rules, error returns, PG extension memory contexts. |
 | [csharp-conventions.md](csharp-conventions.md) | C# naming conventions, structured logging, generic constraints and patterns, keyed services. |
 | [ingestion-pipeline.md](ingestion-pipeline.md) | The unified ingestion pipeline. One pipeline for all writes. IngestionUnit types, provenance/tenant identity, C#-side deduplication, concurrency, index exploitation, decomposer relationship. |
+| [ai-agent-workflows.md](ai-agent-workflows.md) | Shared Claude Code and Copilot scaffolding. Exactness rules, semantic regression pack, finish-work expectations, hooks, prompts, and agent roles. |

@@ -80,7 +80,15 @@ CREATE FUNCTION neighbors(bigint, int DEFAULT NULL, int DEFAULT 1)
     AS 'MODULE_PATHNAME', 'pg_neighbors'
     LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
 
-CREATE FUNCTION traverse_astar(bigint, int, int, int DEFAULT 5, int DEFAULT 100)
+CREATE FUNCTION traverse_astar(
+    seed_id            bigint,
+    target_type_id     int,
+    arena_id           int,
+    max_depth          int              DEFAULT 5,
+    max_results        int              DEFAULT 100,
+    edge_type_filter   int              DEFAULT NULL,
+    p_min_mu           double precision DEFAULT NULL
+)
     RETURNS SETOF traversal_path
     AS 'MODULE_PATHNAME', 'pg_traverse_astar'
     LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
