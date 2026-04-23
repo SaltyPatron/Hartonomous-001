@@ -59,7 +59,7 @@ In the substrate, inference is traversal. The path IS the explanation. Every edg
 
 Conventional multi-modal AI stitches separate encoders together with projection layers. A vision encoder, a text encoder, a speech encoder, each producing embeddings in different spaces, connected by learned linear projections that map one embedding space to another. The projection is a trained approximation. Cross-modal understanding is as good as the projection, which is as good as the training data for that specific modality pair.
 
-In the substrate, text, image, audio, video, and model weights are the same thing: entities with typed edges and geometric physicality (POINTZM / LINESTRINGZM / MULTILINESTRINGZM on S3). One entity table. One edge table. One physicality table. One GiST index. `ST_FrechetDistance` compares the shape of any two trajectories — word similarity, audio waveform similarity, attention pattern similarity, image contour similarity — with one operator. Cross-modal edges are first-class edges with significance ratings, not projection-layer approximations. "This audio segment sounds like this word" is an edge, not an embedding distance.
+In the substrate, text, image, audio, video, and model weights are the same thing: entities with typed edges and geometric physicality stored in one `physicality` table. That table has two coordinate surfaces, both first-class and both GiST-indexed. Modalities whose physicality is natively 2D or 3D — pixel grids, audio sample grids, video-frame time, terrestrial S² — use PostGIS `geometry` (POINT, POINTZ, LINESTRING, LINESTRINGZ, MULTILINESTRINGZ) where 2D and 3D operators are exact. Physicality that is genuinely 4D — codepoint atoms on S³ from UCA Super-Fibonacci projection, embedding fireflies in R⁴ from Laplacian eigenmaps, edge trajectories through 4D participants, compositional trajectories through 4D children — uses the substrate-native `point4d` / `box4d` / `linestring4d` type surface defined in `specs/native/4d-type-and-index.md`, with its own operators (`<->` Euclidean 4D, `<=>` S³ geodesic), its own GiST and SP-GiST opclasses, its own aggregates (`centroid_4d`, `centroid_s3`, `bbox_4d`), its own Fréchet and Hausdorff in four dimensions. PostGIS cannot be used for 4D storage — its distance operators and GiST keys drop the M axis silently. The two surfaces coexist in one table via two coordinate columns (one PostGIS `geometry`, one substrate `point4d`/`linestring4d`); exactly one is non-null per row, selected by the physicality type's declared dimensionality. Shape comparisons across two trajectories — word similarity, audio waveform similarity, attention pattern similarity, image contour similarity — use the appropriate surface's distance primitive for the dimensionality involved. Cross-modal edges are first-class edges with significance ratings, not projection-layer approximations. "This audio segment sounds like this word" is an edge, not an embedding distance.
 
 ### AI Is Democratized
 
@@ -101,6 +101,10 @@ To prevent pattern-matching to existing paradigms:
 
 - **This is not fine-tuning.** Fine-tuning adjusts model weights via gradient descent on a smaller dataset. Hartonomous does not have weights to adjust. New knowledge enters via ingestion — INSERT statements that create entities and edges. The substrate grows monotonically. Nothing is overwritten. Nothing is forgotten.
 
+## Future Direction — Decentralized Mode
+
+A planned mode (not scheduled, not on the M1–M11 critical path) splits the substrate across participating user hardware in exchange for usage credits. This is a deliberate forward direction, not a hypothetical. Content-addressing via BLAKE3 Merkle DAG is already decentralization-friendly by construction — identity is derivable from content alone, independent of which host stores which partition. Glicko-2 significance state is per-entity and per-edge, carryable across hosts without reconciliation drift. The current single-process implementation must not paint corners that would later have to be torn up (centralized-only assumptions in identity generation, threading backend choices that preclude distributed coordination, migration formats that assume a single authority). Distributed-compute tooling — MPI, shared-memory coordination libraries, gossip protocols, federated sync, sharded content-addressed stores — is **deferred for decentralized mode**, not out of scope. Do not scaffold decentralization into M1–M11 code; do keep the door open.
+
 ## Cost Model
 
 **Expensive ingestion, cheap queries.** This is the fundamental inversion from conventional AI.
@@ -115,7 +119,7 @@ The system does not use HNSW indexes, pgvector, cosine similarity over embedding
 
 - **Glicko-2 rated significance** on typed semantic edges — the "distance" between two entities is the significance score on the edge connecting them (or the product of edge significances along the path between them).
 - **Referential integrity** — FK-constrained graph walks over B-tree/GiST indexed relational columns.
-- **Fréchet/Hausdorff distance** over S3 geometric coordinates — for spatial similarity queries on PostGIS GEOMETRYZM, which is a real geometric distance, not a vector dot product.
+- **Fréchet and Hausdorff distance on stored trajectories** — for spatial similarity queries across any modality. 2D/3D trajectories (image contours, audio waveforms) use PostGIS `ST_FrechetDistance` / `ST_HausdorffDistance`. 4D trajectories (edge trajectories through S³ or R⁴ participants, compositional trajectories through 4D children, codepoint-path trajectories through unit-quaternion positions) use the substrate-native 4D Fréchet/Hausdorff primitives over `linestring4d` defined in `specs/native/4d-type-and-index.md`. Both are real geometric distances, not vector dot products.
 
 Classical algorithms (FFT, SVD, edge detection, spectral analysis) are used freely at ingestion time. Knowledge extracted from neural network weights (via the Safetensors decomposer) becomes explicit typed edges in the substrate. The system *uses* neural network knowledge — it extracts it once at ingestion and never runs inference through the network again.
 
@@ -131,6 +135,7 @@ Classical algorithms (FFT, SVD, edge detection, spectral analysis) are used free
 8. **Ingestion records facts, inference decides meaning**: decomposition records ALL candidate senses, syntactic structures, and evidence edges without disambiguation. Sense selection, role assignment, and meaning resolution happen at inference time via significance-weighted traversal. Decomposers never guess.
 9. **Context**: prompts are content. Context is graph-addressable substrate state. No token window. No attention matrix. Previous turns are session-scoped entities with significance scores. Relevant context is selected by the same traversal mechanism as all other inference.
 10. **Runtime**: CPU/index/pathing first. GPU/ANN are optional accelerators, never requirements.
+   - **Positioning commitment.** The invention is explicitly designed to *prove GPU is not required* for a substrate-native AI at real scale. The ingestion stack commits to the full Intel CPU optimization surface — MKL (ILP64 under `MKL_CBWR=AUTO,STRICT` for bitwise reduction order), TBB as the MKL threading layer, TCM (`tbbmalloc`) as the scalable allocator, IPP where applicable, oneDPL header-only parallel STL, and oneDNN gated behind `HTNS_ENABLE_ONEDNN` for JIT attention kernels in analysis passes. Intel `icx` is the preferred compiler; MSVC is the Windows fallback. No CUDA, no ROCm, no GPU BLAS, no GPU-assumption code paths anywhere. If a conventional approach assumes GPU, the substrate takes the CPU route. See `specs/native/compute-library.md` for the two-artifact split (ILP64 ingest vs LP64 query) and the ISA ceiling (AVX2+FMA3+AVX-VNNI+BMI2 — no AVX-512 on the reference 14900KS).
 11. **Sparsity**: near-zero-significance edges are not stored. Policy-governed, auditable.
 12. **Semantic fidelity**: no flattening. No lazy n-ary grouping without proper semantic extraction. Every composition must carry correct edges. Fail explicitly if unable.
 13. **Fail loud**: no error swallowing. No silent failures. No fallback continuations. No graceful degradation. No partial results. Every operation succeeds completely or fails explicitly with full diagnostic context. The only retry-eligible errors are transient infrastructure failures (database connection timeout, deadlock); these retry at the pipeline level with bounded attempts, not inside individual operations. A failure during seed ingestion means the substrate's initial state is broken. A failure in significance computation means ELO ratings are muddied. A failure anywhere means everything downstream is wrong. The only acceptable response to failure is: stop, report exactly what broke and why, fix it, then re-run from the last known-good state. If storage fills up, that is a defect in capacity planning — halt, do not attempt to continue. If source data is missing, that is a defect in deployment — halt, do not attempt to continue.
@@ -141,7 +146,7 @@ Classical algorithms (FFT, SVD, edge detection, spectral analysis) are used free
 
 The entity table holds **atoms** and **compositions**. One table. Two roles. The `entity_type_id` tells you what structural kind an entity is. The tier is emergent from reference depth.
 
-- **Atom**: a leaf-level entity with no children. A Unicode codepoint (tier 0). Atoms are positioned on the S3 surface as POINTZMs — their S3 coordinate IS their centroid.
+- **Atom**: a leaf-level entity with no children. A Unicode codepoint (tier 0). Atoms are positioned on the S³ surface as unit quaternions stored as `point4d` — the atom's four-coordinate S³ position IS its centroid.
 - **Composition**: an entity whose content is an ordered sequence of child entities. A word like [m,i,n,u,t,e] is a composition of codepoint atoms. A sentence is a composition of word compositions. An image region is a composition of pixel value compositions. An FFT spectrum is a composition of frequency-magnitude points. Same content = same hash = one entity, always.
 
 Relations between entities live in the **edge** table — a separate, n-ary structure with its own trajectory geometry. Edges are typed, evidence-based, and carry significance. Edges are NOT entities. They are the connective tissue of the substrate — the AI model IS its edges.
@@ -152,46 +157,47 @@ Classification vocabulary — POS types, dependency relation types, morphologica
 
 ### Recursive Physicality
 
-Every entity has a geometric position. Physicality is ONE normalized table for all modalities — text, image, audio, video, model weights, analysis results. One table, one GiST index.
+Every entity has a geometric position. Physicality is ONE normalized table for all modalities — text, image, audio, video, model weights, analysis results. One table. Two coordinate surfaces within it: PostGIS `geometry` for natively 2D/3D physicality, substrate-native `point4d` / `linestring4d` for 4D. Each physicality type declares which surface it lives on; exactly one coordinate column is non-null per row. Both surfaces are GiST-indexed.
 
-- **Tier-0 atom**: POINTZM on the S3 surface (from UCA Fibonacci projection). The atom's centroid IS that point.
-- **Tier-N composition**: LINESTRINGZM through the centroids of its constituent entities in sequence order. [c,a,t] is a linestring through the S3 positions of c, a, and t. The centroid of that linestring IS the word's position.
-- **Next level up**: that centroid becomes a point in the parent composition's linestring. [the, cat, in, the, hat] is a linestring through the centroids of those five word entities. Recursive. No special cases.
-- **Analysis results**: FFT spectrum = LINESTRINGZM (X=frequency bin, Y=magnitude, Z=phase, M=significance). STFT spectrogram = MULTILINESTRINGZM (each linestring = one time window's FFT). SVD singular values = LINESTRINGZM. One geometry value, one row in physicality, one GiST index entry.
+- **Tier-0 atom (4D surface)**: `point4d` on S³ (from UCA Super-Fibonacci projection — a unit quaternion). The atom's four-coordinate position IS its centroid. Indexed by `point4d_gist_ops`.
+- **Tier-N composition (4D surface)**: `linestring4d` through the four-coordinate positions of its constituent entities in sequence order. `[c,a,t]` is a linestring through the S³ positions of `c`, `a`, and `t`. The 4D centroid of that linestring (via `centroid_4d` for Euclidean, `centroid_s3` for direction-only) IS the word's 4D position.
+- **Next level up**: that 4D centroid becomes a point in the parent composition's `linestring4d`. `[the, cat, in, the, hat]` is a linestring through the centroids of those five word entities. Recursive. No special cases.
+- **2D/3D analysis results**: FFT spectrum = LINESTRINGZ (X=frequency bin, Y=magnitude, Z=phase) with magnitude on Z. STFT spectrogram = MULTILINESTRINGZ (each linestring = one time window's FFT). Pixel patches = POINT/POLYGON on 2D image coordinates. These stay on the PostGIS `geometry` surface where 2D/3D operators and GiST keys are exact.
+- **4D analysis results**: anything whose native geometry is genuinely 4D — SVD singular-value spectra paired with subspace angles, attention-pattern trajectories across S³, tensor operator characteristic curves in R⁴ — lives on the `point4d`/`linestring4d` surface so all four axes participate in every distance, range, and centroid query.
 
-PostGIS geometry types are arbitrary-dimensional coordinate containers. Nothing about them requires geographic data. `ST_FrechetDistance` compares the SHAPE of any two trajectories: word similarity (king vs sing vs ring share [i,n,g] suffix trajectory), syntactic tree similarity (two sentences with the same dependency structure), audio similarity (two waveforms), attention pattern similarity (two weight distributions). One spatial operator, every modality.
+Both surfaces expose a compatible shape-comparison vocabulary — Fréchet, Hausdorff, centroid, containment, kNN, Hilbert-ordered scans — in their own dimensionality. One row, one geometry value, one GiST index entry, in whichever surface the physicality type belongs to.
+
+`ST_FrechetDistance` (2D/3D) and the 4D Fréchet primitive (substrate-native over `linestring4d`) compare the SHAPE of any two trajectories in their respective surfaces: word similarity (king vs sing vs ring share `[i,n,g]` suffix trajectory across 4D codepoint positions), syntactic tree similarity (two sentences with the same dependency structure), audio similarity (two 2D/3D waveforms), attention pattern similarity (two 4D attention trajectories). The operator is determined by the physicality type of the rows being compared, not by modality label.
 
 This is the Merkle DAG. Each level's geometry is deterministically derived from the level below. Same content = same hash = same geometry = same entity.
 
-### XYZM Coordinate Semantics
+### 4D Coordinate Semantics
 
-POINTZM and LINESTRINGZM have four coordinate slots per point: X, Y, Z, M. PostGIS treats all four as arbitrary scalars — none are constrained to geographic meaning. This is a design surface.
+`point4d` carries four `float8` coordinates (`x1, x2, x3, x4`) that are application-defined per physicality type. For a codepoint atom on S³ they are the four components of a unit quaternion. For an embedding firefly they are `(eig2, eig3, eig4, ||row||)` — three orthonormalized Laplacian-eigenmap axes plus the row's pre-normalization L2 norm. For a different 4D physicality type they may encode something else entirely; semantics are carried by `physicality_type_id`, not by the type itself. All four coordinates participate in every distance, kNN, centroid, and box containment query — that is the whole point of the surface.
 
-For a composition's LINESTRINGZM, each point in the string corresponds to one child entity in sequence order. The naive encoding puts the child's S3 centroid coordinates in XYZ — but that creates a recomposition problem: given a coordinate, you must JOIN back to find which entity lives there.
+A composition's `linestring4d` carries one 4-tuple per child entity in sequence order. The encoding choice is carried by the physicality type: it may be the child's 4D centroid (direct shape encoding, enables Fréchet/Hausdorff across compositional shape), the child's S³ position combined with a sequence payload (enables shape comparison plus direct child readback), or a compact self-describing layout where one axis carries a surrogate reference and the other three carry the child's S³ direction. Whichever encoding the type declares, recomposition reads the linestring directly — the geometry IS the composition, no JOIN to `sequence` is required when the physicality type embeds child references. The `sequence` table remains the integrity enforcement layer; `physicality` remains the traversal-and-comparison layer.
 
-The direct encoding: **X = child entity ID**. The linestring is then self-describing. Recomposition reads X values from the linestring points — child entity IDs in order — with no JOIN to the sequence table. The geometry IS the composition. Y, Z, M are free for additional payload: S3 coordinate dimensions, significance at that position, RLE count, tier depth, or any combination the physicality_type declares.
-
-This makes the physicality table not merely a geometry store but a self-indexing composition structure. Reading a LINESTRINGZM gives you the ordered child entity IDs directly. The geometry IS the composition. No secondary lookup. No JOIN. The sequence table is then the integrity enforcement layer; the physicality table is the traversal-and-comparison layer.
+The 2D/3D side (`geometry` column) keeps PostGIS's XYZ semantics unchanged for physicality types whose dimensionality is 2 or 3.
 
 ### Two Distinct Geometric Mechanisms
 
 The substrate has two separate and non-interchangeable geometric operations. Conflating them produces nonsense.
 
-**1. Compositional geometry** — the LINESTRINGZM of an entity's constituent sequence. `[k,i,n,g]` is a path through codepoint S3 positions. This captures structural and orthographic similarity. `king`, `ring`, `sing`, `ding` share the `[i,n,g]` suffix trajectory — Fréchet distance detects that shared path immediately. This is the geometry of WHAT SOMETHING IS MADE OF.
+**1. Compositional geometry** — the trajectory (2D/3D `LINESTRING*` or 4D `linestring4d`, chosen by the composition's physicality type) of an entity's constituent sequence. `[k,i,n,g]` is a path through four codepoint S³ positions, stored as `linestring4d`. This captures structural and orthographic similarity. `king`, `ring`, `sing`, `ding` share the `[i,n,g]` suffix trajectory — 4D Fréchet detects that shared path. This is the geometry of WHAT SOMETHING IS MADE OF.
 
-**2. Relational geometry** — the `edge.geom` of each edge in the substrate. Every edge (hypernym, nsubj, translation_of, gender_correspondence, etc.) is a LINESTRINGZM through its n-ary participants' S3 positions. This captures the shape of a RELATIONSHIP between entities. This is the geometry of HOW ENTITIES CONNECT TO EACH OTHER.
+**2. Relational geometry** — the `edge.geom_4d` (or `edge.geom` for 2D/3D participants) of each edge in the substrate. Every edge (hypernym, nsubj, translation_of, gender_correspondence, etc.) is a trajectory through its n-ary participants' positions, in the surface dictated by the participants' physicality. For edges whose participants live on S³ / in R⁴, the edge carries a `linestring4d`; for edges whose participants live on the 2D/3D surface, the edge carries a PostGIS `LINESTRING*`. This captures the shape of a RELATIONSHIP between entities. This is the geometry of HOW ENTITIES CONNECT TO EACH OTHER.
 
-These are not two ways of looking at the same thing. A word like "finance" has one compositional geometry (the path through `[f,i,n,a,n,c,e]`) and thousands of relational geometries — one for every edge it participates in. Fréchet on compositional geometries finds orthographically similar words. Fréchet on relational geometries finds structurally similar relationships.
+These are not two ways of looking at the same thing. A word like "finance" has one compositional trajectory (the path through `[f,i,n,a,n,c,e]` in 4D) and thousands of relational trajectories — one for every edge it participates in. Fréchet on compositional trajectories finds orthographically similar words. Fréchet on relational trajectories finds structurally similar relationships. Either flavour runs on the appropriate 2D/3D or 4D primitives; the substrate never conflates dimensionality.
 
 The significance-weighted edge graph — the spider colony — is a third mechanism entirely: not geometry, but propagation. When inference activates an entity, significance ratings on every connected edge determine how hard each strand tugs. High Glicko-2 mu = strong pull. Low mu = barely moves. Because entities are Merkle-deduplicated and shared across the entire substrate, pulling one strand tugs every composition, every synset, every model-derived edge, every co-occurrence that shares that entity — and each of those tugs propagates through their own edges. The tension is inference. The mu values are the spring constants. This is the geometry of HOW MEANING PROPAGATES.
 
 ### Relational Geometry: Edge Trajectories as Relation Fingerprints
 
-Every edge has a `geom` column: LINESTRINGZM through the S3 positions of its participant entities in role order. This trajectory is the structural fingerprint of that specific relationship.
+Every edge has a stored trajectory, in whichever surface its participants occupy. For 4D participants, that is a `linestring4d` through the participants' `point4d` positions in role order. For 2D/3D participants, that is a PostGIS `LINESTRING*`. This trajectory is the structural fingerprint of that specific relationship.
 
-The edge between `king` and `queen` traces a path across S3. The edge between `man` and `woman` traces a path. The edge between `actor` and `actress` traces a path. These are all `gender_correspondence` edges — and their trajectories in S3 are geometrically similar. Fréchet distance between them is small. The relation type has a characteristic spatial signature.
+The edge between `king` and `queen` traces a path across S³ (both codepoint-compositions are 4D entities, so the edge carries a `linestring4d`). The edge between `man` and `woman` traces a path. The edge between `actor` and `actress` traces a path. These are all `gender_correspondence` edges — and their 4D trajectories are geometrically similar. The 4D Fréchet distance between them is small. The relation type has a characteristic spatial signature in S³.
 
-This is not an analysis pass run separately. `edge.geom` is a first-class column on the edge table, GiST-indexed, populated at ingestion. Every stored edge IS its trajectory. Comparing any two edges is a single `ST_FrechetDistance` call on their stored geometries.
+This is not an analysis pass run separately. The edge's trajectory column is first-class, GiST-indexed (PostGIS GiST for 2D/3D, `point4d_gist_ops` / `linestring4d_gist_ops` for 4D), populated at ingestion. Every stored edge IS its trajectory. Comparing any two edges is a single Fréchet call on their stored geometries in the matching surface.
 
 The relational geometry enables:
 - **Analogy completion**: find edges whose trajectory best matches a query trajectory. `king:queen :: man:?` is a Fréchet query, not a vector arithmetic operation. The substrate finds the edge that completes the geometric pattern.
@@ -262,31 +268,43 @@ Small table. Populated during Phase 1 (core algebra). Rarely changed after.
 |--------|------|---------|
 | `id` | `BIGSERIAL` | Primary key. |
 | `entity_id` | `BIGINT FK → entity(id)` | Which entity. |
-| `physicality_type_id` | `INT FK → physicality_type(id)` | What this geometry represents. |
-| `geom` | `GEOMETRYZM` | GiST-indexed. POINTZM, LINESTRINGZM, MULTILINESTRINGZM, or any PostGIS geometry type. |
+| `physicality_type_id` | `INT FK → physicality_type(id)` | What this geometry represents. Also declares which coordinate surface this row uses. |
+| `geom` | `GEOMETRY` (nullable) | PostGIS 2D/3D surface. POINT / POINTZ / LINESTRING / LINESTRINGZ / MULTILINESTRINGZ. GiST-indexed. Non-null iff `physicality_type.dimensionality ∈ {2, 3}`. |
+| `point4d` | `point4d` (nullable) | Substrate-native 4D point surface. Non-null iff `physicality_type.dimensionality = 4` and the type stores a single 4D position. GiST-indexed via `point4d_gist_ops` (also SP-GiST via `point4d_spgist_ops`). |
+| `linestring4d` | `linestring4d` (nullable) | Substrate-native 4D trajectory surface. Non-null iff `physicality_type.dimensionality = 4` and the type stores a trajectory (composition, edge trajectory, attention path, etc.). GiST-indexed. |
 
-One table for everything. Query `physicality` for any spatial operation across any modality.
+One table for everything. A CHECK constraint enforces exactly one of `geom`, `point4d`, `linestring4d` non-null per row, selected by `physicality_type_id → ref_physicality_type.dimensionality` and the type's declared coordinate shape (`point` vs `trajectory`). Query the physicality table for any spatial operation across any modality; the operator you apply must match the surface for that row's type.
 
-- Tier-0 codepoint: POINTZM on S3 surface (UCA Fibonacci projection). Centroid = same point.
-- Word [c,a,t]: LINESTRINGZM through the S3 positions of c, a, t. Centroid of this linestring = word's own position.
-- Sentence: LINESTRINGZM through word centroids. Centroid = sentence's position.
-- Audio waveform: LINESTRINGZM (X=time, Y=amplitude, Z=frequency band, M=significance).
-- FFT spectrum: LINESTRINGZM (X=frequency bin, Y=magnitude, Z=phase, M=significance). One geometry per analysis result. One row.
-- STFT spectrogram: MULTILINESTRINGZM — each linestring is one time window's FFT. Whole spectrogram = one geometry, one row, one GiST entry.
-- SVD singular values: LINESTRINGZM. Weight matrix comparison = one Fréchet distance call.
-- Image contour: LINESTRINGZM in pixel space. Shape similarity = Fréchet distance.
-- Pitch contour: LINESTRINGZM (X=time, Y=Hz). Prosodic comparison = Fréchet distance.
+Rows using the 4D surface (codepoint S³ positions, compositional trajectories through S³, edge trajectories through S³ / R⁴, embedding fireflies in R⁴):
+- Tier-0 codepoint: `point4d` on S³ (UCA Super-Fibonacci projection — a unit quaternion). Centroid = same point.
+- Word [c,a,t]: `linestring4d` through the S³ positions of c, a, t. 4D centroid of this linestring (`centroid_4d` or `centroid_s3`) = word's own 4D position.
+- Sentence: `linestring4d` through word 4D centroids. Centroid = sentence's 4D position.
+- Embedding firefly: `point4d(eig2, eig3, eig4, ||row||)` from Laplacian eigenmap + Gram-Schmidt.
+- Attention-pattern trajectory: `linestring4d` across S³ attention head positions.
+- SVD singular-value spectra paired with subspace angles, any tensor-operator characteristic curve that is natively 4D: `linestring4d`.
 
-One entity can have multiple physicality rows (different `physicality_type_id`s) — e.g., a word has an S3 trajectory AND a Hilbert curve value.
+Rows using the 2D/3D PostGIS surface (modalities whose physicality is natively 2D or 3D):
+- Audio waveform: LINESTRINGZ (X=time, Y=amplitude, Z=frequency band).
+- FFT spectrum: LINESTRINGZ (X=frequency bin, Y=magnitude, Z=phase).
+- STFT spectrogram: MULTILINESTRINGZ — each linestring is one time window's FFT. Whole spectrogram = one geometry, one row, one GiST entry.
+- Image contour: LINESTRING / LINESTRINGZ in pixel space. Shape similarity = PostGIS `ST_FrechetDistance`.
+- Pitch contour: LINESTRINGZ (X=time, Y=Hz, Z=confidence). Prosodic comparison = PostGIS `ST_FrechetDistance`.
 
-PostGIS operators work universally because geometry types are coordinate containers, not geographic data structures:
-- `ST_FrechetDistance(a, b)` — shape similarity between ANY two trajectories.
+One entity can have multiple physicality rows (different `physicality_type_id`s and different surfaces) — e.g., a word may have a 4D S³ trajectory AND a Hilbert curve value AND a 2D pixel bounding box if rendered.
+
+Operators for the 2D/3D surface (PostGIS, work universally because geometry types are coordinate containers, not geographic data structures):
+- `ST_FrechetDistance(a, b)` — shape similarity between any two 2D/3D trajectories.
 - `ST_HausdorffDistance(a, b)` — set-based shape distance.
-- `ST_DWithin(a, b, d)` — proximity query, GiST-indexed.
-- `ST_LineSubstring(geom, start, end)` — clip a time/frequency range.
-- `ST_Simplify(geom, tolerance)` — downsample.
-- `ST_NPoints(geom)` — sample/point count.
-- `ST_Centroid(geom)` — derive composition's own position from its trajectory.
+- `ST_DWithin(a, b, d)`, `ST_LineSubstring`, `ST_Simplify`, `ST_NPoints`, `ST_Centroid` — standard PostGIS.
+
+Operators for the 4D surface (substrate-native, defined in `specs/native/4d-type-and-index.md`):
+- `<->` (Euclidean 4D distance), `<=>` (S³ geodesic = `acos(clamp(⟨a,b⟩, −1, 1))`).
+- `&&`, `@>`, `<@`, `=` (box overlap / containment / equality) on `box4d`.
+- `centroid_4d(point4d)`, `centroid_s3(point4d)` (direction-only with unit-norm re-projection), `bbox_4d(point4d)` aggregates.
+- `distance_4d`, `distance_s3`, `dot_4d`, `norm_4d`, `normalize_4d`, `slerp`, `antipode`, `super_fibonacci_4d`, `hilbert_4d` / `hilbert_4d_inverse` scalars.
+- Fréchet and Hausdorff primitives over `linestring4d` (substrate-native 4D shape comparison).
+
+The two surfaces never mix in a single operator call — you never pass a `point4d` to `ST_FrechetDistance` or a `LINESTRINGZ` to `distance_s3`. The physicality type's declared dimensionality tells callers which surface to query against.
 
 Custom C/C++ extension functions extend spatial operators for S3-specific distance metrics beyond what PostGIS provides natively.
 
@@ -317,7 +335,8 @@ The edge table is the AI model. Edges connect entities with typed semantics, car
 | `id` | `BIGSERIAL` | Primary key. |
 | `hash` | `BYTEA(32)` | BLAKE3 hash for deduplication. `UNIQUE`. |
 | `edge_type_id` | `INT FK → edge_type(id)` | What kind of relation: `hypernym`, `translation_of`, `has_sense`, `aligned_to_synset`, `nsubj`, `amod`, `recording_of`, etc. |
-| `geom` | `GEOMETRYZM` | Trajectory through participant positions. GiST-indexed. Enables Fréchet distance comparison of relation structures — two dependency trees with similar shapes have similar edge geometries. |
+| `geom` | `GEOMETRY` (nullable) | 2D/3D trajectory (PostGIS LINESTRING / LINESTRINGZ) for edges whose participants live on the 2D/3D surface. GiST-indexed. |
+| `linestring4d` | `linestring4d` (nullable) | 4D trajectory through participant 4D positions in role order for edges whose participants live on the 4D surface (codepoint S³ positions, embedding fireflies, 4D compositions). GiST-indexed. Enables 4D Fréchet comparison of relation structures — two dependency trees with similar shapes have similar edge trajectories. Exactly one of `geom` / `linestring4d` is non-null per edge, selected by the participants' physicality surface. |
 | `provenance_id` | `INT FK → provenance(id)` | Where this edge came from (which seed source, which model, which user session). |
 
 #### Edge Member (N-ary Participants)
@@ -437,7 +456,9 @@ The entity table will hold billions of rows. The edge table will grow even large
 **Index strategy:**
 - `entity(hash)` — B-tree UNIQUE for O(1) deduplication lookup. This is the hottest index.
 - `entity(entity_type_id)` — B-tree for type-filtered queries.
-- `physicality(geom)` — GiST for spatial similarity (Fréchet/Hausdorff distance, `ST_DWithin`).
+- `physicality(geom)` — GiST for 2D/3D spatial similarity (`ST_FrechetDistance`, `ST_HausdorffDistance`, `ST_DWithin`).
+- `physicality(point4d)` — GiST (`point4d_gist_ops`) and SP-GiST (`point4d_spgist_ops`) for 4D proximity, kNN (`<->`, `<=>`), range, and containment.
+- `physicality(linestring4d)` — GiST for 4D trajectory shape similarity (substrate-native Fréchet / Hausdorff over 4D trajectories).
 - `sequence(parent_id, position)` — composite B-tree for ordered child retrieval.
 - `sequence(child_id, parent_id)` — composite B-tree for reverse lookup ("what references this entity?").
 - `edge(hash)` — B-tree UNIQUE for edge deduplication.
@@ -447,7 +468,7 @@ The entity table will hold billions of rows. The edge table will grow even large
 - `significance(edge_id, context_type_id)` — composite B-tree for edge significance lookup.
 - Junction tables (`entity_pos`, `entity_sense`, etc.) — composite B-tree on `(entity_id, *)` for fast classification lookups.
 
-4D PostGIS exploitation (POINTZM, LINESTRINGZM, MULTILINESTRINGZM) is already native. Custom C/C++ extension functions extend spatial operators for S3-specific distance metrics beyond what PostGIS provides natively.
+The substrate uses two coordinate surfaces, both GiST-indexed. PostGIS provides the 2D/3D surface natively (POINT, POINTZ, LINESTRING, LINESTRINGZ, MULTILINESTRINGZ) for modalities whose physicality is natively 2D or 3D. The substrate-native C/C++ extension (see `specs/native/4d-type-and-index.md` and `specs/native/pg-extension.md`) provides the 4D surface — `point4d`, `box4d`, `linestring4d`, GiST and SP-GiST opclasses, Euclidean-4D and S³-geodesic operators, 4D Fréchet/Hausdorff, 4D aggregates, Hilbert-4D ordering. This is required: PostGIS silently drops the M axis from every distance operator and GiST key, so 4D physicality (codepoints on S³, embedding fireflies in R⁴, compositional and edge trajectories in four dimensions) cannot be stored on the PostGIS surface without information loss. The 4D surface is a general-purpose capability set — available to any query that needs to ask a geometric question in four dimensions, not tied to a single feature.
 
 ### Multi-Tenancy
 
@@ -623,7 +644,7 @@ ext/
 
 - [specs/modalities/text.md](../specs/modalities/text.md) -- Runtime text decomposition: bytes -> codepoints -> grapheme clusters -> words -> morphemes -> lemmas/senses -> syntactic structure -> semantic analysis. 7 levels with analysis passes at each.
 - [specs/modalities/image.md](../specs/modalities/image.md) -- Image decomposition: decode -> pixel value compositions -> spatial structure -> color space decomposition -> analysis passes (edges, textures, HOG, DCT, contours, color histograms, perceptual hash). Cascade compression for uniform regions.
-- [specs/modalities/audio.md](../specs/modalities/audio.md) -- Audio decomposition: decode -> PCM -> LinestringZM waveform -> spectral analysis (FFT, STFT, MFCC, chromagram) -> temporal features (pitch, onsets, silence, beats, formants, spectral centroid, zero-crossing, harmonic-percussive separation). Speech and music specific passes.
+- [specs/modalities/audio.md](../specs/modalities/audio.md) -- Audio decomposition: decode -> PCM -> LINESTRINGZ waveform (PostGIS 2D/3D surface, native audio is sample-grid 2D/3D) -> spectral analysis (FFT, STFT, MFCC, chromagram) -> temporal features (pitch, onsets, silence, beats, formants, spectral centroid, zero-crossing, harmonic-percussive separation). Speech and music specific passes.
 - [specs/modalities/video.md](../specs/modalities/video.md) -- Video decomposition: composed from ImageDecomposer + AudioDecomposer + temporal alignment. Scene detection, motion vectors, shot boundaries, I/P/B frame typing, audio-visual alignment.
 
 ## Phase Map

@@ -31,7 +31,6 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private const string HuggingFaceRegistryDisplay = "Hugging Face Hub";
 
     private readonly string _hubRoot;
-    private readonly string _connectionString;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IModelPassCheckpointStore? _checkpointStore;
     private readonly IReferenceDataReader? _referenceDataReader;
@@ -49,7 +48,6 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _checkpointStore = checkpointStore;
         _referenceDataReader = referenceDataReader;
@@ -71,11 +69,10 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             return;
         }
 
-        // Identity resolution (publisher / model / source) runs against the same
-        // Postgres as the pipeline but needs its own connection pool for the
-        // checkpoint store too — share one NpgsqlDataSource across both.
-        await using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(_connectionString);
-        SafetensorsReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        // Identity resolution (publisher / model / source) flows through the same
+        // injected services as the ingestion pipeline; the BaseReferenceTableWriter no
+        // longer opens its own NpgsqlDataSource (audit A.3 — single connection pool).
+        SafetensorsReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
 
         try
         {

@@ -45,7 +45,57 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
     {
-        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb));
+        _physicalities.Add(new PhysicalityEntry(
+            entity,
+            physicalityTypeCode,
+            PhysicalitySurface.PostGisGeom,
+            geomWkb,
+            null,
+            null));
+    }
+
+    public void AddPhysicalityPoint4d(
+        EntityHandle entity,
+        string physicalityTypeCode,
+        double x1,
+        double x2,
+        double x3,
+        double x4)
+    {
+        _physicalities.Add(new PhysicalityEntry(
+            entity,
+            physicalityTypeCode,
+            PhysicalitySurface.Point4D,
+            null,
+            [x1, x2, x3, x4],
+            null));
+    }
+
+    public void AddPhysicalityLineString4d(
+        EntityHandle entity,
+        string physicalityTypeCode,
+        ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices)
+    {
+        if (vertices.Length < 1)
+        {
+            throw new ArgumentException(
+                "linestring4d requires at least one vertex.", nameof(vertices));
+        }
+        double[] flat = new double[vertices.Length * 4];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            flat[i * 4 + 0] = vertices[i].X1;
+            flat[i * 4 + 1] = vertices[i].X2;
+            flat[i * 4 + 2] = vertices[i].X3;
+            flat[i * 4 + 3] = vertices[i].X4;
+        }
+        _physicalities.Add(new PhysicalityEntry(
+            entity,
+            physicalityTypeCode,
+            PhysicalitySurface.LineString4D,
+            null,
+            null,
+            flat));
     }
 
     public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1)

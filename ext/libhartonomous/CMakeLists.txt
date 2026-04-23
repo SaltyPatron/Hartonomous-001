@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 project(hartonomous
     VERSION 0.1.0
     LANGUAGES C CXX
@@ -52,30 +52,100 @@ endif()
 
 include(FetchContent)
 
-# BLAKE3 reference implementation.
+# BLAKE3 — prefer system install, fall back to FetchContent.
+#
+# Why not just FetchContent? BLAKE3 1.5.4's c/CMakeLists.txt branches on
+# CMAKE_C_COMPILER_ID for SIMD-flag tables: GNU / Clang / AppleClang / MSVC
+# only. The Intel icx (IntelLLVM) compiler falls through every branch and the
+# configure step asserts. BLAKE3 is one hash, gains nothing from icx vs gcc,
+# and the right answer is to build it once with gcc (in the Docker pgext
+# layer) then link it here as a system library. icx remains the toolchain
+# for the libhartonomous numerical kernels where it actually wins.
+find_package(BLAKE3 CONFIG QUIET)
+if(BLAKE3_FOUND)
+    # find_package gives the namespaced target BLAKE3::blake3; the rest of this
+    # file links against bare `blake3`. Alias so both branches expose the same
+    # link target name.
+    if(NOT TARGET blake3)
+        add_library(blake3 ALIAS BLAKE3::blake3)
+    endif()
+else()
+    FetchContent_Declare(
+        blake3
+        GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
+        GIT_TAG        1.5.4
+        SOURCE_SUBDIR  c
+    )
+    set(BLAKE3_TESTING OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(blake3)
+endif()
+
+# ── Eigen 3.4.0 (header-only linear algebra) ───────────────────
+# Used for templated fixed-size matrix math, SVD (BDCSVD), Jacobi
+# rotations, and as the backing vector type for Spectra. Downloading
+# the source and adding as INTERFACE target (no install, no tests).
 FetchContent_Declare(
-    blake3
-    GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
-    GIT_TAG        1.5.4
-    SOURCE_SUBDIR  c
+    eigen
+    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+    GIT_TAG        3.4.0
 )
-set(BLAKE3_TESTING OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(blake3)
+set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+FetchContent_GetProperties(eigen)
+if(NOT eigen_POPULATED)
+    FetchContent_Populate(eigen)
+    add_library(eigen INTERFACE)
+    target_include_directories(eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
+endif()
+
+# ── Spectra 1.0.1 (header-only large sparse eigensolver) ───────
+# Lanczos / Arnoldi on top of Eigen. Used for exact top-k eigenvectors
+# of large symmetric sparse matrices (normalized Laplacian of k-NN
+# graphs for embedding fireflies — Phase 3.B). Determinism achieved by
+# MKL CBWR + fixed random-vector seed.
+FetchContent_Declare(
+    spectra
+    GIT_REPOSITORY https://github.com/yixuan/spectra.git
+    GIT_TAG        v1.0.1
+)
+set(SPECTRA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_GetProperties(spectra)
+if(NOT spectra_POPULATED)
+    FetchContent_Populate(spectra)
+    add_library(spectra INTERFACE)
+    target_include_directories(spectra SYSTEM INTERFACE ${spectra_SOURCE_DIR}/include)
+    target_link_libraries(spectra INTERFACE eigen)
+endif()
 
 set(HARTONOMOUS_SOURCES
     src/version.c
     src/runtime_info.c
     src/hash.c
     src/s3_geometry.c
+    src/karcher_s3.c
     src/super_fibonacci.c
     src/hilbert.c
     src/tensor_decode.c
     src/gemm.c
+    src/svd.c
+    src/procrustes.c
     src/knn.c
+    src/knearest_exact.c
+    src/laplacian_eigenmap.cpp
+    src/kmeans_plusplus.c
+    src/delaunay_4d.cpp
     src/sparse_eigs.c
     src/gram_schmidt.c
     src/merkle.c
+    src/distance.c
+    src/centroid.c
+    src/box4d.c
+    src/trajectory.c
+    src/glicko_bulk.c
 )
 
 set(HARTONOMOUS_HEADERS
@@ -97,6 +167,8 @@ target_include_directories(hartonomous
 target_link_libraries(hartonomous
     PRIVATE
         blake3
+        eigen
+        spectra
         MKL::MKL
 )
 if(NOT MSVC)
@@ -119,6 +191,18 @@ set_target_properties(hartonomous PROPERTIES
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
 )
+
+# Statically embed libstdc++ and libgcc into libhartonomous.so on Linux so the
+# .so is self-contained and runs on any distro with glibc >= the build host's.
+# Required because the builder is Ubuntu 22.04 (gcc 11 libstdc++) while the
+# postgis runtime image is Debian bullseye (gcc 10 libstdc++). Eliminates the
+# GLIBCXX_3.4.29 / GLIBC_2.34 ABI mismatch at load time.
+if(NOT MSVC)
+    target_link_options(hartonomous PRIVATE
+        -static-libstdc++
+        -static-libgcc
+    )
+endif()
 
 if(HARTONOMOUS_BUILD_TESTS)
     enable_testing()

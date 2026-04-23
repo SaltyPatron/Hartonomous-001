@@ -26,3 +26,22 @@ void hartonomous_runtime_info(hartonomous_runtime_info_t* out) {
     out->omp_max_threads = omp_get_max_threads();
     out->cbwr_branch     = mkl_cbwr_get(MKL_CBWR_BRANCH);
 }
+
+/*
+ * Force MKL conditional-bitwise-reproducibility to AUTO|STRICT and return the
+ * resolved branch (>= 0). This is the deterministic-execution gate: callers
+ * that need byte-identical math across runs (PG extension load, CLI ingest
+ * entrypoint, test harnesses) must invoke this before doing any compute.
+ *
+ * Idempotent: subsequent calls with CBWR already set are no-ops at the MKL
+ * level. Returns the active branch on success, or -1 if mkl_cbwr_set rejects
+ * the request (which would indicate MKL was used before this call — a
+ * deterministic-init violation we want to surface immediately).
+ */
+int hartonomous_init_determinism(void) {
+    int rc = mkl_cbwr_set(MKL_CBWR_AUTO | MKL_CBWR_STRICT);
+    if (rc != MKL_CBWR_SUCCESS) {
+        return -1;
+    }
+    return mkl_cbwr_get(MKL_CBWR_BRANCH);
+}

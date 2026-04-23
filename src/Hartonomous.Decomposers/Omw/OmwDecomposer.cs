@@ -27,7 +27,6 @@ public sealed partial class OmwDecomposer : BaseDecomposer
     private const double WiktTrustMu = 50000.0;
 
     private readonly string _sourceDir;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -41,7 +40,6 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -65,14 +63,14 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         // Synset keys are "offset:pos" — we need to resolve synsetCode "XXXXXXXX-p" to the hash.
         // Build lookup: "XXXXXXXX-p" → byte[] hash (matching WordNet decomposer's hashing).
         // Also load language code → id map for entity_language junctions.
-        OmwReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        OmwReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             Dictionary<string, int> langIdMap = await refWriter.LoadLanguageCodeMapAsync(ct);
             Log.LanguagesLoaded(Logger, langIdMap.Count);
 
-            // Load synset glosses so we can compute the same content-based hash that WordNet produced.
-            Dictionary<string, string> synsetGlossMap = await refWriter.LoadSynsetGlossMapAsync(ct);
+            // Load UD POS code → id map so we can write entity_pos junctions for each lemma.
+            Dictionary<string, int> posIdMap = await refWriter.LoadPosMapAsync(ct);
 
             long entityCount = 0;
             long edgeCount = 0;
@@ -83,6 +81,11 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             // Key: lemmaHash → (langIds to assign).
             Dictionary<string, byte[]> lemmaKeyToHash = new(500_000, StringComparer.Ordinal);
             Dictionary<string, HashSet<int>> lemmaKeyToLangIds = new(500_000, StringComparer.Ordinal);
+
+            // Track POS assignments per lemma. Key: lemmaKey → set of UD POS strings
+            // ("NOUN", "VERB", "ADJ", "ADV"). Same lemma in multiple synsets of different POS
+            // accumulates all POS — "rake" is both NOUN and VERB.
+            Dictionary<string, HashSet<string>> lemmaKeyToUdPos = new(500_000, StringComparer.Ordinal);
 
             // Track alignment edges to create: (lemmaHash, synsetHash).
             List<(byte[] LemmaHash, byte[] SynsetHash, double TrustMu)> alignments = new(3_000_000);
@@ -110,13 +113,12 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                         continue;
                     }
 
-                    // Compute synset hash matching WordNet decomposer convention.
-                    // SynsetCode format: "XXXXXXXX-p" — look up gloss and hash that.
-                    byte[]? synsetHash = ParseSynsetHash(entry.SynsetCode, synsetGlossMap);
-                    if (synsetHash is null)
-                    {
-                        continue;
-                    }
+                    // Compute synset hash matching WordNet decomposer convention:
+                    // synset identity = ComputeHash(synsetCode) where synsetCode is
+                    // "XXXXXXXX-p" (Princeton WordNet's stable concept identifier).
+                    // Synsets are concepts, not text — their canonical identity is the
+                    // offset+POS, NOT the gloss (which is one of many attached text_compositions).
+                    byte[] synsetHash = ComputeHash(entry.SynsetCode);
 
                     // Compute lemma hash.
                     string lemmaWord = entry.Word;
@@ -124,7 +126,8 @@ public sealed partial class OmwDecomposer : BaseDecomposer
 
                     if (!lemmaKeyToHash.TryGetValue(lemmaKey, out byte[]? lemmaHash))
                     {
-                        (EntityHandle lemmaEntity, byte[] mHash) = EmitWordFormMerkle(batch, lemmaWord, "lemma");
+                        (EntityHandle lemmaEntity, byte[] mHash) =
+                            EmitLemmaMaybeCompound(batch, lemmaWord, ProvenanceCode);
                         lemmaHash = mHash;
                         lemmaKeyToHash[lemmaKey] = lemmaHash;
                         batch.AddSignificance(lemmaEntity, "source_authority", trustMu);
@@ -141,6 +144,19 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                         lemmaKeyToLangIds[lemmaKey] = langIds;
                     }
                     langIds.Add(langId);
+
+                    // Track POS assignment derived from the synset code suffix
+                    // ("XXXXXXXX-p" where p ∈ {n,v,a,r,s}).
+                    string udPos = SynsetCodeToUdPos(entry.SynsetCode);
+                    if (udPos != "X")
+                    {
+                        if (!lemmaKeyToUdPos.TryGetValue(lemmaKey, out HashSet<string>? posSet))
+                        {
+                            posSet = new HashSet<string>(StringComparer.Ordinal);
+                            lemmaKeyToUdPos[lemmaKey] = posSet;
+                        }
+                        posSet.Add(udPos);
+                    }
 
                     alignments.Add((lemmaHash, synsetHash, trustMu));
 
@@ -245,6 +261,28 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             await refWriter.WriteEntityLanguageJunctionsAsync(langJunctions, ct);
             Log.LanguageJunctionsWritten(Logger, langJunctions.Count);
 
+            // ── entity_pos junctions for each (lemma, UD POS) pair ──
+            List<(long EntityId, int PosId)> posJunctions = new(lemmaKeyToUdPos.Count * 2);
+            foreach (KeyValuePair<string, HashSet<string>> kv in lemmaKeyToUdPos)
+            {
+                if (!lemmaKeyToHash.TryGetValue(kv.Key, out byte[]? hash) ||
+                    !entityIdMap.TryGetValue(hash, out long entityId))
+                {
+                    continue;
+                }
+
+                foreach (string udPos in kv.Value)
+                {
+                    if (posIdMap.TryGetValue(udPos, out int posId))
+                    {
+                        posJunctions.Add((entityId, posId));
+                    }
+                }
+            }
+
+            await refWriter.WriteEntityPosJunctionsAsync(posJunctions, ct);
+            Log.PosJunctionsWritten(Logger, posJunctions.Count);
+
             Log.DecompositionComplete(Logger, entityCount, edgeCount, filesProcessed);
         }
         finally
@@ -253,14 +291,25 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         }
     }
 
-    private static byte[]? ParseSynsetHash(string synsetCode, Dictionary<string, string> glossMap)
+    /// <summary>
+    /// Maps an OMW synset code ("XXXXXXXX-p") to the UD POS tag matching
+    /// <c>WordNetParser.PosCharToUdPos</c>: n→NOUN, v→VERB, a/s→ADJ, r→ADV.
+    /// Returns "X" if the suffix is missing or unrecognised.
+    /// </summary>
+    private static string SynsetCodeToUdPos(string synsetCode)
     {
-        // Look up the gloss for this synset code and hash it (matching WordNet's content-based hash).
-        if (glossMap.TryGetValue(synsetCode, out string? gloss))
+        if (string.IsNullOrEmpty(synsetCode) || synsetCode.Length < 2 || synsetCode[^2] != '-')
         {
-            return ComputeHash(gloss);
+            return "X";
         }
-        return null;
+        return synsetCode[^1] switch
+        {
+            'n' => "NOUN",
+            'v' => "VERB",
+            'a' or 's' => "ADJ",
+            'r' => "ADV",
+            _ => "X",
+        };
     }
 
     private static double GetTrustMu(OmwSourceTier tier) => tier switch
@@ -296,6 +345,9 @@ public sealed partial class OmwDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Information, Message = "entity_language junctions: {Count}")]
         public static partial void LanguageJunctionsWritten(ILogger logger, int count);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "entity_pos junctions: {Count}")]
+        public static partial void PosJunctionsWritten(ILogger logger, int count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "OMW complete: {Entities} entities, {Edges} edges from {Files} files")]
         public static partial void DecompositionComplete(ILogger logger, long entities, long edges, int files);

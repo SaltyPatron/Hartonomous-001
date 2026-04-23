@@ -8,10 +8,12 @@ Hartonomous is an invention-specific substrate, not a generic knowledge graph, v
 
 - **One entity table** (`substrate.entity`, migration `0006`) for atoms and compositions only. Identity = BLAKE3 hash of content via `BaseDecomposer.ComputeHash()`. Compositions use Merkle hashing via `ComputeMerkleHash()`.
 - **Separate n-ary edge substrate** (`substrate.edge` + `substrate.edge_member`, migration `0006`) with role-ordered participants, trajectory geometry (`geom` column), and Glicko-2 significance. Edges are NOT entities.
-- **One universal physicality table** (`substrate.physicality`, migration `0006`) for geometry across all modalities. POINTZM for atoms, LINESTRINGZM for compositions. GiST-indexed. `ST_FrechetDistance` compares shapes.
+- **One universal physicality table** (`substrate.physicality`, migration `0006`) for geometry across all modalities, with two coordinate surfaces coexisting in one table. PostGIS `geometry` (POINT / POINTZ / LINESTRINGZ / MULTILINESTRINGZ) for physicality types whose native dimensionality is 2 or 3 (pixel grids, audio sample grids, video-frame time, terrestrial S²) — GiST-indexed, uses `ST_FrechetDistance` / `ST_HausdorffDistance`. Substrate-native `point4d` / `linestring4d` (defined in `specs/native/4d-type-and-index.md`, provided by the `hartonomous` PG extension) for physicality types whose native dimensionality is 4 (codepoint S³ positions from Super-Fibonacci, embedding fireflies in R⁴ from Laplacian eigenmaps, 4D compositional and edge trajectories) — GiST via `point4d_gist_ops`, SP-GiST via `point4d_spgist_ops`, operators `<->` (Euclidean 4D) and `<=>` (S³ geodesic), aggregates `centroid_4d` / `centroid_s3` / `bbox_4d`, 4D Fréchet/Hausdorff. Exactly one coordinate column is non-null per row, selected by `physicality_type_id → ref_physicality_type.dimensionality`. PostGIS cannot hold 4D physicality — its distance operators and GiST keys silently drop the M axis. The 4D surface is a general-purpose capability set available to any query, not pinned to any single feature.
 - **Classification vocabularies** in reference tables (`pos`, `deprel`, `sense`, `language`, etc. — migration `0004`) and junction tables (`entity_pos`, `entity_sense`, etc. — migration `0007`). NOT in the entity or edge substrate.
 - **BLAKE3 identity hashes** cover content only, never placement metadata (position, filename, ordinal, tensor name). Placement lives on `sequence.position`, edges (`has_source`, `in_model`), or `provenance`.
 - **Inference** (`src/Hartonomous.Engine/`) traverses and reweights existing edges via Glicko-2 significance. It does NOT invent new knowledge edges. **Ingestion** (`src/Hartonomous.Decomposers/`) is deterministic — same input + same decomposer version = same substrate state.
+- **One centralized ingestion pipeline** (`src/Hartonomous.Engine/Ingestion/NpgsqlIngestionPipeline.cs`) owns batching, partitioning, parallelization, threading, async, per-batch transactions, hash→id resolution, and backpressure. Every decomposer — modality or seed — is a pure streaming producer of substrate records and does NOT own that machinery. No decomposer-private channels, no decomposer-phase-wide `ResolveEntityIdsAsync`, no two-pass accumulation of cross-batch join state.
+- **Seed decomposers use core decomposers — they never bypass them.** Core (modality) decomposers: text, image, audio, video, telemetry, chess, DNA, medical, safetensors, etc. Seed decomposers: UCD/UCA, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba. A Tatoeba sentence is a full text AST (codepoint → grapheme_cluster → morpheme → word_form → text_composition → paragraph) produced by the TEXT core decomposer; the Tatoeba seed decomposer hands the string to it, receives the text_composition hash, and attaches metadata edges (provenance, entity_language, translation_link, has_contributor). Same string in Tatoeba, in a WordNet example, in a Wiktionary citation, in a user prompt, and in a model output all collapse to ONE text_composition with ONE hash. Applies to every text-bearing content in every decomposer. No decomposer calls `ComputeHash(string)` on user-visible multi-character text to produce a `text_composition`-tier atom.
 
 ## Semantic regression cases
 
@@ -19,7 +21,7 @@ The 10 regression cases in `.claude/skills/hartonomous-semantic-eval/cases.md` c
 
 ## Exact counts
 
-24 migration pairs (0001–0024). 12 phases in the Phase enum. 9 decomposers. 25 entity types. 33 edge types. 7 edge roles. 13 physicality types. 10 significance arenas. 10 provenances. 8 junction tables (3 with Glicko-2).
+36 migration pairs (0001–0036). 12 phases in the Phase enum (`CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `ModelDecomp` → `Wiktionary` → `Tatoeba` → `TextDecomp` → `SignificanceField` → `InferenceEngine` → `Validation`). 9 decomposers. 25 entity types. 33 edge types. 7 edge roles. 13 physicality types. 10 significance arenas. 10 provenances. 8 junction tables (3 with Glicko-2: `entity_pos`, `entity_sense`, `pattern_deprel`).
 
 ## Repo entrypoints
 
@@ -49,7 +51,7 @@ The 10 regression cases in `.claude/skills/hartonomous-semantic-eval/cases.md` c
 | Phase orchestration | `src/Hartonomous.Core/Orchestration/Phase.cs` |
 | Decomposers | `src/Hartonomous.Decomposers/` (Ucd, Iso639, WordNet, Omw, Ud, Safetensors, Wiktionary, Tatoeba) |
 | Engine | `src/Hartonomous.Engine/Orchestration/SequentialPhaseRunner.cs` |
-| Migrations | `sql/migrations/` (0001–0024) |
+| Migrations | `sql/migrations/` (0001–0035) |
 
 ## Supplementary instruction surfaces
 

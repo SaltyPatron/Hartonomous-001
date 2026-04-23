@@ -12,8 +12,8 @@ namespace Hartonomous.Decomposers.Tatoeba;
 /// </summary>
 internal sealed class TatoebaReferenceTableWriter : BaseReferenceTableWriter
 {
-    public TatoebaReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
-        : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public TatoebaReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+        : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 }

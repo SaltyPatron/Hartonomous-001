@@ -1,0 +1,22 @@
+* text=auto
+
+# Shell scripts must always have LF endings even when checked out on Windows.
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# Dockerfiles likewise (some parsers care).
+Dockerfile  text eol=lf
+*.Dockerfile text eol=lf
+
+# SQL scripts run inside Linux containers.
+*.sql       text eol=lf
+
+# Binaries
+*.so        binary
+*.dll       binary
+*.dylib     binary
+*.a         binary
+*.lib       binary
+*.exe       binary
+*.png       binary
+*.jpg       binary

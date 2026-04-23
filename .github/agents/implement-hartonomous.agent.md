@@ -71,4 +71,4 @@ public interface IDecomposer : IAsyncDisposable {
 | Phases | `src/Hartonomous.Core/Orchestration/Phase.cs` |
 | Decomposers | `src/Hartonomous.Decomposers/` (Ucd/, Iso639/, WordNet/, Omw/, Ud/, Safetensors/, Wiktionary/, Tatoeba/) |
 | Engine | `src/Hartonomous.Engine/Orchestration/SequentialPhaseRunner.cs` |
-| Migrations | `sql/migrations/` (0001–0024, next = 0025) |
+| Migrations | `sql/migrations/` (0001–0035, next = 0036) |

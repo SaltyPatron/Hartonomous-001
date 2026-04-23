@@ -1,0 +1,3 @@
+sql/init/*.sh text eol=lf
+ext/hartonomous_pg/sql/*.sh text eol=lf
+Dockerfile* text eol=lf

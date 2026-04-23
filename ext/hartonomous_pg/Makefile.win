@@ -1,0 +1,122 @@
+# Makefile.win — MSVC nmake build for the hartonomous PG extension on Windows.
+#
+# Pattern modeled directly on pgvector's Makefile.win (battle-tested across
+# Postgres 13–18). PGXS does not work natively on Windows, so we reproduce
+# its essentials by hand: link the .obj files into a DLL against
+# $(PGROOT)\lib\postgres.lib using the same include and link conventions
+# the official Postgres MSVC build uses.
+#
+# Prerequisites:
+#   1. PostgreSQL 17 installed via the EDB installer (or compatible). Set:
+#         set "PGROOT=C:\Program Files\PostgreSQL\17"
+#   2. libhartonomous.dll/.lib already built. Default search path is
+#         ext\libhartonomous\build\bin\Release\hartonomous.{dll,lib}
+#      Override with `nmake /F Makefile.win HARTONOMOUS_LIB_DIR=...`.
+#   3. "x64 Native Tools Command Prompt for VS 2022" (or equivalent) — gives
+#      `cl.exe` and `nmake.exe` on PATH.
+#
+# Usage:
+#   nmake /F Makefile.win
+#   nmake /F Makefile.win install     (run as Administrator)
+#   nmake /F Makefile.win installcheck
+#   nmake /F Makefile.win clean
+#
+# The OBJS list MUST stay in sync with the OBJS list in the POSIX Makefile.
+
+EXTENSION = hartonomous
+EXTVERSION = 1.0
+# sql\hartonomous--1.0.sql is the authoritative source (hand-maintained), not a generated artifact.
+
+OBJS = \
+    src\hartonomous.obj \
+    src\pg_blake3.obj \
+    src\pg_traversal.obj \
+    src\pg_point4d.obj \
+    src\pg_box4d.obj \
+    src\pg_distance.obj \
+    src\pg_scalar.obj \
+    src\pg_aggregates.obj \
+    src\pg_gist_point4d.obj \
+    src\pg_spgist_point4d.obj \
+    src\pg_linestring4d.obj \
+    src\pg_trajectory.obj \
+    src\pg_glicko_bulk.obj \
+    src\pg_casts.obj \
+    src\pg_geometry4d.obj \
+    src\pg_gist_geometry4d.obj \
+    src\pg_spgist_geometry4d.obj
+
+REGRESS = hartonomous_test
+REGRESS_OPTS = --inputdir=test --load-extension=$(EXTENSION)
+
+# Auto-vectorization-friendly flags. /arch:AVX2 matches the libhartonomous
+# CMake ceiling. /openmp:llvm matches the native lib too. /MD matches the
+# C runtime PostgreSQL itself is built with on Windows — required, mismatched
+# CRT crashes at the extension/server boundary.
+OPTFLAGS = /O2 /fp:fast /arch:AVX2 /openmp:llvm /MD
+
+!ifndef PGROOT
+!error PGROOT is not set. Example: set "PGROOT=C:\Program Files\PostgreSQL\17"
+!endif
+
+# libhartonomous import library and DLL. CMake's MSVC layout puts hartonomous.lib
+# in build\lib\Release and hartonomous.dll in build\bin\Release. Override either
+# with HARTONOMOUS_LIB_DIR=... / HARTONOMOUS_DLL_DIR=... if your build emits
+# elsewhere.
+!ifndef HARTONOMOUS_LIB_DIR
+HARTONOMOUS_LIB_DIR = ..\libhartonomous\build\lib\Release
+!endif
+!ifndef HARTONOMOUS_DLL_DIR
+HARTONOMOUS_DLL_DIR = ..\libhartonomous\build\bin\Release
+!endif
+!ifndef HARTONOMOUS_INCLUDE_DIR
+HARTONOMOUS_INCLUDE_DIR = ..\libhartonomous\include
+!endif
+
+BINDIR = $(PGROOT)\bin
+INCLUDEDIR = $(PGROOT)\include
+INCLUDEDIR_SERVER = $(PGROOT)\include\server
+LIBDIR = $(PGROOT)\lib
+PKGLIBDIR = $(PGROOT)\lib
+SHAREDIR = $(PGROOT)\share
+
+PG_REGRESS = $(LIBDIR)\pgxs\src\test\regress\pg_regress
+
+CFLAGS = /nologo /W3 \
+    /I"$(INCLUDEDIR_SERVER)\port\win32_msvc" \
+    /I"$(INCLUDEDIR_SERVER)\port\win32" \
+    /I"$(INCLUDEDIR_SERVER)" \
+    /I"$(INCLUDEDIR)" \
+    /I"$(HARTONOMOUS_INCLUDE_DIR)"
+CFLAGS = $(CFLAGS) $(OPTFLAGS) $(PG_CFLAGS)
+
+SHLIB = $(EXTENSION).dll
+LIBS = "$(LIBDIR)\postgres.lib" "$(HARTONOMOUS_LIB_DIR)\hartonomous.lib"
+
+all: $(SHLIB)
+
+.c.obj:
+	$(CC) $(CFLAGS) /c $< /Fo$@
+
+$(SHLIB): $(OBJS)
+	$(CC) $(CFLAGS) $(OBJS) $(LIBS) /link /DLL /OUT:$(SHLIB)
+
+install: all
+	copy $(SHLIB) "$(PKGLIBDIR)"
+	copy $(EXTENSION).control "$(SHAREDIR)\extension"
+	copy sql\$(EXTENSION)--*.sql "$(SHAREDIR)\extension"
+	copy "$(HARTONOMOUS_DLL_DIR)\hartonomous.dll" "$(BINDIR)"
+
+installcheck:
+	"$(PG_REGRESS)" --bindir="$(BINDIR)" $(REGRESS_OPTS) $(REGRESS)
+
+uninstall:
+	del /f "$(PKGLIBDIR)\$(SHLIB)"
+	del /f "$(SHAREDIR)\extension\$(EXTENSION).control"
+	del /f "$(SHAREDIR)\extension\$(EXTENSION)--*.sql"
+
+clean:
+	del /f $(SHLIB) $(EXTENSION).lib $(EXTENSION).exp 2>nul
+	del /f $(DATA_built) 2>nul
+	del /f $(OBJS) 2>nul
+	del /f /s /q results regression.diffs regression.out 2>nul

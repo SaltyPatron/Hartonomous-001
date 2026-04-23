@@ -5,7 +5,7 @@ Centralized definitions for every domain-specific term used across the project d
 ---
 
 ### 4D Embedding Physicality
-The geometric representation of an embedding-matrix row as a `POINTZM` in 4-dimensional concept space. Every ingested model's embeddings are projected into the same 4D frame via Laplacian eigenmap + Gram-Schmidt orthonormalization. Each row becomes a **firefly** stored in the `physicality` table with `physicality_type='embedding_firefly'`. Four dimensions is the minimum ambient dimension in which cross-model Voronoi consensus cells are guaranteed to have well-defined interiors (see **Borsuk-Ulam**). See `specs/engine/embedding-physicality.md`.
+The geometric representation of an embedding-matrix row as a `point4d` in 4-dimensional concept space. Every ingested model's embeddings are projected into the same 4D frame via Laplacian eigenmap + Gram-Schmidt orthonormalization. Each row becomes a **firefly** stored in the `physicality` table with `physicality_type='embedding_firefly'` and a non-null `point4d` column (the PostGIS `geom` column is null for this type because PostGIS distance operators and GiST keys silently drop the fourth axis; see the 4D surface in `specs/native/4d-type-and-index.md`). Four dimensions is the minimum ambient dimension in which cross-model Voronoi consensus cells are guaranteed to have well-defined interiors for every shared token (see **Borsuk-Ulam**). See `specs/engine/embedding-physicality.md`.
 
 ### Analysis Pass
 A C# class that performs a specific analytical operation on decomposed content. Each pass takes entities as input and produces additional entities, edges, physicalities, or junction table entries as output. Examples: `FFTPass`, `EdgeDetectionPass`, `NERPass`. All passes implement a shared `IAnalysisPass` interface. Passes run after structural decomposition and may depend on other passes' output.
@@ -17,7 +17,7 @@ The ingestion policy: every decomposer's content enters the substrate unconditio
 A significance context in which Glicko-2 ratings are computed. Each arena isolates one kind of evaluation: `lexical_disambiguation`, `syntactic_role_fitness`, `translation_quality`, etc. The same entity or edge can have different ratings in different arenas. Arenas are rows in the `significance_context` reference table.
 
 ### Atom
-A leaf-level entity with no children. The lowest structural unit in a given modality. For text, a Unicode codepoint is an atom (tier 0). Atoms are positioned on the S3 surface as POINTZMs — their S3 coordinate IS their centroid. Contrast with **composition**.
+A leaf-level entity with no children. The lowest structural unit in a given modality. For text, a Unicode codepoint is an atom (tier 0). Codepoint atoms are positioned on the S³ surface as unit quaternions stored as `point4d` in the physicality table — the atom's four-coordinate S³ position IS its centroid. Atoms in natively 2D or 3D modalities (individual pixel values, individual audio samples) use the PostGIS 2D/3D surface (`POINT`, `POINTZ`). Contrast with **composition**.
 
 ### Borsuk-Ulam
 Borsuk (1933). Every continuous function from the n-sphere `S^n` into `R^n` sends some pair of antipodal points to the same value. Equivalently, `S^n` cannot be embedded into `R^(n-1)` without collapsing some antipodal pair. Hartonomous consequence: 4D is the smallest ambient dimension in which cross-model Voronoi consensus cells are guaranteed to have well-defined interiors for every shared token, which is the geometric foundation of **4D Embedding Physicality**.
@@ -26,7 +26,7 @@ Borsuk (1933). Every continuous function from the n-sphere `S^n` into `R^n` send
 The canonical hash function used throughout the system. 256-bit output, SIMD-accelerated. Used for entity identity (content hash), composition identity (Merkle hash of ordered children), and edge identity (hash of type + participant hashes). Implemented once in the shared C++ library (`libhartonomous`) and exposed to both the PostgreSQL extension and C# via P/Invoke.
 
 ### Centroid
-The spatial position of a composition entity, derived from the physicality of its children. For a LINESTRINGZM trajectory, the centroid is the geometric center of that linestring (via `ST_Centroid`). This centroid becomes a POINTZM in the parent composition's trajectory. Recursive — each tier's centroid feeds the next tier up.
+The spatial position of a composition entity, derived from the physicality of its children. For a 4D trajectory (`linestring4d` through S³ child positions), the centroid is the 4D center computed via `centroid_4d` (Euclidean) or `centroid_s3` (direction-only, re-projected to the unit sphere) — a `point4d` that becomes one vertex of the parent composition's trajectory. For a 2D/3D trajectory (`LINESTRINGZ`), the centroid is PostGIS `ST_Centroid`. Recursive — each tier's centroid feeds the next tier up, in the same coordinate surface as the composition.
 
 ### Comparison Event
 A recorded evaluation in an arena where two or more alternatives are compared. Drives Glicko-2 rating updates. Example: two candidate senses for an ambiguous word are compared in the `lexical_disambiguation` arena based on traversal evidence. The winner's mu rises, the loser's mu drops, both sigmas decrease.
@@ -56,7 +56,7 @@ A table mapping entities to their classification values for fast application-lay
 Substrate Law #13. No error swallowing, no silent failures, no fallback continuations, no partial results. Every operation succeeds completely or fails explicitly with full diagnostic context. The only acceptable response to failure is: stop, report what broke and why, fix it, re-run.
 
 ### Firefly
-A 4D `POINTZM` physicality of an entity, produced by Track 1 embedding ingestion. Its coordinates are `(eig2, eig3, eig4, ||row||)` — the three non-trivial Laplacian eigenvector components (Gram-Schmidt orthonormalized) plus the embedding row's L2 norm as `m`. One entity can have many firefly physicalities (one per ingested model) sharing the same 4D frame. Used for cross-model **Voronoi Consensus**. See `specs/engine/embedding-physicality.md`.
+A 4D `point4d` physicality of an entity, produced by Track 1 embedding ingestion. Its four coordinates are `(eig2, eig3, eig4, ||row||)` — the three non-trivial Laplacian eigenvector components (Gram-Schmidt orthonormalized) plus the embedding row's pre-normalization L2 norm. One entity can have many firefly physicalities (one per ingested model) sharing the same 4D frame; the ingesting-model provenance is carried by the `has_embedding_in` edge attaching the firefly to its entity, not by a column on the physicality row. Used for cross-model **Voronoi Consensus** and for any other 4D query against the firefly set. See `specs/engine/embedding-physicality.md`.
 
 ### Frayed Edge
 A query that cannot be resolved by traversal because it lands outside any existing Voronoi consensus cell, or traverses toward a destination with no significant path. The geometric or topological evidence of a gap in the substrate. Frayed edges are the substrate's primary trigger for Gödel-engine exploration — they tell the system "you do not know this yet, consider acquiring content that would fill the gap."
@@ -65,16 +65,16 @@ A query that cannot be resolved by traversal because it lands outside any existi
 The Track 2 filter applied to transformation weights during safetensors ingestion. Not magnitude thresholding — activation-based, in the spirit of the Lottery Ticket Hypothesis. A weight (or weight cluster) is significant if it participates in an activation pathway that produces a non-zero downstream response on representative inputs. Weights that never fire are pruned. Contrast with wholesale ingestion (Track 1) which takes all embedding rows regardless of magnitude.
 
 ### Fréchet Distance
-The spatial similarity metric used universally across modalities. `ST_FrechetDistance(a, b)` compares the SHAPE of any two trajectories: word similarity (suffix patterns), syntactic tree similarity, audio waveform similarity, attention pattern similarity. One PostGIS operator, every modality.
+The spatial similarity metric used universally across modalities. For 2D/3D trajectories (image contours, audio waveforms, FFT spectra), PostGIS `ST_FrechetDistance(a, b)` compares the SHAPE of any two `LINESTRING*` geometries. For 4D trajectories (codepoint-composition paths across S³, edge trajectories through 4D participants, attention-pattern paths), the substrate-native 4D Fréchet primitive over `linestring4d` (specified in `specs/native/4d-type-and-index.md`) provides the same comparison without collapsing the fourth axis. Same operator family, two surfaces, every modality covered in the dimensionality it natively lives in.
 
 ### Gram-Schmidt Orthonormalization
-Linear-algebra procedure that turns any linearly-independent vector set into an orthonormal basis. Applied to the top-3 non-trivial Laplacian eigenvectors during Track 1 ingestion to guarantee that firefly `(x, y, z)` coordinates form a right-handed Cartesian frame. PostGIS 3D geometric functions (`ST_3DDistance`, `ST_3DDWithin`, `ST_Centroid`) require orthogonal axes to produce meaningful results; GSO makes the guarantee explicit rather than relying on numerical tolerance of the eigendecomposition solver.
+Linear-algebra procedure that turns any linearly-independent vector set into an orthonormal basis. Applied to the top-3 non-trivial Laplacian eigenvectors during Track 1 ingestion to guarantee that firefly coordinates `(eig2, eig3, eig4)` form an honest orthonormal 3-frame within the `point4d`. The 4D metric primitives (`distance_4d`, `distance_s3`, `centroid_4d`, `centroid_s3`, 4D Fréchet/Hausdorff over `linestring4d`) require orthonormal sub-frames to produce meaningful results; GSO makes the guarantee explicit rather than relying on numerical tolerance of the eigendecomposition solver.
 
 ### Glicko-2
 The rating system used for significance scores. Each significance record has mu (rating mean), sigma (uncertainty), volatility (meta-uncertainty), and games (number of update events). Mu represents estimated strength. Sigma decreases as evidence accumulates. Ratings are updated from comparison events where alternatives compete in an arena.
 
 ### GiST Index
-Generalized Search Tree index in PostGIS. Used on geometry columns (`physicality.geom`, `edge.geom`) for spatial queries: `ST_DWithin`, `ST_FrechetDistance`, `ST_HausdorffDistance`. Enables efficient proximity and similarity queries across all modalities.
+Generalized Search Tree index. Two flavours used in the substrate, matching the two coordinate surfaces. PostGIS GiST on the `physicality.geom` / `edge.geom` columns indexes 2D/3D geometries for `ST_DWithin`, `ST_FrechetDistance`, `ST_HausdorffDistance`. Substrate-native GiST via `point4d_gist_ops` and `linestring4d` GiST opclasses (specified in `specs/native/4d-type-and-index.md`, provided by the Hartonomous PG extension) indexes 4D points and 4D trajectories for `<->` Euclidean-4D kNN, `<=>` S³-geodesic kNN, `&&` / `@>` / `<@` on `box4d`, and 4D Fréchet / Hausdorff. Both enable efficient proximity, shape, and containment queries in their respective dimensionalities. Complementary SP-GiST (`point4d_spgist_ops`) provides 16-way hyperoctant partitioning for high-selectivity 4D queries.
 
 ### Junction Table
 See **Evidence Junction Table**.
@@ -92,7 +92,7 @@ A category of content: `text`, `image`, `audio`, `video`, `model_weights`, `tens
 A stage in the seed ingestion pipeline. Phases are ordered and have dependencies. Phase 0: repo/governance. Phase 1: core algebra (schema, reference table bootstrap). Phase 2a-2f: seed decomposers. Phase 3: model decomposition. Phase 4: significance field. Phase 5: inference engine. Phase 6: validation. See the Phase Map in architecture.md.
 
 ### Physicality
-A geometric representation of an entity, stored in the `physicality` table. One entity can have multiple physicalities (different `physicality_type_id`). Uses PostGIS GEOMETRYZM types (POINTZM, LINESTRINGZM, MULTILINESTRINGZM). GiST-indexed for spatial queries. Text, audio, image, video, model weights — all share one physicality table.
+A geometric representation of an entity, stored in the `physicality` table. One entity can have multiple physicalities (different `physicality_type_id`). The table has two coordinate surfaces, both first-class and both GiST-indexed: PostGIS `geometry` (POINT / POINTZ / LINESTRINGZ / MULTILINESTRINGZ) for natively 2D/3D modalities (pixel grids, audio sample grids, video-frame time, terrestrial S²), and substrate-native `point4d` / `linestring4d` for 4D physicality (codepoint S³ positions, embedding fireflies, compositional and edge trajectories in four dimensions). Exactly one coordinate column is non-null per row, selected by the physicality type's declared dimensionality. Text, audio, image, video, model weights — all share one physicality table and use whichever surface matches their dimensionality.
 
 ### Provenance
 The origin of an entity or edge. Stored as a reference table row with source code, curator class, and initial trust prior (mu). Every entity and edge has a `provenance_id`. Enables filtering by source authority and temporal replay.
@@ -107,7 +107,7 @@ A properly normalized lookup table holding classification vocabulary. POS types,
 Compression mechanism in the `sequence` table. 100 identical elements (e.g., blue pixels) = one row with `count=100` instead of 100 rows. Intrinsic to the Merkle DAG — compression is structural, not a separate pass.
 
 ### S3 (3-Sphere)
-The mathematical surface on which tier-0 atoms are positioned. UCA collation ordering → Super-Fibonacci spiral algorithm → 4D coordinates (x, y, z, m) stored as PostGIS POINTZM. Linguistically related codepoints are geometrically adjacent on this surface. Higher-tier composition centroids drift toward the interior as constituent positions are averaged.
+The unit three-sphere in R⁴, the mathematical surface on which tier-0 codepoint atoms are positioned. UCA collation ordering → Super-Fibonacci spiral algorithm → unit quaternion (four coordinates, x²+y²+z²+w²=1) stored as `point4d` on the substrate's 4D surface. Linguistically related codepoints are geometrically adjacent on this surface (small `<=>` S³-geodesic distance). Higher-tier composition centroids, computed via `centroid_4d` or `centroid_s3`, drift toward the interior of the 4D unit ball as constituent positions are averaged.
 
 ### Seed Data
 Data sources ingested during seed phases to build the substrate's initial knowledge graph. Two roles: **infrastructure** (UCD, ISO 639, WordNet/UD type vocabularies — creates the system's ability to process) and **content** (WordNet synsets, OMW alignments, UD syntactic patterns, AI model edges, Wiktionary, Tatoeba — seeds the knowledge graph with attested facts).
@@ -128,13 +128,13 @@ A recorded disagreement between multiple contributors about the same entity or e
 The safetensors decomposer's split ingestion model. **Track 1 (wholesale):** embedding-matrix rows are projected into 4D fireflies with no sparsity filter. **Track 2 (functional sparsity):** transformation weights are filtered by activation-based participation criteria and kept as explicit typed edges. The two tracks exist because embeddings are atomic reference frames (every row is a lookup key, can't prune) and transformations are ensembles of learned rules (most rows are gradient-descent noise, should prune). See `specs/decomposers/safetensors.md`.
 
 ### Super-Fibonacci Spiral
-The algorithm used to project UCA collation ordering onto the S3 surface. Produces a uniformly distributed set of points on the 3-sphere. Each codepoint gets a unique POINTZM position determined by its collation rank. The algorithm ensures linguistically adjacent codepoints (by collation weight) are geometrically adjacent on the sphere.
+The algorithm (`super_fibonacci_4d`) used to project UCA collation ordering onto the S³ surface. Produces a uniformly distributed set of unit quaternions on the 3-sphere. Each codepoint gets a unique `point4d` position determined by its collation rank. The algorithm ensures linguistically adjacent codepoints (by collation weight) are geometrically adjacent on the sphere under `<=>` S³-geodesic distance.
 
 ### Tier
 The structural depth of an entity in the Merkle DAG. Tier 0 = atoms (codepoints, individual pixel values). Tier N = compositions over tier-(N-1) entities. Emergent from reference depth, not hardcoded. Higher tiers have physicality centroids closer to the S3 interior.
 
 ### Trajectory
-The geometric shape of a composition or edge. A composition's trajectory is a LINESTRINGZM through its children's centroids. An edge's trajectory is a LINESTRINGZM through its participants' positions. Trajectory shape encodes structural similarity — `ST_FrechetDistance` between two trajectories quantifies how similarly shaped they are.
+The geometric shape of a composition or edge. For 4D participants (codepoint compositions, embedding fireflies, edges between 4D entities) the trajectory is a `linestring4d` through the participants' `point4d` positions in sequence / role order. For 2D/3D participants (image contours, audio waveforms, pixel-grid edges) the trajectory is a PostGIS `LINESTRING*`. Trajectory shape encodes structural similarity — Fréchet distance between two trajectories (PostGIS `ST_FrechetDistance` on 2D/3D, substrate-native 4D Fréchet on `linestring4d`) quantifies how similarly shaped they are.
 
 ### Trust Prior
 The initial Glicko-2 mu assigned to entities and edges from a given provenance source. Authoritative sources (Unicode Consortium, ISO) get higher priors. Community sources (Wiktionary, Tatoeba) get lower priors. Trust priors are the starting point — arena dynamics adjust them from evidence.

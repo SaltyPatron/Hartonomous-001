@@ -1,30 +1,33 @@
 services:
   postgres:
-    build:
-      context: .
-      dockerfile: Dockerfile.pg
+    # Image is built by scripts/docker/Build.ps1 (4-layer stack).
+    # Run: pwsh scripts/docker/Build.ps1
+    image: hartonomous-postgres:latest
     container_name: hartonomous-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-hartonomous}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hartonomous}
       POSTGRES_DB: ${POSTGRES_DB:-hartonomous}
-      PGDATA: /var/lib/postgresql/data/pgdata
+      PGDATA: /var/lib/postgresql/data
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./ext/hartonomous_pg:/hartonomous_pg:ro
-      - ./sql/init:/docker-entrypoint-initdb.d:ro
-    shm_size: 1g
+    shm_size: 2g
     command: >
       postgres
-        -c shared_buffers=512MB
+        -c shared_buffers=1GB
         -c work_mem=64MB
-        -c maintenance_work_mem=256MB
-        -c max_wal_size=2GB
+        -c maintenance_work_mem=512MB
+        -c max_wal_size=8GB
+        -c min_wal_size=1GB
+        -c checkpoint_timeout=15min
+        -c checkpoint_completion_target=0.9
+        -c wal_compression=on
         -c effective_cache_size=2GB
         -c random_page_cost=1.1
+        -c synchronous_commit=off
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hartonomous} -d ${POSTGRES_DB:-hartonomous}"]
       interval: 5s

@@ -13,8 +13,8 @@ namespace Hartonomous.Decomposers.Ucd;
 /// </summary>
 internal sealed class UcdReferenceTableWriter : BaseReferenceTableWriter
 {
-    public UcdReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
-        : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public UcdReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+        : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 

@@ -1,0 +1,12 @@
+[submodule "external/postgres"]
+	path = external/postgres
+	url = https://github.com/postgres/postgres.git
+[submodule "external/postgis"]
+	path = external/postgis
+	url = https://github.com/postgis/postgis.git
+[submodule "external/geos"]
+	path = external/geos
+	url = https://github.com/libgeos/geos.git
+[submodule "external/proj"]
+	path = external/proj
+	url = https://github.com/OSGeo/PROJ.git

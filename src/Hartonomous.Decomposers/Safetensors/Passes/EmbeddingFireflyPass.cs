@@ -98,8 +98,7 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
                     .Finalize();
 
                 EntityHandle firefly = session.Batch.AddEntity(fireflyHash, "bpe_token");
-                byte[] wkb = PointZMToWkb(x[i], y[i], z[i], magnitude[i]);
-                session.Batch.AddPhysicality(firefly, "embedding_firefly", wkb);
+                session.Batch.AddPhysicalityPoint4d(firefly, "embedding_firefly", x[i], y[i], z[i], magnitude[i]);
                 session.Batch.AddSignificance(firefly, "model_trust", ModelDerivedTrustMu);
                 session.Batch.AddEntityModelSource(firefly, context.Source.ModelSourceId);
 
@@ -130,18 +129,6 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
             mag[i] = Math.Sqrt(sumSq);
         }
         return mag;
-    }
-
-    private static byte[] PointZMToWkb(double x, double y, double z, double m)
-    {
-        byte[] wkb = new byte[37];
-        wkb[0] = 1;
-        BinaryPrimitives.WriteUInt32LittleEndian(wkb.AsSpan(1), 0xC0000001u); // POINTZM
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(5), x);
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(13), y);
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(21), z);
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(29), m);
-        return wkb;
     }
 
     private static partial class Log

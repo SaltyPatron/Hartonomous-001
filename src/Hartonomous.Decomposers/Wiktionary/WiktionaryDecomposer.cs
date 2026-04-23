@@ -79,7 +79,6 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
     private const string WiktEtymEtymon = "wikt_etym_etymon";
 
     private readonly string _jsonlPath;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -93,7 +92,6 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _jsonlPath = ResolveJsonlPath(config.SourceDirectory);
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -129,7 +127,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
         IProgressReporter reporter,
         CancellationToken ct)
     {
-        await using WiktionaryReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        await using WiktionaryReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
 
         await PrepareReferenceDataAsync(refWriter, ct);
 
@@ -420,7 +418,8 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
     {
         // ── Lemma ──
         string lemmaForm = entry.Word;
-        (EntityHandle lemmaEntity, byte[] lemmaHash) = EmitWordFormMerkle(batch, lemmaForm, "lemma");
+        (EntityHandle lemmaEntity, byte[] lemmaHash) =
+            EmitLemmaMaybeCompound(batch, lemmaForm, ProvenanceCode);
         batch.AddSignificance(lemmaEntity, "source_authority", TrustPriorMu);
         EmitContourPhysicality(batch, lemmaEntity, lemmaForm);
         needIds.Add(lemmaHash);
@@ -632,7 +631,8 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
             }
 
             string targetLemma = t.Word;
-            (EntityHandle targetEntity, byte[] targetHash) = EmitWordFormMerkle(batch, targetLemma, "lemma");
+            (EntityHandle targetEntity, byte[] targetHash) =
+                EmitLemmaMaybeCompound(batch, targetLemma, ProvenanceCode);
             needIds.Add(targetHash);
 
             batch.AddSignificance(targetEntity, "source_authority", TrustPriorMu);
@@ -734,7 +734,8 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
             }
 
             string target = rel.Word;
-            (EntityHandle targetEntity, byte[] targetHash) = EmitWordFormMerkle(batch, target, "lemma");
+            (EntityHandle targetEntity, byte[] targetHash) =
+                EmitLemmaMaybeCompound(batch, target, ProvenanceCode);
             needIds.Add(targetHash);
 
             batch.AddSignificance(targetEntity, "source_authority", TrustPriorMu);
@@ -783,7 +784,8 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
             }
 
             string target = rel.Word;
-            (EntityHandle targetEntity, byte[] targetHash) = EmitWordFormMerkle(batch, target, "lemma");
+            (EntityHandle targetEntity, byte[] targetHash) =
+                EmitLemmaMaybeCompound(batch, target, ProvenanceCode);
             needIds.Add(targetHash);
 
             batch.AddSignificance(targetEntity, "source_authority", TrustPriorMu);
@@ -833,7 +835,8 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
         }
 
         string target = sourceWord;
-        (EntityHandle targetEntity, byte[] targetHash) = EmitWordFormMerkle(batch, target, "lemma");
+        (EntityHandle targetEntity, byte[] targetHash) =
+            EmitLemmaMaybeCompound(batch, target, ProvenanceCode);
         needIds.Add(targetHash);
 
         batch.AddSignificance(targetEntity, "source_authority", TrustPriorMu);

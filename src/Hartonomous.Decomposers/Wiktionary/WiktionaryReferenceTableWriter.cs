@@ -10,8 +10,8 @@ namespace Hartonomous.Decomposers.Wiktionary;
 /// </summary>
 internal sealed class WiktionaryReferenceTableWriter : BaseReferenceTableWriter
 {
-    public WiktionaryReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
-        : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public WiktionaryReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+        : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 }

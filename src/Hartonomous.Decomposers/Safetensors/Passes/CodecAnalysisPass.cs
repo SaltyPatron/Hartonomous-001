@@ -188,39 +188,20 @@ internal sealed partial class CodecAnalysisPass : IModelAnalysisPass
                 ]);
 
                 // S³ placement via Super-Fibonacci: index → deterministic S³
-                // point, with the codeword's L2 norm on the M coordinate so the
-                // codeword is still reachable by Hilbert index at inference time.
-                byte[] wkb = BuildSuperFibonacciPointZm(i, codes, norms[i]);
-                session.Batch.AddPhysicality(codeEntity, "codec_codevector_position", wkb);
+                // point, with the codeword's L2 norm on the 4th coordinate so
+                // the codeword is still reachable by Hilbert index at inference
+                // time.
+                double[] parms = [i, codes];
+                double[] quat = new double[4];
+                SuperFibonacci.Project(parms, quat);
+                session.Batch.AddPhysicalityPoint4d(
+                    codeEntity, "codec_codevector_position",
+                    quat[0], quat[1], quat[2], norms[i]);
             }
 
             Log.CodebookAnalyzed(_logger, t.Info.Name, codes, dim, deadCodes, entropy, meanPairSqSim);
         }
         return Task.CompletedTask;
-    }
-
-    /// <summary>
-    /// Deterministic placement on S³ via Super-Fibonacci quaternion sequence.
-    /// Index = codeword position; scale on M = L2 norm. Codewords from identical
-    /// codebooks therefore land on identical points — placement corroborates
-    /// content.
-    /// </summary>
-    private static byte[] BuildSuperFibonacciPointZm(int idx, int total, double magnitude)
-    {
-        double[] parms = new double[2];
-        parms[0] = idx;
-        parms[1] = total;
-        double[] quat = new double[4];
-        SuperFibonacci.Project(parms, quat);
-
-        byte[] wkb = new byte[37];
-        wkb[0] = 1;
-        BinaryPrimitives.WriteUInt32LittleEndian(wkb.AsSpan(1), 0xC0000001u); // POINTZM
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(5), quat[0]);
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(13), quat[1]);
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(21), quat[2]);
-        BinaryPrimitives.WriteDoubleLittleEndian(wkb.AsSpan(29), magnitude);
-        return wkb;
     }
 
     private static partial class Log

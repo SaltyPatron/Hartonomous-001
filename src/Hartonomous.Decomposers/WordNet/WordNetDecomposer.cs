@@ -25,7 +25,6 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
     private const double TrustPriorMu = 95000.0;
 
     private readonly string _dictDir;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -39,7 +38,6 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _dictDir = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -88,7 +86,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
         Log.Parsed(Logger, allSynsets.Count, senseIndex.Count, morphExceptions.Count);
 
-        WordNetReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        WordNetReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             // ── Load reference data ──
@@ -176,25 +174,14 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
                     if (!lemmaToHash.ContainsKey(lemmaKey))
                     {
-                        (EntityHandle lemmaEntity, byte[] lemmaHash) = EmitWordFormMerkle(batch, lemmaKey, "lemma");
+                        // EmitLemmaMaybeCompound: monolexical → single lemma; multi-word
+                        // ("high_rise") → lemma + part word_forms + lexicalized_compound edge.
+                        (EntityHandle lemmaEntity, byte[] lemmaHash) =
+                            EmitLemmaMaybeCompound(batch, lemmaKey, ProvenanceCode);
                         lemmaToHash[lemmaKey] = lemmaHash;
                         batch.AddSignificance(lemmaEntity, "source_authority", TrustPriorMu);
 
-                        if (lemmaVertices.Count >= 2)
-                        {
-                            batch.AddPhysicality(
-                                lemmaEntity,
-                                "contour",
-                                PhysicalityEmitter.LineStringZmWkb(lemmaVertices));
-                        }
-                        else if (lemmaVertices.Count == 1)
-                        {
-                            (double x, double y, double z, double m) = lemmaVertices[0];
-                            batch.AddPhysicality(
-                                lemmaEntity,
-                                "s3_position",
-                                PhysicalityEmitter.PointZmWkb(x, y, z, m));
-                        }
+                        EmitContourPhysicality(batch, lemmaEntity, lemmaKey);
 
                         entityCount++;
                     }
@@ -209,31 +196,33 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                     }
                 }
 
-                // Synset physicality = MULTILINESTRINGZM over member lemma trajectories.
-                // Each linestring component needs >= 2 vertices; single-codepoint members are
-                // replaced by a degenerate 2-vertex line at the same point so multi-linestring
-                // topology stays well-formed.
+                // Synset physicality = the S³ centroid of every member-lemma
+                // vertex. The synset is one concept at one place on S³; the
+                // member lemmas already preserve their own trajectories. We
+                // average all (x, y, z, m) coordinates across every member
+                // contour, then L2-normalize so the result lands on the unit
+                // 3-sphere.
                 if (synsetMemberContours.Count > 0)
                 {
-                    List<IReadOnlyList<(double X, double Y, double Z, double M)>> wellFormed =
-                        new(synsetMemberContours.Count);
-                    foreach (IReadOnlyList<(double X, double Y, double Z, double M)> m in synsetMemberContours)
+                    double sx = 0, sy = 0, sz = 0, sm = 0;
+                    int n = 0;
+                    foreach (IReadOnlyList<(double X, double Y, double Z, double M)> contour in synsetMemberContours)
                     {
-                        if (m.Count >= 2)
+                        foreach ((double X, double Y, double Z, double M) v in contour)
                         {
-                            wellFormed.Add(m);
-                        }
-                        else if (m.Count == 1)
-                        {
-                            wellFormed.Add(new[] { m[0], m[0] });
+                            sx += v.X; sy += v.Y; sz += v.Z; sm += v.M;
+                            n++;
                         }
                     }
-                    if (wellFormed.Count > 0)
+                    if (n > 0)
                     {
-                        batch.AddPhysicality(
-                            synsetEntity,
-                            "contour",
-                            PhysicalityEmitter.MultiLineStringZmWkb(wellFormed));
+                        double cx = sx / n, cy = sy / n, cz = sz / n, cm = sm / n;
+                        double norm = Math.Sqrt(cx * cx + cy * cy + cz * cz + cm * cm);
+                        if (norm > 0)
+                        {
+                            cx /= norm; cy /= norm; cz /= norm; cm /= norm;
+                            batch.AddPhysicalityPoint4d(synsetEntity, "s3_position", cx, cy, cz, cm);
+                        }
                     }
                 }
 
@@ -271,24 +260,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 // word_sense trajectory = the spelling of its lemma (the part of the sense key
                 // before the first '%'). Same geometric trajectory as the underlying lemma but
                 // attached as an independent physicality on the sense entity.
-                string senseLemma = senseLemmaStr;
-                List<(double, double, double, double)> senseVertices =
-                    PhysicalityEmitter.SurfaceFormVertices(senseLemma);
-                if (senseVertices.Count >= 2)
-                {
-                    batch.AddPhysicality(
-                        senseEntity,
-                        "contour",
-                        PhysicalityEmitter.LineStringZmWkb(senseVertices));
-                }
-                else if (senseVertices.Count == 1)
-                {
-                    (double x, double y, double z, double m) = senseVertices[0];
-                    batch.AddPhysicality(
-                        senseEntity,
-                        "s3_position",
-                        PhysicalityEmitter.PointZmWkb(x, y, z, m));
-                }
+                EmitContourPhysicality(batch, senseEntity, senseLemmaStr);
 
                 if (batch.EntityCount >= BatchSize)
                 {
@@ -306,7 +278,8 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 string inflKey = exc.InflectedForm;
                 if (!lemmaToHash.ContainsKey(inflKey))
                 {
-                    (EntityHandle entity, byte[] hash) = EmitWordFormMerkle(batch, inflKey, "lemma");
+                    (EntityHandle entity, byte[] hash) =
+                        EmitLemmaMaybeCompound(batch, inflKey, ProvenanceCode);
                     lemmaToHash[inflKey] = hash;
                     batch.AddSignificance(entity, "source_authority", TrustPriorMu);
 
@@ -319,7 +292,8 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                     string baseKey = baseForm;
                     if (!lemmaToHash.ContainsKey(baseKey))
                     {
-                        (EntityHandle entity, byte[] hash) = EmitWordFormMerkle(batch, baseKey, "lemma");
+                        (EntityHandle entity, byte[] hash) =
+                            EmitLemmaMaybeCompound(batch, baseKey, ProvenanceCode);
                         lemmaToHash[baseKey] = hash;
                         batch.AddSignificance(entity, "source_authority", TrustPriorMu);
 
@@ -336,33 +310,19 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 }
             }
 
-            // Verb frame template entities.
+            // Verb frame template entities. Templates are real text (e.g. "Somebody ----s")
+            // → emit through the canonical Merkle path so identical strings from
+            // Wiktionary citations or text corpora collapse onto the same text_composition.
             Dictionary<int, byte[]> frameIdToHash = new(verbSentences.Count);
             foreach (VerbSentence vs in verbSentences)
             {
-                byte[] hash = ComputeHash(vs.Template);
+                (EntityHandle entity, byte[] hash) =
+                    EmitWordFormMerkle(batch, vs.Template, "text_composition");
                 frameIdToHash[vs.Id] = hash;
-                EntityHandle entity = batch.AddEntity(hash, "text_composition");
                 batch.AddSignificance(entity, "source_authority", TrustPriorMu);
 
                 // text_composition trajectory = contour through every codepoint of the template.
-                List<(double, double, double, double)> frameVertices =
-                    PhysicalityEmitter.SurfaceFormVertices(vs.Template);
-                if (frameVertices.Count >= 2)
-                {
-                    batch.AddPhysicality(
-                        entity,
-                        "contour",
-                        PhysicalityEmitter.LineStringZmWkb(frameVertices));
-                }
-                else if (frameVertices.Count == 1)
-                {
-                    (double x, double y, double z, double m) = frameVertices[0];
-                    batch.AddPhysicality(
-                        entity,
-                        "s3_position",
-                        PhysicalityEmitter.PointZmWkb(x, y, z, m));
-                }
+                EmitContourPhysicality(batch, entity, vs.Template);
 
                 entityCount++;
             }

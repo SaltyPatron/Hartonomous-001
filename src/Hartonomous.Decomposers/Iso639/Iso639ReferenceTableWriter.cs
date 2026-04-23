@@ -12,8 +12,8 @@ namespace Hartonomous.Decomposers.Iso639;
 /// </summary>
 internal sealed class Iso639ReferenceTableWriter : BaseReferenceTableWriter
 {
-    public Iso639ReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
-        : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public Iso639ReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+        : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 

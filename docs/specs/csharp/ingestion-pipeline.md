@@ -1,25 +1,62 @@
 # Ingestion Pipeline
 
-**Status**: ✅ Complete
+**Status**: 🚧 Architectural invariant documented; current implementation has pass-2 anti-patterns in seed decomposers (OMW, UCD, WordNet) that must be eliminated. See § *Invariant* and § *Anti-patterns* below.
 
-The bridge between C# decomposer output and PostgreSQL stored procedures. Batching, transactions, call sequence, and connection management.
+The bridge between every decomposer (modality or seed) and the substrate. One centralized pipeline owns batching, partitioning, parallelization, threading, async, commit boundaries, hash→id resolution, and backpressure. Every decomposer is a pure record producer.
+
+---
+
+## Invariant
+
+**The pipeline is invention-level infrastructure. Decomposers are adapters.**
+
+There is exactly one ingestion pipeline. Every decomposer — text, image, audio, video, telemetry, chess games, DNA, medical data, safetensors models, UCD, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba — produces records for that pipeline and nothing else. No decomposer owns a transaction. No decomposer owns a channel. No decomposer calls `ResolveEntityIdsAsync` to stitch its own cross-batch joins. No decomposer runs a "pass 2" over accumulated hashes.
+
+Two classes of decomposer, both producers, no architectural difference:
+1. **Modality (core) decomposers** — ingest native content of a modality. Text, image, audio, video, telemetry, chess PGN, DNA FASTA, medical DICOM, safetensors weights, etc. These OWN the AST decomposition for their modality (e.g., the text decomposer owns codepoint → grapheme_cluster → morpheme → word_form → text_composition → paragraph → document).
+2. **Seed decomposers** — ingest authoritative foundational lexicons so the substrate has structural grammar to reason against. UCD/UCA, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba. The database IS the model; seed decomposers seed its foundational grammar.
+
+### Seed decomposers USE core decomposers — they do not bypass them
+
+A Tatoeba sentence is NOT a flat `tatoeba_sentence` atom that carries the raw string. It is a full text AST produced by the TEXT core decomposer: codepoint → grapheme_cluster → morpheme → word_form → text_composition (Merkle) → paragraph → document. Each level is an entity with its own BLAKE3 content hash. The Tatoeba seed decomposer's job is to hand the raw string to the text decomposer, receive back the root text_composition hash, and attach metadata edges/junctions on top (provenance = tatoeba, `entity_language` = eng, `translation_link` to another sentence, `has_contributor`, etc.).
+
+**Same content = same hash at every level of the AST.** "Hello world" in a Tatoeba row, in a WordNet example gloss, in a Wiktionary citation, in a user prompt, and in a model-generated output all collapse to ONE `text_composition` entity with ONE hash. The per-source provenance/edges/junctions diverge; the content atom never duplicates. This is the invention — content addressing at every tier of the AST, shared across every decomposer that encounters that content.
+
+This principle applies everywhere text lives:
+- **WordNet glosses and examples** — full text AST, not opaque text_composition atoms. "a tool for gathering leaves" decomposes into its word_forms, morphemes, graphemes, codepoints. Every one is shared with any other text containing those substrings.
+- **Wiktionary** definitions, etymologies, pronunciations (IPA is text), hyphenation annotations — text AST.
+- **UD sentences** — text AST via the text decomposer; UD overlays syntactic dependency edges on top of the word_forms the text decomposer already produced.
+- **Safetensors** model config JSON string values, tokenizer vocab entries, architecture metadata — text AST.
+- **Any modality carrying embedded text** — image captions, audio transcripts, video subtitles, chess PGN comments, medical report narrative — text AST.
+
+And symmetrically for other modalities when they appear embedded in text: an image URL in a Wiktionary entry, an audio clip referenced from a Tatoeba row, a tensor referenced from a model card — the seed/metadata decomposer hands the bytes to the core decomposer for that modality and references the resulting content hash.
+
+### Phase ordering consequence
+
+UCD/UCA must run first — it seeds codepoint atoms. Immediately after, the TEXT core decomposer service must be available (via DI) to every subsequent decomposer. WordNet, UD, Wiktionary, Tatoeba, Safetensors, and every modality decomposer route their embedded text through it. No decomposer in the system calls `ComputeHash(string)` directly on a user-visible string and emits it as an atomic entity — that bypasses the AST and breaks same-content-same-hash.
 
 ---
 
 ## Architecture
 
 ```
-Decomposer
-  → creates IIngestionBatch (in-memory buffer)
-  → calls pipeline.SubmitBatchAsync(batch)
+Decomposer (streaming producer — modality or seed, no distinction)
+  → creates IIngestionBatch
+  → emits records: entity (hash), edge (type + member hashes/handles),
+                   junction, physicality, sequence, significance
+  → calls pipeline.SubmitBatchAsync(batch) when batch thresholds are reached
+  → SINGLE PASS over the source — no pass-2, no cross-batch accumulation
 
-Pipeline (NpgsqlIngestionPipeline)
-  → opens transaction
-  → resolves entity hashes → IDs (SELECT + batch_upsert_entities)
-  → remaps EntityHandles to real entity_ids
+Pipeline (NpgsqlIngestionPipeline — owns everything non-record)
+  → batching, flush thresholds, bounded-channel parallelism
+  → per-batch transaction
+  → UpsertEntitiesAsync (hash → id)
+  → resolves cross-batch hashes in edges/junctions via
+    SELECT id FROM substrate.entity WHERE hash = ANY($1)
+  → remaps EntityHandles + resolved hashes to real entity_ids
   → calls stored procedures in FK order
   → commits transaction
-  → reports stats
+  → reports stats + progress
 ```
 
 ---
@@ -93,6 +130,18 @@ COMMIT
 If any step fails, the entire transaction rolls back. No partial batches in the database. The decomposer receives the exception and propagates it — the phase runner halts.
 
 **No savepoints.** A batch is the atomic unit. If one entity in a 10,000-entity batch has a corrupt hash, the entire batch fails. The operator fixes the source data and re-runs the decomposer. The decomposer is idempotent (entity upsert on hash + ON CONFLICT DO NOTHING) so re-running is safe.
+
+---
+
+## Anti-patterns (current code violations — to be eliminated)
+
+1. **Pass-1 (atoms) / Pass-2 (connective tissue) inside a decomposer.** A decomposer that flushes entity batches, then calls `pipeline.ResolveEntityIdsAsync(allHashes)` against the entire phase's hash set, then iterates a second time to emit edges and junctions by integer id, is doing the pipeline's job badly. Symptoms: `List<(byte[] LemmaHash, byte[] SynsetHash, double TrustMu)> alignments = new(3_000_000)` (OMW), two-pass loops over `allCodepoints` (UCD), large `glossEntries`/`exampleEntries` lists held across the phase (WordNet). Memory grows linearly in the phase input, not in the batch. Replace by emitting edges at the point of production via hash-valued `EdgeMemberSpec` that the pipeline resolves at batch-commit time (`SELECT id FROM substrate.entity WHERE hash = ANY($1)` for any hashes not present in the current batch).
+
+2. **Decomposer-owned parallelism.** UD and Wiktionary each implement their own `Channel.CreateBounded` producer/consumer over `Parallel.ForEachAsync`. That logic belongs on the pipeline, applied uniformly across every decomposer. Decomposers should be single-threaded streaming producers; the pipeline distributes work.
+
+3. **Seed decomposers bypassing core decomposers.** Tatoeba emitting `tatoeba_sentence` entities as atoms whose hash comes from the raw string directly. WordNet emitting gloss and example strings as opaque `text_composition` entities without running them through the text decomposer. Wiktionary storing etymology text and IPA pronunciation as flat strings. Every one of these routes its text content around the text-modality AST, producing `text_composition` hashes that will NOT match the same content appearing in a user prompt or another seed source. This defeats the invention.
+
+4. **Decomposer-side `ComputeHash(string)` on user-visible text.** Any time a decomposer takes a multi-character string destined for a `text_composition`-tier entity and hashes it directly, it is bypassing the AST. The only callers that may hash raw strings as atoms are the core decomposers of the matching modality (text decomposer hashes graphemes/codepoints; image decomposer hashes pixel regions; audio decomposer hashes audio chunks), and only at the atom tier.
 
 ---
 

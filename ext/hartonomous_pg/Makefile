@@ -2,7 +2,24 @@ EXTENSION    = hartonomous
 EXTVERSION   = 1.0
 
 MODULE_big   = hartonomous
-OBJS         = src/hartonomous.o src/pg_blake3.o src/pg_geometry.o src/pg_traversal.o
+# 4D type surface (P1a.2/.3) replaces the prior pg_geometry.c PostGIS bridge.
+OBJS         = src/hartonomous.o \
+               src/pg_blake3.o \
+               src/pg_traversal.o \
+               src/pg_point4d.o \
+               src/pg_box4d.o \
+               src/pg_distance.o \
+               src/pg_scalar.o \
+               src/pg_aggregates.o \
+               src/pg_gist_point4d.o \
+               src/pg_spgist_point4d.o \
+               src/pg_linestring4d.o \
+               src/pg_trajectory.o \
+               src/pg_glicko_bulk.o \
+               src/pg_casts.o \
+               src/pg_geometry4d.o \
+               src/pg_gist_geometry4d.o \
+               src/pg_spgist_geometry4d.o
 
 DATA         = sql/hartonomous--$(EXTVERSION).sql
 PG_CPPFLAGS  = -I$(srcdir)/../libhartonomous/include

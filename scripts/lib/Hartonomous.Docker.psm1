@@ -22,11 +22,11 @@ function Start-HartDockerDesktop {
         throw "Docker daemon not reachable. Auto-start only supported on Windows (Docker Desktop). On Linux/macOS start dockerd manually."
     }
 
-    $candidates = foreach ($p in $Cfg.Docker.DesktopCandidatePaths) {
+    $candidates = @(foreach ($p in $Cfg.Docker.DesktopCandidatePaths) {
         $expanded = $ExecutionContext.InvokeCommand.ExpandString($p)
         if (Test-Path $expanded) { $expanded }
-    }
-    if (-not $candidates) {
+    })
+    if ($candidates.Count -eq 0) {
         throw "Docker Desktop executable not found in any of: $($Cfg.Docker.DesktopCandidatePaths -join ', '). Install Docker Desktop or start it manually."
     }
 

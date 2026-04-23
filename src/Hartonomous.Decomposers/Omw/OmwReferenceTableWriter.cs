@@ -7,8 +7,8 @@ namespace Hartonomous.Decomposers.Omw;
 
 internal sealed class OmwReferenceTableWriter : BaseReferenceTableWriter
 {
-    public OmwReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
-        : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public OmwReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+        : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 

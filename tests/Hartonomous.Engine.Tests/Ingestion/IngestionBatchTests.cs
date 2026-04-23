@@ -163,12 +163,57 @@ public sealed class IngestionBatchTests
         EntityHandle h = batch.AddEntity(Hash(0), "codepoint");
         byte[] wkb = new byte[] { 1, 2, 3, 4 };
 
-        batch.AddPhysicality(h, "s3_position", wkb);
+        batch.AddPhysicality(h, "waveform", wkb);
+
+        Assert.Single(batch.Physicalities);
+        Assert.Equal(h, batch.Physicalities[0].Entity);
+        Assert.Equal("waveform", batch.Physicalities[0].PhysicalityTypeCode);
+        Assert.Equal(PhysicalitySurface.PostGisGeom, batch.Physicalities[0].Surface);
+        Assert.Equal(wkb, batch.Physicalities[0].PostGisWkb);
+        Assert.Null(batch.Physicalities[0].Point4DCoords);
+        Assert.Null(batch.Physicalities[0].LineString4DCoords);
+    }
+
+    [Fact]
+    public void AddPhysicalityPoint4d_StoredCorrectly()
+    {
+        IngestionBatch batch = new();
+        EntityHandle h = batch.AddEntity(Hash(0), "codepoint");
+
+        batch.AddPhysicalityPoint4d(h, "s3_position", 0.1, 0.2, 0.3, 0.4);
 
         Assert.Single(batch.Physicalities);
         Assert.Equal(h, batch.Physicalities[0].Entity);
         Assert.Equal("s3_position", batch.Physicalities[0].PhysicalityTypeCode);
-        Assert.Equal(wkb, batch.Physicalities[0].GeomWkb);
+        Assert.Equal(PhysicalitySurface.Point4D, batch.Physicalities[0].Surface);
+        Assert.Null(batch.Physicalities[0].PostGisWkb);
+        Assert.Equal(new[] { 0.1, 0.2, 0.3, 0.4 }, batch.Physicalities[0].Point4DCoords);
+        Assert.Null(batch.Physicalities[0].LineString4DCoords);
+    }
+
+    [Fact]
+    public void AddPhysicalityLineString4d_StoredCorrectly()
+    {
+        IngestionBatch batch = new();
+        EntityHandle h = batch.AddEntity(Hash(0), "lemma");
+
+        ReadOnlySpan<(double X1, double X2, double X3, double X4)> verts =
+            new (double, double, double, double)[]
+            {
+                (0.1, 0.2, 0.3, 0.4),
+                (0.5, 0.6, 0.7, 0.8),
+            }.AsSpan();
+        batch.AddPhysicalityLineString4d(h, "contour", verts);
+
+        Assert.Single(batch.Physicalities);
+        Assert.Equal(h, batch.Physicalities[0].Entity);
+        Assert.Equal("contour", batch.Physicalities[0].PhysicalityTypeCode);
+        Assert.Equal(PhysicalitySurface.LineString4D, batch.Physicalities[0].Surface);
+        Assert.Null(batch.Physicalities[0].PostGisWkb);
+        Assert.Null(batch.Physicalities[0].Point4DCoords);
+        Assert.Equal(
+            new[] { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8 },
+            batch.Physicalities[0].LineString4DCoords);
     }
 
     [Fact]

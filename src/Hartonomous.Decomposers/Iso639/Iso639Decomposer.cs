@@ -23,7 +23,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
     private const double TrustPriorMu = 95000.0;
 
     private readonly string _sourceDir;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -37,7 +36,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -69,7 +67,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
         List<RetirementRecord> retirements = Iso639Parser.ParseRetirements(retirePath);
         Log.Parsed(Logger, languages.Count, macroMappings.Count, nameIndex.Count, retirements.Count);
 
-        Iso639ReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        Iso639ReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             // ── Step 1: Populate language reference table ──
@@ -101,21 +99,16 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             {
                 ct.ThrowIfCancellationRequested();
 
-                byte[] nameHash = ComputeHash(rec.RefName);
+                // language_name identity = canonical Merkle of codepoint children.
+                // EmitWordFormMerkle creates codepoint + grapheme_cluster + language_name
+                // entities and sequence rows in one pass; same content from any decomposer
+                // (e.g. text_composition "English" from TextDecomposer) yields the same
+                // Merkle hash → same entity row in the language_name partition.
+                (EntityHandle nameEntity, byte[] nameHash) =
+                    EmitWordFormMerkle(batch, rec.RefName, "language_name");
                 codeToNameHash[rec.Id] = nameHash;
-                EntityHandle nameEntity = batch.AddEntity(nameHash, "language_name");
 
                 batch.AddSignificance(nameEntity, "source_authority", TrustPriorMu);
-
-                int position = 0;
-                foreach (Rune rune in rec.RefName.EnumerateRunes())
-                {
-                    byte[] cpHash = HashCodepoint(rune.Value);
-                    EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
-                    batch.AddSequence(nameEntity, cpHandle, position, 1);
-                    position++;
-                }
-
                 EmitContourPhysicality(batch, nameEntity, rec.RefName);
                 entityCount++;
 
@@ -141,8 +134,10 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                     continue;
                 }
 
-                byte[] printHash = ComputeHash(entry.PrintName);
-                byte[] invertHash = ComputeHash(entry.InvertedName);
+                // Canonical Merkle hash for both alternates — same content as the
+                // reference name yields the same hash → no duplicate row.
+                byte[] printHash = ComputeWordFormHash(entry.PrintName);
+                byte[] invertHash = ComputeWordFormHash(entry.InvertedName);
 
                 bool printIsRef = SequenceEqual(printHash, refHash);
                 bool invertIsRef = SequenceEqual(invertHash, refHash);
@@ -156,35 +151,21 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
                 if (!printIsRef)
                 {
-                    EntityHandle altEntity = batch.AddEntity(printHash, "language_name");
+                    (EntityHandle altEntity, byte[] hash) =
+                        EmitWordFormMerkle(batch, entry.PrintName, "language_name");
                     batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
-                    altList.Add(printHash);
-
-                    int pos = 0;
-                    foreach (Rune rune in entry.PrintName.EnumerateRunes())
-                    {
-                        batch.AddSequence(altEntity, batch.AddEntity(HashCodepoint(rune.Value), "codepoint"), pos, 1);
-                        pos++;
-                    }
-
                     EmitContourPhysicality(batch, altEntity, entry.PrintName);
+                    altList.Add(hash);
                     entityCount++;
                 }
 
                 if (!invertIsRef && !invertIsPrint)
                 {
-                    EntityHandle altEntity = batch.AddEntity(invertHash, "language_name");
+                    (EntityHandle altEntity, byte[] hash) =
+                        EmitWordFormMerkle(batch, entry.InvertedName, "language_name");
                     batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
-                    altList.Add(invertHash);
-
-                    int pos = 0;
-                    foreach (Rune rune in entry.InvertedName.EnumerateRunes())
-                    {
-                        batch.AddSequence(altEntity, batch.AddEntity(HashCodepoint(rune.Value), "codepoint"), pos, 1);
-                        pos++;
-                    }
-
                     EmitContourPhysicality(batch, altEntity, entry.InvertedName);
+                    altList.Add(hash);
                     entityCount++;
                 }
 

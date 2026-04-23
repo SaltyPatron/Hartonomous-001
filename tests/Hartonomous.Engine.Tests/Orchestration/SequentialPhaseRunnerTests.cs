@@ -287,6 +287,8 @@ public sealed class SequentialPhaseRunnerTests
         public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members) { }
         public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null) { }
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }
+        public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4) { }
+        public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices) { }
         public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1) { }
         public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu) { }
         public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }

@@ -47,7 +47,9 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     // Tatoeba is community_contributed per substrate.provenance (migration 0015 set this
     // tier to 50000 after the 2000→100000 rescale). Sentences get the flat trust prior;
     // per-sentence corroboration (translation count, audio presence) boosts mu via
-    // Glicko-2 at inference — NOT at ingest — so we keep emission deterministic.
+    // Glicko-2 Flow 4.2/4.3 at ingest. Emission stays deterministic because content-
+    // addressed hashing means the same sentence content yields the same entity row,
+    // so corroboration arrives as separate hash collisions on the same identity.
     private const double TrustPriorMu = 50000.0;
 
     private const string EdgeHasText = "has_text";
@@ -56,7 +58,6 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     private const string EdgeHasContributor = "has_contributor";
 
     private readonly string _rootDir;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -70,7 +71,6 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _rootDir = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -93,7 +93,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 $"Tatoeba sentences.csv not found under {_rootDir}", sentencesPath);
         }
 
-        await using TatoebaReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        await using TatoebaReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         Dictionary<string, int> languageMap = await refWriter.LoadLanguageCodeMapAsync(ct);
         Log.ReferenceDataReady(Logger, languageMap.Count);
 
@@ -242,29 +242,26 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         ref long entityCount,
         ref long edgeCount)
     {
-        // Sentence identity = hash of text content (not the Tatoeba DB integer).
-        // Sentences with empty text get a fallback hash from the ID to remain addressable.
-        byte[] sentHash = !string.IsNullOrEmpty(row.Text)
-            ? ComputeHash(row.Text)
-            : ComputeHash($"tatoeba_empty:{row.SentenceId}");
-        sentenceIdToHash[row.SentenceId] = sentHash;
-        needIds.Add(sentHash);
-        EntityHandle sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
-        batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
-        entityCount++;
-
-        if (languageMap.TryGetValue(row.Lang, out int langId))
-        {
-            perSentenceLang.Add((sentHash, langId));
-        }
-
+        // Sentence text decomposes via the canonical Merkle path: codepoints →
+        // grapheme_clusters → text_composition. The tatoeba_sentence shares the
+        // same Merkle hash (different entity_type_id partition), so identical
+        // sentences across Tatoeba, Wiktionary examples, UD treebanks, and
+        // TextDecomposer-ingested corpora all converge on the same identity.
+        // Empty-text rows fall back to a stable Tatoeba-ID-derived hash so the
+        // sentence remains addressable for translation_link / recording_of.
+        byte[] sentHash;
+        EntityHandle sentEntity;
         if (!string.IsNullOrEmpty(row.Text))
         {
-            // The text_composition uses the same hash as the sentence (same content).
-            // This is intentional — the sentence IS its text.
-            EntityHandle textEntity = batch.AddEntity(sentHash, "text_composition");
+            (EntityHandle textEntity, byte[] textHash) =
+                EmitWordFormMerkle(batch, row.Text, "text_composition");
+            sentHash = textHash;
             batch.AddSignificance(textEntity, "source_authority", TrustPriorMu);
             EmitContourPhysicality(batch, textEntity, row.Text);
+            entityCount++;
+
+            sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
+            batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
             entityCount++;
 
             batch.AddEdge(EdgeHasText, "tatoeba",
@@ -273,6 +270,21 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 new EdgeMemberSpec(textEntity, null, "target", 1),
             ]);
             edgeCount++;
+        }
+        else
+        {
+            sentHash = ComputeHash($"tatoeba_empty:{row.SentenceId}");
+            sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
+            batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
+            entityCount++;
+        }
+
+        sentenceIdToHash[row.SentenceId] = sentHash;
+        needIds.Add(sentHash);
+
+        if (languageMap.TryGetValue(row.Lang, out int langId))
+        {
+            perSentenceLang.Add((sentHash, langId));
         }
     }
 
@@ -328,9 +340,12 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
         if (!string.IsNullOrEmpty(row.Contributor))
         {
-            byte[] contribHash = ComputeHash(row.Contributor);
+            // Contributor handle decomposes via the canonical Merkle path so the
+            // text_composition converges with any other Merkle-hashed occurrence
+            // of the same handle (e.g. mention in a Wiktionary citation).
+            (EntityHandle contribEntity, byte[] contribHash) =
+                EmitWordFormMerkle(batch, row.Contributor, "text_composition");
             needIds.Add(contribHash);
-            EntityHandle contribEntity = batch.AddEntity(contribHash, "text_composition");
             batch.AddSignificance(contribEntity, "source_authority", TrustPriorMu);
             EmitContourPhysicality(batch, contribEntity, row.Contributor);
             entityCount++;

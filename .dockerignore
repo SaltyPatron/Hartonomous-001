@@ -1,6 +1,13 @@
-**/build/
-**/bin/
-**/obj/
+# Scope build artifact ignores to .NET project trees only — do NOT use **/bin/
+# because postgres has src/bin and similar subdirs in submodules.
+src/**/bin/
+src/**/obj/
+src/**/build/
+tests/**/bin/
+tests/**/obj/
+tests/**/build/
+ext/libhartonomous/build/
+ext/hartonomous_pg/build/
 **/.vs/
 **/node_modules/
 pgdata/
@@ -9,3 +16,5 @@ pgdata/
 *.suo
 temp/
 docs/
+logs/
+reports/

@@ -25,7 +25,7 @@ description: Audit Hartonomous claims for semantic drift.
 
 **Edge content**: `substrate.edge` + `substrate.edge_member`. N-ary relations with significance + trajectory geometry. 33 types, 7 roles. Edge hash = `ComputeEdgeHash(edgeTypeId, participantHashes)`.
 
-**Physicality**: `substrate.physicality`. POINTZM/LINESTRINGZM/MULTILINESTRINGZM. 13 types. GiST-indexed. `ST_FrechetDistance`.
+**Physicality**: `substrate.physicality`. Dual-surface: PostGIS `geometry` (POINT/POINTZ/LINESTRINGZ/MULTILINESTRINGZ) for 2D/3D physicality types, substrate-native `point4d`/`linestring4d` for 4D physicality types (codepoint S³, embedding fireflies, 4D trajectories). 13 physicality types, each with declared dimensionality. Both surfaces GiST-indexed. `ST_FrechetDistance` for 2D/3D, substrate-native 4D Fréchet for 4D. See `specs/native/4d-type-and-index.md`.
 
 **Reference vocabulary**: migration `0004`. `entity_type` (25), `edge_type` (33), `edge_role` (7), `physicality_type` (13), `significance_context` (10), `provenance` (10), `pos` (17+), `deprel`, `morph_feature`, `sense`, `lexname` (45), `language`, `general_category`, `script`, `block`, `break_property`, `architecture_class`, `tensor_role` (27). NOT entities.
 

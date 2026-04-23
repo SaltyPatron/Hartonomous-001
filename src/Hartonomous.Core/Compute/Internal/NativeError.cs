@@ -15,6 +15,8 @@ internal static class NativeError
                 throw new ComputeArgumentException($"{operation}: null argument");
             case -2:
                 throw new ComputeArgumentException($"{operation}: invalid shape or size");
+            case -3:
+                throw new ComputeArgumentException($"{operation}: degenerate geometry (e.g. antipodal points on S³)");
             case -6:
                 throw new ComputeConvergenceException($"{operation}: did not converge");
             case -8:

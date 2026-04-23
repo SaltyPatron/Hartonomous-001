@@ -225,9 +225,13 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     /// <summary>
-    /// Emit physicality geometry for a surface-form string: LINESTRINGZM contour when ≥2 codepoints,
-    /// POINTZM s3_position for a single codepoint, nothing for empty strings. This is the single
-    /// authoritative contour-physicality path; every decomposer calls it, none reimplement it.
+    /// Emit physicality geometry for a surface-form string. For ≥2 codepoints
+    /// the entity gets a <c>contour</c> physicality typed as a substrate-native
+    /// 4D linestring through each codepoint's S³ position. For a single
+    /// codepoint the entity gets an <c>s3_position</c> physicality typed as a
+    /// substrate-native 4D point. Empty strings emit nothing. This is the
+    /// single authoritative contour-physicality path; every decomposer calls
+    /// it, none reimplement it.
     /// </summary>
     protected static void EmitContourPhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
     {
@@ -235,12 +239,17 @@ public abstract partial class BaseDecomposer : IDecomposer
             PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
         if (vertices.Count >= 2)
         {
-            batch.AddPhysicality(entity, "contour", PhysicalityEmitter.LineStringZmWkb(vertices));
+            (double, double, double, double)[] arr = new (double, double, double, double)[vertices.Count];
+            for (int i = 0; i < vertices.Count; i++)
+            {
+                arr[i] = vertices[i];
+            }
+            batch.AddPhysicalityLineString4d(entity, "contour", arr.AsSpan());
         }
         else if (vertices.Count == 1)
         {
             (double x, double y, double z, double m) = vertices[0];
-            batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
+            batch.AddPhysicalityPoint4d(entity, "s3_position", x, y, z, m);
         }
     }
 
@@ -265,6 +274,99 @@ public abstract partial class BaseDecomposer : IDecomposer
             batch.AddSequence(entity, cpHandle, position, 1);
             position++;
         }
+    }
+
+    /// <summary>
+    /// Emit a lemma that may be a lexicalized compound. If <paramref name="surfaceForm"/>
+    /// contains <c>_</c> or U+0020 SPACE, splits on that boundary and routes through
+    /// <see cref="EmitLexicalizedCompound"/> so both the whole and each constituent
+    /// word_form become first-class Merkle entities. Otherwise routes through
+    /// <see cref="EmitWordFormMerkle"/> for the simple monolexical case. Returns
+    /// the whole-form handle and Merkle hash either way.
+    /// <para>
+    /// Splitting on space + underscore covers WordNet ("high_rise"), OMW (same),
+    /// and Wiktionary ("ice cream", "open up", "rock 'n' roll" — though apostrophe
+    /// is not a separator, so that one stays a single word_form). Empty parts are
+    /// dropped (e.g. leading or trailing separators).
+    /// </para>
+    /// </summary>
+    protected static (EntityHandle Handle, byte[] Hash) EmitLemmaMaybeCompound(
+        IIngestionBatch batch,
+        string surfaceForm,
+        string provenanceCode)
+    {
+        // Fast path: no separator → simple monolexical lemma.
+        if (surfaceForm.IndexOf('_') < 0 && surfaceForm.IndexOf(' ') < 0)
+        {
+            return EmitWordFormMerkle(batch, surfaceForm, "lemma");
+        }
+
+        // Split and drop empty parts. If after dropping there is ≤1 non-empty part,
+        // fall back to monolexical (the separators are still preserved in the
+        // whole-form Merkle hash because EmitWordFormMerkle hashes them as codepoints).
+        string[] rawParts = surfaceForm.Split(['_', ' '], StringSplitOptions.RemoveEmptyEntries);
+        if (rawParts.Length < 2)
+        {
+            return EmitWordFormMerkle(batch, surfaceForm, "lemma");
+        }
+
+        return EmitLexicalizedCompound(batch, surfaceForm, rawParts, provenanceCode, "lemma");
+    }
+
+    /// <summary>
+    /// Emit a lexicalized compound (semantic regression case #2 — "highrise"):
+    /// the whole surface form AND each constituent word_form get their own
+    /// Merkle entities, joined by a single n-ary <c>lexicalized_compound</c>
+    /// edge with the whole as <c>source</c> @ position 0 and each part as
+    /// <c>target</c> @ positions 1..N in left-to-right order.
+    /// <para>
+    /// This preserves both retrieval paths required by inference:
+    /// (a) the whole-form path — "high_rise" as a single lemma carrying
+    ///     its own senses, glosses, and inflections; and
+    /// (b) the parts-composition path — "high" and "rise" as independent
+    ///     word_form entities that converge by Merkle identity with their
+    ///     monomorphemic occurrences elsewhere in the substrate.
+    /// </para>
+    /// <para>
+    /// The whole's surface form is hashed via the standard Merkle path over
+    /// its codepoint sequence (preserving any internal separator like
+    /// underscore or space as a real codepoint child), so the whole entity
+    /// converges with any other Merkle-hashed occurrence of the same string.
+    /// </para>
+    /// </summary>
+    /// <param name="batch">Batch to append entities and edges to.</param>
+    /// <param name="surfaceForm">Whole-form surface string (e.g. "high_rise" or "ice cream").</param>
+    /// <param name="parts">Constituent strings in left-to-right order (e.g. ["high", "rise"]).</param>
+    /// <param name="provenanceCode">Provenance code for the lexicalized_compound edge.</param>
+    /// <param name="wholeEntityType">Entity type of the whole (default "lemma").</param>
+    /// <returns>The whole entity's handle and Merkle hash.</returns>
+    protected static (EntityHandle Handle, byte[] Hash) EmitLexicalizedCompound(
+        IIngestionBatch batch,
+        string surfaceForm,
+        IReadOnlyList<string> parts,
+        string provenanceCode,
+        string wholeEntityType = "lemma")
+    {
+        if (parts.Count < 2)
+        {
+            throw new ArgumentException(
+                $"EmitLexicalizedCompound requires ≥2 parts; got {parts.Count} for '{surfaceForm}'.",
+                nameof(parts));
+        }
+
+        (EntityHandle wholeHandle, byte[] wholeHash) =
+            EmitWordFormMerkle(batch, surfaceForm, wholeEntityType);
+
+        EdgeMemberSpec[] members = new EdgeMemberSpec[parts.Count + 1];
+        members[0] = new EdgeMemberSpec(wholeHandle, null, "source", 0);
+        for (int i = 0; i < parts.Count; i++)
+        {
+            (EntityHandle partHandle, _) = EmitWordFormMerkle(batch, parts[i], "word_form");
+            members[i + 1] = new EdgeMemberSpec(partHandle, null, "target", (short)(i + 1));
+        }
+
+        batch.AddEdge("lexicalized_compound", provenanceCode, members.AsSpan());
+        return (wholeHandle, wholeHash);
     }
 
     /// <summary>

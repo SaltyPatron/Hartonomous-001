@@ -53,6 +53,14 @@ typedef struct hartonomous_runtime_info {
 HARTONOMOUS_API void hartonomous_runtime_info(hartonomous_runtime_info_t* out);
 
 /*
+ * Force MKL CBWR=AUTO|STRICT and return the resolved branch (>= 0).
+ * Returns -1 if MKL refuses the request (typically because compute was
+ * performed before this call — a deterministic-init violation). Idempotent
+ * when called repeatedly with the same setting.
+ */
+HARTONOMOUS_API int hartonomous_init_determinism(void);
+
+/*
  * BLAKE3 one-shot hash. Computes a 32-byte digest over `len` bytes at `data`.
  * `out` must point to at least HARTONOMOUS_HASH_LEN (32) bytes.
  * Thread-safe. No allocations.
@@ -111,6 +119,44 @@ HARTONOMOUS_API int hartonomous_s3_centroid(
     const double* points,
     size_t point_count,
     double out[4]
+);
+
+/*
+ * Karcher (Fréchet) mean on the unit 3-sphere.
+ *
+ * Returns the point μ ∈ S³ minimizing (1/n) Σ dist_S³(μ, p_i)², where
+ * dist_S³(a,b) = arccos(clamp(⟨a,b⟩, -1, 1)). Distinct from
+ * hartonomous_s3_centroid, which returns the *chordal* mean (renormalize
+ * the Euclidean sum) — fine as a seed, biased for widely-spread sets.
+ *
+ * Iteration: projected-gradient on S³ via Log/Exp maps. Seeded from the
+ * chordal mean; converges in 3–8 iters for angular spreads under π/2.
+ *
+ * Inputs:
+ *   points       — packed 4-double-per-point array, length 4·point_count.
+ *                  Each point must be S³-unit (||p|| = 1) within 1e-9.
+ *   point_count  — number of points; must be >= 1.
+ *   max_iter     — iteration cap; <= 0 selects the default (64).
+ *   tol          — stop when ||tangent-space update|| < tol; <= 0 → 1e-12.
+ *
+ * Output:
+ *   out[4]       — S³-unit 4-vector (||out|| = 1 within rounding).
+ *
+ * Returns:
+ *    0 on success,
+ *   -1 on null argument or zero-count,
+ *   -2 if the chordal seed cannot be computed (antipodal cancellation in
+ *      the Euclidean mean),
+ *   -3 if any point is antipodal to the current iterate (Log map undefined).
+ *
+ * Deterministic: same inputs → bit-identical output, Law #6.
+ */
+HARTONOMOUS_API int hartonomous_karcher_mean_s3(
+    const double* points,
+    size_t        point_count,
+    int           max_iter,
+    double        tol,
+    double        out[4]
 );
 
 /* ── Super-Fibonacci ─────────────────────────────────────── */
@@ -191,6 +237,169 @@ HARTONOMOUS_API int hartonomous_gemm_f64(
     const double* b, int64_t ldb,
     double beta,
     double* c, int64_t ldc
+);
+
+/* ── Dense SVD (ingest) ──────────────────────────────────────
+ *
+ * Thin singular value decomposition of a row-major m×n f64 matrix A via
+ * MKL dgesdd (divide-and-conquer). Let k = min(m, n). Writes:
+ *   u   — row-major m×k, left singular vectors (orthogonal columns)
+ *   s   — length k, singular values descending
+ *   vt  — row-major k×n, right singular vectors transposed
+ *
+ * A is preserved (copied internally). Deterministic under CBWR=AUTO,STRICT:
+ * same inputs → bit-identical output across repeated runs.
+ *
+ * Returns 0 on success, -1 on null arg, -2 on size <= 0 or invalid arg,
+ * -6 on non-convergence of the bidiagonal solver, -9 on alloc failure.
+ */
+HARTONOMOUS_API int hartonomous_svd_f64(
+    int64_t m, int64_t n,
+    const double* a,
+    double* u,
+    double* s,
+    double* vt
+);
+
+/* ── Orthogonal Procrustes alignment (ingest) ────────────────
+ *
+ * Given two d×n row-major configurations X, Y, compute the proper rotation
+ * R ∈ SO(d) minimizing ||R·X − Y||_F. Uses SVD of Y·X^T (Kabsch). Always
+ * returns det(R) = +1 — reflections are corrected via sign flip of the
+ * last column of U.
+ *
+ * Inputs:
+ *   d, n           — dimension and point count
+ *   x, y           — row-major d×n, each column is a point
+ * Outputs:
+ *   rotation       — row-major d×d
+ *   out_residual   — optional (may be NULL); ||R·X − Y||_F
+ *
+ * Returns 0 on success, -1 on null arg, -2 on bad shape, -3 if U·V^T is
+ * singular (degenerate input), -6 on SVD non-convergence, -9 on alloc.
+ */
+HARTONOMOUS_API int hartonomous_procrustes_f64(
+    int64_t d, int64_t n,
+    const double* x,
+    const double* y,
+    double* rotation,
+    double* out_residual
+);
+
+/* ── Exact k-nearest-neighbour query (ingest) ────────────────
+ *
+ * For each of `nq` queries, return the k nearest corpus points by squared
+ * Euclidean distance ascending. Uses MKL GEMM for cross-term, per-query
+ * heap selection. Deterministic under CBWR=AUTO,STRICT.
+ *
+ * Inputs:
+ *   nq, nc, d      — query count, corpus count, dimension
+ *   queries        — row-major nq × d
+ *   corpus         — row-major nc × d
+ *   k              — neighbours per query, 1 ≤ k ≤ nc
+ * Outputs (caller-allocated, row-major nq × k):
+ *   out_indices    — corpus index of each neighbour
+ *   out_distances  — squared Euclidean distances (floored at 0)
+ *
+ * Returns 0 on success, -1 on null arg, -2 on bad shape, -9 on alloc.
+ */
+HARTONOMOUS_API int hartonomous_knearest_exact_f64(
+    int64_t nq, int64_t nc, int64_t d,
+    const double* queries,
+    const double* corpus,
+    int64_t k,
+    int64_t* out_indices,
+    double* out_distances
+);
+
+/* ── Laplacian eigenmap (ingest) ─────────────────────────────
+ *
+ * Given the full symmetric CSR adjacency A (nonneg weights, both triangles
+ * stored), compute the k smallest-algebraic eigenpairs of the normalized
+ * symmetric Laplacian L_sym = I − D^{-1/2} · A · D^{-1/2}. Uses Spectra
+ * Lanczos on the spectrum-flipped matrix (c·I − L_sym) so smallest
+ * eigenvalues of L_sym correspond to largest of the flipped matrix,
+ * where Lanczos converges fastest.
+ *
+ * The trivial λ₀ ≈ 0 IS included in the output. Callers filter it.
+ *
+ * Inputs:
+ *   n, nnz           — node count, A-nnz
+ *   row_ptr/col_idx/values — full symmetric CSR
+ *   k                — eigenpairs, 1 ≤ k < n
+ *   max_iter         — Lanczos ncv, must satisfy k < ncv ≤ n
+ *   seed             — starting vector seed
+ * Outputs (caller-allocated):
+ *   out_eigenvalues  — length k, ascending
+ *   out_eigenvectors — row-major k × n
+ *   out_iters        — iterations performed
+ *
+ * Returns 0, -1 null, -2 shape, -3 negative weight or bad column index,
+ * -6 non-convergence, -9 alloc.
+ */
+HARTONOMOUS_API int hartonomous_laplacian_eigenmap_f64(
+    int64_t n, int64_t nnz,
+    const int64_t* row_ptr,
+    const int64_t* col_idx,
+    const double*  values,
+    int64_t k,
+    int64_t max_iter,
+    uint64_t seed,
+    double* out_eigenvalues,
+    double* out_eigenvectors,
+    int64_t* out_iters
+);
+
+/* ── k-means++ (ingest) ───────────────────────────────
+ * Deterministic k-means++ seeding + Lloyd iterations on row-major f64
+ * points. Tie-break: lowest-index center wins on equal squared distance.
+ * Empty clusters are re-seeded from the farthest point of the largest
+ * cluster. Converges when assignments stabilize or max_iter reached.
+ *
+ * Inputs:
+ *   n, d, k   — points, dimension, clusters; 1 ≤ k ≤ n.
+ *   points    — row-major n × d.
+ *   max_iter  — maximum Lloyd iterations.
+ *   seed      — RNG seed for deterministic k-means++ picks.
+ * Outputs:
+ *   out_assignments — length n.
+ *   out_centers     — row-major k × d.
+ *   out_iters       — Lloyd iterations actually performed.
+ * Returns 0, -1 null, -2 shape, -9 alloc.
+ */
+HARTONOMOUS_API int hartonomous_kmeans_plusplus_f64(
+    int64_t n, int64_t d, int64_t k,
+    const double* points,
+    int64_t max_iter,
+    uint64_t seed,
+    int64_t* out_assignments,
+    double*  out_centers,
+    int64_t* out_iters
+);
+
+/* ── Delaunay 4D (ingest) ──────────────────────────────
+ * Bowyer-Watson incremental 4D Delaunay tetrahedralization. Every output
+ * simplex is a 4-simplex with 5 vertex indices into the input point list.
+ *
+ * Inputs:
+ *   n           — number of points (≥ 5 required for a non-degenerate hull)
+ *   points      — row-major n × 4 (f64 xyzw)
+ *   out_capacity— size of out_simplices / 5. Pass 0 with out_simplices=NULL
+ *                 to query the count via out_simplex_count.
+ * Outputs:
+ *   out_simplex_count — number of 4-simplices produced
+ *   out_simplices     — row-major count × 5 vertex indices (sorted ascending
+ *                       within each simplex; simplices ordered
+ *                       lexicographically for deterministic output)
+ * Returns 0 on success, -1 null, -2 shape/insufficient capacity,
+ * -6 numerical failure, -9 alloc.
+ */
+HARTONOMOUS_API int hartonomous_delaunay_4d_f64(
+    int64_t n,
+    const double* points,
+    int64_t* out_simplex_count,
+    int64_t* out_simplices,
+    int64_t  out_capacity
 );
 
 /* ── k-NN cosine graph (ingest) ──────────────────────────────
@@ -283,6 +492,143 @@ HARTONOMOUS_API int hartonomous_gram_schmidt_f64(
 HARTONOMOUS_API int hartonomous_blake3_merkle(
     const uint8_t* child_hashes, size_t child_count,
     uint8_t output[HARTONOMOUS_HASH_LEN]
+);
+
+/* ── 4D primitives (point4d / box4d / linestring4d) ───────────
+ *
+ * The substrate is genuinely 4D. PostGIS POINTZM treats the M axis as an
+ * out-of-band scalar attribute, so any distance through PostGIS drops it.
+ * These functions operate on raw `double[4]` so the native side has zero
+ * coupling to PostgreSQL's type machinery; the PG extension wraps each one
+ * in a `point4d`/`box4d`/`linestring4d` SQL type.
+ *
+ * Coordinate semantics are application-defined (S³ unit-quaternion vs
+ * Euclidean 4-space) and live on the row's physicality_type, not in the
+ * function. For S³ operations the caller must pre-normalize.
+ */
+
+/* Euclidean 4D distance: sqrt(sum_i (a_i - b_i)^2). */
+HARTONOMOUS_API double hartonomous_distance_4d(
+    const double a[4], const double b[4]
+);
+
+/* 4D inner product. */
+HARTONOMOUS_API double hartonomous_dot_4d(
+    const double a[4], const double b[4]
+);
+
+/* L2 norm: sqrt(sum_i x_i^2). */
+HARTONOMOUS_API double hartonomous_norm_4d(const double x[4]);
+
+/* Unit-normalize. Returns 0 on success; -1 on null arg; -2 on near-zero norm
+ * (||x|| < 1e-12). On error `out` is left untouched. */
+HARTONOMOUS_API int hartonomous_normalize_4d(
+    const double x[4], double out[4]
+);
+
+/* Spherical linear interpolation on S³. Inputs are assumed unit-length.
+ * t in [0,1]; t=0 returns a, t=1 returns b. Returns 0 on success;
+ * -1 on null; -2 if either input is not unit-length within 1e-9. */
+HARTONOMOUS_API int hartonomous_slerp(
+    const double a[4], const double b[4], double t, double out[4]
+);
+
+/* Antipode: out_i = -p_i. Returns 0 on success; -1 on null. */
+HARTONOMOUS_API int hartonomous_antipode(
+    const double p[4], double out[4]
+);
+
+/* Euclidean centroid of `point_count` 4D points. Output is the arithmetic
+ * mean (NOT renormalized — use hartonomous_s3_centroid for spherical mean).
+ * Returns 0 on success; -1 on null/zero-count. */
+HARTONOMOUS_API int hartonomous_centroid_4d(
+    const double* points, size_t point_count, double out[4]
+);
+
+/* ── box4d: axis-aligned bounding box ─────────────────────────
+ * Layout: 8 doubles laid out as [min[0..3], max[0..3]].
+ * Used as the GiST key type for point4d columns.
+ */
+
+/* Initialize box from a single point: min = max = p. */
+HARTONOMOUS_API void hartonomous_bbox_init_point(
+    const double p[4], double box[8]
+);
+
+/* Expand `box` in-place to include `p`. */
+HARTONOMOUS_API void hartonomous_bbox_expand_point(
+    double box[8], const double p[4]
+);
+
+/* Compute union of two boxes into `out` (which may alias either input). */
+HARTONOMOUS_API void hartonomous_bbox_union(
+    const double a[8], const double b[8], double out[8]
+);
+
+/* Box-box overlap predicate: closed intervals on every axis. */
+HARTONOMOUS_API int hartonomous_bbox_overlaps(
+    const double a[8], const double b[8]
+);
+
+/* Point-in-box predicate (closed). */
+HARTONOMOUS_API int hartonomous_bbox_contains_point(
+    const double box[8], const double p[4]
+);
+
+/* Box-in-box predicate (closed): every axis of `inner` ⊆ axis of `outer`. */
+HARTONOMOUS_API int hartonomous_bbox_contains_box(
+    const double outer[8], const double inner[8]
+);
+
+/* Box-box equality (exact double comparison). */
+HARTONOMOUS_API int hartonomous_bbox_equals(
+    const double a[8], const double b[8]
+);
+
+/* 4D volume of a box (product of axis extents). */
+HARTONOMOUS_API double hartonomous_bbox_volume(const double box[8]);
+
+/* Lower-bound distance from `p` to the nearest point of `box` (Euclidean 4D).
+ * Zero when `p` is inside `box`. Used by GiST `distance` support function for
+ * <-> kNN ordering. */
+HARTONOMOUS_API double hartonomous_bbox_min_distance_4d(
+    const double box[8], const double p[4]
+);
+
+/* ── linestring4d: trajectories ───────────────────────────────
+ * Stored as a contiguous packed array of `point_count` 4D points,
+ * total length 4*point_count doubles. */
+
+/* 4D discrete Fréchet distance between two polylines.
+ *   a, b           — packed 4-double-per-vertex arrays
+ *   na, nb         — vertex counts (>= 1 each)
+ *   workspace      — caller-allocated double[na * nb] scratch buffer
+ * Returns Fréchet distance in the Euclidean 4D metric. Returns NaN on
+ * null arg or zero-vertex input. Deterministic, O(na*nb). */
+HARTONOMOUS_API double hartonomous_frechet_4d(
+    const double* a, size_t na,
+    const double* b, size_t nb,
+    double* workspace
+);
+
+/* 4D Hausdorff distance: max(sup_a inf_b ||a-b||, sup_b inf_a ||a-b||). */
+HARTONOMOUS_API double hartonomous_hausdorff_4d(
+    const double* a, size_t na,
+    const double* b, size_t nb
+);
+
+/* ── Glicko-2 bulk update ───────────────────────────────────── */
+HARTONOMOUS_API int hartonomous_glicko2_bulk_update(
+    int64_t n,
+    const double* mu,
+    const double* sigma,
+    const double* volatility,
+    const double* opp_mu,
+    const double* opp_sigma,
+    const double* score,
+    double* new_mu,
+    double* new_sigma,
+    double* new_volatility
 );
 
 #ifdef __cplusplus

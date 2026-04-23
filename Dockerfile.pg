@@ -1,39 +1,54 @@
-# Multi-stage build: compile libhartonomous + pg extension, install into PostGIS image.
-# Usage: docker compose build postgres
+# syntax=docker/dockerfile:1.7
 #
-# Intel oneAPI is sourced from the official intel/oneapi-* images so a rebuild does
-# NOT re-download multi-GB packages from apt.repos.intel.com. The oneAPI layer is
-# pulled exactly once per host (cached by Docker), reused across every rebuild
-# until you `docker pull intel/oneapi-basekit:latest` again.
+# Hartonomous PostgreSQL extension image — registry-cached layers only.
 #
-# Library coverage (per CPU-only mandate — every Intel library is in, not just MKL):
-#   MKL, IPP, TBB, oneDNN, oneDAL, oneDPL, oneCCL, OpenMP, DPC++ compiler runtime.
+# Three pinned upstream images, each cached as Docker image layers in the
+# Docker Hub registry. A fresh machine pulls them once via `docker pull`.
+# `docker rmi` followed by `docker compose up` re-pulls the same cached
+# layers — NO apt-get against repos.intel.com, NO multi-GB Intel install
+# happens inside any RUN layer of this Dockerfile.
+#
+#   Builder  : intel/oneapi-hpckit:2025.3.1-0-devel-ubuntu22.04
+#              — full oneAPI dev (MKL, IPP, TBB, oneDNN, oneDAL, DPC++, OpenMP)
+#                pre-baked into image layers by Intel (verified on Docker Hub).
+#   Runtime  : postgis/postgis:17-3.5
+#              — official Postgres 17 + PostGIS 3.5, Debian bookworm.
+#   Intel rt : intel/oneapi-runtime:2025.3.1-0-devel-ubuntu22.04
+#              — runtime-only oneAPI shared libraries, also pre-baked by Intel.
+#
+# Library coverage stays identical to before (every Intel CPU library, not
+# just MKL): MKL + IPP + TBB + oneDNN + oneDAL + oneDPL + OpenMP + DPC++ rt.
+#
+# Determinism note: the runtime stage uses Debian bookworm (PostGIS 17-3.5)
+# while the builder uses Ubuntu 22.04 (oneAPI hpckit). Both are glibc>=2.34,
+# so libhartonomous.so links against symbols that resolve cleanly under either.
+# The Intel runtime libs are copied straight from the registry layer, so they
+# carry their own glibc-compatible loader paths.
 
-# ── Stage 0: pre-built Intel oneAPI runtime image (cached by Docker) ──
-# Used as a COPY source in the final stage so no apt-get install of Intel
-# packages happens at runtime-image build time.
-FROM intel/oneapi-runtime:latest AS oneapi-runtime
+# ---------------------------------------------------------------------------
+# Stage 1: Builder — Intel oneAPI HPC kit (registry-cached, no apt-get-Intel)
+# ---------------------------------------------------------------------------
+FROM intel/oneapi-hpckit:2025.3.1-0-devel-ubuntu22.04 AS builder
 
-# ── Stage 1: Builder — Intel basekit (has full devel toolchain pre-installed) ──
-# basekit ships with: MKL-devel, IPP-devel, TBB-devel, oneDNN-devel, oneDAL-devel,
-# oneDPL, oneCCL, DPC++ compiler, OpenMP. No apt-get install of Intel packages here.
-FROM intel/oneapi-basekit:latest AS builder
-
-# Add the PostgreSQL apt repo so we can install postgresql-server-dev-17 against
-# the same major version PostGIS 17 ships. Pinning the keyring + repo gives us a
-# reproducible builder layer that gets cached as long as the keys don't rotate.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Add the official PostgreSQL apt repo for Ubuntu jammy so we can pull
+# postgresql-server-dev-17 against the same major version PostGIS 17 ships.
+# This is the ONLY apt-get install in any layer of this Dockerfile, and it
+# pulls only Postgres dev headers + a tiny build-essential — not Intel.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
         wget ca-certificates gnupg lsb-release \
         build-essential cmake git pkg-config \
-    && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc \
         | gpg --dearmor > /usr/share/keyrings/pgdg.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        postgresql-server-dev-17 \
-    && rm -rf /var/lib/apt/lists/*
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-server-dev-17
 
-# Source oneAPI environment so cmake's find_package picks up MKL/IPP/TBB/DNN/DAL.
+# oneAPI environment is already baked into the image; just point at it.
 ENV ONEAPI_ROOT=/opt/intel/oneapi
 ENV MKLROOT=/opt/intel/oneapi/mkl/latest
 ENV IPPROOT=/opt/intel/oneapi/ipp/latest
@@ -46,6 +61,7 @@ ENV CMPLR_ROOT=/opt/intel/oneapi/compiler/latest
 ENV LD_LIBRARY_PATH=${MKLROOT}/lib:${IPPROOT}/lib:${TBBROOT}/lib:${DNNLROOT}/lib:${DALROOT}/lib:${CCL_ROOT}/lib:${CMPLR_ROOT}/lib
 ENV CMAKE_PREFIX_PATH=${MKLROOT}/lib/cmake/mkl:${IPPROOT}/lib/cmake/ipp:${TBBROOT}/lib/cmake/tbb:${DNNLROOT}/lib/cmake/dnnl:${DALROOT}/lib/cmake/oneDAL
 
+# Build libhartonomous (BLAKE3 + S3 + 4D geometry + Lanczos/SVD/Procrustes/etc).
 COPY ext/libhartonomous /build/libhartonomous
 WORKDIR /build/libhartonomous
 RUN cmake -S . -B build \
@@ -53,28 +69,62 @@ RUN cmake -S . -B build \
         -DHARTONOMOUS_BUILD_TESTS=OFF \
         -DHARTONOMOUS_BUILD_SHARED=ON \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
-    && cmake --build build --config Release -j \
-    && cp build/bin/libhartonomous.so /usr/local/lib/
+ && cmake --build build --config Release -j \
+ && cp build/bin/libhartonomous.so /usr/local/lib/
 
+# Build the hartonomous PG extension (.so + .control + --1.0.sql).
 COPY ext/hartonomous_pg /build/hartonomous_pg
 WORKDIR /build/hartonomous_pg
 RUN make PG_CONFIG=/usr/bin/pg_config install
 
-# ── Stage 2: Runtime — PostGIS + Intel runtime libs copied in (no apt install) ──
+# ---------------------------------------------------------------------------
+# Stage 2: Intel oneAPI runtime — declared as a named stage so BuildKit
+# resolves it from the local `docker images` store after one `docker pull
+# intel/oneapi-runtime:2025.3.1-0-devel-ubuntu22.04`. NO re-pull on rebuild,
+# NO BuildKit-internal cache games — the image lives in the regular Docker
+# image store and is visible in `docker images`.
+# ---------------------------------------------------------------------------
+FROM intel/oneapi-runtime:2025.3.1-0-devel-ubuntu22.04 AS oneapi_runtime
+
+# ---------------------------------------------------------------------------
+# Stage 3: Runtime — PostGIS 17 + Intel oneAPI runtime libs (from local stage)
+# ---------------------------------------------------------------------------
 FROM postgis/postgis:17-3.5
 
-# Pull the entire Intel runtime tree from the cached oneapi-runtime stage. This
-# is the ONLY place runtime libs come from — no apt repo, no network call.
-COPY --from=oneapi-runtime /opt/intel /opt/intel
+# Pull every Intel runtime shared library from the locally-resolved
+# oneapi_runtime stage. The runtime image flattens all components
+# (mkl, ipp, tbb, dnnl, onedal, openmp, ccl, opencl, ifcore, ...) into
+# /opt/intel/oneapi/redist/lib/  with the compiler/openmp runtime under
+# /opt/intel/oneapi/redist/opt/compiler/lib/. No network, no apt.
+COPY --from=oneapi_runtime /opt/intel/oneapi/redist/lib          /opt/intel/oneapi/redist/lib
+COPY --from=oneapi_runtime /opt/intel/oneapi/redist/opt/compiler /opt/intel/oneapi/redist/opt/compiler
 
-COPY --from=builder /usr/local/lib/libhartonomous.so                     /usr/local/lib/
-COPY --from=builder /usr/lib/postgresql/17/lib/hartonomous.so            /usr/lib/postgresql/17/lib/
-COPY --from=builder /usr/share/postgresql/17/extension/hartonomous.control       /usr/share/postgresql/17/extension/
-COPY --from=builder /usr/share/postgresql/17/extension/hartonomous--1.0.sql      /usr/share/postgresql/17/extension/
+# Pull the built artifacts from the builder stage.
+COPY --from=builder /usr/local/lib/libhartonomous.so                            /usr/local/lib/
+COPY --from=builder /usr/lib/postgresql/17/lib/hartonomous.so                   /usr/lib/postgresql/17/lib/
+COPY --from=builder /usr/share/postgresql/17/extension/hartonomous.control      /usr/share/postgresql/17/extension/
+COPY --from=builder /usr/share/postgresql/17/extension/hartonomous--1.0.sql     /usr/share/postgresql/17/extension/
 
-# intel/oneapi-runtime image flattens every component's libs into a single
-# /opt/intel/oneapi/redist/lib tree (MKL, IPP, TBB, DNN, DAL, DPL, CCL, OpenMP,
-# DPC++ compiler runtime are all present there). Pointing ldconfig at that one
-# directory exposes the entire runtime to libhartonomous.so + hartonomous.so.
-RUN echo "/opt/intel/oneapi/redist/lib" > /etc/ld.so.conf.d/oneapi.conf \
-    && ldconfig
+# Defensive: remove any libstdc++.so.6 that may have been left in /usr/local/lib by
+# a previously-cached layer. The runtime base (postgis/postgis:17-3.5 = Debian 11,
+# glibc 2.31) ships its own /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.28 which is
+# what every binary including libhartonomous.so must resolve to. A stale newer
+# libstdc++.so.6 in /usr/local/lib (e.g. left over from a Ubuntu-22.04-built copy)
+# requires GLIBC_2.32+ symbols that bullseye does not provide, causing initdb and
+# every postgres binary to fail at dynamic-linker time.
+RUN rm -f /usr/local/lib/libstdc++.so.6 /usr/local/lib/libstdc++.so.6.* /usr/local/lib/libstdc++.so
+
+# Register the Intel runtime library directories with ldconfig so PG's dynamic
+# loader finds every transitive dependency of libhartonomous.so at startup.
+# /usr/local/lib covers libhartonomous.so.0 and the builder-supplied libstdc++.so.6.
+RUN echo "/usr/local/lib"                                >  /etc/ld.so.conf.d/oneapi.conf \
+ && echo "/opt/intel/oneapi/redist/lib"                  >> /etc/ld.so.conf.d/oneapi.conf \
+ && echo "/opt/intel/oneapi/redist/lib/intel64"          >> /etc/ld.so.conf.d/oneapi.conf \
+ && echo "/opt/intel/oneapi/redist/opt/compiler/lib"     >> /etc/ld.so.conf.d/oneapi.conf \
+ && ldconfig
+
+# Preload the hartonomous extension at server startup so _PG_init runs in the
+# postmaster context. Required for PGC_POSTMASTER GUCs (strict_determinism)
+# and for pinning MKL CBWR=AUTO,STRICT before any compute runs (Law #6).
+# The preload-config script sql/init/00_preload.sh is bind-mounted into
+# /docker-entrypoint-initdb.d/ by docker-compose.

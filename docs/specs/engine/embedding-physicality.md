@@ -4,7 +4,7 @@
 
 The substrate needs a single, geometric way to express what a token (or codebook entry, or object query) *is* to a model — a way that lets every model's notion of "what this token is near" coexist in one comparable space. Embedding physicality is that representation.
 
-An embedding-matrix row is projected into a 4-dimensional point we call a **firefly**. Each firefly is a `POINTZM` in the `physicality` table with `physicality_type='embedding_firefly'`. Every ingested model contributes its fireflies into the same 4D space. Queries over the substrate then ask *geometric* questions — "which tokens do all ingested models place near 'king'?" — and get set-theoretic answers via Voronoi consensus.
+An embedding-matrix row is projected into a 4-dimensional point we call a **firefly**. Each firefly is stored in the `physicality` table as a `point4d` (four `float8` coordinates, the first-class 4D type defined in `specs/native/4d-type-and-index.md`) with `physicality_type='embedding_firefly'`. PostGIS `POINTZM` is not used for fireflies — its `M` is an out-of-band measure that PostGIS distance operators, GiST keys, and `ST_Centroid` all ignore, which silently drops the firefly's salience axis from every query. The `point4d` type, its `<->` (Euclidean 4D) and `<=>` (S³ geodesic) operators, and its GiST/SP-GiST opclasses treat all four axes as first-class. Every ingested model contributes its fireflies into the same `point4d` frame. Queries over the substrate ask *geometric* questions — "which tokens do all ingested models place near 'king'?", "what 4D region is the centroid of this entity's fireflies in?", "which trajectories cross this region?" — and the 4D surface answers them without collapsing any axis.
 
 ## Why 4D — Borsuk-Ulam and its corollary
 
@@ -48,7 +48,7 @@ These three eigenvectors, stacked column-wise, give a `V × 3` embedding matrix 
 
 ### Step 4 — Gram-Schmidt orthonormalization
 
-Eigenvectors from a numerical solver are orthogonal in theory but often not in practice at the numerical tolerance we care about. Apply Gram-Schmidt to the three column vectors of `Φ` to guarantee an orthonormal 3-frame. This ensures `(x, y, z)` coordinates in the substrate form an honest right-handed Cartesian frame, which PostGIS geometric operations (`ST_FrechetDistance`, `ST_Centroid`, `ST_3DDistance`) require to produce meaningful results.
+Eigenvectors from a numerical solver are orthogonal in theory but often not in practice at the numerical tolerance we care about. Apply Gram-Schmidt to the three column vectors of `Φ` to guarantee an orthonormal 3-frame. This ensures the first three coordinates in the substrate form an honest right-handed Cartesian sub-frame, which the 4D distance, centroid, Fréchet, and Hausdorff primitives (all of `distance_4d`, `distance_s3`, `centroid_4d`, `centroid_s3`, and the trajectory operators in `specs/native/4d-type-and-index.md`) require to produce meaningful results. Without GSO the spectral axes are not metrically consistent; distances computed over the raw eigenvector frame would be wrong by the axis-skew amount.
 
 ### Step 5 — The `m` (measure) coordinate
 
@@ -56,7 +56,7 @@ Each firefly's 4th coordinate is `m`, the embedding row's `L2` norm (the row's "
 
 ### Result
 
-One `POINTZM(x=eig2_i, y=eig3_i, z=eig4_i, m=||e_i||)` per embedding row. Written to `physicality(entity_id, physicality_type_id='embedding_firefly', geom)`.
+One `point4d(eig2_i, eig3_i, eig4_i, ||e_i||)` per embedding row — three orthonormal Laplacian-eigenmap coordinates plus the pre-normalization row norm as the fourth axis. Written to `physicality(entity_id, physicality_type_id='embedding_firefly', point4d)` using the 4D column defined by the 4D type surface. The `geometry` column on the same row is `NULL` for this physicality type (`geometry` carries the 2D/3D physicalities that are natively 2D/3D — pixel coordinates, audio sample grids, video-frame time, terrestrial S² — and `point4d` carries the 4D ones). Exactly one coordinate column is non-null per physicality row, determined by `physicality_type_id → ref_physicality_type.dimensionality`.
 
 ## Firefly entity — what a firefly actually is
 
@@ -103,13 +103,13 @@ safetensors decomposer (Track 1)
         └─ Laplacian L = I - D^(-1/2) W D^(-1/2)
            └─ top-3 non-trivial eigenvectors
               └─ Gram-Schmidt orthonormalize
-                 └─ per-row POINTZM(eig2, eig3, eig4, ||row||)
+                 └─ per-row point4d(eig2, eig3, eig4, ||row||)
                     └─ physicality table INSERT
                        (entity_id, physicality_type='embedding_firefly',
-                        provenance_id=model's provenance, geom=POINTZM)
+                        point4d=point4d(...), geometry=NULL)
 ```
 
-All ingested models contribute their rows into the same `physicality` table. PostGIS GiST index on `geom` enables `ST_3DDWithin`, `ST_3DDistance`, `ST_Centroid` queries directly.
+All ingested models contribute their rows into the same `physicality` table. The 4D GiST and SP-GiST opclasses (`point4d_gist_ops`, `point4d_spgist_ops`) on the `point4d` column make every 4D capability — range queries, kNN by `<->` or `<=>`, box containment, centroid aggregation, Hilbert-ordered scans — run in index-backed time against the full four coordinates. Provenance of the ingesting model lives on the edges that attach the firefly to its entity (`has_embedding_in(bpe_token, model_architecture)` and equivalents per entity type), not on the physicality row — one entity's many model-specific fireflies are distinguished by their edges' `provenance_id`, so `provenance_id` does not need to appear on `physicality` itself.
 
 ## Interactions with other substrate components
 
@@ -119,7 +119,7 @@ A firefly's `m` coordinate is the row's `L2` norm at ingest. A firefly's `signif
 
 ### Inference traversal (`inference.md`)
 
-Traversal queries use fireflies to seed activation. Given a prompt token `t`, the query looks up all fireflies for `t`, computes their Voronoi consensus centroid, and uses that centroid's position as the starting point for significance-guided graph traversal. Nearby entities in 4D (by `ST_3DDWithin`) are candidates for activation, ordered by Glicko-2 `mu`.
+Traversal queries can use fireflies as one of many seeding strategies — given a prompt token `t`, a query may look up all fireflies for `t`, compute a 4D centroid (`centroid_4d` for Euclidean or `centroid_s3` for direction-only), and use that position as a starting region. Nearby entities in 4D (by `distance_4d(... , ...) < r` or kNN via `<->`) are candidates for activation, ordered by Glicko-2 `mu`. But the 4D surface is not *only* used this way: the same primitives serve any query that wants to ask a geometric question against any `point4d` physicality — trajectory intersection, Fréchet-shape matching against known edge distributions, Hilbert-range scans for spatial locality, box containment for region filters. The 4D capability set is general-purpose; inference seeding is one caller of it.
 
 ### Gödel engine (`godel-engine.md`)
 
@@ -127,15 +127,15 @@ When a query lands outside all Voronoi consensus cells — i.e., no firefly clus
 
 ### Type system (`type-system.md`)
 
-Adds one `physicality_type`: `embedding_firefly`. Adds one entity type: `codebook_entry` (for audio/image codec codebooks; token entities reuse existing `bpe_token`). Adds reference-table rows for tracking firefly provenance. No new junction tables required — existing `physicality.provenance_id` carries the ingested-model identity.
+Adds one `physicality_type`: `embedding_firefly`, with `ref_physicality_type.dimensionality = 4` (selects the `point4d` column of `physicality`, not `geometry`). Adds one entity type: `codebook_entry` (for audio/image codec codebooks; token entities reuse existing `bpe_token`). No new junction tables required — model-of-origin is carried by the `has_embedding_in` edge's `provenance_id`, not by a column on `physicality`.
 
 ## Completeness criteria
 
-- Every embedding-matrix row (Track 1) from every ingested model produces exactly one `physicality` row with `physicality_type='embedding_firefly'`.
-- All firefly physicalities share a single 4D frame (x, y, z, m) — no per-model frame reprojection at query time.
-- Gram-Schmidt pass is mandatory — raw eigenvector frames are not acceptable because PostGIS 3D functions require orthogonal axes.
-- `ST_3DDWithin(f1.geom, f2.geom, r)` returns plausible token neighborhoods on a small-model sanity check (e.g., MiniLM: nearest neighbors of "king" include "queen", "prince", "monarch").
-- Voronoi consensus computable in SQL via existing PostGIS `ST_VoronoiPolygons` (extended to 4D via substrate helper) over the firefly set of a given entity.
+- Every embedding-matrix row (Track 1) from every ingested model produces exactly one `physicality` row with `physicality_type='embedding_firefly'` and a non-null `point4d` coordinate.
+- All firefly physicalities share a single 4D frame (three eigenmap axes + row-norm salience) — no per-model frame reprojection at query time.
+- Gram-Schmidt pass is mandatory — raw eigenvector frames are not acceptable because the 4D metric primitives require orthonormal sub-frames for meaningful distances.
+- A kNN query `SELECT … ORDER BY point4d <-> :q LIMIT k` over the firefly set produces plausible token neighborhoods on a small-model sanity check (e.g., MiniLM: nearest neighbors of "king" include "queen", "prince", "monarch").
+- Voronoi-style consensus regions over a firefly set are computable against the 4D surface — the 4D centroid/box/distance primitives compose into a substrate-side Voronoi helper; no PostGIS `ST_VoronoiPolygons` dependency, because PostGIS is 2D.
 
 ## Why this matters
 
@@ -149,5 +149,6 @@ The 4D choice is not arbitrary — it is the smallest dimension in which cross-m
 - `specs/engine/inference.md` — how traversal uses firefly positions at query time.
 - `specs/engine/godel-engine.md` — how frayed-edge detection uses Voronoi consensus.
 - `specs/engine/arenas-and-significance.md` — significance (Glicko-2) layered on top of geometry.
+- `specs/native/4d-type-and-index.md` — authoritative definition of `point4d`, `box4d`, operators, GiST/SP-GiST opclasses, aggregates. The 4D surface that firefly storage and every 4D query run against.
 - `type-system.md` — `physicality_type='embedding_firefly'`, `entity_type='codebook_entry'`.
-- `architecture.md` — PostGIS GEOMETRYZM and the Merkle DAG substrate.
+- `architecture.md` — the dual-surface physicality model (PostGIS for 2D/3D modalities, `point4d` for 4D) and the Merkle DAG substrate.

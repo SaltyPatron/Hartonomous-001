@@ -13,8 +13,8 @@ namespace Hartonomous.Decomposers.WordNet;
 /// </summary>
 internal sealed class WordNetReferenceTableWriter : BaseReferenceTableWriter
 {
-    public WordNetReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
-        : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public WordNetReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+        : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 

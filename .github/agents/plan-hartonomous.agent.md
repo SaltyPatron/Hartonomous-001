@@ -12,12 +12,12 @@ handoffs:
 
 1. `substrate.entity` — atoms and compositions. PK `(id, entity_type_id)`. BLAKE3 hash of content only. 25 entity types, LIST-partitioned (migration `0006`).
 2. `substrate.edge` + `substrate.edge_member` — n-ary typed relations with role-ordered participants. Trajectory geometry. 33 edge types: structural (1–13), cross_lingual (14–16), cross_modal (17–18), unicode (19–21), model_derived (22–33). 7 roles.
-3. `substrate.physicality` — universal geometry. 13 types. POINTZM/LINESTRINGZM. GiST-indexed. `ST_FrechetDistance`.
+3. `substrate.physicality` — universal geometry, dual-surface. 13 physicality types. PostGIS `geometry` surface (2D/3D) for natively 2D/3D modalities; substrate-native `point4d`/`linestring4d` surface (4D) for codepoint S³ positions, embedding fireflies, 4D trajectories. Both GiST-indexed. `ST_FrechetDistance` for 2D/3D, 4D Fréchet over `linestring4d` for 4D (`specs/native/4d-type-and-index.md`).
 4. Reference tables (migration `0004`) + junction tables (migration `0007`) — classification vocabularies and evidence junctions. Three junctions carry Glicko-2: `entity_pos`, `entity_sense`, `pattern_deprel`.
 
 ## Phase enum
 
-`CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `ModelDecomp` → `Wiktionary` → `Tatoeba` → `SignificanceField` → `InferenceEngine` → `Validation`
+`CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `ModelDecomp` → `Wiktionary` → `Tatoeba` → `TextDecomp` → `SignificanceField` → `InferenceEngine` → `Validation`
 
 Defined in `src/Hartonomous.Core/Orchestration/Phase.cs`. `SequentialPhaseRunner` in `src/Hartonomous.Engine/Orchestration/`.
 

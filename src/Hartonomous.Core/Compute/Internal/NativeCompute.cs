@@ -51,6 +51,12 @@ internal static partial class NativeCompute
     internal static partial int S3Centroid(
         ReadOnlySpan<double> points, nuint pointCount, Span<double> result);
 
+    [LibraryImport(Library, EntryPoint = "hartonomous_karcher_mean_s3")]
+    internal static partial int KarcherMeanS3(
+        ReadOnlySpan<double> points, nuint pointCount,
+        int maxIter, double tol,
+        Span<double> result);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_super_fibonacci")]
     internal static partial int SuperFibonacci(
         ReadOnlySpan<double> parameters, nuint ndims, Span<double> result);
@@ -78,6 +84,31 @@ internal static partial class NativeCompute
         double beta,
         Span<double> c, long ldc);
 
+    [LibraryImport(Library, EntryPoint = "hartonomous_svd_f64")]
+    internal static partial int SvdF64(
+        long m, long n,
+        ReadOnlySpan<double> a,
+        Span<double> u,
+        Span<double> s,
+        Span<double> vt);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_procrustes_f64")]
+    internal static partial int ProcrustesF64(
+        long d, long n,
+        ReadOnlySpan<double> x,
+        ReadOnlySpan<double> y,
+        Span<double> rotation,
+        out double outResidual);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_knearest_exact_f64")]
+    internal static partial int KnearestExactF64(
+        long nq, long nc, long d,
+        ReadOnlySpan<double> queries,
+        ReadOnlySpan<double> corpus,
+        long k,
+        Span<long> outIndices,
+        Span<double> outDistances);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_knn_cosine_graph_f64")]
     internal static partial int KnnCosineGraphF64(
         long n, long d,
@@ -87,6 +118,29 @@ internal static partial class NativeCompute
         Span<long> outColIdx,
         Span<double> outValues,
         out long outNnz);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_laplacian_eigenmap_f64")]
+    internal static partial int LaplacianEigenmapF64(
+        long n, long nnz,
+        ReadOnlySpan<long> rowPtr,
+        ReadOnlySpan<long> colIdx,
+        ReadOnlySpan<double> values,
+        long k,
+        long maxIter,
+        ulong seed,
+        Span<double> outEigenvalues,
+        Span<double> outEigenvectors,
+        out long outIters);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_kmeans_plusplus_f64")]
+    internal static partial int KmeansPlusPlusF64(
+        long n, long d, long k,
+        ReadOnlySpan<double> points,
+        long maxIter,
+        ulong seed,
+        Span<long> outAssignments,
+        Span<double> outCenters,
+        out long outIters);
 
     [LibraryImport(Library, EntryPoint = "hartonomous_sparse_sym_eigs_f64")]
     internal static partial int SparseSymEigsF64(
@@ -105,4 +159,12 @@ internal static partial class NativeCompute
     internal static partial int GramSchmidtF64(
         long k, long n,
         Span<double> vectors, long ld);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_delaunay_4d_f64")]
+    internal static partial int Delaunay4dF64(
+        long n,
+        ReadOnlySpan<double> points,
+        out long outSimplexCount,
+        Span<long> outSimplices,
+        long outCapacity);
 }

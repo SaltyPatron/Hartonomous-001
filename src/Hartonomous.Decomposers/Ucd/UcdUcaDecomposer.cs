@@ -17,7 +17,6 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
     private const double TrustPriorMu = 95000.0;
 
     private readonly string _sourceDir;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -31,7 +30,6 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -78,7 +76,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             refCollector.Scripts.Count, refCollector.Blocks.Count);
 
         // ── Phase 3: Populate reference tables ──
-        UcdReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        UcdReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
             Dictionary<string, int> gcIds = await refWriter.PopulateGeneralCategoriesAsync(
@@ -146,7 +144,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 // points are adjacent on S3 — block/script locality is preserved geometrically.
                 {
                     (double x, double y, double z, double m) = PhysicalityEmitter.CodepointS3Position(cp.Value);
-                    batch.AddPhysicality(entity, "s3_position", PhysicalityEmitter.PointZmWkb(x, y, z, m));
+                    batch.AddPhysicalityPoint4d(entity, "s3_position", x, y, z, m);
                 }
 
                 if (collationMap.TryGetValue(cp.Value, out CollationWeight weights))
@@ -169,7 +167,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     {
                         (double cx, double cy, double cz, double cm) =
                             PhysicalityEmitter.SuperFibonacciS3(ucaIndex, totalUcaEntries);
-                        batch.AddPhysicality(ceEntity, "s3_position", PhysicalityEmitter.PointZmWkb(cx, cy, cz, cm));
+                        batch.AddPhysicalityPoint4d(ceEntity, "s3_position", cx, cy, cz, cm);
                     }
                 }
 
@@ -331,18 +329,6 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
         ceBytes[4] = (byte)(weights.Tertiary >> 8);
         ceBytes[5] = (byte)weights.Tertiary;
         return ComputeHash(ceBytes.AsSpan());
-    }
-
-    internal static byte[] PointZMToWkb(double x, double y, double z, double m)
-    {
-        byte[] wkb = new byte[37];
-        wkb[0] = 1; // little-endian
-        BitConverter.TryWriteBytes(wkb.AsSpan(1), 0xC0000001u); // PointZM
-        BitConverter.TryWriteBytes(wkb.AsSpan(5), x);
-        BitConverter.TryWriteBytes(wkb.AsSpan(13), y);
-        BitConverter.TryWriteBytes(wkb.AsSpan(21), z);
-        BitConverter.TryWriteBytes(wkb.AsSpan(29), m);
-        return wkb;
     }
 
     private static partial class Log

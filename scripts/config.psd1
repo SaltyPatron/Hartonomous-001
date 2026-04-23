@@ -101,6 +101,37 @@
         TextRoot             = 'test_data\text'
     }
 
+    # ── Native Windows install layout ─────────────────────────────────────
+    # Used by scripts/build/PgExtension.ps1 (Windows target) and
+    # scripts/install/Repair-WindowsRuntime.ps1. Every value is overridable
+    # via env var (HARTONOMOUS_WINDOWSNATIVE__*).
+    WindowsNative = @{
+        # Candidate Postgres install roots, scanned in order. First one that
+        # contains lib\postgres.lib wins. Pin a specific version with
+        # HARTONOMOUS_WINDOWSNATIVE__PGROOT=...
+        PgRootCandidates = @(
+            'C:\Program Files\PostgreSQL\18',
+            'C:\Program Files\PostgreSQL\17',
+            'C:\Program Files\PostgreSQL\16'
+        )
+        # Intel oneAPI install root. setvars.bat is the canonical sentinel.
+        IntelOneApiRoot  = 'C:\Program Files (x86)\Intel\oneAPI'
+        # Visual Studio: discovered via vswhere.exe; this is the override.
+        VsInstallRoot    = $null
+        # Runtime DLL closure libhartonomous.dll links against. Each entry is
+        # a (subdir-under-oneAPI, glob) tuple. Staged into PG bin\ on install.
+        IntelRuntimeDlls = @(
+            @{ Subdir = 'mkl\latest\bin';      Pattern = 'mkl_core.*.dll' },
+            @{ Subdir = 'mkl\latest\bin';      Pattern = 'mkl_def.*.dll' },
+            @{ Subdir = 'mkl\latest\bin';      Pattern = 'mkl_avx2.*.dll' },
+            @{ Subdir = 'mkl\latest\bin';      Pattern = 'mkl_avx512.*.dll' },
+            @{ Subdir = 'mkl\latest\bin';      Pattern = 'mkl_intel_thread.*.dll' },
+            @{ Subdir = 'mkl\latest\bin';      Pattern = 'mkl_rt.*.dll' },
+            @{ Subdir = 'compiler\latest\bin'; Pattern = 'libiomp5md.dll' },
+            @{ Subdir = 'compiler\latest\bin'; Pattern = 'svml_dispmd.dll' }
+        )
+    }
+
     Logging = @{
         Console = 'Info'      # Trace|Debug|Info|Warn|Error
         File    = 'Debug'

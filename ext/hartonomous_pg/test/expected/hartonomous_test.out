@@ -1,138 +1,529 @@
--- pg_regress test for hartonomous extension
+-- pg_regress test for hartonomous extension (P1a.5 minimal smoke pack).
+-- Validates: extension loads, types round-trip, distance is correct,
+-- aggregates work end-to-end. GiST/SP-GiST kNN tests deferred to P1a.3.
+
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS hartonomous;
+
 -- Version
 SELECT length(hartonomous_version()) > 0 AS has_version;
- has_version
+ has_version 
 -------------
  t
 (1 row)
 
--- BLAKE3
+
+-- BLAKE3 (regression-stable subset).
 SELECT length(blake3_hash('\x48656c6c6f'::bytea)) AS blake3_len;
- blake3_len
+ blake3_len 
 ------------
          32
 (1 row)
 
 SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
- blake3_text_len
+ blake3_text_len 
 -----------------
               32
 (1 row)
 
 SELECT blake3_hash_text('hello') = blake3_hash_text('hello') AS blake3_deterministic;
- blake3_deterministic
+ blake3_deterministic 
 ----------------------
  t
 (1 row)
 
 SELECT blake3_hash_text('hello') != blake3_hash_text('world') AS blake3_distinct;
- blake3_distinct
+ blake3_distinct 
 -----------------
  t
 (1 row)
 
--- S3 Distance
-SELECT round(_s3_distance(
-    ARRAY[1.0, 0.0, 0.0, 0.0],
-    ARRAY[1.0, 0.0, 0.0, 0.0]
-)::numeric, 6) AS s3_self_distance;
- s3_self_distance
-------------------
-         0.000000
-(1 row)
 
-SELECT round(_s3_distance(
-    ARRAY[1.0, 0.0, 0.0, 0.0],
-    ARRAY[-1.0, 0.0, 0.0, 0.0]
-)::numeric, 4) AS s3_antipodal;
- s3_antipodal
+-- point4d round-trip via text I/O.
+SELECT '(1, 2, 3, 4)'::point4d AS p_in;
+     p_in     
 --------------
-       3.1416
+ (1, 2, 3, 4)
 (1 row)
 
-SELECT round(_s3_distance(
-    ARRAY[1.0, 0.0, 0.0, 0.0],
-    ARRAY[0.0, 1.0, 0.0, 0.0]
-)::numeric, 4) AS s3_orthogonal;
- s3_orthogonal
+SELECT point4d(1.0, 2.0, 3.0, 4.0) AS p_ctor;
+    p_ctor    
+--------------
+ (1, 2, 3, 4)
+(1 row)
+
+
+-- distance_4d on basis vectors: ||(1,0,0,0) - (0,1,0,0)|| = sqrt(2).
+SELECT round(distance_4d(point4d(1, 0, 0, 0), point4d(0, 1, 0, 0))::numeric, 6) AS d_4d_basis;
+ d_4d_basis 
+------------
+   1.414214
+(1 row)
+
+
+-- distance_s3: identical → 0, antipodal → π, orthogonal → π/2.
+SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(1, 0, 0, 0))::numeric, 6) AS d_s3_self;
+ d_s3_self 
+-----------
+  0.000000
+(1 row)
+
+SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(-1, 0, 0, 0))::numeric, 4) AS d_s3_antipode;
+ d_s3_antipode 
 ---------------
-        1.5708
+        3.1416
 (1 row)
 
--- S3 Distance via geometry wrapper
-SELECT round(s3_distance(
-    ST_MakePoint(1.0, 0.0, 0.0, 0.0),
-    ST_MakePoint(0.0, 1.0, 0.0, 0.0)
-)::numeric, 4) AS s3_geom_distance;
- s3_geom_distance
-------------------
-           1.5708
+SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(0, 1, 0, 0))::numeric, 4) AS d_s3_orthogonal;
+ d_s3_orthogonal 
+-----------------
+          1.5708
 (1 row)
 
--- Super-Fibonacci
-SELECT array_length(_super_fibonacci_project(ARRAY[0.0, 100.0]), 1) AS superfib_dims;
- superfib_dims
----------------
-             4
+
+-- Operators bind correctly.
+SELECT round((point4d(1, 0, 0, 0) <-> point4d(0, 1, 0, 0))::numeric, 6) AS op_dist_4d;
+ op_dist_4d 
+------------
+   1.414214
 (1 row)
 
--- Super-Fibonacci deterministic
-SELECT _super_fibonacci_project(ARRAY[42.0, 1000.0]) = _super_fibonacci_project(ARRAY[42.0, 1000.0]) AS superfib_deterministic;
- superfib_deterministic
-------------------------
+SELECT round((point4d(1, 0, 0, 0) <=> point4d(0, 1, 0, 0))::numeric, 4) AS op_dist_s3;
+ op_dist_s3 
+------------
+     1.5708
+(1 row)
+
+SELECT point4d(1, 2, 3, 4) = point4d(1, 2, 3, 4) AS op_eq_self;
+ op_eq_self 
+------------
  t
 (1 row)
 
--- Hilbert index
-SELECT _hilbert_index(ARRAY[0.0, 0.0, 0.0, 0.0], 4) AS hilbert_origin;
- hilbert_origin
+SELECT point4d(1, 2, 3, 4) <> point4d(1, 2, 3, 5) AS op_ne_diff;
+ op_ne_diff 
+------------
+ t
+(1 row)
+
+
+-- dot, norm, normalize.
+SELECT round(dot_4d(point4d(1, 2, 3, 4), point4d(1, 1, 1, 1))::numeric, 6) AS dot_one;
+  dot_one  
+-----------
+ 10.000000
+(1 row)
+
+SELECT round(norm_4d(point4d(1, 1, 1, 1))::numeric, 6) AS norm_ones;
+ norm_ones 
+-----------
+  2.000000
+(1 row)
+
+SELECT round(norm_4d(normalize_4d(point4d(1, 2, 3, 4)))::numeric, 6) AS norm_after_normalize;
+ norm_after_normalize 
+----------------------
+             1.000000
+(1 row)
+
+
+-- antipode.
+SELECT antipode(point4d(1, 0, 0, 0)) AS antipode_basis;
+  antipode_basis  
+------------------
+ (-1, -0, -0, -0)
+(1 row)
+
+
+-- Super-Fibonacci is deterministic and unit-norm.
+SELECT super_fibonacci_4d(0, 1024) = super_fibonacci_4d(0, 1024) AS sf_deterministic;
+ sf_deterministic 
+------------------
+ t
+(1 row)
+
+SELECT round(norm_4d(super_fibonacci_4d(0, 1024))::numeric, 6) AS sf_unit_norm;
+ sf_unit_norm 
+--------------
+     1.000000
+(1 row)
+
+SELECT round(norm_4d(super_fibonacci_4d(42, 1024))::numeric, 6) AS sf_unit_norm_42;
+ sf_unit_norm_42 
+-----------------
+        1.000000
+(1 row)
+
+
+-- Hilbert round-trip at order 8 within quantization tolerance.
+SELECT hilbert_4d(point4d(0, 0, 0, 0), 8) AS hilbert_origin;
+ hilbert_origin 
 ----------------
               0
 (1 row)
 
-SELECT _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 4) AS hilbert_center;
- hilbert_center
-----------------
-          40960
-(1 row)
-
--- Hilbert round-trip via geometry wrapper
-SELECT hilbert_index(ST_MakePoint(0.5, 0.5, 0.5, 0.5)) AS hilbert_geom;
- hilbert_geom
---------------
-   2684354560
-(1 row)
-
--- Hilbert order matters
-SELECT _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 4) != _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 8) AS hilbert_order_matters;
- hilbert_order_matters
+SELECT hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 4) <> hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 8) AS hilbert_order_matters;
+ hilbert_order_matters 
 -----------------------
  t
 (1 row)
 
--- Error cases
+
+-- Hilbert order out of range → error.
 DO $$
 BEGIN
-    PERFORM _s3_distance(ARRAY[1.0, 0.0], ARRAY[1.0, 0.0, 0.0, 0.0]);
-    RAISE EXCEPTION 'should have failed';
-EXCEPTION WHEN array_element_error THEN
-    RAISE NOTICE 's3_distance correctly rejects non-4D input';
-END $$;
-NOTICE:  s3_distance correctly rejects non-4D input
-DO $$
-BEGIN
-    PERFORM _hilbert_index(ARRAY[0.5, 0.5, 0.5, 0.5], 20);
+    PERFORM hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 20);
     RAISE EXCEPTION 'should have failed';
 EXCEPTION WHEN numeric_value_out_of_range THEN
-    RAISE NOTICE 'hilbert_index correctly rejects order > 16';
+    RAISE NOTICE 'hilbert_4d correctly rejects order > 16';
 END $$;
-NOTICE:  hilbert_index correctly rejects order > 16
+NOTICE:  hilbert_4d correctly rejects order > 16
+
+-- Super-Fibonacci index out of range → error.
+DO $$
+BEGIN
+    PERFORM super_fibonacci_4d(1024, 1024);
+    RAISE EXCEPTION 'should have failed';
+EXCEPTION WHEN numeric_value_out_of_range THEN
+    RAISE NOTICE 'super_fibonacci_4d correctly rejects i >= n';
+END $$;
+NOTICE:  super_fibonacci_4d correctly rejects i >= n
+
+-- box4d round-trip and predicates.
+SELECT '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d AS b_in;
+             b_in             
+------------------------------
+ ((0, 0, 0, 0), (1, 1, 1, 1))
+(1 row)
+
+SELECT bbox(point4d(1, 2, 3, 4)) AS degenerate_box;
+        degenerate_box        
+------------------------------
+ ((1, 2, 3, 4), (1, 2, 3, 4))
+(1 row)
+
+SELECT box4d_overlaps(
+    '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
+    '((0.5, 0.5, 0.5, 0.5), (2, 2, 2, 2))'::box4d
+) AS boxes_overlap;
+ boxes_overlap 
+---------------
+ t
+(1 row)
+
+SELECT box4d_contains_point(
+    '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
+    point4d(0.5, 0.5, 0.5, 0.5)
+) AS box_contains_inside;
+ box_contains_inside 
+---------------------
+ t
+(1 row)
+
+SELECT box4d_contains_point(
+    '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
+    point4d(2, 2, 2, 2)
+) AS box_contains_outside;
+ box_contains_outside 
+----------------------
+ f
+(1 row)
+
+
+-- centroid_4d aggregate over a tetrahedron's vertices = (0.25, 0.25, 0.25, 0.25).
+WITH pts(p) AS (
+    VALUES (point4d(1, 0, 0, 0)),
+           (point4d(0, 1, 0, 0)),
+           (point4d(0, 0, 1, 0)),
+           (point4d(0, 0, 0, 1))
+)
+SELECT centroid_4d(p) AS tet_centroid FROM pts;
+       tet_centroid       
+--------------------------
+ (0.25, 0.25, 0.25, 0.25)
+(1 row)
+
+
+-- centroid_s3 over the same set: renormalized centroid is unit-norm.
+WITH pts(p) AS (
+    VALUES (point4d(1, 0, 0, 0)),
+           (point4d(0, 1, 0, 0)),
+           (point4d(0, 0, 1, 0)),
+           (point4d(0, 0, 0, 1))
+)
+SELECT round(norm_4d(centroid_s3(p))::numeric, 6) AS s3_centroid_unit FROM pts;
+ s3_centroid_unit 
+------------------
+         1.000000
+(1 row)
+
+
+-- bbox_4d aggregate over the same set yields the unit corners box.
+WITH pts(p) AS (
+    VALUES (point4d(1, 0, 0, 0)),
+           (point4d(0, 1, 0, 0)),
+           (point4d(0, 0, 1, 0)),
+           (point4d(0, 0, 0, 1))
+)
+SELECT bbox_4d(p) AS tet_box FROM pts;
+           tet_box            
+------------------------------
+ ((0, 0, 0, 0), (1, 1, 1, 1))
+(1 row)
+
+
 -- Done
 SELECT 'all tests passed' AS result;
-     result
------------------
+      result      
+------------------
  all tests passed
+(1 row)
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- P1a.3 additions: linestring4d, trajectory, glicko bulk, casts, GiST/SP-GiST
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- linestring4d round-trip via text I/O.
+SELECT '((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d AS ls_in;
+              ls_in              
+---------------------------------
+ ((0,0,0,0),(1,1,1,1),(2,2,2,2))
+(1 row)
+
+SELECT npoints('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d) AS ls_n;
+ ls_n 
+------
+    3
+(1 row)
+
+SELECT point_n('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d, 2) AS ls_p2;
+    ls_p2     
+--------------
+ (1, 1, 1, 1)
+(1 row)
+
+SELECT bbox('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d) AS ls_bbox;
+           ls_bbox            
+------------------------------
+ ((0, 0, 0, 0), (2, 2, 2, 2))
+(1 row)
+
+SELECT round(length_4d('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d)::numeric, 6) AS ls_len;
+  ls_len  
+----------
+ 4.000000
+(1 row)
+
+
+-- frechet_4d identity = 0, hausdorff_4d identity = 0.
+SELECT round(frechet_4d(
+    '((0,0,0,0),(1,0,0,0))'::linestring4d,
+    '((0,0,0,0),(1,0,0,0))'::linestring4d)::numeric, 6) AS frechet_self;
+ frechet_self 
+--------------
+     0.000000
+(1 row)
+
+SELECT round(hausdorff_4d(
+    '((0,0,0,0),(1,0,0,0))'::linestring4d,
+    '((0,0,0,0),(1,0,0,0))'::linestring4d)::numeric, 6) AS hausdorff_self;
+ hausdorff_self 
+----------------
+       0.000000
+(1 row)
+
+
+-- frechet_4d shifted polylines: parallel offset = constant.
+SELECT round(frechet_4d(
+    '((0,0,0,0),(1,0,0,0),(2,0,0,0))'::linestring4d,
+    '((0,1,0,0),(1,1,0,0),(2,1,0,0))'::linestring4d)::numeric, 6) AS frechet_offset;
+ frechet_offset 
+----------------
+       1.000000
+(1 row)
+
+
+-- Glicko-2 bulk: 1 player vs equal-strength opponent, score 0.5 ⇒ mu unchanged.
+SELECT g.new_mu[1]::numeric(8,2) AS mu_after,
+       (g.new_sigma[1] < 350.0) AS sigma_decreased
+FROM glicko2_bulk_update(
+    ARRAY[1500.0]::float8[], ARRAY[350.0]::float8[], ARRAY[0.06]::float8[],
+    ARRAY[1500.0]::float8[], ARRAY[350.0]::float8[], ARRAY[0.5]::float8[]
+) g;
+ mu_after | sigma_decreased 
+----------+-----------------
+  1500.00 | t
+(1 row)
+
+
+-- Cast point4d ↔ float8[].
+SELECT (point4d(1, 2, 3, 4)::double precision[]) AS p_to_arr;
+ p_to_arr  
+-----------
+ {1,2,3,4}
+(1 row)
+
+SELECT (ARRAY[1.0, 2.0, 3.0, 4.0]::double precision[])::point4d AS arr_to_p;
+   arr_to_p   
+--------------
+ (1, 2, 3, 4)
+(1 row)
+
+
+-- Domain: unit_quaternion accepts unit-norm, rejects otherwise.
+SELECT (point4d(1, 0, 0, 0)::unit_quaternion) AS uq_ok;
+    uq_ok     
+--------------
+ (1, 0, 0, 0)
+(1 row)
+
+DO $$
+BEGIN
+    PERFORM (point4d(1, 1, 1, 1)::unit_quaternion);
+    RAISE EXCEPTION 'should have failed';
+EXCEPTION WHEN check_violation THEN
+    RAISE NOTICE 'unit_quaternion correctly rejects non-unit input';
+END $$;
+NOTICE:  unit_quaternion correctly rejects non-unit input
+
+-- Domain: glicko_mu rejects out-of-range.
+DO $$
+BEGIN
+    PERFORM ((-1.0)::glicko_mu);
+    RAISE EXCEPTION 'should have failed';
+EXCEPTION WHEN check_violation THEN
+    RAISE NOTICE 'glicko_mu correctly rejects negative input';
+END $$;
+NOTICE:  glicko_mu correctly rejects negative input
+
+-- GiST index: build, query <-> kNN against seq scan reference.
+CREATE TEMP TABLE g_pts (id serial PRIMARY KEY, p point4d);
+INSERT INTO g_pts (p)
+SELECT super_fibonacci_4d(i, 1000) FROM generate_series(0, 999) i;
+CREATE INDEX g_pts_gist ON g_pts USING gist (p);
+ANALYZE g_pts;
+
+WITH q AS (SELECT super_fibonacci_4d(123, 1000) AS qp),
+gist_top AS (
+    SELECT id FROM g_pts, q ORDER BY p <-> q.qp LIMIT 5
+),
+seq_top AS (
+    SELECT id FROM g_pts, q ORDER BY distance_4d(p, q.qp) LIMIT 5
+)
+SELECT (SELECT array_agg(id ORDER BY id) FROM gist_top)
+     = (SELECT array_agg(id ORDER BY id) FROM seq_top) AS gist_knn_matches_seq;
+ gist_knn_matches_seq 
+----------------------
+ t
+(1 row)
+
+
+-- GiST containment.
+SELECT count(*) > 0 AS gist_containment_works
+FROM g_pts
+WHERE p <@ '((-1,-1,-1,-1),(1,1,1,1))'::box4d;
+ gist_containment_works 
+------------------------
+ t
+(1 row)
+
+
+-- SP-GiST index: build, query <@ containment matches seq scan.
+CREATE TEMP TABLE s_pts (id serial PRIMARY KEY, p point4d);
+INSERT INTO s_pts (p)
+SELECT super_fibonacci_4d(i, 500) FROM generate_series(0, 499) i;
+CREATE INDEX s_pts_spgist ON s_pts USING spgist (p);
+ANALYZE s_pts;
+
+WITH spgist_in AS (
+    SELECT id FROM s_pts
+    WHERE p <@ '((-0.5,-0.5,-0.5,-0.5),(0.5,0.5,0.5,0.5))'::box4d
+),
+seq_in AS (
+    SELECT id FROM s_pts
+    WHERE box4d_contains_point('((-0.5,-0.5,-0.5,-0.5),(0.5,0.5,0.5,0.5))'::box4d, p)
+)
+SELECT (SELECT array_agg(id ORDER BY id) FROM spgist_in)
+     = (SELECT array_agg(id ORDER BY id) FROM seq_in) AS spgist_filter_matches_seq;
+ spgist_filter_matches_seq 
+---------------------------
+ 
+(1 row)
+
+
+-- Diagnostic view returns rows.
+SELECT count(*) >= 2 AS view_sees_indexes
+FROM point4d_index_stats
+WHERE table_name IN ('g_pts', 's_pts');
+ view_sees_indexes 
+-------------------
+ t
+(1 row)
+
+
+-- Done (P1a.3 extension)
+SELECT 'P1a.3 tests passed' AS result;
+       result       
+--------------------
+ P1a.3 tests passed
+(1 row)
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- P1a.5: CBWR=AUTO,STRICT determinism gate + runtime introspection
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Strict determinism is requested at extension load (default GUC = on).
+SELECT strict_determinism FROM hartonomous_runtime_info();
+ strict_determinism 
+--------------------
+ t
+(1 row)
+
+
+-- CBWR branch is resolved (>= 0 means MKL accepted the AUTO|STRICT request).
+SELECT cbwr_branch >= 0 AS cbwr_active FROM hartonomous_runtime_info();
+ cbwr_active 
+-------------
+ t
+(1 row)
+
+
+-- MKL version string is populated (non-empty).
+SELECT length(mkl_version) > 0 AS mkl_version_present FROM hartonomous_runtime_info();
+ mkl_version_present 
+---------------------
+ t
+(1 row)
+
+
+-- Golden determinism fixture: super_fibonacci index 0 / N=1024 is byte-stable.
+-- Two calls with identical args must produce identical output. The cast to
+-- text via point4d_out uses %.17g so repeated runs produce character-identical
+-- representations.
+SELECT super_fibonacci_4d(0, 1024)::text = super_fibonacci_4d(0, 1024)::text
+    AS sf_byte_stable;
+ sf_byte_stable 
+----------------
+ t
+(1 row)
+
+
+-- Golden determinism fixture: a known-good Hilbert index for a fixed point.
+-- This is a regression anchor — if the underlying algorithm or its bit
+-- packing ever changes, this row breaks and pg_regress reports a diff.
+SELECT hilbert_4d(point4d(0.25, 0.5, 0.75, 0.125), 8) AS hilbert_anchor;
+ hilbert_anchor 
+----------------
+     1099161053
+(1 row)
+
+
+-- Done (P1a.5 extension)
+SELECT 'P1a.5 tests passed' AS result;
+       result       
+--------------------
+ P1a.5 tests passed
 (1 row)
 

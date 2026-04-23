@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Data;
-using Npgsql;
 
 namespace Hartonomous.Decomposers;
 
@@ -11,8 +10,9 @@ namespace Hartonomous.Decomposers;
 /// Shared Npgsql plumbing for every decomposer's reference-table/junction/edge-type
 /// writer. Generic loaders delegate to <see cref="IReferenceDataReader"/> and junction
 /// writers delegate to <see cref="IJunctionWriter"/> so the SQL is in one place
-/// (the Engine implementations). Subclasses retain <see cref="DataSource"/> for
-/// domain-specific stored procedure calls.
+/// (the Engine implementations). All database access flows through those injected
+/// services, which share the pipeline's single <see cref="NpgsqlDataSource"/> —
+/// no second connection pool is opened here (audit A.3).
 /// </summary>
 internal abstract class BaseReferenceTableWriter
 {
@@ -20,15 +20,12 @@ internal abstract class BaseReferenceTableWriter
     protected const double AuthoritativeSigma = 50.0;
     protected const int ChunkSize = 50_000;
 
-    protected readonly NpgsqlDataSource DataSource;
     private readonly IReferenceDataReader _reader;
     private readonly IJunctionWriter _junctionWriter;
     private readonly IReferenceDataWriter _writer;
 
-    protected BaseReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
+    protected BaseReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter)
     {
-        NpgsqlDataSourceBuilder builder = new(connectionString);
-        DataSource = builder.Build();
         _reader = reader;
         _junctionWriter = junctionWriter;
         _writer = referenceDataWriter;
@@ -254,10 +251,9 @@ internal abstract class BaseReferenceTableWriter
         CancellationToken ct) =>
         _writer.PopulateSensesAsync(senses, ct);
 
-    public async ValueTask DisposeAsync()
-    {
-        await DataSource.DisposeAsync();
-    }
+    // Virtual so subclasses can extend if they ever own disposable state. The base
+    // owns nothing now (audit A.3 — single connection pool comes from the pipeline).
+    public virtual ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     // Defense-in-depth: every table/column name passed to a generic helper is compiled
     // from a string literal at the call site today, but we validate anyway so a future

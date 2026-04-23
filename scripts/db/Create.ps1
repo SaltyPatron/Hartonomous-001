@@ -42,6 +42,11 @@ try {
         Write-HartInfo 'PostGIS ready.'
     }
 
+    Invoke-HartStep -Name 'Ensure hartonomous extension' -Action {
+        Invoke-HartPsql -Cfg $Cfg -Sql 'CREATE EXTENSION IF NOT EXISTS hartonomous' | Out-Null
+        Write-HartInfo 'hartonomous extension ready.'
+    }
+
     Exit-Hartonomous -Code $Cfg.ExitCodes.Ok -Message 'Database ready.'
 }
 catch {

@@ -23,6 +23,7 @@ Master table of contents and completion tracker. Every document in the project i
 | [flow-inventory.md](flow-inventory.md) | ✅ | Complete flow inventory. 34 cataloged database operation flows (seed ingestion, runtime ingestion, inference, significance/arena, monitoring, recomposition). Every chain of operations from trigger to final state. |
 | [glossary.md](glossary.md) | ✅ | Centralized term definitions. Every domain-specific term used across all docs. |
 | [build-plan.md](build-plan.md) | ✅ | Implementation build plan. Phase-ordered work breakdown with dependencies and completion tracking. |
+| [familiar-principle.md](familiar-principle.md) | ✅ | The conceptual frame. Laplace's Demon in the knowledge regime (why physics-Laplace fails but knowledge-Laplace is tractable). The familiar as bonded/subservient/auditable cognitive organ. Five properties + five corollaries that every design choice in the repo must satisfy. Required reading before architectural claims about the substrate. |
 
 ---
 
@@ -56,6 +57,7 @@ Each defines WHAT the engine does algorithmically. Traversal strategy, Glicko-2 
 | [specs/engine/embedding-physicality.md](specs/engine/embedding-physicality.md) | ✅ | 4D embedding physicality. Laplacian eigenmaps, Gram-Schmidt orthonormalization, firefly POINTZMs, Voronoi consensus, Borsuk-Ulam N=4 rationale. The geometric substrate for cross-model agreement over shared tokens. |
 | [specs/engine/generation-and-transformation.md](specs/engine/generation-and-transformation.md) | ✅ | Text/image/audio/video generation. Translation, summarization, style transfer, modality conversion. Recomposer concepts. |
 | [specs/engine/godel-engine.md](specs/engine/godel-engine.md) | ✅ | Gödel Engine. The substrate's reasoning system — OODA loop at micro (per-traversal-step), meso (query/task decomposition), and macro (background exploration/ingestion) scales. Self-questioning, metacognition, hypothesis formation, curiosity-driven exploration. The inner monologue. |
+| [specs/engine/substrate-governance.md](specs/engine/substrate-governance.md) | ✅ | Governance as substrate property, not model output. Forward-pass per-entity junction lookups during decomposition as the enforcement surface. Per-level checkpoint chain (codepoint → grapheme → morpheme → lemma → word_form → lexicalized_compound → sense → UD pattern → turn). Normalization defeats surface-form obfuscation by structural property. Properties: determinism, audit traceability, modification without retraining, honest abstention, adversarial resistance, multi-provenance disagreement. Governance sandbox — prototype rules as SQL and test against historical corpora. |
 
 ---
 
@@ -88,6 +90,8 @@ These define the actual database objects: complete DDL, stored procedure signatu
 | [specs/sql/partitioning.md](specs/sql/partitioning.md) | ✅ | LIST partitioning for 4 tables (entity, edge, physicality, significance). Partition key choices, maintenance. |
 | [specs/sql/indexing.md](specs/sql/indexing.md) | ✅ | 31 indexes. Full CREATE INDEX statements. Bulk-load strategy (deferred creation). Partial indexes. GiST configuration. |
 | [specs/sql/migrations.md](specs/sql/migrations.md) | ✅ | Migration strategy. Sequential numbering, up/down scripts, C# CLI runner, SHA-256 checksum drift detection. |
+| [specs/sql/infrastructure-vs-substrate.md](specs/sql/infrastructure-vs-substrate.md) | ✅ | The two-layer discipline. App-layer infrastructure (reference + junction tables, cached judgment, microsecond JOINs, rebuildable from seeds) vs substrate content (entity/edge/physicality/significance/sequence — content-addressed, deterministic, irreducible). Glicko-2 on junctions vs Glicko-2 on substrate. Cheap-gate-plus-deep-read query composition. Three probe case studies (rake the rakes, dog the door, scurvy dog) walked through both layers. Anti-patterns. |
+| [specs/sql/mantissa-exploitation.md](specs/sql/mantissa-exploitation.md) | ✅ | PostGIS GeometryZM as a generalized 4-float indexed columnar store, not a GIS system. 53-bit float8 mantissa (2^53 ≈ 9 × 10^15 exact integers per axis) holds bitmasks, timestamps, packed category codes, hash prefixes, covering columns. Per-physicality-type coordinate convention table. Physicality partitioning as interpretation discipline (not geometric necessity). When to use GeometryZM vs native GEOMETRY4D. Indexing strategy (GiST envelope + BRIN on ST_Z/ST_M). Operator semantics reminder. Consolidation guidance. |
 
 ---
 
@@ -122,6 +126,7 @@ These define the PostgreSQL extension and shared native library: function signat
 | [specs/native/compute-library.md](specs/native/compute-library.md) | 🔜 | Ingestion-time numerical compute (MKL + Eigen + Spectra + BLAKE3). C ABI for SVD, sparse Lanczos eigensolve, chunked GEMM, sparse matvec, exact k-NN graph, tensor dtype decode. Two-artifact split (ILP64 ingest vs LP64 query). ISA ceiling AVX2+FMA3+AVX-VNNI+BMI2 (14900KS — no AVX-512). Determinism contract (MKL_CBWR=AUTO,STRICT, fixed seeds, no prohibited approximations). |
 | [specs/native/build-system.md](specs/native/build-system.md) | ✅ | CMake for shared library, PGXS Makefile for PG extension. Platform matrix (Windows x64, Linux x86_64, macOS ARM64). SIMD compile flags, Google Test integration, packaging for NuGet and PostgreSQL. |
 | [specs/native/4d-type-and-index.md](specs/native/4d-type-and-index.md) | ✅ | 4D PostGIS type and GiST index internals. POINTZM/LINESTRINGZM usage, Hilbert curve indexing, Fréchet distance operator, spatial query patterns. |
+| [specs/native/geometry4d-composition.md](specs/native/geometry4d-composition.md) | ✅ | Native GEOMETRY4D type hierarchy (point4d, linestring4d, multilinestring4d, polymorphic parent) and the recursive centroid construction that makes every entity a queryable geometric object. Entity composition geometry per level (atom → grapheme → word → sentence → paragraph → document). Merkle-DAG memoized geometric pyramid (Law-#6 deterministic, write-once-per-entity centroids). Frege compositionality as a physical law. Idiomaticity at three granularities (Euclidean centroid, Fréchet trajectory, Hausdorff cloud). Geometric anomaly detector family — frayed_edges, edge-trajectory misfit, sparsity flags, antipodal violations, cross-model divergence, convergence failure. How geometric queries relate to inference (sidecar tool for similarity, NOT primary inference path — primary is O(K log N) Glicko-weighted A\*). |
 
 ---
 
@@ -139,18 +144,62 @@ These define operational concerns: monitoring schema, configuration, deployment,
 
 ---
 
+## Reference — Lookup Tables
+
+Structured tables for fast lookup, no narrative. Open the table, scan to your row, apply.
+
+| Doc | Status | Description |
+|-----|--------|-------------|
+| [reference/file-layout.md](reference/file-layout.md) | ✅ | Where every artifact goes. Schema files, C# files, native files, tests, scripts, docs — with exact path templates. Forbidden locations enumerated. |
+| [reference/naming.md](reference/naming.md) | ✅ | Every naming convention as tables: C#, SQL, C/C++, files, folders, provenance codes, migration intent strings. |
+| [reference/anti-patterns.md](reference/anti-patterns.md) | ✅ | Catalogue of named wrong shapes (AP-SQL-*, AP-CS-*, AP-NAT-*, AP-DEC-*, AP-INF-*, AP-GOV-*, AP-DOC-*, AP-TEST-*, AP-OPS-*) each with the wrong code and the right code shown side by side. |
+| [reference/allowed-dependencies.md](reference/allowed-dependencies.md) | ✅ | C# project dependency graph. Per-project allowed external packages. Compute facade isolation rule. Native library boundaries. Forbidden imports. Approximation ban. |
+
+---
+
+## Recipes — How-To Guides
+
+Each recipe answers ONE assembly question with numbered steps, exact file paths, copy-paste code, and verification commands. Format is uniform across all recipes.
+
+| Doc | Status | Description |
+|-----|--------|-------------|
+| [recipes/00-vertical-slice.md](recipes/00-vertical-slice.md) | ✅ | The canonical end-to-end walkthrough — input file → decomposer → ingestion pipeline → substrate state → inference query → recomposed output. Read first to orient. |
+| [recipes/01-fresh-setup.md](recipes/01-fresh-setup.md) | ✅ | Clone to first inference query. Bootstrap, build, docker, migrate, seed, smoke test. |
+| [recipes/02-add-entity-type.md](recipes/02-add-entity-type.md) | ✅ | Register a new substrate atom or composition type. |
+| [recipes/03-add-edge-type.md](recipes/03-add-edge-type.md) | ✅ | Register a new typed n-ary relation between entity types. |
+| [recipes/04-add-physicality-type.md](recipes/04-add-physicality-type.md) | ✅ | Register a new geometric representation. Decision rubric for GEOMETRY4D vs PostGIS GeometryZM. |
+| [recipes/05-add-junction-table.md](recipes/05-add-junction-table.md) | ✅ | Add an app-layer classification junction (rated or unrated). |
+| [recipes/06-add-reference-table.md](recipes/06-add-reference-table.md) | ✅ | Add a bounded vocabulary reference table. |
+| [recipes/07-add-provenance-class.md](recipes/07-add-provenance-class.md) | ✅ | Register a new corpus / data source with trust prior. |
+| [recipes/08-add-decomposer.md](recipes/08-add-decomposer.md) | ✅ | Add a thin source parser that submits content to the central pipeline. Decomposer<TSource> generic shape. |
+| [recipes/09-add-analysis-pass.md](recipes/09-add-analysis-pass.md) | ✅ | Add a model-analysis or modality-analysis pass with the IModelAnalysisPass contract. |
+| [recipes/10-add-recomposer.md](recipes/10-add-recomposer.md) | ✅ | Add a deterministic per-modality reconstruction surface. Round-trip fidelity contract per modality. |
+| [recipes/11-add-sql-function.md](recipes/11-add-sql-function.md) | ✅ | Add a pure SQL function. |
+| [recipes/12-add-sql-procedure.md](recipes/12-add-sql-procedure.md) | ✅ | Add a stored procedure. The two transaction-management patterns. |
+| [recipes/13-add-migration.md](recipes/13-add-migration.md) | ✅ | Add an idempotent up/down migration that only `\i` includes from sql/schema/. |
+| [recipes/14-add-native-operator.md](recipes/14-add-native-operator.md) | ✅ | Add a C-implemented compute primitive to libhartonomous and/or the PG extension. |
+| [recipes/15-add-pinvoke-surface.md](recipes/15-add-pinvoke-surface.md) | ✅ | Expose a libhartonomous function to C# through the compute facade. |
+| [recipes/16-add-governance-rule.md](recipes/16-add-governance-rule.md) | ✅ | Add a SQL-predicate governance rule with deterministic action wiring and historical-corpus simulation. |
+| [recipes/17-add-test.md](recipes/17-add-test.md) | ✅ | Test taxonomy and per-kind patterns. Hand-written fakes, no Moq. |
+| [recipes/18-add-cli-command.md](recipes/18-add-cli-command.md) | ✅ | Add a CLI command and PowerShell entrypoint. |
+| [recipes/19-add-phase.md](recipes/19-add-phase.md) | ✅ | Add an orchestration phase to the runner. |
+
+---
+
 ## Completion Summary
 
 | Category | Total Docs | Complete | Planned |
 |----------|-----------|----------|---------|
-| Foundation | 7 | 7 | 0 |
+| Foundation | 8 | 8 | 0 |
 | Domain — Decomposers | 10 | 8 | 2 |
-| Domain — Engine | 5 | 5 | 0 |
+| Domain — Engine | 6 | 6 | 0 |
 | Domain — Modalities | 4 | 4 | 0 |
-| Implementation — SQL | 10 | 10 | 0 |
+| Implementation — SQL | 12 | 12 | 0 |
 | Implementation — C# | 11 | 10 | 1 |
-| Implementation — C/C++ | 4 | 3 | 1 |
+| Implementation — C/C++ | 5 | 4 | 1 |
 | Implementation — Operations | 5 | 5 | 0 |
-| **Total** | **56** | **52** | **4** |
+| Reference — Lookup Tables | 4 | 4 | 0 |
+| Recipes — How-To Guides | 20 | 20 | 0 |
+| **Total** | **85** | **81** | **4** |
 
-52 of 56 documentation artifacts are complete. 4 are planned (🔜).
+81 of 85 documentation artifacts are complete. 4 are planned (🔜).

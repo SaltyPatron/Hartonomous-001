@@ -78,7 +78,7 @@ internal static class Program
     private static string DefaultConnectionString()
     {
         return Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
-            ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
+            ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous;Include Error Detail=true";
     }
 
     private static Command BuildMigrateCommand()
@@ -308,7 +308,7 @@ internal static class Program
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter),
             ],
             [Phase.Wiktionary] =
             [

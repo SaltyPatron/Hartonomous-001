@@ -7,7 +7,7 @@ applyTo: 'sql/**/*.sql'
 ## Migration conventions
 
 - Migrations live in `sql/migrations/` as numbered pairs: `NNNN_description.up.sql` / `NNNN_description.down.sql`.
-- Current range: `0001`–`0024` (24 pairs). The next migration is `0025`.
+- Current range: `0001`–`0035` (35 pairs). The next migration is `0036`.
 - Each migration is idempotent — use `IF NOT EXISTS`, `CREATE OR REPLACE`, or guard clauses.
 - Down scripts reverse exactly what the up script creates.
 

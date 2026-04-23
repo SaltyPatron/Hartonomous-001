@@ -34,7 +34,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
     private const int FileChunkSize = 10;
 
     private readonly string _rootDir;
-    private readonly string _connectionString;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -48,7 +47,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _rootDir = config.SourceDirectory;
-        _connectionString = config.ConnectionString;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -64,7 +62,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         List<UdTreebankInfo> banks = UdTreebankScanner.Scan(_rootDir);
         Log.TreebanksDiscovered(Logger, banks.Count);
 
-        await using UdReferenceTableWriter refWriter = new(_connectionString, _referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        await using UdReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
 
         // ── Pass 1: scan for distinct deprels, morph features (parallel). ──
         ConcurrentDictionary<string, byte> deprelsBag = new(StringComparer.Ordinal);
@@ -342,6 +340,12 @@ public sealed partial class UdDecomposer : BaseDecomposer
             tokenHandles[ti] = tokEntity;
             tokenHashes[ti] = wfHash;
             batch.AddSignificance(tokEntity, "source_authority", TrustPriorMu);
+            // ud_token gets its own contour physicality row. Physicality is
+            // keyed by entity_id (not just hash); without this row, head→
+            // dependent edges (the bulk of UD's edge volume) have no
+            // resolvable endpoint geometry in substrate.entity_pointzm and
+            // therefore can never receive a trajectory.
+            EmitContourPhysicality(batch, tokEntity, tok.Form);
             entityCount++;
 
             // Lemma entity: Merkle hash (codepoints → grapheme clusters → lemma) for convergence
@@ -409,14 +413,17 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
         if (sentVertices.Count >= 2)
         {
-            batch.AddPhysicality(sentEntity, "contour",
-                PhysicalityEmitter.LineStringZmWkb(sentVertices));
+            (double, double, double, double)[] arr = new (double, double, double, double)[sentVertices.Count];
+            for (int i = 0; i < sentVertices.Count; i++)
+            {
+                arr[i] = sentVertices[i];
+            }
+            batch.AddPhysicalityLineString4d(sentEntity, "contour", arr.AsSpan());
         }
         else if (sentVertices.Count == 1)
         {
             (double x, double y, double z, double m) = sentVertices[0];
-            batch.AddPhysicality(sentEntity, "s3_position",
-                PhysicalityEmitter.PointZmWkb(x, y, z, m));
+            batch.AddPhysicalityPoint4d(sentEntity, "s3_position", x, y, z, m);
         }
 
         // Dependency edges: head != 0 and deprel != null.

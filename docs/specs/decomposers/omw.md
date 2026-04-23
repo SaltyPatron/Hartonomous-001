@@ -3,10 +3,14 @@
 ## Identity
 
 - **Decomposer class**: `OmwDecomposer` extends `BaseDecomposer`
-- **Source path**: `external/omw` (git submodule from `https://github.com/omwn/omw-data.git`)
+- **Source path**: `D:\Models\omw` (full clone of `https://github.com/omwn/omw-data.git`, kept alongside all other source corpora under `D:\Models\`). The decomposer takes the source root as a configurable parameter; `D:\Models\omw` is the default on the inventor's workstation, not a hard-coded path in the spec.
 - **Trust prior**: High (academic consortium, per-language curators)
 - **Provenance**: `omwn/omw-data` with per-language sub-provenance (e.g., `omwn/omw-data/jpn`, `omwn/omw-data/fra`)
 - **Dependency**: Phase 2c prerequisite -- WordNet synsets must exist (OMW aligns TO Princeton WordNet synsets). ISO 639 language entities must exist for language tagging.
+
+### Why not a git submodule
+
+The upstream repository contains `wns/wikt/wn-wikt-Xuogien?.tab` — a literal `?` in the filename, which is invalid on NTFS. This prevents the repository from being checked out as a git submodule on Windows. The decomposer's source root is therefore kept outside the Hartonomous git tree (default `D:\Models\omw`, alongside the local model zoo at `D:\Models\hub`). The one excluded file carries a single entry for an unidentified language with no ISO 639 code — zero data loss. The decomposer must skip any path containing characters invalid on the host filesystem and log the exclusion, not abort.
 
 ## What This Decomposer Creates
 

@@ -9,7 +9,7 @@ namespace Hartonomous.Decomposers.Safetensors;
 /// </summary>
 internal sealed class SafetensorsReferenceTableWriter : BaseReferenceTableWriter
 {
-    public SafetensorsReferenceTableWriter(string connectionString, IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter) : base(connectionString, reader, junctionWriter, referenceDataWriter)
+    public SafetensorsReferenceTableWriter(IReferenceDataReader reader, IJunctionWriter junctionWriter, IReferenceDataWriter referenceDataWriter) : base(reader, junctionWriter, referenceDataWriter)
     {
     }
 
