@@ -62,7 +62,7 @@ RUN source ${ONEAPI_ROOT}/setvars.sh --force && \
         -DHARTONOMOUS_BUILD_TESTS=OFF \
         -DHARTONOMOUS_BUILD_SHARED=ON && \
     cmake --build . -j"$(nproc)" && \
-    cp libhartonomous.so /usr/local/lib/ && \
+    cp bin/libhartonomous.so /usr/local/lib/ && \
     ldconfig
 
 # ----- hartonomous_pg (extension) -----

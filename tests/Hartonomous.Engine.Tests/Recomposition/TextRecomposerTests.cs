@@ -461,6 +461,12 @@ public sealed class TextRecomposerTests
             return Task.FromResult<IReadOnlyList<(long, string)>>(Array.Empty<(long, string)>());
         }
 
+        public Task<IReadOnlyList<long>> GetOutboundEdgeTargetsAsync(
+            long sourceEntityId, string edgeTypeCode, CancellationToken ct)
+        {
+            return Task.FromResult<IReadOnlyList<long>>(Array.Empty<long>());
+        }
+
         public Task<string?> RecomposeTextAsync(long entityId, int maxDepth, CancellationToken ct)
         {
             FastPathRequest = (entityId, maxDepth);

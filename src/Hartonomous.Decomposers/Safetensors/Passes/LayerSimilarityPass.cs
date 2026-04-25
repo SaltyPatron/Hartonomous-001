@@ -153,7 +153,7 @@ internal sealed partial class LayerSimilarityPass : IModelAnalysisPass
                     session.Batch.AddEntityModelSource(pair, context.Source.ModelSourceId);
                     session.Batch.AddEdge("has_layer_similarity", context.ProvenanceCode,
                     [
-                        new EdgeMemberSpec(null, context.Architecture.EntityId, "architecture", 0),
+                        new EdgeMemberSpec(null, context.Architecture.EntityId, "source", 0),
                         new EdgeMemberSpec(pair, null, "target", 1),
                     ]);
 

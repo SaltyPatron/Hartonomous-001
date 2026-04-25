@@ -728,9 +728,8 @@ CREATE OPERATOR CLASS geometry4d_gist_ops
     DEFAULT FOR TYPE geometry4d USING gist AS
         OPERATOR        1       && ,
         OPERATOR        2       @> ,
-        OPERATOR        3       @> ,
-        OPERATOR        4       <@ ,
-        OPERATOR        5       =  ,
+        OPERATOR        3       <@ ,
+        OPERATOR        4       =  ,
         FUNCTION        1       gist_geometry4d_consistent (internal, geometry4d, smallint, oid, internal),
         FUNCTION        2       gist_geometry4d_union (internal, internal),
         FUNCTION        3       gist_geometry4d_compress (internal),
@@ -756,9 +755,8 @@ CREATE OPERATOR CLASS geometry4d_spgist_ops
     FOR TYPE geometry4d USING spgist AS
         OPERATOR        1       && ,
         OPERATOR        2       @> ,
-        OPERATOR        3       @> ,
-        OPERATOR        4       <@ ,
-        OPERATOR        5       =  ,
+        OPERATOR        3       <@ ,
+        OPERATOR        4       =  ,
         FUNCTION        1       spg_geometry4d_config(internal, internal),
         FUNCTION        2       spg_geometry4d_choose(internal, internal),
         FUNCTION        3       spg_geometry4d_picksplit(internal, internal),

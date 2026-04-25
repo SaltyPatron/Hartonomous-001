@@ -11,6 +11,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Decomposers.Iso639;
 using Microsoft.Extensions.Logging;
 
@@ -25,6 +26,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
     private const double TrustPriorMu = 95000.0;
 
     private readonly string _dictDir;
+    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -32,12 +34,14 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
     public WordNetDecomposer(
         DecomposerConfig config,
         ILogger<WordNetDecomposer> logger,
+        ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _dictDir = config.SourceDirectory;
+        _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -141,8 +145,9 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
                 if (definition.Length > 0)
                 {
-                    (EntityHandle glossEntity, byte[] glossHash) = EmitWordFormMerkle(batch, definition, "text_composition");
-                    batch.AddSignificance(glossEntity, "source_authority", TrustPriorMu);
+                    (EntityHandle glossEntity, byte[] glossHash) =
+                        TextSegmentationEmitter.EmitTextComposition(
+                            batch, definition, _codepointProperties, "text_composition", TrustPriorMu);
                     EmitContourPhysicality(batch, glossEntity, definition);
                     glossEntries.Add((synsetKey, glossHash));
                     entityCount++;
@@ -150,8 +155,9 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
                 foreach (string example in examples)
                 {
-                    (EntityHandle exampleEntity, byte[] exampleHash) = EmitWordFormMerkle(batch, example, "text_composition");
-                    batch.AddSignificance(exampleEntity, "source_authority", TrustPriorMu);
+                    (EntityHandle exampleEntity, byte[] exampleHash) =
+                        TextSegmentationEmitter.EmitTextComposition(
+                            batch, example, _codepointProperties, "text_composition", TrustPriorMu);
                     EmitContourPhysicality(batch, exampleEntity, example);
                     exampleEntries.Add((synsetKey, exampleHash));
                     entityCount++;
@@ -317,9 +323,9 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             foreach (VerbSentence vs in verbSentences)
             {
                 (EntityHandle entity, byte[] hash) =
-                    EmitWordFormMerkle(batch, vs.Template, "text_composition");
+                    TextSegmentationEmitter.EmitTextComposition(
+                        batch, vs.Template, _codepointProperties, "text_composition", TrustPriorMu);
                 frameIdToHash[vs.Id] = hash;
-                batch.AddSignificance(entity, "source_authority", TrustPriorMu);
 
                 // text_composition trajectory = contour through every codepoint of the template.
                 EmitContourPhysicality(batch, entity, vs.Template);

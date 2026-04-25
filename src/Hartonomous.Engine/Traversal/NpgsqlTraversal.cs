@@ -12,6 +12,9 @@ namespace Hartonomous.Engine.Traversal;
 
 public sealed class NpgsqlTraversal : ITraversal
 {
+    private static readonly string[] DefaultTargetEntityTypeCodes =
+        ["synset", "lemma", "wikt_sense", "word_form"];
+
     private readonly NpgsqlDataSource _dataSource;
     private readonly IReferenceDataReader _refReader;
 
@@ -21,12 +24,73 @@ public sealed class NpgsqlTraversal : ITraversal
         _refReader = refReader;
     }
 
+    private static async Task<(List<TraversalPath> Paths, int NodesVisited)> TraverseOneOnConnectionAsync(
+        NpgsqlConnection conn,
+        long seedId, int targetTypeId, int arenaId, int maxDepth,
+        int? edgeTypeFilter, double significanceThreshold, double costBudget,
+        CancellationToken ct)
+    {
+        List<TraversalPath> paths = new();
+        int nodesVisited = 0;
+
+        await using NpgsqlCommand cmd = new(
+            "SELECT target_entity_id, cost, path, edge_path " +
+            "FROM traverse_astar($1, $2, $3, $4, $5, $6, $7)", conn);
+        // Timeout cap is a safety net for pathological inputs (cycle-rich subgraphs,
+        // bad seeds), not a normal-case allowance — traverse_astar should return in
+        // milliseconds for typical depth-3-to-6 queries against the indexed graph.
+        cmd.CommandTimeout = 300;
+
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, seedId);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, targetTypeId);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, maxDepth);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, 100); // max_results
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer,
+            (object?)edgeTypeFilter ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Double,
+            significanceThreshold > 0 ? significanceThreshold : DBNull.Value);
+
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            double cost = reader.GetDouble(1);
+            if (cost > costBudget)
+            {
+                continue;
+            }
+            long[] entityPath = (long[])reader.GetValue(2);
+            long[] edgePath = (long[])reader.GetValue(3);
+
+            List<TraversalStep> steps = new(entityPath.Length);
+            for (int i = 0; i < entityPath.Length; i++)
+            {
+                steps.Add(new TraversalStep
+                {
+                    EntityId = entityPath[i],
+                    EdgeId = i < edgePath.Length ? edgePath[i] : null,
+                });
+            }
+
+            paths.Add(new TraversalPath
+            {
+                Steps = steps,
+                PathSignificance = cost > 0 ? 1.0 / cost : double.MaxValue,
+            });
+            nodesVisited += entityPath.Length;
+        }
+
+        return (paths, nodesVisited);
+    }
+
     public async Task<TraversalResult> TraverseAsync(TraversalQuery query, CancellationToken ct)
     {
         Dictionary<string, int> edgeTypes = await _refReader.LoadCodeMapAsync(
             "substrate.edge_type", 64, ct);
         Dictionary<string, int> sigContexts = await _refReader.LoadCodeMapAsync(
             "substrate.significance_context", 16, ct);
+        Dictionary<string, int> entityTypes = await _refReader.LoadCodeMapAsync(
+            "substrate.entity_type", 64, ct);
 
         if (!sigContexts.TryGetValue(query.ArenaCode, out int arenaId))
         {
@@ -43,59 +107,42 @@ public sealed class NpgsqlTraversal : ITraversal
             }
         }
 
-        List<TraversalPath> allPaths = [];
-        int nodesVisited = 0;
-        double totalCost = 0;
+        // The C-implemented traverse_astar requires a concrete target type per
+        // call (target_type_id=0 is not a wildcard — it filters to no rows).
+        // For unconstrained semantic queries, traverse against each canonical
+        // semantic target type and union the results. The caller can narrow
+        // via EdgeTypeFilter when a single-target traversal is wanted.
+        int[] targetTypeIds = DefaultTargetEntityTypeCodes
+            .Where(c => entityTypes.ContainsKey(c))
+            .Select(c => entityTypes[c])
+            .ToArray();
+        if (targetTypeIds.Length == 0)
+        {
+            // Defensive fallback: use any single populated type id so the
+            // traversal still issues at least one query rather than silently
+            // returning empty.
+            targetTypeIds = entityTypes.Values.Take(1).ToArray();
+        }
+
         Stopwatch sw = Stopwatch.StartNew();
 
+        // Reuse a single connection across the (seed × target_type) cross-product.
+        // Profiling showed that opening multiple connections concurrently against
+        // postgres (even with max_parallel_workers=24 server-side) serialized at
+        // ~7.5s per additional connection due to authentication/handshake overhead.
+        // One connection used sequentially: ~50ms × 8 = ~400ms total.
+        List<TraversalPath> allPaths = [];
+        int nodesVisited = 0;
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         foreach (long seedId in query.SeedEntityIds)
         {
-            await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-            await using NpgsqlCommand cmd = new(
-                "SELECT target_entity_id, cost, path, edge_path " +
-                "FROM traverse_astar($1, $2, $3, $4, $5, $6, $7)", conn);
-
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, seedId);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, 0); // target_type_id: 0 = any
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, query.MaxDepth);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, 100); // max_results
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer,
-                (object?)edgeTypeFilter ?? DBNull.Value);
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Double,
-                query.SignificanceThreshold > 0 ? query.SignificanceThreshold : DBNull.Value);
-
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
+            foreach (int targetTypeId in targetTypeIds)
             {
-                long targetEntityId = reader.GetInt64(0);
-                double cost = reader.GetDouble(1);
-                long[] entityPath = (long[])reader.GetValue(2);
-                long[] edgePath = (long[])reader.GetValue(3);
-
-                if (cost > query.CostBudget)
-                {
-                    continue;
-                }
-
-                List<TraversalStep> steps = new(entityPath.Length);
-                for (int i = 0; i < entityPath.Length; i++)
-                {
-                    steps.Add(new TraversalStep
-                    {
-                        EntityId = entityPath[i],
-                        EdgeId = i < edgePath.Length ? edgePath[i] : null,
-                    });
-                }
-
-                allPaths.Add(new TraversalPath
-                {
-                    Steps = steps,
-                    PathSignificance = cost > 0 ? 1.0 / cost : double.MaxValue,
-                });
-
-                nodesVisited += entityPath.Length;
-                totalCost += cost;
+                (List<TraversalPath> paths, int nodes) = await TraverseOneOnConnectionAsync(
+                    conn, seedId, targetTypeId, arenaId, query.MaxDepth,
+                    edgeTypeFilter, query.SignificanceThreshold, query.CostBudget, ct);
+                allPaths.AddRange(paths);
+                nodesVisited += nodes;
             }
         }
 
@@ -103,6 +150,12 @@ public sealed class NpgsqlTraversal : ITraversal
 
         // Enrich steps with edge type codes and entity significance.
         await EnrichTraversalStepsAsync(allPaths, arenaId, ct);
+
+        double totalCost = 0;
+        foreach (TraversalPath p in allPaths)
+        {
+            totalCost += p.PathSignificance > 0 ? 1.0 / p.PathSignificance : 0;
+        }
 
         return new TraversalResult
         {

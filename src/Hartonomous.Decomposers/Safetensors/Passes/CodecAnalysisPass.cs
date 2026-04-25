@@ -183,8 +183,8 @@ internal sealed partial class CodecAnalysisPass : IModelAnalysisPass
                 EntityHandle codeEntity = session.Batch.AddEntity(vecHash, "codec_codevector");
                 session.Batch.AddEdge("contains_codevector", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(codebookEntity, null, "codebook", 0),
-                    new EdgeMemberSpec(codeEntity, null, "codevector", (short)i),
+                    new EdgeMemberSpec(codebookEntity, null, "source", 0),
+                    new EdgeMemberSpec(codeEntity, null, "target", (short)i),
                 ]);
 
                 // S³ placement via Super-Fibonacci: index → deterministic S³

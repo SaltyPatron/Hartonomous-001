@@ -2,6 +2,7 @@ using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Decomposers.Safetensors;
 using Xunit;
+using LaplacianEigenmap = Hartonomous.Decomposers.Safetensors.LaplacianEigenmap;
 
 namespace Hartonomous.Decomposers.Tests.Safetensors;
 

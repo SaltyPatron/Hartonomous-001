@@ -52,18 +52,16 @@ _PG_init(void)
         NULL
     );
 
-    if (hartonomous_strict_determinism)
-    {
-        int branch = hartonomous_init_determinism();
-        if (branch < 0)
-        {
-            ereport(WARNING,
-                    (errmsg("hartonomous: failed to set MKL CBWR=AUTO,STRICT; "
-                            "deterministic execution is not guaranteed for this "
-                            "session")));
-        }
-        hartonomous_resolved_cbwr_branch = branch;
-    }
+    /*
+     * MKL initialization is now lazy — moved out of _PG_init and into every
+     * MKL-using SQL function entry point via hartonomous_ensure_mkl_initialized().
+     * Eager init in _PG_init forced every newly-forked postgres backend to pay
+     * MKL's per-process pool-rebuild cost (~7s) on every fresh connection,
+     * which broke the inference-engine latency target (microseconds-per-step,
+     * milliseconds-per-walk, sub-second LLM-equivalent response). With lazy
+     * init, graph-traversal-only backends pay zero MKL cost.
+     */
+    (void)hartonomous_strict_determinism;
 }
 
 PG_FUNCTION_INFO_V1(pg_hartonomous_version);

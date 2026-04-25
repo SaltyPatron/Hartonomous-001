@@ -22,6 +22,12 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
     private readonly ISessionStore? _sessionStore;
     private readonly Dictionary<Phase, PhaseStatus> _status = [];
 
+    /// <summary>
+    /// When true, <see cref="RunPhaseAsync"/> bypasses the
+    /// "already-completed" short-circuit. Surface for `phases run --force`.
+    /// </summary>
+    public bool ForceRerun { get; set; }
+
     public SequentialPhaseRunner(
         IReadOnlyDictionary<Phase, IReadOnlyList<IDecomposer>> decomposers,
         IIngestionPipeline pipeline,
@@ -93,11 +99,14 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
 
     public async Task<PhaseResult> RunPhaseAsync(Phase phase, CancellationToken ct)
     {
-        // Already-completed phases short-circuit. Without this, invoking a
-        // single phase re-runs every predecessor against whatever the current
+        // Already-completed phases short-circuit unless ForceRerun is set on
+        // the runner. Without the short-circuit, invoking a single phase
+        // re-runs every predecessor against whatever the current
         // SourceDirectory happens to be — catastrophic when the caller passed
         // a model-specific path but the UCD phase wants the Unicode drop.
-        if (_status.GetValueOrDefault(phase) == PhaseStatus.Completed)
+        // ForceRerun is what `phases run --force` and the per-pass checkpoint
+        // recovery flow use to retry a phase that committed partial state.
+        if (!ForceRerun && _status.GetValueOrDefault(phase) == PhaseStatus.Completed)
         {
             Log.PhaseAlreadyCompleted(_logger, phase);
             return new PhaseResult(phase, PhaseStatus.Completed, TimeSpan.Zero, null);

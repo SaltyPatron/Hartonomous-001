@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text;
+
 namespace Hartonomous.Core.Text.Segmentation;
 
 /// <summary>
@@ -8,6 +11,84 @@ namespace Hartonomous.Core.Text.Segmentation;
 /// </summary>
 public static class GraphemeClusters
 {
+    /// <summary>
+    /// .NET-backed grapheme cluster enumeration via
+    /// <see cref="StringInfo.GetTextElementEnumerator(string)"/>. This delegates
+    /// to Microsoft's UAX #29 implementation (currently UAX #29 v15.1 in .NET 9
+    /// targeting Unicode 16). Use this path when conformance to the official
+    /// UCD <c>GraphemeBreakTest.txt</c> is required.
+    /// <para>
+    /// Why this exists: the hand-rolled <see cref="Enumerate"/> below fails 425
+    /// of 766 UCD test cases (44.5% conformance, see
+    /// <c>UcdConformanceTests.GraphemeClusters_Conform_To_UCD_Test_File</c>).
+    /// Until those bugs are tracked down, every text-decomposition path that
+    /// requires correct grapheme boundaries on non-ASCII content (combining
+    /// marks, Devanagari conjuncts, complex emoji ZWJ) MUST use this method.
+    /// </para>
+    /// </summary>
+    public static List<GraphemeRange> EnumerateUsingNet(ReadOnlySpan<byte> utf8)
+    {
+        List<GraphemeRange> result = new();
+        if (utf8.IsEmpty)
+        {
+            return result;
+        }
+
+        string s = Encoding.UTF8.GetString(utf8);
+        // Build per-char-index byte offset map so we can translate StringInfo's
+        // char indices back to UTF-8 byte offsets without rescanning. Surrogate
+        // pairs (one supplementary codepoint = 2 chars) share a single 4-byte
+        // UTF-8 sequence; both char indices map to the same byte offset.
+        int[] charToByte = new int[s.Length + 1];
+        int byteCursor = 0;
+        int i = 0;
+        while (i < s.Length)
+        {
+            charToByte[i] = byteCursor;
+            char c = s[i];
+            if (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+            {
+                charToByte[i + 1] = byteCursor;
+                byteCursor += 4;
+                i += 2;
+                continue;
+            }
+            if (c <= 0x7F)
+            {
+                byteCursor += 1;
+            }
+            else if (c <= 0x7FF)
+            {
+                byteCursor += 2;
+            }
+            else
+            {
+                byteCursor += 3;
+            }
+            i++;
+        }
+        charToByte[s.Length] = byteCursor;
+
+        long cpOffset = 0;
+        TextElementEnumerator e = StringInfo.GetTextElementEnumerator(s);
+        while (e.MoveNext())
+        {
+            int charIdx = e.ElementIndex;
+            string te = (string)e.Current;
+            int byteOffset = charToByte[charIdx];
+            int byteEnd = charToByte[charIdx + te.Length];
+            int byteLen = byteEnd - byteOffset;
+            int cpLen = 0;
+            foreach (Rune _ in te.EnumerateRunes())
+            {
+                cpLen++;
+            }
+            result.Add(new GraphemeRange(byteOffset, cpOffset, byteLen, cpLen));
+            cpOffset += cpLen;
+        }
+        return result;
+    }
+
     private enum EmojiChain : byte { None, Pict, ZwjAfterPict }
 
     /// <summary>

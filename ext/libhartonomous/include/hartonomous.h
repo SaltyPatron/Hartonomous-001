@@ -61,6 +61,15 @@ HARTONOMOUS_API void hartonomous_runtime_info(hartonomous_runtime_info_t* out);
 HARTONOMOUS_API int hartonomous_init_determinism(void);
 
 /*
+ * One-shot MKL initializer with a process-local atomic guard. Safe to call
+ * from every MKL-using entry point; only the first invocation per process
+ * pays the actual mkl_cbwr_set cost. Subsequent calls return immediately.
+ * This is what should be used inside SQL function entry points instead of
+ * calling MKL eagerly at extension load.
+ */
+HARTONOMOUS_API int hartonomous_ensure_mkl_initialized(void);
+
+/*
  * BLAKE3 one-shot hash. Computes a 32-byte digest over `len` bytes at `data`.
  * `out` must point to at least HARTONOMOUS_HASH_LEN (32) bytes.
  * Thread-safe. No allocations.

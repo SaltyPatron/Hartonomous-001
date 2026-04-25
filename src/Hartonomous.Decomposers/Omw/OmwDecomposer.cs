@@ -96,6 +96,11 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             {
                 ct.ThrowIfCancellationRequested();
 
+                if (!LanguageAllowed(source.LangCode))
+                {
+                    continue;
+                }
+
                 List<OmwTabEntry> entries = OmwParser.ParseTabFile(source.FilePath);
                 double trustMu = GetTrustMu(source.Tier);
 

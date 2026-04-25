@@ -57,12 +57,12 @@ public abstract partial class BaseDecomposer : IDecomposer
 
     protected abstract IReadOnlyList<string> GetSourcePaths();
 
-    protected static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
+    public static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
 
-    protected static byte[] ComputeHash(string content)
+    public static byte[] ComputeHash(string content)
         => Blake3.Hash(Encoding.UTF8.GetBytes(content).AsSpan());
 
-    protected static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes)
+    public static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes)
     {
         byte[] concat = new byte[childHashes.Length * Blake3.HashLen];
         for (int i = 0; i < childHashes.Length; i++)
@@ -233,7 +233,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// single authoritative contour-physicality path; every decomposer calls
     /// it, none reimplement it.
     /// </summary>
-    protected static void EmitContourPhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
+    public static void EmitContourPhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
     {
         List<(double X, double Y, double Z, double M)> vertices =
             PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
@@ -396,7 +396,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// decomposer so that "a" from ISO 639-3, "a" from WordNet, and "a" from Wiktionary all
     /// deduplicate to the same codepoint entity.
     /// </summary>
-    protected static byte[] HashCodepoint(int cpValue)
+    public static byte[] HashCodepoint(int cpValue)
     {
         Span<byte> cpBytes = stackalloc byte[4];
         cpBytes[0] = (byte)(cpValue >> 24);
@@ -407,6 +407,34 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     protected int BatchSize => _config.BatchSize;
+
+    /// <summary>
+    /// Per-decomposer ISO 639-3 allowlist resolved from <see cref="DecomposerConfig.LanguageFilter"/>.
+    /// Returns true when <paramref name="languageCode"/> is in the filter, or when no filter is set
+    /// (<c>null</c> = unfiltered). Multi-language seed sources (UD, OMW, Wiktionary, Tatoeba) call
+    /// this at the source boundary (per-row, per-file, per-treebank, per-JSONL-entry) to bound
+    /// ingestion volume per tier — T0 = English only, T1 = next batch, etc. Outbound cross-lingual
+    /// edges whose target language is not allowed are dropped to avoid phantom hash-only entities.
+    /// </summary>
+    protected bool LanguageAllowed(string? languageCode)
+    {
+        if (_config.LanguageFilter is null)
+        {
+            return true;
+        }
+        if (languageCode is null)
+        {
+            return false;
+        }
+        foreach (string allowed in _config.LanguageFilter)
+        {
+            if (string.Equals(allowed, languageCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     public virtual ValueTask DisposeAsync()
     {

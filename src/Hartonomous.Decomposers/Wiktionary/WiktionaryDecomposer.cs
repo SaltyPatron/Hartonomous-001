@@ -12,6 +12,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text.Segmentation;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Wiktionary;
@@ -79,6 +80,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
     private const string WiktEtymEtymon = "wikt_etym_etymon";
 
     private readonly string _jsonlPath;
+    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -86,12 +88,14 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
     public WiktionaryDecomposer(
         DecomposerConfig config,
         ILogger<WiktionaryDecomposer> logger,
+        ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _jsonlPath = ResolveJsonlPath(config.SourceDirectory);
+        _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -153,6 +157,12 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
         foreach (WiktEntry entry in WiktionaryJsonlParser.Parse(_jsonlPath))
         {
             ct.ThrowIfCancellationRequested();
+
+            if (!LanguageAllowed(entry.LangCode))
+            {
+                continue;
+            }
+
             chunk.Add(entry);
 
             if (chunk.Count >= EntryChunkSize)
@@ -630,6 +640,14 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                 continue;
             }
 
+            // Drop cross-lingual edges whose target language is not in the filter.
+            // Without this, English entries would emit phantom non-English lemma
+            // entities (entity row created by hash but no junctions / no other edges).
+            if (!LanguageAllowed(t.LangCode))
+            {
+                continue;
+            }
+
             string targetLemma = t.Word;
             (EntityHandle targetEntity, byte[] targetHash) =
                 EmitLemmaMaybeCompound(batch, targetLemma, ProvenanceCode);
@@ -858,15 +876,15 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
         edgeCount++;
     }
 
-    private static EntityHandle EmitTextComposition(
+    private EntityHandle EmitTextComposition(
         IIngestionBatch batch,
         string text,
         List<byte[]> needIds,
         ref long entityCount)
     {
-        (EntityHandle entity, byte[] hash) = EmitWordFormMerkle(batch, text, "text_composition");
+        (EntityHandle entity, byte[] hash) = TextSegmentationEmitter.EmitTextComposition(
+            batch, text, _codepointProperties, "text_composition", TrustPriorMu);
         needIds.Add(hash);
-        batch.AddSignificance(entity, "source_authority", TrustPriorMu);
         EmitContourPhysicality(batch, entity, text);
         entityCount++;
         return entity;

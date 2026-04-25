@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.CommandLine;
+using System.CommandLine.Invocation;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -51,6 +52,9 @@ internal static class Program
         Command status = BuildStatusCommand();
         root.AddCommand(status);
 
+        Command query = BuildQueryCommand();
+        root.AddCommand(query);
+
         return await root.InvokeAsync(args);
     }
 
@@ -78,7 +82,13 @@ internal static class Program
     private static string DefaultConnectionString()
     {
         return Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
-            ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous;Include Error Detail=true";
+            ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous;" +
+               "Include Error Detail=true;" +
+               // Keep a warm pool so the per-connection cold-start cost (postgres
+               // backend fork + C extension init) is paid once at startup, not
+               // repeatedly per query. Targets the 14900KS/24-core host.
+               "Minimum Pool Size=8;Maximum Pool Size=32;Multiplexing=true;" +
+               "Application Name=hartonomous-cli;";
     }
 
     private static Command BuildMigrateCommand()
@@ -163,22 +173,35 @@ internal static class Program
             getDefaultValue: () => false,
             description: "Skip dependency phases (assume they already ran).");
 
+        Option<bool> forceOpt = new(
+            aliases: ["--force", "-f"],
+            getDefaultValue: () => false,
+            description: "Re-run the phase even if monitor.phase_status says it already completed. Combine with --skip-deps to retry one phase whose checkpoint partially failed without re-running its predecessors.");
+
         Command run = new("run", "Execute phases in dependency order.");
         run.AddOption(phaseOpt);
         run.AddOption(dryRunOpt);
         run.AddOption(connOpt2);
         run.AddOption(sourceOpt);
         run.AddOption(skipDepsOpt);
-        run.SetHandler(async (string? phaseStr, bool dryRun, string conn, string source, bool skipDeps) =>
+        run.AddOption(forceOpt);
+        run.SetHandler(async (InvocationContext ic) =>
         {
+            string? phaseStr = ic.ParseResult.GetValueForOption(phaseOpt);
+            bool dryRun = ic.ParseResult.GetValueForOption(dryRunOpt);
+            string conn = ic.ParseResult.GetValueForOption(connOpt2)!;
+            string source = ic.ParseResult.GetValueForOption(sourceOpt)!;
+            bool skipDeps = ic.ParseResult.GetValueForOption(skipDepsOpt);
+            bool force = ic.ParseResult.GetValueForOption(forceOpt);
+
             if (dryRun)
             {
                 PrintDryRun(phaseStr);
                 return;
             }
 
-            await RunPhasesAsync(phaseStr, conn, source, skipDeps, CancellationToken.None);
-        }, phaseOpt, dryRunOpt, connOpt2, sourceOpt, skipDepsOpt);
+            await RunPhasesAsync(phaseStr, conn, source, skipDeps, force, CancellationToken.None);
+        });
 
         Command statusCmd = new("status", "Show the status of all phases.");
         statusCmd.SetHandler(() =>
@@ -200,7 +223,7 @@ internal static class Program
         return phases;
     }
 
-    private static async Task RunPhasesAsync(string? phaseStr, string conn, string sourceRoot, bool skipDeps, CancellationToken ct)
+    private static async Task RunPhasesAsync(string? phaseStr, string conn, string sourceRoot, bool skipDeps, bool force, CancellationToken ct)
     {
         using ILoggerFactory logFactory = LoggerFactory.Create(builder =>
         {
@@ -264,6 +287,16 @@ internal static class Program
         NpgsqlJunctionWriter junctionWriter = new(phaseDs);
         NpgsqlReferenceDataWriter refDataWriter = new(phaseDs);
 
+        // Codepoint-property cache for all decomposers that go through
+        // TextSegmentationEmitter (Tatoeba, WordNet glosses/examples,
+        // Wiktionary text bodies, runtime TextDecomposer). Loaded eagerly
+        // for the full Unicode range so non-English seed content (Greek,
+        // CJK, Arabic, RTL, combining marks) segments correctly per UAX #29.
+        NpgsqlCodepointPropertiesCache cpProps = await NpgsqlCodepointPropertiesCache.LoadAsync(
+            conn,
+            logFactory.CreateLogger<NpgsqlCodepointPropertiesCache>(),
+            ct);
+
         // Build per-file text decomposers if the directory exists.
         List<IDecomposer> textDecomposers = [];
         string[] textFiles = Directory.Exists(textSourceDir)
@@ -271,13 +304,6 @@ internal static class Program
             : [];
         if (textFiles.Length > 0)
         {
-            HashSet<int> textCodepoints = await CollectDistinctCodepointsAsync(textFiles, ct);
-            NpgsqlCodepointPropertiesCache cpProps = await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
-                conn,
-                textCodepoints,
-                logFactory.CreateLogger<NpgsqlCodepointPropertiesCache>(),
-                ct);
-
             foreach (string txtFile in textFiles)
             {
                 DecomposerConfig textConfig = new()
@@ -299,7 +325,7 @@ internal static class Program
             [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [
-                new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+                new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
                 new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.UniversalDeps] =
@@ -308,17 +334,23 @@ internal static class Program
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, codepointProperties: cpProps),
             ],
             [Phase.Wiktionary] =
             [
-                new WiktionaryDecomposer(wiktionaryConfig, logFactory.CreateLogger<WiktionaryDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+                new WiktionaryDecomposer(wiktionaryConfig, logFactory.CreateLogger<WiktionaryDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.Tatoeba] =
             [
-                new TatoebaDecomposer(tatoebaConfig, logFactory.CreateLogger<TatoebaDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+                new TatoebaDecomposer(tatoebaConfig, logFactory.CreateLogger<TatoebaDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.TextDecomp] = textDecomposers,
+            [Phase.SignificanceField] =
+            [
+                new Hartonomous.Engine.Significance.SignificanceFieldRunner(
+                    conn,
+                    logFactory.CreateLogger<Hartonomous.Engine.Significance.SignificanceFieldRunner>()),
+            ],
         };
         await using NpgsqlIngestionPipeline pipeline = new(conn, refDataReader, logFactory.CreateLogger<NpgsqlIngestionPipeline>());
         ConsoleProgressReporter reporter = new();
@@ -326,8 +358,30 @@ internal static class Program
         SequentialPhaseRunner runner = new(
             decomposers, pipeline, reporter,
             logFactory.CreateLogger<SequentialPhaseRunner>(),
-            sessionStore);
+            sessionStore)
+        {
+            ForceRerun = force,
+        };
         await runner.HydrateStatusAsync(ct);
+
+        // --force also clears stale model_pass_checkpoint and monitor.phase_status
+        // rows for the target phase so the orchestrator inside the safetensors
+        // decomposer doesn't skip "already-completed" passes that committed
+        // partial state. Without this, --force only bypasses the runner-level
+        // gate but the per-pass checkpoint still short-circuits.
+        if (force && phaseStr is not null)
+        {
+            await using NpgsqlDataSource resetDs = NpgsqlDataSource.Create(conn);
+            await using NpgsqlConnection resetConn = await resetDs.OpenConnectionAsync(ct);
+            await using (NpgsqlCommand cmd = new(
+                "DELETE FROM monitor.phase_status WHERE phase_code = $1; "
+                + "TRUNCATE TABLE substrate.model_pass_checkpoint;",
+                resetConn))
+            {
+                cmd.Parameters.AddWithValue(phaseStr);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+        }
 
         if (phaseStr is not null)
         {
@@ -646,6 +700,123 @@ internal static class Program
         }, connOpt, snapshotOpt);
 
         return status;
+    }
+
+    private static Command BuildQueryCommand()
+    {
+        Option<string> connOpt = new(
+            aliases: ConnAliases,
+            getDefaultValue: DefaultConnectionString,
+            description: "Npgsql connection string.");
+
+        Option<int> maxDepthOpt = new("--max-depth", () => 4,
+            description: "Maximum traversal depth.");
+        Option<int> maxResultsOpt = new("--max-results", () => 10,
+            description: "Maximum number of paths to return.");
+        Option<string> arenaOpt = new("--arena", () => "lexical_disambiguation",
+            description: "Significance arena for path scoring.");
+        Option<int> costBudgetOpt = new("--cost-budget", () => 100,
+            description: "Maximum total cost of a path before it's pruned.");
+
+        Argument<string[]> textArg = new("text", "Query text. Tokenized into seeds against the substrate.");
+        textArg.Arity = ArgumentArity.OneOrMore;
+
+        Command query = new("query", "Inference query against the substrate. Decomposes text → seeds → A* traversal → recomposed answer paths.");
+        query.AddOption(connOpt);
+        query.AddOption(maxDepthOpt);
+        query.AddOption(maxResultsOpt);
+        query.AddOption(arenaOpt);
+        query.AddOption(costBudgetOpt);
+        query.AddArgument(textArg);
+
+        query.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
+            int maxDepth = ctx.ParseResult.GetValueForOption(maxDepthOpt);
+            int maxResults = ctx.ParseResult.GetValueForOption(maxResultsOpt);
+            string arena = ctx.ParseResult.GetValueForOption(arenaOpt)!;
+            int costBudget = ctx.ParseResult.GetValueForOption(costBudgetOpt);
+            string[] textParts = ctx.ParseResult.GetValueForArgument(textArg);
+            string text = string.Join(' ', textParts);
+
+            await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
+            Hartonomous.Engine.Data.NpgsqlReferenceDataReader refReader = new(ds);
+            Hartonomous.Engine.Data.NpgsqlEntityReader entityReader = new(ds);
+            Hartonomous.Engine.Traversal.NpgsqlTraversal traversal = new(ds, refReader);
+
+            using Microsoft.Extensions.Logging.ILoggerFactory lf =
+                Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Warning));
+            Hartonomous.Engine.Inference.SubstrateInferenceEngine engine = new(
+                traversal, entityReader, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
+
+            Hartonomous.Core.Engine.InferenceQuery q = new()
+            {
+                Text = text,
+                MaxDepth = maxDepth,
+                MaxResults = maxResults,
+                SignificanceThreshold = 0.0,
+                CostBudget = costBudget,
+                ArenaCode = arena,
+            };
+
+            Console.WriteLine($"=== Inference Query ===");
+            Console.WriteLine($"  text: {text}");
+            Console.WriteLine($"  arena: {arena}, max_depth: {maxDepth}, max_results: {maxResults}, cost_budget: {costBudget}");
+            Console.WriteLine();
+
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            Hartonomous.Core.Engine.InferenceResult result = await engine.InferAsync(q, CancellationToken.None);
+            sw.Stop();
+
+            Console.WriteLine($"=== Result ===");
+            Console.WriteLine($"  seeds resolved: {result.SeedEntityIds.Count}");
+            Console.WriteLine($"  paths returned: {result.Paths.Count}");
+            Console.WriteLine($"  nodes visited:  {result.NodesVisited}");
+            Console.WriteLine($"  elapsed: {sw.Elapsed.TotalMilliseconds:F1} ms");
+            Console.WriteLine();
+
+            if (result.Paths.Count == 0)
+            {
+                Console.WriteLine("(no paths)");
+                return;
+            }
+
+            await using Npgsql.NpgsqlConnection rconn = await ds.OpenConnectionAsync(CancellationToken.None);
+            int idx = 0;
+            foreach (Hartonomous.Core.Engine.TraversalPath path in result.Paths)
+            {
+                idx++;
+                long targetId = path.Steps.Count > 0 ? path.Steps[^1].EntityId : 0;
+                string targetText = await TryRecomposeAsync(rconn, targetId);
+                Console.WriteLine($"[{idx}] significance={path.PathSignificance:F4} depth={path.Steps.Count - 1} → {targetText}");
+            }
+        });
+
+        return query;
+    }
+
+    private static async Task<string> TryRecomposeAsync(Npgsql.NpgsqlConnection conn, long entityId)
+    {
+        if (entityId <= 0)
+        {
+            return "<no target>";
+        }
+        await using Npgsql.NpgsqlCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT substrate.recompose_text($1)";
+        cmd.Parameters.Add(new Npgsql.NpgsqlParameter { Value = entityId });
+        try
+        {
+            object? result = await cmd.ExecuteScalarAsync();
+            if (result is string s && !string.IsNullOrEmpty(s))
+            {
+                return s.Length > 120 ? s[..117] + "..." : s;
+            }
+            return $"<entity {entityId}>";
+        }
+        catch (Exception ex) // BOUNDARY: CLI display surface — recomposition errors on a single entity must not abort listing the other paths in the result.
+        {
+            return $"<entity {entityId} (recompose error: {ex.Message[..Math.Min(60, ex.Message.Length)]})>";
+        }
     }
 
     private static string RepoRoot()

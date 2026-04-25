@@ -345,5 +345,11 @@ public sealed class SubstrateInferenceEngineTests
             }
             return Task.FromResult<IReadOnlyList<(long, string)>>(Array.Empty<(long, string)>());
         }
+
+        public Task<IReadOnlyList<long>> GetOutboundEdgeTargetsAsync(
+            long sourceEntityId, string edgeTypeCode, CancellationToken ct)
+        {
+            return Task.FromResult<IReadOnlyList<long>>(Array.Empty<long>());
+        }
     }
 }

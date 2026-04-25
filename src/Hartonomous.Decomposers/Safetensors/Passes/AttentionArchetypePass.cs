@@ -176,14 +176,19 @@ internal sealed partial class AttentionArchetypePass : IModelAnalysisPass
                 EntityHandle arch = session.Batch.AddEntity(hash, "attention_archetype");
                 session.Batch.AddEntityModelSource(arch, context.Source.ModelSourceId);
 
+                // Role disambiguation (Q vs K projection) lives on the source
+                // tensor's tensor_role junction, not on edge_role here. Both
+                // edges use 'source' generically; the substrate-level Q/K
+                // distinction is recovered by joining edge.source → tensor →
+                // tensor_tensor_role.
                 session.Batch.AddEdge("encodes_archetype", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, q.EntityId, "q_proj", 0),
+                    new EdgeMemberSpec(null, q.EntityId, "source", 0),
                     new EdgeMemberSpec(arch, null, "target", 1),
                 ]);
                 session.Batch.AddEdge("encodes_archetype", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, k.EntityId, "k_proj", 0),
+                    new EdgeMemberSpec(null, k.EntityId, "source", 0),
                     new EdgeMemberSpec(arch, null, "target", 1),
                 ]);
 

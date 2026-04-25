@@ -9,6 +9,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text.Segmentation;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Tatoeba;
@@ -58,6 +59,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     private const string EdgeHasContributor = "has_contributor";
 
     private readonly string _rootDir;
+    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -65,12 +67,14 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     public TatoebaDecomposer(
         DecomposerConfig config,
         ILogger<TatoebaDecomposer> logger,
+        ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _rootDir = config.SourceDirectory;
+        _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -111,9 +115,16 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         // ── Pass 1: sentences ──
         IIngestionBatch batch = pipeline.CreateBatch();
         long pass1Count = 0;
+        long pass1Filtered = 0;
         foreach (TatoebaSentenceRow row in TatoebaCsvReader.ReadSentences(sentencesPath))
         {
             ct.ThrowIfCancellationRequested();
+
+            if (!LanguageAllowed(row.Lang))
+            {
+                pass1Filtered++;
+                continue;
+            }
 
             if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
             {
@@ -123,7 +134,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 batch = pipeline.CreateBatch();
             }
 
-            EmitSentence(batch, row, languageMap, needIds, perSentenceLang, sentenceIdToHash,
+            EmitSentence(batch, row, _codepointProperties, languageMap, needIds, perSentenceLang, sentenceIdToHash,
                 ref entityCount, ref edgeCount);
             pass1Count++;
             if (pass1Count % 500_000 == 0)
@@ -195,7 +206,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                     batch = pipeline.CreateBatch();
                 }
 
-                EmitAudio(batch, ar, sentenceIdToHash, needIds, ref entityCount, ref edgeCount);
+                EmitAudio(batch, ar, _codepointProperties, sentenceIdToHash, needIds, ref entityCount, ref edgeCount);
                 pass3Count++;
                 if (pass3Count % 250_000 == 0)
                 {
@@ -235,6 +246,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     private static void EmitSentence(
         IIngestionBatch batch,
         TatoebaSentenceRow row,
+        ICodepointProperties codepointProperties,
         Dictionary<string, int> languageMap,
         HashSet<byte[]> needIds,
         List<(byte[] Hash, int LangId)> perSentenceLang,
@@ -242,11 +254,11 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         ref long entityCount,
         ref long edgeCount)
     {
-        // Sentence text decomposes via the canonical Merkle path: codepoints →
-        // grapheme_clusters → text_composition. The tatoeba_sentence shares the
-        // same Merkle hash (different entity_type_id partition), so identical
-        // sentences across Tatoeba, Wiktionary examples, UD treebanks, and
-        // TextDecomposer-ingested corpora all converge on the same identity.
+        // Sentence text decomposes via the canonical Merkle path:
+        //   codepoint → grapheme_cluster → word_form (UAX #29) + raw_span → text_composition.
+        // Routes through TextSegmentationEmitter so the word_form layer is preserved
+        // and identical word_forms across Tatoeba, WordNet, UD, Wiktionary, and the
+        // runtime TextDecomposer collapse to the same content-addressed entity (Law #1).
         // Empty-text rows fall back to a stable Tatoeba-ID-derived hash so the
         // sentence remains addressable for translation_link / recording_of.
         byte[] sentHash;
@@ -254,9 +266,9 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         if (!string.IsNullOrEmpty(row.Text))
         {
             (EntityHandle textEntity, byte[] textHash) =
-                EmitWordFormMerkle(batch, row.Text, "text_composition");
+                TextSegmentationEmitter.EmitTextComposition(
+                    batch, row.Text, codepointProperties, "text_composition", TrustPriorMu);
             sentHash = textHash;
-            batch.AddSignificance(textEntity, "source_authority", TrustPriorMu);
             EmitContourPhysicality(batch, textEntity, row.Text);
             entityCount++;
 
@@ -314,6 +326,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     private static void EmitAudio(
         IIngestionBatch batch,
         TatoebaAudioRow row,
+        ICodepointProperties codepointProperties,
         Dictionary<int, byte[]> sentenceIdToHash,
         HashSet<byte[]> needIds,
         ref long entityCount,
@@ -344,9 +357,9 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             // text_composition converges with any other Merkle-hashed occurrence
             // of the same handle (e.g. mention in a Wiktionary citation).
             (EntityHandle contribEntity, byte[] contribHash) =
-                EmitWordFormMerkle(batch, row.Contributor, "text_composition");
+                TextSegmentationEmitter.EmitTextComposition(
+                    batch, row.Contributor, codepointProperties, "text_composition", TrustPriorMu);
             needIds.Add(contribHash);
-            batch.AddSignificance(contribEntity, "source_authority", TrustPriorMu);
             EmitContourPhysicality(batch, contribEntity, row.Contributor);
             entityCount++;
 

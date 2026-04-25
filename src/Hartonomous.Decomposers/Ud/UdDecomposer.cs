@@ -59,7 +59,15 @@ public sealed partial class UdDecomposer : BaseDecomposer
         IProgressReporter reporter,
         CancellationToken ct)
     {
-        List<UdTreebankInfo> banks = UdTreebankScanner.Scan(_rootDir);
+        List<UdTreebankInfo> banksAll = UdTreebankScanner.Scan(_rootDir);
+        List<UdTreebankInfo> banks = new(banksAll.Count);
+        foreach (UdTreebankInfo b in banksAll)
+        {
+            if (LanguageAllowed(b.LanguageCode))
+            {
+                banks.Add(b);
+            }
+        }
         Log.TreebanksDiscovered(Logger, banks.Count);
 
         await using UdReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);

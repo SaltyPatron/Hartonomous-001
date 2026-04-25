@@ -14,20 +14,38 @@ services:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    shm_size: 2g
+    shm_size: 8g
+    # Tuned for: 14900KS (24 logical cores), 48GB DDR5 host, NVMe RAID0 (~14 GB/s).
+    # Total Postgres memory budget: ~24GB (12GB shared + 8GB work distributed + 4GB maintenance),
+    # leaving ~24GB for the OS, the C# decomposers running in parallel, and page cache.
     command: >
       postgres
-        -c shared_buffers=1GB
-        -c work_mem=64MB
-        -c maintenance_work_mem=512MB
-        -c max_wal_size=8GB
-        -c min_wal_size=1GB
-        -c checkpoint_timeout=15min
+        -c shared_buffers=12GB
+        -c effective_cache_size=36GB
+        -c work_mem=256MB
+        -c maintenance_work_mem=4GB
+        -c wal_buffers=64MB
+        -c max_wal_size=16GB
+        -c min_wal_size=4GB
+        -c checkpoint_timeout=30min
         -c checkpoint_completion_target=0.9
-        -c wal_compression=on
-        -c effective_cache_size=2GB
-        -c random_page_cost=1.1
+        -c wal_compression=zstd
         -c synchronous_commit=off
+        -c max_connections=50
+        -c max_worker_processes=24
+        -c max_parallel_workers=24
+        -c max_parallel_workers_per_gather=8
+        -c max_parallel_maintenance_workers=8
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=256
+        -c maintenance_io_concurrency=256
+        -c default_statistics_target=200
+        -c jit=on
+        -c jit_above_cost=100000
+        -c log_min_duration_statement=60000
+        -c log_checkpoints=on
+        -c log_lock_waits=on
+        -c log_temp_files=10MB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hartonomous} -d ${POSTGRES_DB:-hartonomous}"]
       interval: 5s

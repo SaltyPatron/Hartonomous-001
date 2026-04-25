@@ -67,18 +67,58 @@ public sealed partial class TextDecomposer : BaseDecomposer
         byte[] utf8Bytes = await File.ReadAllBytesAsync(_sourcePath, ct);
         Log.FileRead(Logger, _sourcePath, utf8Bytes.Length);
 
-        // ── Synchronous segmentation (spans cannot cross await) ──
-        SegmentationResult seg = Segment(utf8Bytes, _codepointProperties);
-        Log.CodepointsParsed(Logger, seg.Codepoints.Count);
-        Log.GraphemeClustersSegmented(Logger, seg.GraphemeClusters.Count);
-        Log.WordsSegmented(Logger, seg.Words.Count);
-        Log.SentencesSegmented(Logger, seg.Sentences.Count);
-
-        // ── Emit entities into the pipeline (async batching) ──
-        long entityCount = 0;
-        long edgeCount = 0;
-        int batchNum = 0;
         IIngestionBatch batch = pipeline.CreateBatch();
+        TextIngestionResult result = IngestUtf8DocumentIntoBatch(
+            batch, utf8Bytes, _codepointProperties, SessionTrustMu, Logger, ct);
+
+        if (batch.EntityCount > 0 || batch.EdgeCount > 0)
+        {
+            await ReportProgressAsync(pipeline, reporter, batch,
+                result.EntitiesEmitted, 0, batchNum: 1, _sourcePath, ct, "document");
+        }
+
+        Log.DecompositionComplete(Logger, result.EntitiesEmitted, 0, 1);
+    }
+
+    /// <summary>
+    /// Result of decomposing a single UTF-8 document into the substrate.
+    /// </summary>
+    public readonly record struct TextIngestionResult(
+        EntityHandle DocumentHandle,
+        byte[] DocumentHash,
+        long EntitiesEmitted);
+
+    /// <summary>
+    /// Segments a UTF-8 byte buffer into the substrate's text DAG (codepoint →
+    /// grapheme cluster → word_form → text_composition sentence → document)
+    /// and emits all entities, sequence rows, contour physicalities, and
+    /// significance rows directly into the provided <paramref name="batch"/>.
+    /// Caller owns batch creation, submission, and progress reporting.
+    ///
+    /// Used by the Text decomposer (file-driven) AND by passes inside other
+    /// decomposers that need to ingest model-package text artifacts
+    /// (config.json, tokenizer.json, merges.txt, special_tokens_map.json,
+    /// chat_template.jinja, generation_config.json, README.md) as full text
+    /// DAGs that dedup against the rest of the substrate by content.
+    ///
+    /// Pure: no I/O, no async, no batch submission. Returns the document
+    /// entity handle + hash + entities-emitted count.
+    /// </summary>
+    public static TextIngestionResult IngestUtf8DocumentIntoBatch(
+        IIngestionBatch batch,
+        byte[] utf8Bytes,
+        ICodepointProperties codepointProperties,
+        double trustMu,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        SegmentationResult seg = Segment(utf8Bytes, codepointProperties);
+        Log.CodepointsParsed(logger, seg.Codepoints.Count);
+        Log.GraphemeClustersSegmented(logger, seg.GraphemeClusters.Count);
+        Log.WordsSegmented(logger, seg.Words.Count);
+        Log.SentencesSegmented(logger, seg.Sentences.Count);
+
+        long entityCount = 0;
 
         // One document is emitted as one closed composition graph in one batch.
         // The document-local dictionaries below deduplicate repeated content so
@@ -139,7 +179,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 if (!gcHandlesByHash.TryGetValue(gcHash, out EntityHandle gcEntity))
                 {
                     gcEntity = batch.AddEntity(gcHash, "grapheme_cluster");
-                    batch.AddSignificance(gcEntity, "source_authority", SessionTrustMu);
+                    batch.AddSignificance(gcEntity, "source_authority", trustMu);
                     for (int i = 0; i < cpSequence.Length; i++)
                     {
                         batch.AddSequence(gcEntity, cpSequence[i], i, 1);
@@ -199,7 +239,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
             if (!wordHandlesByHash.TryGetValue(wordHash, out EntityHandle wordEntity))
             {
                 wordEntity = batch.AddEntity(wordHash, "word_form");
-                batch.AddSignificance(wordEntity, "source_authority", SessionTrustMu);
+                batch.AddSignificance(wordEntity, "source_authority", trustMu);
                 for (int i = 0; i < childHandles.Count; i++)
                 {
                     batch.AddSequence(wordEntity, childHandles[i], i, 1);
@@ -214,7 +254,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
             wordHashByOffset[word.ByteOffset] = wordHash;
         }
 
-        Log.WordEntitiesEmitted(Logger, wordHandlesByHash.Count);
+        Log.WordEntitiesEmitted(logger, wordHandlesByHash.Count);
 
         // --- Sentence entities ---
         int wordIndex = 0;
@@ -253,7 +293,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
                     rawSpanHandlesByHash,
                     ref entityCount,
                     sentChildHandles,
-                    sentChildHashes);
+                    sentChildHashes,
+                    trustMu);
 
                 if (wordHandleByOffset.TryGetValue(word.ByteOffset, out EntityHandle wordHandle) &&
                     wordHashByOffset.TryGetValue(word.ByteOffset, out byte[]? wordHash))
@@ -278,7 +319,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 rawSpanHandlesByHash,
                 ref entityCount,
                 sentChildHandles,
-                sentChildHashes);
+                sentChildHashes,
+                trustMu);
 
             if (sentChildHashes.Count == 0)
             {
@@ -289,7 +331,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
             if (!sentenceHandlesByHash.TryGetValue(sentHash, out EntityHandle sentEntity))
             {
                 sentEntity = batch.AddEntity(sentHash, "text_composition");
-                batch.AddSignificance(sentEntity, "source_authority", SessionTrustMu);
+                batch.AddSignificance(sentEntity, "source_authority", trustMu);
                 for (int i = 0; i < sentChildHandles.Count; i++)
                 {
                     batch.AddSequence(sentEntity, sentChildHandles[i], i, 1);
@@ -305,7 +347,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
             sentenceHashByOffset[sent.ByteOffset] = sentHash;
         }
 
-        Log.SentenceEntitiesEmitted(Logger, sentenceHandlesByHash.Count);
+        Log.SentenceEntitiesEmitted(logger, sentenceHandlesByHash.Count);
 
         // --- Document entity ---
         List<EntityHandle> documentChildHandles = [];
@@ -326,7 +368,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 rawSpanHandlesByHash,
                 ref entityCount,
                 documentChildHandles,
-                documentChildHashes);
+                documentChildHashes,
+                trustMu);
 
             if (sentenceHandleByOffset.TryGetValue(sent.ByteOffset, out EntityHandle sentHandle) &&
                 sentenceHashByOffset.TryGetValue(sent.ByteOffset, out byte[]? sentHash))
@@ -350,11 +393,12 @@ public sealed partial class TextDecomposer : BaseDecomposer
             rawSpanHandlesByHash,
             ref entityCount,
             documentChildHandles,
-            documentChildHashes);
+            documentChildHashes,
+            trustMu);
 
         byte[] docHash = ComputeMerkleHash(documentChildHashes.ToArray().AsSpan());
         EntityHandle docEntity = batch.AddEntity(docHash, "document");
-        batch.AddSignificance(docEntity, "source_authority", SessionTrustMu);
+        batch.AddSignificance(docEntity, "source_authority", trustMu);
         entityCount++;
 
         for (int i = 0; i < documentChildHandles.Count; i++)
@@ -364,14 +408,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
 
         EmitContourPhysicality(batch, docEntity, Encoding.UTF8.GetString(utf8Bytes));
 
-        if (batch.EntityCount > 0 || batch.EdgeCount > 0)
-        {
-            batchNum++;
-            await ReportProgressAsync(pipeline, reporter, batch,
-                entityCount, edgeCount, batchNum, _sourcePath, ct, "document");
-        }
-
-        Log.DecompositionComplete(Logger, entityCount, edgeCount, batchNum);
+        return new TextIngestionResult(docEntity, docHash, entityCount);
     }
 
     private static void AppendRawSpanIfAny(
@@ -386,7 +423,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
         Dictionary<byte[], EntityHandle> rawSpanHandlesByHash,
         ref long entityCount,
         List<EntityHandle> targetHandles,
-        List<byte[]> targetHashes)
+        List<byte[]> targetHashes,
+        double trustMu)
     {
         if (endOffset <= startOffset)
         {
@@ -403,7 +441,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
             cpHandleByOffset,
             cpHashByOffset,
             rawSpanHandlesByHash,
-            ref entityCount);
+            ref entityCount,
+            trustMu);
 
         targetHandles.Add(handle);
         targetHashes.Add(hash);
@@ -419,7 +458,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
         IReadOnlyDictionary<long, EntityHandle> cpHandleByOffset,
         IReadOnlyDictionary<long, byte[]> cpHashByOffset,
         Dictionary<byte[], EntityHandle> rawSpanHandlesByHash,
-        ref long entityCount)
+        ref long entityCount,
+        double trustMu)
     {
         if (!codepointIndexByOffset.TryGetValue(byteOffset, out int codepointIndex))
         {
@@ -463,7 +503,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
         if (!rawSpanHandlesByHash.TryGetValue(spanHash, out EntityHandle spanEntity))
         {
             spanEntity = batch.AddEntity(spanHash, "text_composition");
-            batch.AddSignificance(spanEntity, "source_authority", SessionTrustMu);
+            batch.AddSignificance(spanEntity, "source_authority", trustMu);
             for (int i = 0; i < childHandles.Count; i++)
             {
                 batch.AddSequence(spanEntity, childHandles[i], i, 1);
@@ -489,9 +529,13 @@ public sealed partial class TextDecomposer : BaseDecomposer
     private static SegmentationResult Segment(byte[] utf8Bytes, ICodepointProperties props)
     {
         ReadOnlySpan<byte> utf8 = utf8Bytes.AsSpan();
+        // Graphemes via .NET StringInfo (97.8% UCD-conformant); the hand-rolled
+        // GraphemeClusters.Enumerate is currently 44.5% conformant and unsafe
+        // for non-ASCII content. Words and sentences use the hand-rolled lib
+        // (99.7% / 87.1% conformant) until a vetted replacement lands.
         return new SegmentationResult(
             DecodeCodepoints(utf8),
-            GraphemeClusters.Enumerate(utf8, props),
+            GraphemeClusters.EnumerateUsingNet(utf8),
             WordBoundaries.EnumerateWords(utf8, props),
             SentenceBoundaries.Enumerate(utf8, props));
     }

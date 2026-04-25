@@ -36,6 +36,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
+    private readonly Hartonomous.Core.Text.Segmentation.ICodepointProperties? _codepointProperties;
 
     public SafetensorsDecomposer(
         DecomposerConfig config,
@@ -44,7 +45,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         IModelPassCheckpointStore? checkpointStore = null,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
-        IReferenceDataWriter? referenceDataWriter = null)
+        IReferenceDataWriter? referenceDataWriter = null,
+        Hartonomous.Core.Text.Segmentation.ICodepointProperties? codepointProperties = null)
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;
@@ -53,6 +55,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
+        _codepointProperties = codepointProperties;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() => [_hubRoot];
@@ -124,16 +127,30 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         }
     }
 
-    private IReadOnlyList<IModelAnalysisPass> BuildPassSet()
+    private List<IModelAnalysisPass> BuildPassSet()
     {
-        return
+        List<IModelAnalysisPass> passes =
         [
             new EmbeddingFireflyPass(_loggerFactory.CreateLogger<EmbeddingFireflyPass>()),
             new SparsityAnalysisPass(_loggerFactory.CreateLogger<SparsityAnalysisPass>()),
             new WeightDistributionPass(_loggerFactory.CreateLogger<WeightDistributionPass>()),
             new ActivationRangePass(_loggerFactory.CreateLogger<ActivationRangePass>()),
             new MoERoutingStatsPass(_loggerFactory.CreateLogger<MoERoutingStatsPass>()),
+            new SvdPass(_loggerFactory.CreateLogger<SvdPass>()),
+            new EigenvaluePass(_loggerFactory.CreateLogger<EigenvaluePass>()),
+            new AttentionArchetypePass(_loggerFactory.CreateLogger<AttentionArchetypePass>()),
+            new LayerSimilarityPass(_loggerFactory.CreateLogger<LayerSimilarityPass>()),
+            new CodecAnalysisPass(_loggerFactory.CreateLogger<CodecAnalysisPass>()),
         ];
+
+        if (_codepointProperties is not null)
+        {
+            passes.Add(new ModelTextArtifactsPass(
+                _loggerFactory.CreateLogger<ModelTextArtifactsPass>(),
+                _codepointProperties));
+        }
+
+        return passes;
     }
 
     /// <summary>
