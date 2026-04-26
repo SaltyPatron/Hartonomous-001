@@ -1,0 +1,3 @@
+# Model condensing research (off-repo / optional venv; not part of .NET build)
+numpy>=1.24
+safetensors>=0.4.0

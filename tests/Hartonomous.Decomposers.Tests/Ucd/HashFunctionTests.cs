@@ -1,3 +1,4 @@
+using Hartonomous.Core.Decomposition;
 using Hartonomous.Decomposers.Ucd;
 
 namespace Hartonomous.Decomposers.Tests.Ucd;
@@ -89,13 +90,7 @@ public sealed class HashFunctionTests
 
     // ── Reflection to invoke internal statics ──
 
-    private static byte[] InvokeHashCodepoint(int cpValue)
-    {
-        System.Reflection.MethodInfo method = typeof(UcdUcaDecomposer)
-            .GetMethod("HashCodepoint",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy)!;
-        return (byte[])method.Invoke(null, [cpValue])!;
-    }
+    private static byte[] InvokeHashCodepoint(int cpValue) => BaseDecomposer.HashCodepoint(cpValue);
 
     private static byte[] InvokeHashCollationElement(CollationWeight weights)
     {

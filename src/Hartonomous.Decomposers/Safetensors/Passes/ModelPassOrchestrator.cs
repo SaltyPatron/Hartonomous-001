@@ -6,6 +6,8 @@ using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
+using Hartonomous.Core.Text.Segmentation;
+using Hartonomous.Decomposers.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Safetensors.Passes;
@@ -29,6 +31,11 @@ namespace Hartonomous.Decomposers.Safetensors.Passes;
 /// </summary>
 internal sealed partial class ModelPassOrchestrator
 {
+    // Trust prior for tensor-name and arch-class-name documents. They are
+    // model-derived strings asserted by the safetensors header — same tier
+    // as ModelTextArtifactsPass (60_000.0).
+    private const double ModelDerivedTrustMu = 60_000.0;
+
     private readonly IComputeFacade _compute;
     private readonly IModelPassCheckpointStore _checkpointStore;
     private readonly IIngestionPipeline _pipeline;
@@ -38,6 +45,7 @@ internal sealed partial class ModelPassOrchestrator
     private readonly ILogger _logger;
     private readonly int _batchSize;
     private readonly string _provenanceCode;
+    private readonly ICodepointProperties? _codepointProperties;
 
     public ModelPassOrchestrator(
         IComputeFacade compute,
@@ -48,7 +56,8 @@ internal sealed partial class ModelPassOrchestrator
         IReadOnlyList<IModelAnalysisPass> passes,
         ILogger logger,
         int batchSize,
-        string provenanceCode)
+        string provenanceCode,
+        ICodepointProperties? codepointProperties = null)
     {
         _compute = compute;
         _checkpointStore = checkpointStore;
@@ -59,6 +68,7 @@ internal sealed partial class ModelPassOrchestrator
         _logger = logger;
         _batchSize = batchSize;
         _provenanceCode = provenanceCode;
+        _codepointProperties = codepointProperties;
     }
 
     public async Task RunAsync(
@@ -138,6 +148,24 @@ internal sealed partial class ModelPassOrchestrator
         batch.AddJunction("model_architecture_class", modelEntity, archClassId);
         batch.AddEntityModelSource(modelEntity, modelSourceId);
 
+        // Architecture class name as a substrate document (seed-uses-core).
+        // Two snapshots that share an architecture class collapse to ONE
+        // document with TWO has_architecture_name edges.
+        if (_codepointProperties is not null)
+        {
+            byte[] archNameBytes = Encoding.UTF8.GetBytes(arch.ArchitectureClass);
+            if (archNameBytes.Length > 0)
+            {
+                TextDecomposer.TextIngestionResult archNameResult = TextDecomposer.IngestUtf8DocumentIntoBatch(
+                    batch, archNameBytes, _codepointProperties, ModelDerivedTrustMu, _logger, ct);
+                batch.AddEdge("has_architecture_name", _provenanceCode,
+                [
+                    new EdgeMemberSpec(modelEntity, null, "source", 0),
+                    new EdgeMemberSpec(archNameResult.DocumentHandle, null, "target", 1),
+                ]);
+            }
+        }
+
         List<SafetensorsTensorInfo> rawTensors = [];
         foreach (string st in model.SafetensorsFiles)
         {
@@ -176,6 +204,16 @@ internal sealed partial class ModelPassOrchestrator
                 new EdgeMemberSpec(modelEntity, null, "source", 0),
                 new EdgeMemberSpec(tensorH, null, "target", 1),
             ]);
+
+            // Tensor name + dtype + shape as substrate documents (seed-uses-core).
+            // Identical strings across models collapse to ONE document with N
+            // edges. Recomposer reads these to reconstruct the safetensors
+            // header on export — without them the substrate cannot be
+            // round-tripped from UCD/UCA + AI model alone.
+            if (_codepointProperties is not null)
+            {
+                EmitTensorMetadataDocuments(batch, tensorH, tensor, ct);
+            }
             staged.Add((tensor, cls, tensorHash));
 
             if (batch.EntityCount >= _batchSize || batch.EdgeCount >= _batchSize)
@@ -344,6 +382,86 @@ internal sealed partial class ModelPassOrchestrator
         FeedTensorPrefix(hasher, tensor);
         SafetensorsReader.StreamHashAndDecode(tensor, hasher, flatResult);
         return hasher.Finalize();
+    }
+
+    /// <summary>
+    /// Routes a tensor's three header strings (name, dtype, shape) through
+    /// the text decomposer's full DAG and emits has_tensor_name / has_dtype /
+    /// has_shape edges. The substrate then carries everything the recomposer
+    /// needs to reconstruct the safetensors header on export — without these
+    /// the substrate is not round-trip-self-sufficient.
+    /// </summary>
+    private void EmitTensorMetadataDocuments(
+        IIngestionBatch batch, EntityHandle tensorH, SafetensorsTensorInfo tensor, CancellationToken ct)
+    {
+        if (_codepointProperties is null)
+        {
+            return;
+        }
+
+        EmitMetadataEdge(batch, tensorH, "has_tensor_name", tensor.Name, ct);
+        EmitMetadataEdge(batch, tensorH, "has_dtype", DtypeToWireFormat(tensor.Dtype), ct);
+        EmitMetadataEdge(batch, tensorH, "has_shape", FormatShape(tensor.Shape), ct);
+    }
+
+    private void EmitMetadataEdge(
+        IIngestionBatch batch, EntityHandle source, string edgeCode, string text, CancellationToken ct)
+    {
+        if (_codepointProperties is null || string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+        byte[] bytes = Encoding.UTF8.GetBytes(text);
+        TextDecomposer.TextIngestionResult result = TextDecomposer.IngestUtf8DocumentIntoBatch(
+            batch, bytes, _codepointProperties, ModelDerivedTrustMu, _logger, ct);
+        batch.AddEdge(edgeCode, _provenanceCode,
+        [
+            new EdgeMemberSpec(source, null, "source", 0),
+            new EdgeMemberSpec(result.DocumentHandle, null, "target", 1),
+        ]);
+    }
+
+    /// <summary>Mirrors <c>SafetensorsReader.ParseDtype</c>'s wire-format strings.</summary>
+    private static string DtypeToWireFormat(SafetensorsDtype dtype) => dtype switch
+    {
+        SafetensorsDtype.F32 => "F32",
+        SafetensorsDtype.F64 => "F64",
+        SafetensorsDtype.F16 => "F16",
+        SafetensorsDtype.BF16 => "BF16",
+        SafetensorsDtype.I8 => "I8",
+        SafetensorsDtype.I16 => "I16",
+        SafetensorsDtype.I32 => "I32",
+        SafetensorsDtype.I64 => "I64",
+        SafetensorsDtype.U8 => "U8",
+        SafetensorsDtype.U16 => "U16",
+        SafetensorsDtype.U32 => "U32",
+        SafetensorsDtype.U64 => "U64",
+        SafetensorsDtype.Bool => "BOOL",
+        SafetensorsDtype.F8E4M3 => "F8_E4M3",
+        SafetensorsDtype.F8E5M2 => "F8_E5M2",
+        _ => throw new NotSupportedException($"Unhandled SafetensorsDtype {dtype}"),
+    };
+
+    /// <summary>
+    /// Canonical shape encoding: comma-separated decimals in square brackets,
+    /// matching <see cref="SafetensorsRecomposer"/>'s <c>ParseShape</c>. Same
+    /// shape across models collapses to ONE substrate document.
+    /// </summary>
+    private static string FormatShape(long[] shape)
+    {
+        if (shape is null || shape.Length == 0)
+        {
+            return "[]";
+        }
+        StringBuilder sb = new();
+        sb.Append('[');
+        for (int i = 0; i < shape.Length; i++)
+        {
+            if (i > 0) { sb.Append(','); }
+            sb.Append(shape[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        sb.Append(']');
+        return sb.ToString();
     }
 
     private static void FeedTensorPrefix(Blake3Hasher hasher, SafetensorsTensorInfo tensor)

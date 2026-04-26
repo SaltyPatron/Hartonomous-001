@@ -96,7 +96,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 passes: passes,
                 logger: _loggerFactory.CreateLogger<ModelPassOrchestrator>(),
                 batchSize: BatchSize,
-                provenanceCode: ProvenanceCode);
+                provenanceCode: ProvenanceCode,
+                codepointProperties: _codepointProperties);
 
             int modelIdx = 0;
             foreach (DiscoveredModel model in models)
@@ -141,6 +142,9 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             new AttentionArchetypePass(_loggerFactory.CreateLogger<AttentionArchetypePass>()),
             new LayerSimilarityPass(_loggerFactory.CreateLogger<LayerSimilarityPass>()),
             new CodecAnalysisPass(_loggerFactory.CreateLogger<CodecAnalysisPass>()),
+            new TokenizerMappingPass(_loggerFactory.CreateLogger<TokenizerMappingPass>()),
+            new VocabCoveragePass(_loggerFactory.CreateLogger<VocabCoveragePass>()),
+            new OneDTensorPass(_loggerFactory.CreateLogger<OneDTensorPass>()),
         ];
 
         if (_codepointProperties is not null)

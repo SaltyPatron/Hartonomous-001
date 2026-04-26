@@ -374,7 +374,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// This produces the same hash as <see cref="EmitWordFormMerkle"/> so that any decomposer
     /// can pre-compute a word's identity hash for dedup lookups before deciding whether to emit.
     /// </summary>
-    protected static byte[] ComputeWordFormHash(string form)
+    public static byte[] ComputeWordFormHash(string form)
     {
         List<byte[]> gcHashes = [];
         TextElementEnumerator tee = StringInfo.GetTextElementEnumerator(form);

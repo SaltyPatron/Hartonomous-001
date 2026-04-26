@@ -223,16 +223,26 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await insertCmd.ExecuteNonQueryAsync(ct);
         }
 
-        await using NpgsqlCommand selectCmd = new(
-            "SELECT s.ord, e.id FROM staging_entity s " +
-            "JOIN substrate.entity e ON e.hash = s.hash AND e.entity_type_id = s.entity_type_id", conn);
-
-        await using NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        // Resolve all (hash, type_id) → entity_id. Pure set-based join, no
+        // correlated subqueries. The previous EXISTS-on-entity_model_source
+        // path crashed Postgres backends under UCD-scale load (SIGSEGV during
+        // query execution; reproducible across multiple runs). Corroboration
+        // evidence accumulation needs to be rebuilt as a separate, batched
+        // pass that runs after entity resolution — not inline in the ID
+        // resolution query.
+        await using (NpgsqlCommand selectCmd = new(@"
+            SELECT s.ord, e.id
+              FROM staging_entity s
+              JOIN substrate.entity e
+                ON e.hash = s.hash AND e.entity_type_id = s.entity_type_id", conn))
         {
-            int ordinal = reader.GetInt32(0);
-            long entityId = reader.GetInt64(1);
-            batch.RemapHandle(ordinal, entityId);
+            await using NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                int ordinal = reader.GetInt32(0);
+                long entityId = reader.GetInt64(1);
+                batch.RemapHandle(ordinal, entityId);
+            }
         }
     }
 

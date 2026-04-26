@@ -609,11 +609,22 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                 next.entity_id = nbr_id;
                 next.depth = cur.depth + 1;
                 next.path_len = cur.path_len + 1;
-                next.entity_path = palloc(sizeof(int64) * next.path_len);
+                /* Allocate path arrays in multi_call_memory_ctx so they survive
+                 * SPI_finish at the end of the FIRSTCALL setup. SPI_connect
+                 * switches CurrentMemoryContext to its private context; any
+                 * palloc here would be freed by SPI_finish, leaving dangling
+                 * pointers in results[] that the SRF_PERCALL_SETUP read path
+                 * dereferences. The use-after-free is silent under the simple
+                 * query protocol (psql) because the freed memory is rarely
+                 * overwritten before SRF_RETURN_NEXT runs, but the extended
+                 * query protocol (Npgsql) reliably trips a SIGSEGV. */
+                next.entity_path = MemoryContextAlloc(funcctx->multi_call_memory_ctx,
+                                                      sizeof(int64) * next.path_len);
                 memcpy(next.entity_path, cur.entity_path, sizeof(int64) * cur.path_len);
                 next.entity_path[cur.path_len] = nbr_id;
 
-                next.edge_path = palloc(sizeof(int64) * cur.path_len);
+                next.edge_path = MemoryContextAlloc(funcctx->multi_call_memory_ctx,
+                                                    sizeof(int64) * cur.path_len);
                 if (cur.edge_path && cur.path_len > 1)
                     memcpy(next.edge_path, cur.edge_path, sizeof(int64) * (cur.path_len - 1));
                 next.edge_path[cur.path_len - 1] = nbr_edge_id;

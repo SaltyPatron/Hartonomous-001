@@ -84,12 +84,21 @@ public static class WordBoundaries
         return positions;
     }
 
+    // LastPhysWb tracks the word_break of the LAST physical codepoint folded
+    // into this token (independent of the base Wb). Some rules — WB3c
+    // (ZWJ × ExtPict) and WB3d (WSegSpace × WSegSpace) — only fire when the
+    // literal preceding codepoint matches; an intervening Extend/Format kills
+    // them, even though WB4 attaches all of them to the same base.
+    // UCD WordBreakTest.txt: line 1059 `200D × 24C2` joins (WB3c [3.3]); line
+    // 1060 `200D × 0308 ÷ 24C2` breaks (WB999 [999.0]); line 1206
+    // `0020 × 0308 ÷ 0020` likewise breaks despite both ends being WSegSpace.
     private readonly record struct WbToken(
         WordBreak Wb,
         long ByteOffset,
         int TotalByteLength,
         int Codepoint,
-        bool IsExtPict);
+        bool IsExtPict,
+        WordBreak LastPhysWb);
 
     private static List<WbToken> CollectTokens(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
     {
@@ -113,12 +122,16 @@ public static class WordBoundaries
             if (canAttach)
             {
                 WbToken prev = tokens[^1];
-                tokens[^1] = prev with { TotalByteLength = prev.TotalByteLength + consumed };
+                tokens[^1] = prev with
+                {
+                    TotalByteLength = prev.TotalByteLength + consumed,
+                    LastPhysWb = wb,
+                };
             }
             else
             {
                 bool isExtPict = properties.IsExtendedPictographic(cp);
-                tokens.Add(new WbToken(wb, byteOffset, consumed, cp, isExtPict));
+                tokens.Add(new WbToken(wb, byteOffset, consumed, cp, isExtPict, wb));
             }
 
             byteOffset += consumed;
@@ -161,13 +174,16 @@ public static class WordBoundaries
         {
             return true;
         }
-        // WB3c: ZWJ × Extended_Pictographic
-        if (a.Wb == WordBreak.ZWJ && b.IsExtPict)
+        // WB3c: ZWJ × Extended_Pictographic — applies to the LITERAL preceding
+        // codepoint, not the WB4-attached base. An Extend/Format between ZWJ and
+        // ExtPict cancels WB3c (UCD WordBreakTest.txt rule [999.0]).
+        if (a.LastPhysWb == WordBreak.ZWJ && b.IsExtPict)
         {
             return false;
         }
-        // WB3d: WSegSpace × WSegSpace
-        if (a.Wb == WordBreak.WSegSpace && b.Wb == WordBreak.WSegSpace)
+        // WB3d: WSegSpace × WSegSpace — likewise needs literal adjacency. An
+        // Extend between two spaces (line 1206) breaks per default rule.
+        if (a.LastPhysWb == WordBreak.WSegSpace && b.Wb == WordBreak.WSegSpace)
         {
             return false;
         }

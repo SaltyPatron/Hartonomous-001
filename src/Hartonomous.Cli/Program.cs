@@ -55,7 +55,169 @@ internal static class Program
         Command query = BuildQueryCommand();
         root.AddCommand(query);
 
+        Command exportModel = BuildExportModelCommand();
+        root.AddCommand(exportModel);
+
+        Command compareModel = BuildCompareModelCommand();
+        root.AddCommand(compareModel);
+
         return await root.InvokeAsync(args);
+    }
+
+    private static Command BuildCompareModelCommand()
+    {
+        Option<string> origOpt = new("--original", "Original safetensors file");
+        origOpt.IsRequired = true;
+        Option<string> exportedOpt = new("--exported", "Substrate-exported safetensors file");
+        exportedOpt.IsRequired = true;
+
+        Command compare = new("compare-models", "Compare two safetensors files tensor-by-tensor (relative Frobenius error).");
+        compare.AddOption(origOpt);
+        compare.AddOption(exportedOpt);
+
+        compare.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string origPath = ctx.ParseResult.GetValueForOption(origOpt)!;
+            string expPath = ctx.ParseResult.GetValueForOption(exportedOpt)!;
+            await CompareModelsAsync(origPath, expPath, CancellationToken.None);
+        });
+
+        return compare;
+    }
+
+    private static async Task CompareModelsAsync(string origPath, string expPath, CancellationToken ct)
+    {
+        List<Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo> origInfos =
+            Hartonomous.Decomposers.Safetensors.SafetensorsReader.ReadHeader(origPath);
+        List<Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo> expInfos =
+            Hartonomous.Decomposers.Safetensors.SafetensorsReader.ReadHeader(expPath);
+
+        Dictionary<string, Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo> origMap = new(StringComparer.Ordinal);
+        foreach (Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo ti in origInfos) { origMap[ti.Name] = ti; }
+        Dictionary<string, Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo> expMap = new(StringComparer.Ordinal);
+        foreach (Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo ti in expInfos) { expMap[ti.Name] = ti; }
+
+        Console.WriteLine($"Original: {origInfos.Count} tensors  |  Exported: {expInfos.Count} tensors");
+        Console.WriteLine();
+
+        int total = 0;
+        int identical = 0;
+        int allZero = 0;
+        int matched = 0;
+        double sumRelErr = 0;
+        int sumRelN = 0;
+
+        Dictionary<int, (int n, double sumRel)> byRank = new();
+
+        foreach (string name in origMap.Keys)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!expMap.TryGetValue(name, out Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo? expTi)) { continue; }
+            Hartonomous.Decomposers.Safetensors.SafetensorsTensorInfo origTi = origMap[name];
+            if (!origTi.Shape.SequenceEqual(expTi.Shape)) { continue; }
+            total++;
+
+            double[] o = Hartonomous.Decomposers.Safetensors.SafetensorsReader.ReadTensorAsDouble(origTi);
+            double[] e = Hartonomous.Decomposers.Safetensors.SafetensorsReader.ReadTensorAsDouble(expTi);
+            if (o.Length != e.Length) { continue; }
+
+            double normO = 0, normDiff = 0, expAbsMax = 0;
+            for (int i = 0; i < o.Length; i++)
+            {
+                double d = o[i] - e[i];
+                normO += o[i] * o[i];
+                normDiff += d * d;
+                double ea = Math.Abs(e[i]);
+                if (ea > expAbsMax) { expAbsMax = ea; }
+            }
+            normO = Math.Sqrt(normO);
+            normDiff = Math.Sqrt(normDiff);
+
+            bool isAllZero = expAbsMax == 0;
+            double relErr = normO > 0 ? normDiff / normO : (normDiff == 0 ? 0 : double.PositiveInfinity);
+
+            if (isAllZero) { allZero++; }
+            else if (normDiff == 0) { identical++; matched++; }
+            else { matched++; sumRelErr += relErr; sumRelN++; }
+
+            int rank = origTi.Shape.Length;
+            if (!byRank.TryGetValue(rank, out (int n, double sumRel) b)) { b = (0, 0.0); }
+            byRank[rank] = (b.n + 1, b.sumRel + (isAllZero ? 1.0 : relErr));
+
+            if (total <= 30 || isAllZero || (relErr > 0.5 && relErr < double.PositiveInfinity))
+            {
+                string status = isAllZero ? "ZERO" : normDiff == 0 ? "EXACT" : $"rel_err={relErr:F4}";
+                Console.WriteLine($"  [{rank}D shape={string.Join('x', origTi.Shape)}] {name}: {status}");
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"=== Summary ===");
+        Console.WriteLine($"  total compared:   {total}");
+        Console.WriteLine($"  exact match:      {identical}");
+        Console.WriteLine($"  zero-filled:      {allZero}  (substrate had no content for these)");
+        Console.WriteLine($"  partial reconstruction: {matched - identical}");
+        if (sumRelN > 0)
+        {
+            Console.WriteLine($"  mean rel_err on partial: {sumRelErr / sumRelN:F4}");
+        }
+        Console.WriteLine();
+        Console.WriteLine($"=== By rank ===");
+        foreach (KeyValuePair<int, (int n, double sumRel)> kv in byRank.OrderBy(k => k.Key))
+        {
+            Console.WriteLine($"  {kv.Key}D: {kv.Value.n} tensors, mean rel_err = {kv.Value.sumRel / kv.Value.n:F4}");
+        }
+        await Task.CompletedTask;
+    }
+
+    private static Command BuildExportModelCommand()
+    {
+        Option<string> connOpt = new(ConnAliases, () => DefaultConnectionString(), "Connection string");
+        Option<long> archIdOpt = new("--arch-id", "model_architecture entity id to export");
+        archIdOpt.IsRequired = true;
+        Option<string> outputOpt = new("--output", "Output safetensors path");
+        outputOpt.IsRequired = true;
+
+        Command exportModel = new("export-model", "Recompose a substrate model_architecture into a safetensors file.");
+        exportModel.AddOption(connOpt);
+        exportModel.AddOption(archIdOpt);
+        exportModel.AddOption(outputOpt);
+
+        exportModel.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
+            long archId = ctx.ParseResult.GetValueForOption(archIdOpt);
+            string output = ctx.ParseResult.GetValueForOption(outputOpt)!;
+
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            Hartonomous.Engine.Data.NpgsqlEntityReader entityReader = new(ds);
+            Hartonomous.Engine.Data.NpgsqlPhysicalityReader physReader = new(ds);
+            Hartonomous.Engine.Query.NpgsqlSubstrateQuery query = new(ds);
+
+            // NpgsqlEntityReader implements ITextRecompositionReader directly.
+            Hartonomous.Recomposers.SafetensorsRecomposer recomposer = new(
+                entityReader, entityReader, physReader, query);
+
+            Console.WriteLine($"=== Exporting model_architecture {archId} → {output} ===");
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+
+            Hartonomous.Core.Recomposition.RecompositionOptions opts = new() { MaxDepth = 20 };
+            Hartonomous.Recomposers.SafetensorsFile file =
+                await recomposer.RecomposeAsync(archId, opts, CancellationToken.None);
+
+            await using (FileStream fs = File.Create(output))
+            {
+                await Hartonomous.Recomposers.SafetensorsWriter.WriteAsync(file, fs, CancellationToken.None);
+            }
+
+            sw.Stop();
+            FileInfo fi = new(output);
+            Console.WriteLine($"Tensors written: {file.Tensors.Count}");
+            Console.WriteLine($"File size: {fi.Length:N0} bytes");
+            Console.WriteLine($"Elapsed: {sw.Elapsed.TotalSeconds:F1}s");
+        });
+
+        return exportModel;
     }
 
     private static void PrepareNativeLoadPath()

@@ -171,20 +171,20 @@ This is returned as structured `AnnotatedText` (a companion type), not as the `s
 
 **Output type**: `SafetensorsFile` — a record wrapping `IReadOnlyDictionary<string, TensorData> Tensors`, `string ModelName`. `TensorData` contains `string Dtype`, `int[] Shape`, `byte[] Data`.
 
-**Traversal strategy**:
-1. Fetch root model architecture entity.
-2. Fetch composition children (tensor entities) via `in_model` edges.
-3. For each tensor: fetch physicality data (raw weight bytes stored as tier data).
-4. Reconstruct tensor metadata from junction data (`tensor_tensor_role` for layer name, `model_architecture_class` for architecture type).
-5. Assemble `SafetensorsFile` record with tensor name → data mapping.
+**Authoritative spec for *AI model* weights (ingest and export)**: [docs/specs/decomposers/safetensors.md](../../decomposers/safetensors.md) — export is **distillation** (query the substrate, synthesize a **new** student model), not byte replay of a source checkpoint. Near-zero and below-threshold mass becomes zeros in the **student**; training artifacts do not reappear as a bit-identical rematerialization of the download.
 
-**Streaming variant**: `RecomposeToStreamAsync` writes safetensors binary format directly:
+**Traversal strategy (implementation outline)**:
+1. Run a **substrate query** (significance, type, scope, target architecture) as in `safetensors.md` § *Distillation (Recomposer)*.
+2. Synthesize per-target-tensor `byte[]` and metadata (dtype, shape) from **query results and synthesis rules** — not necessarily by re-reading raw source bytes as the primary path.
+3. Assemble `SafetensorsFile` and stream the standard **safetensors** wire format (JSON header + data buffer; sharding as needed).
+
+**Streaming variant**: `RecomposeToStreamAsync` writes valid safetensors bytes:
 1. Build JSON header (tensor names, dtypes, shapes, byte offsets).
 2. Write 8-byte header length (little-endian u64).
 3. Write JSON header (padded to 8-byte alignment).
 4. Write tensor data blocks sequentially.
 
-**Round-trip fidelity**: Bit-exact. Decompose a safetensors file → recompose → produces byte-identical output. The safetensors format is deterministic (sorted keys, no padding variance).
+**Round-trip fidelity (AI models)**: **Not** byte-exact to the **original** ingested checkpoint. Text / lossless media recomposers in this file remain semantically or pixel-accurate on their own domains; for neural checkpoints, the substrate **replaces** opaque tensor replay with distillation. The safetensors **container** format is still deterministic for a *given* synthesized `SafetensorsFile` payload.
 
 ---
 
@@ -196,4 +196,4 @@ This is returned as structured `AnnotatedText` (a companion type), not as the `s
 | Image | `ImageRecomposer` | `ImageBuffer` | PNG | Pixel-accurate |
 | Audio | `AudioRecomposer` | `AudioBuffer` | WAV (PCM) | Sample-accurate (lossless sources) |
 | Video | `VideoRecomposer` | `VideoFrameSequence` | Y4M | Frame-accurate |
-| SafeTensors | `SafetensorsRecomposer` | `SafetensorsFile` | safetensors binary | Bit-exact |
+| SafeTensors (AI) | `SafetensorsRecomposer` | `SafetensorsFile` | safetensors binary | Distilled (not byte-exact to source) |

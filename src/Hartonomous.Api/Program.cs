@@ -9,7 +9,9 @@ using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Recomposition;
+using Hartonomous.Core.Query;
 using Hartonomous.Engine.Data;
+using Hartonomous.Engine.Query;
 using Hartonomous.Engine.Inference;
 using Hartonomous.Engine.Monitoring;
 using Hartonomous.Engine.Significance;
@@ -44,6 +46,15 @@ builder.Services.AddSingleton<IInferenceEngine>(sp => new SubstrateInferenceEngi
     sp.GetRequiredService<ILogger<SubstrateInferenceEngine>>()));
 builder.Services.AddSingleton<IRecomposer<string>>(sp => new TextRecomposer(
     sp.GetRequiredService<IEntityReader>()));
+builder.Services.AddSingleton<IPhysicalityReader>(sp => new NpgsqlPhysicalityReader(
+    sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton<ISubstrateQuery>(sp => new NpgsqlSubstrateQuery(
+    sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton<IRecomposer<SafetensorsFile>>(sp => new SafetensorsRecomposer(
+    sp.GetRequiredService<IEntityReader>(),
+    sp.GetService<ITextRecompositionReader>(),
+    sp.GetService<IPhysicalityReader>(),
+    sp.GetService<ISubstrateQuery>()));
 
 WebApplication app = builder.Build();
 

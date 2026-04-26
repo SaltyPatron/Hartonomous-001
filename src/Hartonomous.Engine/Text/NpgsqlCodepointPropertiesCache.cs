@@ -271,16 +271,19 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
             : LineBreak.XX;
     }
 
+    // Both long forms (UCD GraphemeBreakProperty.txt) and short codes
+    // (UCD PropertyValueAliases.txt). The substrate seeds short codes for
+    // most rows; long forms are accepted for forward-compat with re-seeds.
     private static GraphemeBreak MapGcb(string code) => code switch
     {
         "CR" => GraphemeBreak.CR,
         "LF" => GraphemeBreak.LF,
-        "Control" => GraphemeBreak.Control,
-        "Extend" => GraphemeBreak.Extend,
+        "Control" or "CN" => GraphemeBreak.Control,
+        "Extend" or "EX" => GraphemeBreak.Extend,
         "ZWJ" => GraphemeBreak.ZWJ,
-        "Regional_Indicator" => GraphemeBreak.RegionalIndicator,
-        "Prepend" => GraphemeBreak.Prepend,
-        "SpacingMark" => GraphemeBreak.SpacingMark,
+        "Regional_Indicator" or "RI" => GraphemeBreak.RegionalIndicator,
+        "Prepend" or "PP" => GraphemeBreak.Prepend,
+        "SpacingMark" or "SM" => GraphemeBreak.SpacingMark,
         "L" => GraphemeBreak.L,
         "V" => GraphemeBreak.V,
         "T" => GraphemeBreak.T,
@@ -325,22 +328,25 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         _ => WordBreak.Other,
     };
 
+    // Both long forms (UCD SentenceBreakProperty.txt) and short codes
+    // (UCD PropertyValueAliases.txt: AT, CL, EX, FO, LE/OL, LO, NU, SC, SE,
+    // SP, ST, UP, XX). The substrate seeds short codes for most rows.
     private static SentenceBreak MapSb(string code) => code switch
     {
         "CR" => SentenceBreak.CR,
         "LF" => SentenceBreak.LF,
-        "Extend" => SentenceBreak.Extend,
-        "Format" => SentenceBreak.Format,
-        "Sep" => SentenceBreak.Sep,
-        "Sp" => SentenceBreak.Sp,
-        "Lower" => SentenceBreak.Lower,
-        "Upper" => SentenceBreak.Upper,
-        "OLetter" => SentenceBreak.OLetter,
-        "Numeric" => SentenceBreak.Numeric,
-        "ATerm" => SentenceBreak.ATerm,
-        "STerm" => SentenceBreak.STerm,
-        "Close" => SentenceBreak.Close,
-        "SContinue" => SentenceBreak.SContinue,
+        "Extend" or "EX" => SentenceBreak.Extend,
+        "Format" or "FO" => SentenceBreak.Format,
+        "Sep" or "SE" => SentenceBreak.Sep,
+        "Sp" or "SP" => SentenceBreak.Sp,
+        "Lower" or "LO" => SentenceBreak.Lower,
+        "Upper" or "UP" => SentenceBreak.Upper,
+        "OLetter" or "LE" or "OL" => SentenceBreak.OLetter,
+        "Numeric" or "NU" => SentenceBreak.Numeric,
+        "ATerm" or "AT" => SentenceBreak.ATerm,
+        "STerm" or "ST" => SentenceBreak.STerm,
+        "Close" or "CL" => SentenceBreak.Close,
+        "SContinue" or "SC" => SentenceBreak.SContinue,
         _ => SentenceBreak.Other,
     };
 

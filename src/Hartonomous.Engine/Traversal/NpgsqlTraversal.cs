@@ -60,7 +60,9 @@ public sealed class NpgsqlTraversal : ITraversal
                 continue;
             }
             long[] entityPath = (long[])reader.GetValue(2);
-            long[] edgePath = (long[])reader.GetValue(3);
+            long[] edgePath = reader.IsDBNull(3)
+                ? Array.Empty<long>()
+                : (long[])reader.GetValue(3);
 
             List<TraversalStep> steps = new(entityPath.Length);
             for (int i = 0; i < entityPath.Length; i++)
@@ -126,18 +128,19 @@ public sealed class NpgsqlTraversal : ITraversal
 
         Stopwatch sw = Stopwatch.StartNew();
 
-        // Reuse a single connection across the (seed × target_type) cross-product.
-        // Profiling showed that opening multiple connections concurrently against
-        // postgres (even with max_parallel_workers=24 server-side) serialized at
-        // ~7.5s per additional connection due to authentication/handshake overhead.
-        // One connection used sequentially: ~50ms × 8 = ~400ms total.
+        // Open a fresh connection per traverse_astar call. Reusing a single
+        // connection across the (seed × target_type) cross-product triggered a
+        // backend SIGSEGV during repeated SPI invocations of the C-implemented
+        // traverse_astar — separate sessions sidestep the SPI state bug. The
+        // per-call connection cost is ~10–30ms via Npgsql's connection pool
+        // (already-authenticated connection reused), well within budget.
         List<TraversalPath> allPaths = [];
         int nodesVisited = 0;
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         foreach (long seedId in query.SeedEntityIds)
         {
             foreach (int targetTypeId in targetTypeIds)
             {
+                await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
                 (List<TraversalPath> paths, int nodes) = await TraverseOneOnConnectionAsync(
                     conn, seedId, targetTypeId, arenaId, query.MaxDepth,
                     edgeTypeFilter, query.SignificanceThreshold, query.CostBudget, ct);
