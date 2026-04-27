@@ -177,33 +177,75 @@ internal static class Program
         archIdOpt.IsRequired = true;
         Option<string> outputOpt = new("--output", "Output safetensors path");
         outputOpt.IsRequired = true;
+        Option<long[]> sourceIdsOpt = new("--source-id",
+            "model_source_id to filter on (repeat for multiple). Omit for unfiltered export.");
+        sourceIdsOpt.AllowMultipleArgumentsPerToken = true;
+        Option<double?> minMuOpt = new("--min-significance",
+            "Minimum significance mu (inclusive) — restricts the export to entities at or above this rating.");
+        Option<string?> contextOpt = new("--context",
+            "Significance arena context code (e.g. 'model_trust', 'semantic_relevance').");
+        Option<int?> limitOpt = new("--limit",
+            "Maximum number of tensors to include in the distilled export.");
 
-        Command exportModel = new("export-model", "Recompose a substrate model_architecture into a safetensors file.");
+        Command exportModel = new("export-model",
+            "Recompose a substrate model_architecture into a safetensors file. "
+            + "With filter options the export becomes a distillation query (architecture.md "
+            + "\"Distillation = WHERE clause\").");
         exportModel.AddOption(connOpt);
         exportModel.AddOption(archIdOpt);
         exportModel.AddOption(outputOpt);
+        exportModel.AddOption(sourceIdsOpt);
+        exportModel.AddOption(minMuOpt);
+        exportModel.AddOption(contextOpt);
+        exportModel.AddOption(limitOpt);
 
         exportModel.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
         {
             string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
             long archId = ctx.ParseResult.GetValueForOption(archIdOpt);
             string output = ctx.ParseResult.GetValueForOption(outputOpt)!;
+            long[] sourceIds = ctx.ParseResult.GetValueForOption(sourceIdsOpt) ?? [];
+            double? minMu = ctx.ParseResult.GetValueForOption(minMuOpt);
+            string? context = ctx.ParseResult.GetValueForOption(contextOpt);
+            int? limit = ctx.ParseResult.GetValueForOption(limitOpt);
 
             await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
             Hartonomous.Engine.Data.NpgsqlEntityReader entityReader = new(ds);
             Hartonomous.Engine.Data.NpgsqlPhysicalityReader physReader = new(ds);
             Hartonomous.Engine.Query.NpgsqlSubstrateQuery query = new(ds);
 
-            // NpgsqlEntityReader implements ITextRecompositionReader directly.
             Hartonomous.Recomposers.SafetensorsRecomposer recomposer = new(
                 entityReader, entityReader, physReader, query);
 
-            Console.WriteLine($"=== Exporting model_architecture {archId} → {output} ===");
+            bool filtered = sourceIds.Length > 0 || minMu.HasValue || !string.IsNullOrEmpty(context) || limit.HasValue;
+
+            Console.WriteLine($"=== {(filtered ? "Distilling" : "Exporting")} model_architecture {archId} → {output} ===");
+            if (filtered)
+            {
+                if (sourceIds.Length > 0) { Console.WriteLine($"  --source-id={string.Join(',', sourceIds)}"); }
+                if (minMu.HasValue) { Console.WriteLine($"  --min-significance={minMu.Value}"); }
+                if (!string.IsNullOrEmpty(context)) { Console.WriteLine($"  --context={context}"); }
+                if (limit.HasValue) { Console.WriteLine($"  --limit={limit.Value}"); }
+            }
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
 
             Hartonomous.Core.Recomposition.RecompositionOptions opts = new() { MaxDepth = 20 };
-            Hartonomous.Recomposers.SafetensorsFile file =
-                await recomposer.RecomposeAsync(archId, opts, CancellationToken.None);
+            Hartonomous.Recomposers.SafetensorsFile file;
+            if (filtered)
+            {
+                Hartonomous.Core.Query.SubstrateQueryFilter filter = new()
+                {
+                    ModelSourceIds = sourceIds.Length > 0 ? sourceIds : null,
+                    MinSignificanceMu = minMu,
+                    ContextTypeCode = context,
+                    Limit = limit,
+                };
+                file = await recomposer.RecomposeFilteredAsync(archId, filter, opts, CancellationToken.None);
+            }
+            else
+            {
+                file = await recomposer.RecomposeAsync(archId, opts, CancellationToken.None);
+            }
 
             await using (FileStream fs = File.Create(output))
             {
@@ -496,7 +538,7 @@ internal static class Program
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, codepointProperties: cpProps),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, codepointProperties: cpProps, alignmentDataSource: phaseDs),
             ],
             [Phase.Wiktionary] =
             [
@@ -533,15 +575,22 @@ internal static class Program
         // gate but the per-pass checkpoint still short-circuits.
         if (force && phaseStr is not null)
         {
+            // Two separate commands — Npgsql's prepared-statement protocol
+            // (used implicitly under multiplexing) rejects multi-statement
+            // batches with "cannot insert multiple commands into a prepared
+            // statement". Split into one DELETE + one TRUNCATE.
             await using NpgsqlDataSource resetDs = NpgsqlDataSource.Create(conn);
             await using NpgsqlConnection resetConn = await resetDs.OpenConnectionAsync(ct);
-            await using (NpgsqlCommand cmd = new(
-                "DELETE FROM monitor.phase_status WHERE phase_code = $1; "
-                + "TRUNCATE TABLE substrate.model_pass_checkpoint;",
-                resetConn))
+            await using (NpgsqlCommand del = new(
+                "DELETE FROM monitor.phase_status WHERE phase_code = $1", resetConn))
             {
-                cmd.Parameters.AddWithValue(phaseStr);
-                await cmd.ExecuteNonQueryAsync(ct);
+                del.Parameters.AddWithValue(phaseStr);
+                await del.ExecuteNonQueryAsync(ct);
+            }
+            await using (NpgsqlCommand trunc = new(
+                "TRUNCATE TABLE substrate.model_pass_checkpoint", resetConn))
+            {
+                await trunc.ExecuteNonQueryAsync(ct);
             }
         }
 

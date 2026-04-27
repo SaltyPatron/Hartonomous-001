@@ -60,6 +60,20 @@ public sealed partial class UdDecomposer : BaseDecomposer
         CancellationToken ct)
     {
         List<UdTreebankInfo> banksAll = UdTreebankScanner.Scan(_rootDir);
+        if (banksAll.Count == 0)
+        {
+            // Fail loud: a clean exit with 0 treebanks would silently mark the
+            // phase complete and leave the substrate without ud_sentence /
+            // ud_token / has_lemma / dependency edges — every downstream phase
+            // (Wiktionary morph propagation, Tatoeba syntactic alignment,
+            // Glicko-2 syntactic_role_fitness arena) would then run on an empty
+            // UD foundation. Refusing to proceed forces the operator to fix
+            // the source path or treebank availability before continuing.
+            throw new InvalidOperationException(
+                $"UD source root contained zero UD_* treebank directories: {_rootDir}. "
+                + "Verify config.psd1's Seed.UniversalDepsRoot points at the actual ud-treebanks-v2.17 dir "
+                + "and that the C# CLI's udConfig.SourceDirectory joined the same subpath.");
+        }
         List<UdTreebankInfo> banks = new(banksAll.Count);
         foreach (UdTreebankInfo b in banksAll)
         {
@@ -69,6 +83,12 @@ public sealed partial class UdDecomposer : BaseDecomposer
             }
         }
         Log.TreebanksDiscovered(Logger, banks.Count);
+        if (banks.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"UD scanned {banksAll.Count} treebanks but LanguageFilter rejected all of them. "
+                + "Either drop LanguageFilter or include at least one ISO code present in the discovered banks.");
+        }
 
         await using UdReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
 

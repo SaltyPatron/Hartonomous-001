@@ -227,3 +227,93 @@ At that point M0–M3 are done and M4/M5 can start on a real substrate.
 - Any re-architecture of specs that aren't actively blocking code.
 - New features not in the existing spec set.
 - GPU, model training, or any external-model-inference dependency.
+
+---
+
+## Corrected execution order (post-M0, against the existing task list)
+
+M0–M5e laid the substrate's structural foundation. Once those land, the work that brings the invention to operating state is below. Each item references existing tasks — **no new tasks are added; existing tasks are re-prioritized into phases that align with the actual invention** per `.claude/rules/15-substrate-trinity-and-layers.md`, `25-physicality-4d.md`, `35-inference-and-godel.md`, `45-anti-patterns.md`.
+
+### P0 — Substrate hygiene (unblocks everything)
+
+These are correctness fixes that load-bear all later work. They do not add features; they make the existing substrate behave per spec.
+
+- **#91** Audit + migrate inline SQL out of `NpgsqlIngestionPipeline.cs` to named `substrate.*` functions. AP-2.
+- **#92** RBAR audit across pipeline + readers. AP-2.
+- **#45** Audit entity hash computations for placement contamination. AP-9, Substrate Law #1.
+- **#93** Excise deprecated `pt4d`/`ls4d` from `ext/hartonomous_pg`. Migration 0048 dropped the columns; the extension still compiles them.
+- **#90** Switch CLI inference path from `LoadAsync` to `LoadForCodepointsAsync(workingSet)`. AP-7.
+
+### P1 — Glicko-2 spec compliance (the substrate must actually learn)
+
+- **#47** Implement Glicko-2 in `Hartonomous.Core/Compute/Common/Glicko2.cs` per `docs/specs/engine/glicko-2.md`. Deterministic, no PRNG. Both update-on-comparison and draw-against-self (corroboration) paths.
+- **#46** Replace migration 0051's hardcoded sigma formula with a set-based SQL implementation of the spec Glicko-2 update.
+- **#107** Re-encounter arena update on ingest (Phase C3). The set-based detect-and-update from migrations 0050/0051, with the spec-compliant formula from #46.
+- **#44** Verify edge significance carries non-default mu after ingestion across every arena currently in `significance_context`. Audit `corroboration_strength` games > 0.
+
+### P2 — 4D operator switchover (every point is 4D)
+
+- **#89** Switch every `ST_Distance`/`ST_Centroid`/`ST_FrechetDistance`/`ST_HausdorffDistance` call on substrate physicality to `substrate.st_4d_*` / `substrate.st_s3_*` from migration 0049. AP-4. **Until this is done, every distance computation on physicality silently drops M.**
+
+### P3 — Cross-model alignment (Voronoi consensus becomes possible)
+
+- **#52** Migration: `embedding_alignment_anchor` reference table. Bounded cardinality, app-layer infrastructure.
+- **#51** `EmbeddingAlignmentPass` — Procrustes against anchor over vocab intersection. Reuses `Hartonomous.Core.Compute.Ingestion.ProcrustesAlign.F64` (already exists). After alignment, `substrate.st_4d_centroid` aggregate gives the consensus centroid for any token across models. Voronoi consensus cell computation falls out.
+
+### P4 — Lexicon population (the relational seed has to actually fire)
+
+The substrate currently has 134k lemmas with **zero** outbound `has_sense`/`has_gloss`/`has_example`/`aligned_to_synset` edges. Until those edges exist, all traversals from lemma seeds dead-end at depth 1.
+
+- **WordNet relational seed re-run** — verify the WordNet decomposer actually emits the structural edges (not just the entities). Substrate audit: `SELECT et.code, count(*) FROM substrate.edge JOIN substrate.edge_type et ON et.id = edge_type_id WHERE et.code IN ('has_sense','has_gloss','has_example','aligned_to_synset') GROUP BY et.code` — must return non-zero counts. (No new task; this is a re-run of an existing decomposer.)
+- **#95** Wiktionary end-to-end run + count verification (~10.5M wikt_sense / inflected_form / word_form rows expected).
+- **#96** Tatoeba end-to-end run + count verification (~10M tatoeba_sentence rows expected). Confirm `has_text`/`translation_link`/`recording_of` edges populate.
+
+### P5 — Per-role unit emission (per the A0 role-to-unit table) ✅ landed
+
+Phase A from the existing build-plan structure. Per-role passes that produce the substrate units the recomposer scatters into target tensors.
+
+- **#53** FfnNeuronPass ✅ · **#54** AttentionComponentPass ✅ · **#55** EmbeddingPositionPass ✅ · **#56** LogitHeadPass ✅ · **#57** LayerNormPass ✅ · **#58** RopeFreqPass ✅ · **#59** MoeRouteDirectionPass ✅ · **#60** MoeExpertNeuronPass ✅ · **#61** ConvFilterPass ✅ · **#62** VisionFeaturePass ✅ · **#63** ModalityBasisPass ✅ · **#64** ObjectQueryPass ✅ · **#65** ClassHeadPass ✅ · **#66** BboxHeadPass ✅ · **#67** DiffusionComponentPass ✅ · **#68** ConformerComponentPass ✅ · **#69** AudioCodecFilterPass ✅ · **#70** LoraComponentPass ✅ · **#71** GrammarExtractionPass (pending).
+- **#72** Migrations for per-role unit entity types + placement edges (0056–0060) ✅.
+- All 18 per-role passes wired into `SafetensorsDecomposer.BuildPassSet()`. The shared `PerRowContentPass.RunPerRowAsync` / `RunPerOuterIndexAsync` helper centralizes hashing, sparsity threshold, sequence placement, contour packing — adding a new role is one new pass class plus an entity_type/edge_type row.
+
+### P6 — Substrate query layer + distillation export ✅ landed (E2/E3 still pending)
+
+- **#77** ✅ `QueryFireflyForVocabAsync` on ISubstrateQuery — `embedding_firefly` entities for vocab V above significance T.
+- **#78** ✅ `QueryFfnNeuronsByHiddenDimAsync` — `ffn_neuron` by hidden dim H, top-K significance.
+- **#79** ✅ `QueryAttentionComponentsAsync` — `attention_component` by (head_dim, archetype).
+- **#80** ✅ `QuerySingularDirectionsForRoleAsync` — `svd_rank_component` for tensors of given role, ranked by σ via has_rank_component edge order.
+- **#84** ✅ Per-role scatter lives inside `SafetensorsRecomposer.AssembleTensorBytesAsync`: for ≥2-D tensors, walk `substrate.sequence` children, scatter each unit's contour at row=ordinal_position; fall back to SVD reconstruction when no per-role units exist. For 1-D, prefer tensor-attached contour, fall back to has_layer_norm_scale / has_rope_freqs unit-attached contour.
+- **#85** ✅ CLI `hartonomous export-model --arch-id N --output FILE [--source-id ...] [--min-significance MU] [--context CODE] [--limit N]`.
+- **#86** Trivial-WHERE-clause distillation case (the "round-trip" benchmark on MiniLM-L6-v2). Behavioral similarity gate, not bit-identical. (Pending — invocable now via CLI.)
+- **#87** Python verifier script for safetensors comparison (out-of-tree). (Pending.)
+- **#99** Cross-model materialization within architecture family (E2). (Pending — same CLI; multiple `--source-id` flags.)
+- **#100** Multi-architecture-class export (E3). (Pending — needs target-architecture template selection.)
+- **#101** ✅ Filtered-export distillation (E4) — the `WHERE source AND mu AND context` case is `RecomposeFilteredAsync` end-to-end through the CLI.
+
+### P7 — Validation
+
+- **#42** / **#97** Determinism CI test: ingest MiniLM twice, assert byte-identical entity hash sets. (Duplicate task; consolidate into one.)
+- **#98** Round-trip behavior test: ingest → export → ingest → assert convergence (entity hash overlap ≥ 95%, significance.games bumped on existing rows).
+- **#94** Demonstrate generative walk. Blocked on P4 (lexicon population) and P5 (per-role units — now landed).
+
+### P8 — Documentation truthfulness
+
+- **#102** ✅ `docs/specs/decomposers/analysis-passes.md` — per-role pass section + role-to-unit table added; pass count updated to reflect actual `BuildPassSet()`.
+- **#103** ✅ `docs/specs/decomposers/safetensors.md` § "Distillation (Recomposer)" — implementation-status preamble + CLI invocation form added.
+- **#104** ✅ `docs/specs/csharp/recomposers.md` § SafetensorsRecomposer — assembly precedence, distillation-query form, CLI surface documented.
+- **#105** ✅ This document — P5 / P6 marked landed, ✅ symbols on completed sub-tasks.
+
+### P9 — Cleanup
+
+- **#106** ✅ Inspect uncommitted modifications at session start.
+- **#40** Wiktionary + Tatoeba runs (duplicate of #95 + #96; consolidate or close).
+
+---
+
+## What this means
+
+The existing 51 pending tasks decompose into 9 phases that respect dependencies. **No new tasks are added.** P0 is mandatory before any P1+ work claims to be "demonstrated" — speed of broken data is meaningless (AP-3). P4 is mandatory before generative-walk demonstrations (AP-3). The rest can parallelize within phase.
+
+The corrected priority order is the inversion of "feature work first, hygiene later." Substrate hygiene is the load-bearing prerequisite for every demonstration of the invention.
+
+**Status snapshot (2026-04-26)**: P5 and P6 (per-role emission + substrate query + scatter + CLI) are landed; P8 doc truthfulness is landed. Outstanding live work: P4 lexicon end-to-end runs (#95/#96), P5 final pass `GrammarExtractionPass` (#71), P7 determinism + round-trip + generative walk validation, P6 cross-model and multi-architecture exports (#99/#100), and the smaller hygiene items (#90 codepoint cache subset, #91/#92 SQL/RBAR audits, #93 deprecated pt4d/ls4d removal).

@@ -35,7 +35,8 @@ public interface IIngestionBatch
     /// is a single point: <c>s3_position</c>, <c>hilbert_value</c>,
     /// <c>weight_distribution</c>, <c>embedding_firefly</c>,
     /// <c>codec_codevector_position</c>. The pipeline routes the four
-    /// coordinates into the <c>pt4d</c> column via <c>public.point4d(...)</c>.
+    /// coordinates into the <c>geom geometry(GeometryZM)</c> column via
+    /// <c>ST_MakePoint(x, y, z, m)</c> (post-migration 0048).
     /// </summary>
     void AddPhysicalityPoint4d(
         EntityHandle entity,
@@ -48,8 +49,8 @@ public interface IIngestionBatch
     /// <summary>
     /// Append a substrate-native 4D polyline physicality row. Used for every
     /// 4D trajectory physicality (currently <c>contour</c>). The pipeline
-    /// routes the flat (4n)-element array into the <c>ls4d</c> column via
-    /// <c>public.array_to_linestring4d(double precision[])</c>.
+    /// routes the vertices into the <c>geom geometry(GeometryZM)</c> column
+    /// as a LINESTRINGZM via PostGIS native constructors (post-migration 0048).
     /// </summary>
     /// <param name="vertices">Vertices in trajectory order. Must contain at
     /// least one vertex; each vertex is a 4-tuple (x1, x2, x3, x4).</param>

@@ -108,9 +108,14 @@ internal sealed partial class MoERoutingStatsPass : IModelAnalysisPass
                 }
             }
 
+            // AP-9: hash covers ROUTING-PROFILE CONTENT only (expert count +
+            // utilization vector). Architecture and layer are PLACEMENT
+            // metadata — they live on the has_moe_routing edge and
+            // entity_model_source linkage, never inside the identity hash.
+            // Same routing profile across different (model, layer) positions
+            // collapses to ONE moe_routing_profile entity with multiple
+            // incoming edges — cross-model corroboration on routing patterns.
             ICanonicalSignatureBuilder b = context.NewSignature("moer")
-                .WriteHash(context.Architecture.ContentHash)
-                .WriteInt32LE(layer.Value)
                 .WriteInt32LE(experts);
             for (int e = 0; e < experts; e++)
             {

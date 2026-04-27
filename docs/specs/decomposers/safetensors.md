@@ -389,6 +389,20 @@ All pre-computed at ingestion. All stored as edges.
 
 ## Distillation (Recomposer)
 
+**Implementation status**: ✅ The `SafetensorsRecomposer` is wired and exposed via the `hartonomous export-model` CLI. The substrate's per-role unit emission (Phase A passes — `FfnNeuronPass`, `AttentionComponentPass`, `EmbeddingPositionPass`, `LogitHeadPass`, `LayerNormPass`, `RopeFreqPass`, `MoeRouteDirectionPass`, `MoeExpertNeuronPass`, `ConvFilterPass`, `VisionFeaturePass`, `ModalityBasisPass`, `ObjectQueryPass`, `ClassHeadPass`, `BboxHeadPass`, `LoraComponentPass`, `DiffusionComponentPass`, `ConformerComponentPass`, `AudioCodecFilterPass`) populates the substrate units the recomposer's scatter path consumes. CLI form:
+
+```
+hartonomous export-model \
+  --arch-id <model_architecture entity id> \
+  --output round-trip.safetensors \
+  [--source-id <model_source_id> ...] \
+  [--min-significance <mu>] \
+  [--context <arena code>] \
+  [--limit <N>]
+```
+
+Filter options are the WHERE clause. Without filters the export is a trivial round-trip of one architecture. With `--source-id` repeated across multiple sources the export is a cross-model materialization. With `--min-significance` and `--context` the export is a domain-filtered distillation. Same scatter pipeline in every case.
+
 Model export is **distillation**. The substrate is the teacher. The export is a new student model.
 
 The `SafetensorsRecomposer` does NOT reconstruct the original model. It queries the substrate and builds a **new** safetensors package from the query results. `SELECT ... WHERE ...` against accumulated substrate knowledge, recomposed into a fresh model.

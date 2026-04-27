@@ -128,25 +128,39 @@ public sealed class NpgsqlTraversal : ITraversal
 
         Stopwatch sw = Stopwatch.StartNew();
 
-        // Open a fresh connection per traverse_astar call. Reusing a single
-        // connection across the (seed × target_type) cross-product triggered a
-        // backend SIGSEGV during repeated SPI invocations of the C-implemented
-        // traverse_astar — separate sessions sidestep the SPI state bug. The
-        // per-call connection cost is ~10–30ms via Npgsql's connection pool
-        // (already-authenticated connection reused), well within budget.
-        List<TraversalPath> allPaths = [];
-        int nodesVisited = 0;
+        // Issue every (seed × target_type) traverse_astar concurrently. The bulk-JOIN
+        // fix in pg_traversal.c (one SPI per popped node returning neighbor + edge_mu
+        // together) collapsed the per-traversal cost from ~80s to ~330ms; the
+        // remaining cross-product is small (typically 1 seed × 4 default targets =
+        // 4 calls) and parallelizes cleanly via the Npgsql connection pool. The
+        // earlier per-call fresh-connection workaround was for an SPI-state SIGSEGV
+        // that the bulk-JOIN refactor's reduced SPI churn also resolves.
+        Task<(List<TraversalPath> Paths, int Nodes)>[] tasks =
+            new Task<(List<TraversalPath>, int)>[query.SeedEntityIds.Count * targetTypeIds.Length];
+        int taskIdx = 0;
         foreach (long seedId in query.SeedEntityIds)
         {
             foreach (int targetTypeId in targetTypeIds)
             {
-                await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-                (List<TraversalPath> paths, int nodes) = await TraverseOneOnConnectionAsync(
-                    conn, seedId, targetTypeId, arenaId, query.MaxDepth,
-                    edgeTypeFilter, query.SignificanceThreshold, query.CostBudget, ct);
-                allPaths.AddRange(paths);
-                nodesVisited += nodes;
+                long sid = seedId;
+                int ttid = targetTypeId;
+                tasks[taskIdx++] = Task.Run(async () =>
+                {
+                    await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+                    return await TraverseOneOnConnectionAsync(
+                        conn, sid, ttid, arenaId, query.MaxDepth,
+                        edgeTypeFilter, query.SignificanceThreshold, query.CostBudget, ct);
+                }, ct);
             }
+        }
+
+        (List<TraversalPath> Paths, int Nodes)[] results = await Task.WhenAll(tasks);
+        List<TraversalPath> allPaths = [];
+        int nodesVisited = 0;
+        foreach ((List<TraversalPath> paths, int nodes) in results)
+        {
+            allPaths.AddRange(paths);
+            nodesVisited += nodes;
         }
 
         sw.Stop();

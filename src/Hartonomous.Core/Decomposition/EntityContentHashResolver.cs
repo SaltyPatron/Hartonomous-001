@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
@@ -40,6 +41,11 @@ public static class EntityContentHashResolver
         {
             hashes.Add(HashCodepoint(codepoint));
         }
+
+        if (RequiresBpeTokenHash(entityTypeCodes))
+        {
+            hashes.Add(ComputeBpeTokenHash(content));
+        }
     }
 
     private static bool RequiresStructuredTextHash(IReadOnlyList<string> entityTypeCodes)
@@ -66,6 +72,36 @@ public static class EntityContentHashResolver
         }
 
         return false;
+    }
+
+    private static bool RequiresBpeTokenHash(IReadOnlyList<string> entityTypeCodes)
+    {
+        for (int i = 0; i < entityTypeCodes.Count; i++)
+        {
+            if (entityTypeCodes[i] == "bpe_token")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Mirrors TokenizerMappingPass.ComputeBpeTokenHash exactly: the bpe_token
+    /// signature is BLAKE3(kind="bptk" + WriteBytes(utf8_token_bytes)) where
+    /// WriteBytes prepends an 8-byte little-endian length per
+    /// CanonicalSignatureBuilder. Inlined here so the resolver can match what
+    /// the decomposer wrote without a Hartonomous.Decomposers reference.
+    /// </summary>
+    private static byte[] ComputeBpeTokenHash(string content)
+    {
+        byte[] tokenBytes = Encoding.UTF8.GetBytes(content);
+        byte[] payload = new byte[4 + 8 + tokenBytes.Length];
+        Encoding.ASCII.GetBytes("bptk", payload.AsSpan(0, 4));
+        BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(4, 8), tokenBytes.Length);
+        tokenBytes.CopyTo(payload.AsSpan(12));
+        return Blake3.Hash(payload.AsSpan());
     }
 
     private static bool IsSingleRune(string content, out int codepoint)

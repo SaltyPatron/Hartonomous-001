@@ -169,14 +169,18 @@ This is returned as structured `AnnotatedText` (a companion type), not as the `s
 
 **Class**: `SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>`
 
+**Status**: ✅ Implemented — wired in `BaseRecomposer<SafetensorsFile>`, exposed via the `hartonomous export-model` CLI command (with optional `--source-id`, `--min-significance`, `--context`, `--limit` filter options for distillation). Per-role unit scatter consumes the substrate units emitted by Phase A passes — every Track-2 transformation tensor's row content is reconstructed losslessly when the substrate carries it.
+
 **Output type**: `SafetensorsFile` — a record wrapping `IReadOnlyDictionary<string, TensorData> Tensors`, `string ModelName`. `TensorData` contains `string Dtype`, `int[] Shape`, `byte[] Data`.
 
 **Authoritative spec for *AI model* weights (ingest and export)**: [docs/specs/decomposers/safetensors.md](../../decomposers/safetensors.md) — export is **distillation** (query the substrate, synthesize a **new** student model), not byte replay of a source checkpoint. Near-zero and below-threshold mass becomes zeros in the **student**; training artifacts do not reappear as a bit-identical rematerialization of the download.
 
-**Traversal strategy (implementation outline)**:
-1. Run a **substrate query** (significance, type, scope, target architecture) as in `safetensors.md` § *Distillation (Recomposer)*.
-2. Synthesize per-target-tensor `byte[]` and metadata (dtype, shape) from **query results and synthesis rules** — not necessarily by re-reading raw source bytes as the primary path.
-3. Assemble `SafetensorsFile` and stream the standard **safetensors** wire format (JSON header + data buffer; sharding as needed).
+**Assembly precedence in `AssembleTensorBytesAsync`**:
+1. **1-D tensors**: tensor-attached contour (`OneDTensorPass`) → walk `has_layer_norm_scale` → `has_rope_freqs` → unit-attached contour. Layer norms, RoPE freq tables, biases.
+2. **≥2-D tensors (per-role unit scatter)**: walk `substrate.sequence` children of the tensor. Each row-positioned unit (`ffn_neuron`, `attention_component`, `embedding_position`, `logit_projection`, `moe_*`, `object_query_slot`, `class_projection`, `bbox_projection`, `vision_feature_direction`, `modality_basis_vector`, `lora_component`, `conv_filter`, `diffusion_component`, `conformer_component`, `audio_codec_filter`) carries its row content as a contour physicality. Scatter at row=ordinal_position. Lossless on whatever rows the substrate has; uncovered rows stay zero (Substrate Law #11).
+3. **Fallback (≥2-D, no per-role units)**: walk `has_rank_component` edges and reconstruct via `Σ σ·u·vᵀ` from SvdPass-emitted singular components. Lossy by rank truncation; only used when no per-role units have been emitted for this tensor.
+
+**Distillation queries** (`RecomposeFilteredAsync`): take a `SubstrateQueryFilter` (model_source_ids, min significance mu, arena context code, limit) and route through `ISubstrateQuery.QueryTensorsForArchitectureAsync`. Same scatter pipeline; only the tensor-selection set differs. Per architecture.md "Distillation = WHERE clause" — distillation and export are the same operation parameterized by the query. The CLI exposes this via `--source-id`, `--min-significance`, `--context`, `--limit`.
 
 **Streaming variant**: `RecomposeToStreamAsync` writes valid safetensors bytes:
 1. Build JSON header (tensor names, dtypes, shapes, byte offsets).

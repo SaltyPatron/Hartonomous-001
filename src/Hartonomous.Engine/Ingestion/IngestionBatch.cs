@@ -45,13 +45,7 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
     {
-        _physicalities.Add(new PhysicalityEntry(
-            entity,
-            physicalityTypeCode,
-            PhysicalitySurface.PostGisGeom,
-            geomWkb,
-            null,
-            null));
+        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb));
     }
 
     public void AddPhysicalityPoint4d(
@@ -62,13 +56,14 @@ internal sealed class IngestionBatch : IIngestionBatch
         double x3,
         double x4)
     {
+        // 4D physicality stored as PostGIS POINTZM (X, Y, Z, M).
+        // The substrate's `substrate.st_4d_*` family treats M as a real
+        // spatial axis; PostGIS's `gist_geometry_ops_nd` indexes all four
+        // coordinates in the GIDX bounding box.
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
-            PhysicalitySurface.Point4D,
-            null,
-            [x1, x2, x3, x4],
-            null));
+            PostGisWkbBuilder.PointZM(x1, x2, x3, x4)));
     }
 
     public void AddPhysicalityLineString4d(
@@ -79,23 +74,12 @@ internal sealed class IngestionBatch : IIngestionBatch
         if (vertices.Length < 1)
         {
             throw new ArgumentException(
-                "linestring4d requires at least one vertex.", nameof(vertices));
-        }
-        double[] flat = new double[vertices.Length * 4];
-        for (int i = 0; i < vertices.Length; i++)
-        {
-            flat[i * 4 + 0] = vertices[i].X1;
-            flat[i * 4 + 1] = vertices[i].X2;
-            flat[i * 4 + 2] = vertices[i].X3;
-            flat[i * 4 + 3] = vertices[i].X4;
+                "LINESTRINGZM requires at least one vertex.", nameof(vertices));
         }
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
-            PhysicalitySurface.LineString4D,
-            null,
-            null,
-            flat));
+            PostGisWkbBuilder.LineStringZM(vertices)));
     }
 
     public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1)

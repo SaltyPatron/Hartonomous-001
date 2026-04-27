@@ -29,11 +29,20 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
     private readonly ILogger<SubstrateInferenceEngine> _logger;
 
     /// <summary>
-    /// Entity types that are valid seed targets for text queries.
-    /// Queries are resolved against lemmas, word forms, and synsets.
+    /// Entity types that are valid seed targets for text queries. The substrate
+    /// can match a query token against either:
+    ///   - lexical entities (lemma, word_form, synset, wikt_sense) — when the
+    ///     seed lexicon (WordNet, Wiktionary, UD) has been ingested
+    ///   - bpe_token entities — when one or more model tokenizers have been
+    ///     ingested via TokenizerMappingPass; the token's bpe_token entity
+    ///     gives a foothold into the model's vocab graph (covers_lemma,
+    ///     in_vocabulary, has_token_in_tokenizer edges) even before the
+    ///     lexicon side is populated.
+    /// EntityContentHashResolver computes the hash for each entity type's
+    /// canonical content scheme.
     /// </summary>
     private static readonly string[] SeedEntityTypes =
-        ["lemma", "word_form", "synset", "wikt_sense"];
+        ["lemma", "word_form", "synset", "wikt_sense", "bpe_token"];
 
     public SubstrateInferenceEngine(
         ITraversal traversal,

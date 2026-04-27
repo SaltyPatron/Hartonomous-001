@@ -168,14 +168,11 @@ public sealed class IngestionBatchTests
         Assert.Single(batch.Physicalities);
         Assert.Equal(h, batch.Physicalities[0].Entity);
         Assert.Equal("waveform", batch.Physicalities[0].PhysicalityTypeCode);
-        Assert.Equal(PhysicalitySurface.PostGisGeom, batch.Physicalities[0].Surface);
-        Assert.Equal(wkb, batch.Physicalities[0].PostGisWkb);
-        Assert.Null(batch.Physicalities[0].Point4DCoords);
-        Assert.Null(batch.Physicalities[0].LineString4DCoords);
+        Assert.Equal(wkb, batch.Physicalities[0].Wkb);
     }
 
     [Fact]
-    public void AddPhysicalityPoint4d_StoredCorrectly()
+    public void AddPhysicalityPoint4d_BuildsValidPostGisPointZmWkb()
     {
         IngestionBatch batch = new();
         EntityHandle h = batch.AddEntity(Hash(0), "codepoint");
@@ -185,14 +182,17 @@ public sealed class IngestionBatchTests
         Assert.Single(batch.Physicalities);
         Assert.Equal(h, batch.Physicalities[0].Entity);
         Assert.Equal("s3_position", batch.Physicalities[0].PhysicalityTypeCode);
-        Assert.Equal(PhysicalitySurface.Point4D, batch.Physicalities[0].Surface);
-        Assert.Null(batch.Physicalities[0].PostGisWkb);
-        Assert.Equal(new[] { 0.1, 0.2, 0.3, 0.4 }, batch.Physicalities[0].Point4DCoords);
-        Assert.Null(batch.Physicalities[0].LineString4DCoords);
+
+        // POINTZM WKB: byte order (1) + type (4) + 4 doubles (32) = 37 bytes.
+        byte[] wkb = batch.Physicalities[0].Wkb;
+        Assert.Equal(37, wkb.Length);
+        Assert.Equal(0x01, wkb[0]); // little-endian
+        Assert.Equal(0xB9, wkb[1]); // type 3001 = 0x0BB9 (POINTZM)
+        Assert.Equal(0x0B, wkb[2]);
     }
 
     [Fact]
-    public void AddPhysicalityLineString4d_StoredCorrectly()
+    public void AddPhysicalityLineString4d_BuildsValidPostGisLineStringZmWkb()
     {
         IngestionBatch batch = new();
         EntityHandle h = batch.AddEntity(Hash(0), "lemma");
@@ -208,12 +208,14 @@ public sealed class IngestionBatchTests
         Assert.Single(batch.Physicalities);
         Assert.Equal(h, batch.Physicalities[0].Entity);
         Assert.Equal("contour", batch.Physicalities[0].PhysicalityTypeCode);
-        Assert.Equal(PhysicalitySurface.LineString4D, batch.Physicalities[0].Surface);
-        Assert.Null(batch.Physicalities[0].PostGisWkb);
-        Assert.Null(batch.Physicalities[0].Point4DCoords);
-        Assert.Equal(
-            new[] { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8 },
-            batch.Physicalities[0].LineString4DCoords);
+
+        // LINESTRINGZM WKB: byte order (1) + type (4) + npoints (4) + 2 * 32 = 73 bytes.
+        byte[] wkb = batch.Physicalities[0].Wkb;
+        Assert.Equal(73, wkb.Length);
+        Assert.Equal(0x01, wkb[0]); // little-endian
+        Assert.Equal(0xBA, wkb[1]); // type 3002 = 0x0BBA (LINESTRINGZM)
+        Assert.Equal(0x0B, wkb[2]);
+        Assert.Equal(0x02, wkb[5]); // npoints=2, low byte
     }
 
     [Fact]

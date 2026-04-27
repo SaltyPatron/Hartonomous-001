@@ -167,10 +167,21 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
     /// <summary>
     /// Assembles the tensor's byte payload from substrate state. Default
     /// outcome for a substrate with no per-position content is a zero-filled
-    /// buffer of the correct size — Law #11 sparsity. As Track-2 passes
-    /// populate per-row / per-rank / per-head substrate entities with their
-    /// content stored as physicality, the assembly walks those edges and
-    /// scatters their bytes into the appropriate buffer positions.
+    /// buffer of the correct size — Law #11 sparsity. The assembly precedence:
+    ///   1. 1-D tensors: tensor-attached contour (OneDTensorPass) →
+    ///      has_layer_norm_scale → has_rope_freqs (unit-attached contour).
+    ///   2. ≥2-D tensors: per-role unit scatter via substrate.sequence
+    ///      children — each row-positioned per-role entity (ffn_neuron,
+    ///      attention_component, embedding_position, logit_projection,
+    ///      moe_*, object_query_slot, class_projection, bbox_projection,
+    ///      vision_feature_direction, modality_basis_vector, lora_component,
+    ///      conv_filter, diffusion_component, conformer_component,
+    ///      audio_codec_filter) carries its row content as a contour physicality,
+    ///      scattered into the buffer at row=ordinal_position. The per-role
+    ///      path is lossless on the rows the substrate actually has.
+    ///   3. Fallback: walk has_rank_component edges and reconstruct via
+    ///      Σ σ·uvᵀ. Lossy by rank truncation; used only when no per-role
+    ///      units have been emitted for this tensor.
     /// </summary>
     private async Task<byte[]> AssembleTensorBytesAsync(
         long tensorEntityId, string dtype, int[] shape, CancellationToken ct)
@@ -200,14 +211,19 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             return buffer;
         }
 
-        // 1-D tensors: OneDTensorPass stores their values as a contour
-        // physicality directly on the tensor entity. Read coords[0..length]
-        // and pack to wire bytes. Layer norms, biases, scales — all 1-D.
+        // 1-D path: tensor-attached contour (OneDTensorPass) first, then
+        // walk to a per-role unit (LayerNormPass / RopeFreqPass) via
+        // has_layer_norm_scale or has_rope_freqs and read its contour.
         if (shape.Length == 1 && shape[0] > 0)
         {
             int length = shape[0];
             double[]? values = await _physicalityReader.GetLineString4dAsync(
                 tensorEntityId, "contour", ct);
+            if (values is null || values.Length < length)
+            {
+                values = await TryReadUnitContourAsync(tensorEntityId, "has_layer_norm_scale", length, ct)
+                       ?? await TryReadUnitContourAsync(tensorEntityId, "has_rope_freqs", length, ct);
+            }
             if (values is null || values.Length < length)
             {
                 return buffer;
@@ -218,34 +234,63 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             return buffer;
         }
 
-        // 2D tensors: walk has_rank_component edges for SVD reconstruction.
-        if (shape.Length != 2 || shape[0] <= 0 || shape[1] <= 0)
+        // ≥2-D: per-role unit scatter via sequence children. cols = product
+        // of all dims after the first, so 4-D conv kernels (out, in, kh, kw)
+        // and other rank-N tensors flow through the same scatter path —
+        // outer index = sequence position; trailing dims = packed row content.
+        if (shape.Length < 2 || shape[0] <= 0)
         {
             return buffer;
         }
-        int m = shape[0];
-        int n = shape[1];
+        int rows = shape[0];
+        long cols64 = 1;
+        for (int d = 1; d < shape.Length; d++) { cols64 *= shape[d]; }
+        if (cols64 <= 0 || cols64 > int.MaxValue) { return buffer; }
+        int cols = (int)cols64;
 
-        // Walk has_rank_component edges to find every per-rank substrate
-        // entity for this tensor. Each carries a contour linestring4d packing
-        // (U_col [length m] ⊕ V_row [length n]) with σ stored in the entity's
-        // canonical content hash (recoverable via spectrum, but for
-        // reconstruction we need σ embedded with U/V — which the contour
-        // encoding doesn't carry explicitly). Use the rank index recovered
-        // from the entity's position in the has_rank_component edge order
-        // (SvdPass emits in descending-σ order, so edge[i] = rank i).
+        double[] accum = new double[(long)rows * cols];
+        bool anyScattered = false;
+
+        IReadOnlyList<(long ChildEntityId, int Position)> children =
+            await EntityReader.GetSequenceChildrenAsync(tensorEntityId, ct);
+        if (children.Count > 0)
+        {
+            foreach ((long childId, int pos) in children)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (pos < 0 || pos >= rows) { continue; }
+                double[]? coords = await _physicalityReader.GetLineString4dAsync(
+                    childId, "contour", ct);
+                if (coords is null) { continue; }
+                int take = Math.Min(cols, coords.Length);
+                long rowBase = (long)pos * cols;
+                for (int c = 0; c < take; c++)
+                {
+                    accum[rowBase + c] = coords[c];
+                }
+                anyScattered = true;
+            }
+        }
+
+        if (anyScattered)
+        {
+            PackToWire(accum, dtype, buffer);
+            return buffer;
+        }
+
+        // Fallback: SVD reconstruction (only meaningful for true 2-D tensors).
+        if (shape.Length != 2 || shape[1] <= 0)
+        {
+            return buffer;
+        }
+        int m = rows;
+        int n = cols;
         IReadOnlyList<long> rankComponentIds = await EntityReader.GetOutboundEdgeTargetsAsync(
             tensorEntityId, "has_rank_component", ct);
         if (rankComponentIds.Count == 0)
         {
             return buffer;
         }
-
-        // Accumulator: W ≈ Σ_i σ_i · u_i · v_iᵀ as f64 row-major [m, n].
-        // Each rank component's contour physicality packs σ at index 0,
-        // U_col at indices 1..m+1, V_row at indices m+1..m+n+1. SvdPass
-        // writes them in descending-σ order so edge[i] is rank i.
-        double[] accum = new double[(long)m * n];
         for (int rank = 0; rank < rankComponentIds.Count; rank++)
         {
             ct.ThrowIfCancellationRequested();
@@ -266,14 +311,34 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                 }
             }
         }
-
-        // Pack the f64 accumulator into the requested wire dtype. Most common:
-        // F32 (cast double→float), BF16 (top 16 bits of float), F16
-        // (Half.FromSingle then ReadHalf bytes). Matches the safetensors
-        // wire format dtypes recognized by SafetensorsReader's decode side.
         PackToWire(accum, dtype, buffer);
-
         return buffer;
+    }
+
+    /// <summary>
+    /// Walks <paramref name="edgeTypeCode"/> from a tensor entity to its
+    /// per-role unit, then reads the unit's contour physicality. Returns
+    /// null if the edge or the unit's contour is absent (or shorter than
+    /// the requested element count). Used for 1-D tensor reconstruction
+    /// when the tensor itself carries no contour but a unit does (the
+    /// LayerNormPass / RopeFreqPass cases).
+    /// </summary>
+    private async Task<double[]?> TryReadUnitContourAsync(
+        long tensorEntityId, string edgeTypeCode, int minLength, CancellationToken ct)
+    {
+        if (_physicalityReader is null) { return null; }
+        IReadOnlyList<long> targets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            tensorEntityId, edgeTypeCode, ct);
+        foreach (long unitId in targets)
+        {
+            double[]? contour = await _physicalityReader.GetLineString4dAsync(
+                unitId, "contour", ct);
+            if (contour is not null && contour.Length >= minLength)
+            {
+                return contour;
+            }
+        }
+        return null;
     }
 
     /// <summary>

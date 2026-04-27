@@ -70,6 +70,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await using NpgsqlTransaction tx = await conn.BeginTransactionAsync(ct);
 
             await UpsertEntitiesAsync(conn, b, ct);
+            await DetectCorroborationsAsync(conn, b, ct);
             await CreateEdgesAsync(conn, b, ct);
             await PopulateJunctionsAsync(conn, b, ct);
             await CreatePhysicalitiesAsync(conn, b, ct);
@@ -167,6 +168,36 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     public async ValueTask DisposeAsync()
     {
         await _dataSource.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Fires Glicko-2 corroboration updates for entities in this batch that
+    /// some OTHER model_source has previously contributed. Delegates entirely
+    /// to substrate.detect_and_record_corroborations (migration 0050) — no
+    /// inline SQL, set-based join against staging_entity, one round-trip per
+    /// distinct contributing model_source_id.
+    /// </summary>
+    private static async Task DetectCorroborationsAsync(
+        NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
+    {
+        if (batch.EntityModelSources.Count == 0)
+        {
+            return;
+        }
+
+        HashSet<long> distinctModelSources = new();
+        for (int i = 0; i < batch.EntityModelSources.Count; i++)
+        {
+            distinctModelSources.Add(batch.EntityModelSources[i].ModelSourceId);
+        }
+
+        foreach (long modelSourceId in distinctModelSources)
+        {
+            await using NpgsqlCommand cmd = new(
+                "SELECT substrate.detect_and_record_corroborations($1)", conn);
+            cmd.Parameters.AddWithValue(modelSourceId);
+            await cmd.ExecuteScalarAsync(ct);
+        }
     }
 
     private async Task UpsertEntitiesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
@@ -377,6 +408,18 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         {
             await memberInsert.ExecuteNonQueryAsync(ct);
         }
+
+        // Prime edge significance from provenance trust prior across every
+        // arena currently in substrate.significance_context. Delegated to
+        // substrate.prime_edge_significance_for_staging (migration 0052) so
+        // C# does not construct SQL — per AP-2 in .claude/rules/45-anti-patterns.md.
+        // Open-vocabulary: new arenas added later get backfilled into existing
+        // edges via substrate.backfill_edge_significance_for_arena(code).
+        await using (NpgsqlCommand primeSig = new(
+            "SELECT substrate.prime_edge_significance_for_staging()", conn))
+        {
+            await primeSig.ExecuteNonQueryAsync(ct);
+        }
     }
 
     private static async Task PopulateJunctionsAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
@@ -447,231 +490,52 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             return;
         }
 
-        // Resolve the type id for every entry once, then partition by coordinate
-        // surface so each surface gets its own set-based INSERT against the
-        // appropriate column on substrate.physicality. Per-partition CHECKs
-        // (migrations 0036, 0037) anchor which column each physicality_type
-        // partition allows; routing here to the wrong column would trip those.
-        List<(long EntityId, int TypeId, byte[] Wkb, byte[] Hash)> postGis = [];
-        List<(long EntityId, int TypeId, double[] Coords, byte[] Hash)> point4d = [];
-        List<(long EntityId, int TypeId, double[] Coords, byte[] Hash)> lineString4d = [];
-
-        for (int i = 0; i < batch.Physicalities.Count; i++)
+        // Single coordinate surface: every PhysicalityEntry carries WKB bytes
+        // for substrate.physicality.geom. PostGIS's ST_GeomFromWKB accepts
+        // POINT/POINTZ/POINTZM/LINESTRING/LINESTRINGZ/LINESTRINGZM uniformly;
+        // per-partition CHECKs (migration 0048) reject geometries whose
+        // dimensionality doesn't match the partition's declared type.
+        if (batch.Physicalities.Count == 0)
         {
-            PhysicalityEntry phys = batch.Physicalities[i];
-            long entityId = batch.ResolveHandle(phys.Entity);
-            int typeId = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
-
-            switch (phys.Surface)
-            {
-                case PhysicalitySurface.PostGisGeom:
-                    if (phys.PostGisWkb is null)
-                    {
-                        throw new InvalidOperationException(
-                            $"PhysicalityEntry has Surface=PostGisGeom but PostGisWkb is null (type={phys.PhysicalityTypeCode}).");
-                    }
-                    postGis.Add((
-                        entityId,
-                        typeId,
-                        phys.PostGisWkb,
-                        Hartonomous.Core.Compute.Common.Blake3.Hash(phys.PostGisWkb)));
-                    break;
-
-                case PhysicalitySurface.Point4D:
-                    if (phys.Point4DCoords is null || phys.Point4DCoords.Length != 4)
-                    {
-                        throw new InvalidOperationException(
-                            $"PhysicalityEntry has Surface=Point4D but Point4DCoords is null or not length 4 (type={phys.PhysicalityTypeCode}).");
-                    }
-                    point4d.Add((
-                        entityId,
-                        typeId,
-                        phys.Point4DCoords,
-                        HashFloat8Array(phys.Point4DCoords)));
-                    break;
-
-                case PhysicalitySurface.LineString4D:
-                    if (phys.LineString4DCoords is null
-                        || phys.LineString4DCoords.Length < 4
-                        || (phys.LineString4DCoords.Length % 4) != 0)
-                    {
-                        throw new InvalidOperationException(
-                            $"PhysicalityEntry has Surface=LineString4D but LineString4DCoords is null or length is not a positive multiple of 4 (type={phys.PhysicalityTypeCode}).");
-                    }
-                    lineString4d.Add((
-                        entityId,
-                        typeId,
-                        phys.LineString4DCoords,
-                        HashFloat8Array(phys.LineString4DCoords)));
-                    break;
-
-                default:
-                    throw new InvalidOperationException(
-                        $"Unknown PhysicalitySurface value {(int)phys.Surface} (type={phys.PhysicalityTypeCode}).");
-            }
+            return;
         }
 
-        // Binary COPY into staging for each surface — same rationale as
-        // entities/edges/sequences. The unnest($N::bytea[]) pattern was the
-        // segfault path on the LIST-partitioned physicality table; binary
-        // COPY streams row-by-row without flattening into one giant array
-        // parameter and avoids the partitioned-array decode that crashes pg.
-
-        if (postGis.Count > 0)
+        await using (NpgsqlCommand createTemp = new(
+            "CREATE TEMP TABLE staging_physicality (" +
+            "  entity_id BIGINT NOT NULL, " +
+            "  physicality_type_id INT NOT NULL, " +
+            "  wkb BYTEA NOT NULL, " +
+            "  content_hash BYTEA NOT NULL" +
+            ") ON COMMIT DROP", conn))
         {
-            await using (NpgsqlCommand createTemp = new(
-                "CREATE TEMP TABLE staging_physicality_postgis (" +
-                "  entity_id BIGINT NOT NULL, " +
-                "  physicality_type_id INT NOT NULL, " +
-                "  wkb BYTEA NOT NULL, " +
-                "  content_hash BYTEA NOT NULL" +
-                ") ON COMMIT DROP", conn))
-            {
-                await createTemp.ExecuteNonQueryAsync(ct);
-            }
-
-            await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-                "COPY staging_physicality_postgis (entity_id, physicality_type_id, wkb, content_hash) FROM STDIN (FORMAT binary)", ct))
-            {
-                foreach ((long entityId, int typeId, byte[] wkb, byte[] hash) in postGis)
-                {
-                    await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(entityId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                    await writer.WriteAsync(typeId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(wkb, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                    await writer.WriteAsync(hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                }
-                await writer.CompleteAsync(ct);
-            }
-
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.physicality (entity_id, physicality_type_id, geom, content_hash) " +
-                "SELECT entity_id, physicality_type_id, ST_GeomFromWKB(wkb, 4326), content_hash " +
-                "FROM staging_physicality_postgis " +
-                "ON CONFLICT (entity_id, physicality_type_id, content_hash) DO NOTHING", conn);
-            await cmd.ExecuteNonQueryAsync(ct);
+            await createTemp.ExecuteNonQueryAsync(ct);
         }
 
-        if (point4d.Count > 0)
+        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
+            "COPY staging_physicality (entity_id, physicality_type_id, wkb, content_hash) FROM STDIN (FORMAT binary)", ct))
         {
-            await using (NpgsqlCommand createTemp = new(
-                "CREATE TEMP TABLE staging_physicality_point4d (" +
-                "  entity_id BIGINT NOT NULL, " +
-                "  physicality_type_id INT NOT NULL, " +
-                "  x FLOAT8 NOT NULL, y FLOAT8 NOT NULL, z FLOAT8 NOT NULL, m FLOAT8 NOT NULL, " +
-                "  content_hash BYTEA NOT NULL" +
-                ") ON COMMIT DROP", conn))
+            for (int i = 0; i < batch.Physicalities.Count; i++)
             {
-                await createTemp.ExecuteNonQueryAsync(ct);
+                PhysicalityEntry phys = batch.Physicalities[i];
+                long entityId = batch.ResolveHandle(phys.Entity);
+                int typeId = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
+                byte[] hash = Hartonomous.Core.Compute.Common.Blake3.Hash(phys.Wkb);
+
+                await writer.StartRowAsync(ct);
+                await writer.WriteAsync(entityId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
+                await writer.WriteAsync(typeId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(phys.Wkb, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
+                await writer.WriteAsync(hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
             }
-
-            await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-                "COPY staging_physicality_point4d (entity_id, physicality_type_id, x, y, z, m, content_hash) FROM STDIN (FORMAT binary)", ct))
-            {
-                foreach ((long entityId, int typeId, double[] coords, byte[] hash) in point4d)
-                {
-                    await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(entityId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                    await writer.WriteAsync(typeId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(coords[0], NpgsqlTypes.NpgsqlDbType.Double, ct);
-                    await writer.WriteAsync(coords[1], NpgsqlTypes.NpgsqlDbType.Double, ct);
-                    await writer.WriteAsync(coords[2], NpgsqlTypes.NpgsqlDbType.Double, ct);
-                    await writer.WriteAsync(coords[3], NpgsqlTypes.NpgsqlDbType.Double, ct);
-                    await writer.WriteAsync(hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                }
-                await writer.CompleteAsync(ct);
-            }
-
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.physicality (entity_id, physicality_type_id, pt4d, content_hash) " +
-                "SELECT entity_id, physicality_type_id, public.point4d(x, y, z, m), content_hash " +
-                "FROM staging_physicality_point4d " +
-                "ON CONFLICT (entity_id, physicality_type_id, content_hash) DO NOTHING", conn);
-            await cmd.ExecuteNonQueryAsync(ct);
+            await writer.CompleteAsync(ct);
         }
 
-        if (lineString4d.Count > 0)
-        {
-            // Self-describing wire-format bytea per row — same decode path as
-            // before, just streamed via binary COPY instead of a parameter array.
-            await using (NpgsqlCommand createTemp = new(
-                "CREATE TEMP TABLE staging_physicality_ls4d (" +
-                "  entity_id BIGINT NOT NULL, " +
-                "  physicality_type_id INT NOT NULL, " +
-                "  payload BYTEA NOT NULL, " +
-                "  content_hash BYTEA NOT NULL" +
-                ") ON COMMIT DROP", conn))
-            {
-                await createTemp.ExecuteNonQueryAsync(ct);
-            }
-
-            await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-                "COPY staging_physicality_ls4d (entity_id, physicality_type_id, payload, content_hash) FROM STDIN (FORMAT binary)", ct))
-            {
-                foreach ((long entityId, int typeId, double[] coords, byte[] hash) in lineString4d)
-                {
-                    byte[] payload = EncodeLineString4DWireFormat(coords);
-                    await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(entityId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                    await writer.WriteAsync(typeId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(payload, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                    await writer.WriteAsync(hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                }
-                await writer.CompleteAsync(ct);
-            }
-
-            await using NpgsqlCommand cmd = new(
-                "INSERT INTO substrate.physicality (entity_id, physicality_type_id, ls4d, content_hash) " +
-                "SELECT entity_id, physicality_type_id, public.bytea_to_linestring4d(payload), content_hash " +
-                "FROM staging_physicality_ls4d " +
-                "ON CONFLICT (entity_id, physicality_type_id, content_hash) DO NOTHING", conn);
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
-    }
-
-    /// <summary>
-    /// Encode a flat <c>[x1,y1,z1,m1, x2,y2,z2,m2, ...]</c> coordinate buffer
-    /// (length must be a positive multiple of 4) into the linestring4d wire
-    /// format consumed by <c>public.bytea_to_linestring4d</c>: an int32 npoints
-    /// header followed by <c>4 * npoints</c> float8 values, all in network
-    /// (big-endian) byte order. Matches <c>pg_linestring4d_recv</c> byte for
-    /// byte so the same decoder path is exercised by COPY BINARY round-trips.
-    /// </summary>
-    private static byte[] EncodeLineString4DWireFormat(double[] coords)
-    {
-        if (coords.Length == 0 || (coords.Length % 4) != 0)
-        {
-            throw new ArgumentException(
-                $"linestring4d coordinate buffer length {coords.Length} must be a positive multiple of 4.",
-                nameof(coords));
-        }
-
-        int npoints = coords.Length / 4;
-        byte[] payload = new byte[4 + (coords.Length * 8)];
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(0, 4), npoints);
-        for (int i = 0; i < coords.Length; i++)
-        {
-            System.Buffers.Binary.BinaryPrimitives.WriteDoubleBigEndian(
-                payload.AsSpan(4 + (i * 8), 8), coords[i]);
-        }
-        return payload;
-    }
-
-    /// <summary>
-    /// Hash a flat float8 sequence as 8 bytes per element, little-endian, in
-    /// declaration order. Used as the content hash for both pt4d and ls4d
-    /// physicality rows so the (entity_id, physicality_type_id, content_hash)
-    /// uniqueness constraint dedupes within and across batches.
-    /// </summary>
-    private static byte[] HashFloat8Array(double[] coords)
-    {
-        byte[] bytes = new byte[coords.Length * 8];
-        for (int i = 0; i < coords.Length; i++)
-        {
-            System.Buffers.Binary.BinaryPrimitives.WriteDoubleLittleEndian(
-                bytes.AsSpan(i * 8), coords[i]);
-        }
-        return Hartonomous.Core.Compute.Common.Blake3.Hash(bytes);
+        await using NpgsqlCommand insertCmd = new(
+            "INSERT INTO substrate.physicality (entity_id, physicality_type_id, geom, content_hash) " +
+            "SELECT entity_id, physicality_type_id, ST_GeomFromWKB(wkb), content_hash " +
+            "FROM staging_physicality " +
+            "ON CONFLICT (entity_id, physicality_type_id, content_hash) DO NOTHING", conn);
+        await insertCmd.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task CreateSequencesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
@@ -812,8 +676,8 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         // memory and a crash inside one chunk only loses that chunk's work.
         //
         // Endpoints are resolved per-edge through substrate.entity_s3_point,
-        // which reads pt4d for s3_position and falls back to centroid_s3 over
-        // contour ls4d vertices.
+        // which reads the GeometryZM POINTZM for s3_position and falls back
+        // to centroid_s3 over contour LINESTRINGZM vertices (post-0048).
         //
         // Parallel workers disabled per-session: PostGIS geometry constructors
         // invoked from parallel worker backends have crashed the server

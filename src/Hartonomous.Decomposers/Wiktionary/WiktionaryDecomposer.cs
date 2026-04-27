@@ -190,6 +190,20 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
 
         Log.StreamComplete(Logger, _entriesProcessed, _entityCount, _edgeCount);
         Log.JunctionsWritten(Logger, (int)totalPosWritten, (int)totalLangWritten, (int)totalMorphWritten);
+
+        if (_entriesProcessed == 0)
+        {
+            // Fail loud: a clean exit with 0 entries hides whatever broke
+            // (wrong path, parser regression, every entry rejected by an
+            // accidental LanguageFilter). The substrate would be left without
+            // wikt_sense / inflected_form / has_etymology / translation_of
+            // edges, then downstream passes would silently key off empty
+            // evidence. Refuse to declare success.
+            throw new InvalidOperationException(
+                $"Wiktionary stream yielded zero entries from {_jsonlPath}. "
+                + "Verify the JSONL exists, is non-empty, parses as wiktextract format, "
+                + "and that no LanguageFilter is rejecting every record.");
+        }
     }
 
     /// <summary>

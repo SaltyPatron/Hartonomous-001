@@ -404,7 +404,7 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         int             num_results, results_cap;
         SPIPlanPtr      nbr_plan;
         SPIPlanPtr      sig_plan;
-        Oid             argtypes_nbr[2];
+        Oid             argtypes_nbr[3];
         Oid             argtypes_sig[2];
 
         funcctx = SRF_FIRSTCALL_INIT();
@@ -486,39 +486,43 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
 
         SPI_connect();
 
-        /* Neighbor query: typed-edge filter per inference.md Step 1.1. $2 is the edge-type
-         * filter (NULL = no filter). The entity_type_id of the neighbor is required for the
-         * target-type match downstream. */
+        /* Neighbor + edge-significance bulk JOIN. Single SPI per popped node returns
+         * (entity_id, edge_id, entity_type_id, edge_mu) for every neighbor at once.
+         * Replaces the prior pattern of N inner SPI lookups per popped node — the per-neighbor
+         * significance fetch was the dominant cost (sub-millisecond × thousands of edges = tens
+         * of seconds wall-clock per traversal). LEFT JOIN preserves neighbors with no
+         * significance row in this arena (default mu = 1500.0).
+         * $1 = source entity, $2 = edge_type_filter (NULL = any), $3 = arena context_type_id. */
         argtypes_nbr[0] = INT8OID;
         argtypes_nbr[1] = INT4OID;
+        argtypes_nbr[2] = INT4OID;
         nbr_plan = SPI_prepare(
-            "SELECT em2.entity_id, em1.edge_id, ent.entity_type_id "
+            "SELECT em2.entity_id, em1.edge_id, ent.entity_type_id, "
+            "       COALESCE(s.mu, 1500.0) AS edge_mu "
             "FROM substrate.edge_member em1 "
             "JOIN substrate.edge e ON e.id = em1.edge_id "
             "JOIN substrate.edge_member em2 ON em2.edge_id = em1.edge_id "
             "  AND em2.entity_id != $1 "
             "JOIN substrate.entity ent ON ent.id = em2.entity_id "
+            "LEFT JOIN substrate.significance s ON s.edge_id = em1.edge_id "
+            "  AND s.context_type_id = $3 "
             "WHERE em1.entity_id = $1 "
             "  AND ($2::int IS NULL OR e.edge_type_id = $2)",
-            2, argtypes_nbr
+            3, argtypes_nbr
         );
 
-        argtypes_sig[0] = INT8OID;
-        argtypes_sig[1] = INT4OID;
-        sig_plan = SPI_prepare(
-            "SELECT COALESCE(s.mu, 1500.0) AS mu "
-            "FROM substrate.significance s "
-            "WHERE s.edge_id = $1 AND s.context_type_id = $2",
-            2, argtypes_sig
-        );
+        /* sig_plan retained as a no-op stub for source compatibility; its SPI_prepare
+         * has been removed because the JOIN above carries the significance directly. */
+        sig_plan = NULL;
+        (void)argtypes_sig;
 
         while (heap.count > 0 && num_results < max_results_arg)
         {
             AstarNode cur = heap_pop(&heap);
             CostEntry *ce;
             bool found;
-            Datum args[2];
-            char nulls_arr[2];
+            Datum args[3];
+            char nulls_arr[3];
             int ret, row;
 
             ce = hash_search(best_costs, &cur.entity_id, HASH_FIND, &found);
@@ -532,6 +536,8 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             nulls_arr[0] = ' ';
             args[1] = Int32GetDatum(edge_type_filter);
             nulls_arr[1] = edge_type_filter_is_null ? 'n' : ' ';
+            args[2] = Int32GetDatum(arena_id);
+            nulls_arr[2] = ' ';
 
             ret = SPI_execute_plan(nbr_plan, args, nulls_arr, true, 0);
             if (ret != SPI_OK_SELECT)
@@ -563,33 +569,10 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                     if (isnull) continue;
                     nbr_type_id = DatumGetInt32(SPI_getbinval(tuple, spi_tupdesc, 3, &isnull));
                     if (isnull) continue;
-
-                    /* Get significance for this edge in the arena.
-                     * SPI_execute_plan here mutates SPI_tuptable — read value, then free
-                     * immediately so the BFS/A* outer loop doesn't accumulate sig-query
-                     * tuptables across thousands of neighbor hops. */
-                    {
-                        Datum sig_args[2];
-                        char sig_nulls[2] = {' ', ' '};
-                        int sig_ret;
-
-                        sig_args[0] = Int64GetDatum(nbr_edge_id);
-                        sig_args[1] = Int32GetDatum(arena_id);
-                        sig_ret = SPI_execute_plan(sig_plan, sig_args, sig_nulls, true, 1);
-
-                        if (sig_ret == SPI_OK_SELECT && SPI_processed > 0)
-                        {
-                            edge_mu = DatumGetFloat8(
-                                SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull));
-                            if (isnull) edge_mu = 1500.0;
-                        }
-                        else
-                        {
-                            edge_mu = 1500.0;
-                        }
-                        if (SPI_tuptable != NULL)
-                            SPI_freetuptable(SPI_tuptable);
-                    }
+                    /* Significance read directly from JOIN — no inner SPI per neighbor.
+                     * COALESCE in the prepared SQL substitutes 1500.0 for NULL. */
+                    edge_mu = DatumGetFloat8(SPI_getbinval(tuple, spi_tupdesc, 4, &isnull));
+                    if (isnull) edge_mu = 1500.0;
 
                 /* Significance threshold prune: inference.md Step 1.3 — entities below
                  * p_min_mu do not enter the candidate pool. Applied to edge mu (the

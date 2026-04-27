@@ -37,6 +37,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
     private readonly Hartonomous.Core.Text.Segmentation.ICodepointProperties? _codepointProperties;
+    private readonly NpgsqlDataSource? _alignmentDataSource;
 
     public SafetensorsDecomposer(
         DecomposerConfig config,
@@ -46,7 +47,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null,
-        Hartonomous.Core.Text.Segmentation.ICodepointProperties? codepointProperties = null)
+        Hartonomous.Core.Text.Segmentation.ICodepointProperties? codepointProperties = null,
+        NpgsqlDataSource? alignmentDataSource = null)
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;
@@ -56,6 +58,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
         _codepointProperties = codepointProperties;
+        _alignmentDataSource = alignmentDataSource;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() => [_hubRoot];
@@ -145,6 +148,26 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             new TokenizerMappingPass(_loggerFactory.CreateLogger<TokenizerMappingPass>()),
             new VocabCoveragePass(_loggerFactory.CreateLogger<VocabCoveragePass>()),
             new OneDTensorPass(_loggerFactory.CreateLogger<OneDTensorPass>()),
+            new FfnNeuronPass(_loggerFactory.CreateLogger<FfnNeuronPass>()),
+            new EmbeddingPositionPass(_loggerFactory.CreateLogger<EmbeddingPositionPass>()),
+            new LogitHeadPass(_loggerFactory.CreateLogger<LogitHeadPass>()),
+            new LayerNormPass(_loggerFactory.CreateLogger<LayerNormPass>()),
+            new AttentionComponentPass(_loggerFactory.CreateLogger<AttentionComponentPass>()),
+            new MoeRouteDirectionPass(_loggerFactory.CreateLogger<MoeRouteDirectionPass>()),
+            new MoeExpertNeuronPass(_loggerFactory.CreateLogger<MoeExpertNeuronPass>()),
+            new RopeFreqPass(_loggerFactory.CreateLogger<RopeFreqPass>()),
+            new ObjectQueryPass(_loggerFactory.CreateLogger<ObjectQueryPass>()),
+            new ClassHeadPass(_loggerFactory.CreateLogger<ClassHeadPass>()),
+            new BboxHeadPass(_loggerFactory.CreateLogger<BboxHeadPass>()),
+            new VisionFeaturePass(_loggerFactory.CreateLogger<VisionFeaturePass>()),
+            new ModalityBasisPass(_loggerFactory.CreateLogger<ModalityBasisPass>()),
+            new LoraComponentPass(_loggerFactory.CreateLogger<LoraComponentPass>()),
+            new ConvFilterPass(_loggerFactory.CreateLogger<ConvFilterPass>()),
+            new DiffusionComponentPass(_loggerFactory.CreateLogger<DiffusionComponentPass>()),
+            new ConformerComponentPass(_loggerFactory.CreateLogger<ConformerComponentPass>()),
+            new AudioCodecFilterPass(_loggerFactory.CreateLogger<AudioCodecFilterPass>()),
+            new EmbeddingAlignmentPass(_loggerFactory.CreateLogger<EmbeddingAlignmentPass>(), _alignmentDataSource),
+            new GrammarExtractionPass(_loggerFactory.CreateLogger<GrammarExtractionPass>(), _alignmentDataSource),
         ];
 
         if (_codepointProperties is not null)

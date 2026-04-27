@@ -163,10 +163,15 @@ internal sealed partial class AttentionArchetypePass : IModelAnalysisPass
                 feat[8] = alignment;
                 feat[9] = posBias;
 
+                // AP-9: hash covers ATTENTION-PATTERN CONTENT only (the 10-feature
+                // archetype vector). Architecture, layer, and head are PLACEMENT
+                // metadata — they live on the encodes_archetype edges and on the
+                // source tensor's tensor_tensor_role junction, never inside the
+                // identity hash. Same archetype shape across different (model,
+                // layer, head) positions collapses to ONE attention_archetype
+                // entity with multiple incoming edges — that's how cross-model
+                // corroboration on attention patterns becomes possible.
                 CanonicalSignatureBuilder b = new(context.Compute.Common, "atnh");
-                b.WriteHash(context.Architecture.ContentHash);
-                b.WriteInt32LE(layer);
-                b.WriteInt32LE(head);
                 for (int i = 0; i < feat.Length; i++)
                 {
                     b.WriteDouble(feat[i]);

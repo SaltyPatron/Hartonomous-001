@@ -1,10 +1,10 @@
 # Model Analysis Passes
 
-**Status**: 🔜 M5e (ships with SafetensorsDecomposer rewrite, task #36/#38)
+**Status**: ✅ Implemented. `SafetensorsDecomposer.BuildPassSet()` wires 31 always-on passes (32 with `ModelTextArtifactsPass` when codepoint properties are injected). Per-role unit emission (Phase A of the build plan) is complete for every Track-2 transformation tensor family in the role-to-unit table.
 
-The 12 passes that transform a discovered AI model into substrate entities, edges, and physicality. Called by the Safetensors decomposer (and any future model-source decomposer) as a composable, re-runnable, checkpointable pipeline. Not related to the 43 **modality** passes in `docs/specs/csharp/analysis-passes.md` — those operate on text/image/audio/video content; these operate on model weights.
+The passes transform a discovered AI model into substrate entities, edges, and physicality. Called by the Safetensors decomposer (and any future model-source decomposer) as a composable, re-runnable, checkpointable pipeline. Not related to the 43 **modality** passes in `docs/specs/csharp/analysis-passes.md` — those operate on text/image/audio/video content; these operate on model weights.
 
-These passes are the Track 2 side of the two-track ingestion model. Track 1 (embedding wholesale → Laplacian+GSO → fireflies) is `EmbeddingFireflyPass`, listed below alongside the rest for orchestration uniformity.
+The pass catalogue spans both tracks of the two-track ingestion model: Track 1 (embedding wholesale → Laplacian+GSO → fireflies) via `EmbeddingFireflyPass`, and Track 2 (transformation weights → per-role unit entities + typed edges with significance) via the `*NeuronPass`, `*ComponentPass`, and `*FilterPass` families. Track 2 is the substrate's matmul-replacement: a tensor's row IS the learned function of one neuron / direction / filter, and decomposing it into row-entities + typed edges lets the recomposer scatter substrate units back into target architectures at distillation.
 
 ---
 
@@ -235,6 +235,35 @@ All compute goes through `context.Compute` (the `Hartonomous.Core.Compute.*` fac
 - **Applies to**: text-generative architectures.
 - **What it does.** Inspect attention archetypes flagged as structural (clause boundaries, nesting, phrase brackets). Cluster them across layers and heads. For clusters that exceed an extraction threshold, synthesize a candidate Tree-sitter grammar fragment (`.scm` pattern). The fragment is an entity; it enters the arena against hand-authored grammars with a provisional significance seeded by the archetype cluster's coherence.
 - **Entities.** `grammar_fragment` — signature (model_architecture hash, archetype cluster hash, fragment text UTF-8 bytes). Same fragment derived from two models → one entity, two corroborating `derives_from` edges.
+
+---
+
+## Per-role unit emission (Phase A — Track 2 transformation tensors)
+
+Statistics passes (`SvdPass`, `WeightDistributionPass`, …) describe each tensor; they don't encode the tensor's semantic content. Per-role passes do — each Track-2 transformation tensor decomposes into one entity per meaningful unit (row, filter, slot, component) of its role's unit type, hashed by f64-canonical content only. Identical units across models collapse to one entity → cross-model Glicko-2 corroboration on shared learned functions. The recomposer's scatter path (`SafetensorsRecomposer.AssembleTensorBytesAsync`) walks substrate.sequence children of each target tensor and writes each unit's contour back into the buffer at its row position. Sparsity-filtered units (L2 below `1e-6`) are not stored — Substrate Law #11.
+
+| Tensor role | Unit | Entity | Edge | Pass |
+|---|---|---|---|---|
+| FfnGate, FfnUp, FfnDown, MoeSharedExpert | output row | `ffn_neuron` | `has_ffn_neuron` | `FfnNeuronPass` |
+| TokenEmbedding | row | `embedding_position` | `has_embedding_position` | `EmbeddingPositionPass` |
+| LogitHead | row | `logit_projection` | `has_logit_projection` | `LogitHeadPass` |
+| LayerNorm, RmsNorm, BatchNorm | scale vector | `layer_norm_scale` | `has_layer_norm_scale` | `LayerNormPass` |
+| AttentionQuery, AttentionKey, AttentionValue, AttentionOutput, CrossAttention | row | `attention_component` | `has_attention_component` | `AttentionComponentPass` |
+| MoeRouter | row (per expert direction) | `moe_route_direction` | `has_route_direction` | `MoeRouteDirectionPass` |
+| MoeExpertGate, MoeExpertUp, MoeExpertDown | row | `moe_expert_neuron` | `has_moe_neuron` | `MoeExpertNeuronPass` |
+| RopeFreq | whole tensor | `rope_freq_table` | `has_rope_freqs` | `RopeFreqPass` |
+| ObjectQuery | slot row | `object_query_slot` | `has_object_query` | `ObjectQueryPass` |
+| ClassHead | row | `class_projection` | `has_class_projection` | `ClassHeadPass` |
+| BboxHead | row | `bbox_projection` | `has_bbox_projection` | `BboxHeadPass` |
+| VisionFeature | per-patch row / outer index | `vision_feature_direction` | `has_vision_feature` | `VisionFeaturePass` |
+| VisionProjection, ModalityProjection | basis vector / outer index | `modality_basis_vector` | `has_modality_basis` | `ModalityBasisPass` |
+| LoraA, LoraB | rank component | `lora_component` | `has_lora_component` | `LoraComponentPass` |
+| ConvKernel, VaeBlock | per-output-channel filter | `conv_filter` | `has_conv_filter` | `ConvFilterPass` |
+| DiffusionBlock | per-block / per-row component | `diffusion_component` | `has_diffusion_component` | `DiffusionComponentPass` |
+| ConformerLayer | per-block / per-row component | `conformer_component` | `has_conformer_component` | `ConformerComponentPass` |
+| AudioCodecEncoder, AudioCodecDecoder | per-stage / per-channel filter | `audio_codec_filter` | `has_codec_filter` | `AudioCodecFilterPass` |
+
+Each per-row pass routes through the shared helper `PerRowContentPass.RunPerRowAsync` (2-D tensors) or `PerRowContentPass.RunPerOuterIndexAsync` (rank-N tensors with trailing dims flattened). Both helpers use the same canonical hashing, sparsity threshold, sequence placement (`parent=tensor`, `child=unit`, `position=row_index`), and contour packing — adding a new role is one new pass class plus a row in the table above.
 
 ---
 

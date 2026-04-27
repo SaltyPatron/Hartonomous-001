@@ -140,11 +140,14 @@ internal sealed partial class LayerSimilarityPass : IModelAnalysisPass
                     }
                     double similarity = sumSq / k;
 
+                    // AP-9: hash covers SIMILARITY-FACT CONTENT only (the role family
+                    // — Q/K/V/O — that was compared and the measured value). Architecture
+                    // and (li, lj) layer indices are PLACEMENT metadata on the
+                    // has_layer_similarity edge. Same similarity fact across (model,
+                    // layer-pair) positions collapses to one entity → cross-model
+                    // corroboration on layer-similarity patterns becomes possible.
                     CanonicalSignatureBuilder b = new(context.Compute.Common, "lsim");
-                    b.WriteHash(context.Architecture.ContentHash);
                     b.WriteUtf8(role.ToCode());
-                    b.WriteInt32LE(li);
-                    b.WriteInt32LE(lj);
                     b.WriteInt32LE(k);
                     b.WriteDouble(similarity);
                     byte[] hash = b.Finalize();
