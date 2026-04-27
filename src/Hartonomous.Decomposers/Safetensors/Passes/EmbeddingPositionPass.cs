@@ -51,7 +51,18 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
         {
             ct.ThrowIfCancellationRequested();
 
-            if (t.Classification.Role != TensorRole.TokenEmbedding)
+            // Per-role unit emission applies to ALL embedding-style row-tables:
+            //   TokenEmbedding       — vocab → hidden_dim
+            //   PositionEmbedding    — abs/learned position → hidden_dim
+            //   PositionEmbedding2D  — 2D positional → hidden_dim
+            //   TokenTypeEmbedding   — segment/type → hidden_dim
+            // All four are "row = one position direction in residual stream",
+            // distinguished only by what the row index means (vocab id vs
+            // position id vs type id). Without per-role coverage of each, the
+            // recomposer's scatter path can't materialize them and they
+            // round-trip as zero (Substrate Law #11 — but here that's wrong:
+            // the substrate HAD content, the pass just skipped it).
+            if (!IsEmbeddingRole(t.Classification.Role))
             {
                 continue;
             }
@@ -66,11 +77,12 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
 
             Log.TensorStart(_logger, t.Info.Name, rows, cols);
 
-            EntityHandle tensorHandle = session.Batch.AddEntity(t.ContentHash, "tensor");
             double[] flat = SafetensorsReader.ReadTensorAsDouble(t.Info);
+            double noiseFloor = PerRowContentPass.ComputeAdaptiveNoiseFloor(flat);
 
             int emitted = 0;
             int skippedSparse = 0;
+            double[] thresholded = new double[cols];
             for (int rowIdx = 0; rowIdx < rows; rowIdx++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -80,7 +92,9 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
                 double sumSq = 0;
                 for (int c = 0; c < cols; c++)
                 {
-                    double v = flat[rowOff + c];
+                    double raw = flat[rowOff + c];
+                    double v = Math.Abs(raw) < noiseFloor ? 0.0 : raw;
+                    thresholded[c] = v;
                     sumSq += v * v;
                 }
                 if (Math.Sqrt(sumSq) < SparsityThreshold)
@@ -92,7 +106,7 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
                 CanonicalSignatureBuilder b = new(context.Compute.Common, "epos");
                 for (int c = 0; c < cols; c++)
                 {
-                    b.WriteDouble(flat[rowOff + c]);
+                    b.WriteDouble(thresholded[c]);
                 }
                 byte[] posHash = b.Finalize();
 
@@ -105,10 +119,10 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
                 {
                     int p = v * 4;
                     verts[v] = (
-                        p     < cols ? flat[rowOff + p]     : 0.0,
-                        p + 1 < cols ? flat[rowOff + p + 1] : 0.0,
-                        p + 2 < cols ? flat[rowOff + p + 2] : 0.0,
-                        p + 3 < cols ? flat[rowOff + p + 3] : 0.0);
+                        p     < cols ? thresholded[p]     : 0.0,
+                        p + 1 < cols ? thresholded[p + 1] : 0.0,
+                        p + 2 < cols ? thresholded[p + 2] : 0.0,
+                        p + 3 < cols ? thresholded[p + 3] : 0.0);
                 }
                 session.Batch.AddPhysicalityLineString4d(pos, "contour", verts.AsSpan());
 
@@ -118,7 +132,7 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
                     new EdgeMemberSpec(pos, null, "target", 1),
                 ]);
 
-                session.Batch.AddSequence(parent: tensorHandle, child: pos, position: rowIdx, count: 1);
+                session.Batch.AddSequence(parentEntityId: t.EntityId, child: pos, position: rowIdx, count: 1);
 
                 emitted++;
                 await session.MaybeFlushAsync(FlushThreshold, ct);
@@ -131,6 +145,15 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
 
         Log.PassComplete(_logger, context.Source.ModelId, totalEmitted, totalSkippedSparse);
     }
+
+    private static bool IsEmbeddingRole(TensorRole role) => role switch
+    {
+        TensorRole.TokenEmbedding => true,
+        TensorRole.PositionEmbedding => true,
+        TensorRole.PositionEmbedding2D => true,
+        TensorRole.TokenTypeEmbedding => true,
+        _ => false,
+    };
 
     private static partial class Log
     {

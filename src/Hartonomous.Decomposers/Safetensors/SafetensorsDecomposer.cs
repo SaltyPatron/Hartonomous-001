@@ -168,6 +168,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             new AudioCodecFilterPass(_loggerFactory.CreateLogger<AudioCodecFilterPass>()),
             new EmbeddingAlignmentPass(_loggerFactory.CreateLogger<EmbeddingAlignmentPass>(), _alignmentDataSource),
             new GrammarExtractionPass(_loggerFactory.CreateLogger<GrammarExtractionPass>(), _alignmentDataSource),
+            new FfnEdgeDecompositionPass(_loggerFactory.CreateLogger<FfnEdgeDecompositionPass>()),
         ];
 
         if (_codepointProperties is not null)

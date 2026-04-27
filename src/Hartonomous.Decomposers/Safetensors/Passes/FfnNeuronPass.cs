@@ -43,6 +43,10 @@ internal sealed partial class FfnNeuronPass : IModelAnalysisPass
     // to preserve weak-but-real signal; tighten per-architecture if needed.
     private const double SparsityThreshold = 1e-6;
 
+    // Noise floor is computed per-tensor from the tensor's own |x|
+    // distribution via PerRowContentPass.ComputeAdaptiveNoiseFloor (Law #11).
+    // No hardcoded floor — each FFN tensor's jitter boundary is its own.
+
     private const int FlushThreshold = 5_000;
 
     private readonly ILogger _logger;
@@ -83,31 +87,32 @@ internal sealed partial class FfnNeuronPass : IModelAnalysisPass
             string roleCode = t.Classification.Role.ToCode();
             Log.TensorStart(_logger, tensorOrdinal, t.Info.Name, roleCode, rows, cols);
 
-            // Re-add the tensor entity to the current batch so AddSequence
-            // (which takes EntityHandle, not entity_id) has a parent handle.
-            // Same pattern OneDTensorPass uses: AddEntity dedupes via UNIQUE
-            // (hash, entity_type_id) → returns a handle to the EXISTING row.
-            EntityHandle tensorHandle = session.Batch.AddEntity(t.ContentHash, "tensor");
-
             // Stream the tensor as f64; for each row, hash the row content,
             // emit ffn_neuron entity, attach has_ffn_neuron edge, record
             // placement via substrate.sequence (ordinal = row_index).
             double[] flat = SafetensorsReader.ReadTensorAsDouble(t.Info);
+            // Per-tensor adaptive noise floor (Substrate Law #11).
+            double noiseFloor = PerRowContentPass.ComputeAdaptiveNoiseFloor(flat);
 
             int emitted = 0;
             int skippedSparse = 0;
+            double[] thresholded = new double[cols];
             for (int rowIdx = 0; rowIdx < rows; rowIdx++)
             {
                 ct.ThrowIfCancellationRequested();
 
                 long rowOff = (long)rowIdx * cols;
 
-                // L2 magnitude of this row. Skip below threshold = sparsity-
-                // honest (Law #11): row encodes no learned function.
+                // Threshold THIS row against the per-tensor noise floor —
+                // jitter goes to 0, signal stays. Then compute L2 of the
+                // thresholded row; rows that are entirely jitter get
+                // skipped entirely (sparsity-honest).
                 double sumSq = 0;
                 for (int c = 0; c < cols; c++)
                 {
-                    double v = flat[rowOff + c];
+                    double raw = flat[rowOff + c];
+                    double v = Math.Abs(raw) < noiseFloor ? 0.0 : raw;
+                    thresholded[c] = v;
                     sumSq += v * v;
                 }
                 double l2 = Math.Sqrt(sumSq);
@@ -117,34 +122,31 @@ internal sealed partial class FfnNeuronPass : IModelAnalysisPass
                     continue;
                 }
 
-                // Hash by row content only. f64 row vector packed via the
-                // canonical signature builder. Same row content across models
-                // → same hash → one shared entity → cross-model corroboration.
+                // Hash by THRESHOLDED row content. Two FFN rows that mean
+                // the same thing collapse to one entity even when their
+                // post-training jitter differs.
                 CanonicalSignatureBuilder b = new(context.Compute.Common, "ffnn");
                 for (int c = 0; c < cols; c++)
                 {
-                    b.WriteDouble(flat[rowOff + c]);
+                    b.WriteDouble(thresholded[c]);
                 }
                 byte[] neuronHash = b.Finalize();
 
                 EntityHandle neuron = session.Batch.AddEntity(neuronHash, "ffn_neuron");
                 session.Batch.AddEntityModelSource(neuron, context.Source.ModelSourceId);
 
-                // Attach the full row content as a contour physicality so the
-                // recomposer can scatter the values back into a target FFN
-                // tensor at distillation. Same pattern SvdPass uses for
-                // svd_rank_component (σ + U + V packed). Here: just the row
-                // values, packed as 4-tuples padded with deterministic zeros.
+                // Contour physicality stores the THRESHOLDED row — substrate
+                // stores no jitter, recomposer scatters thresholded values.
                 int vertexCount = (cols + 3) / 4;
                 (double, double, double, double)[] verts = new (double, double, double, double)[vertexCount];
                 for (int v = 0; v < vertexCount; v++)
                 {
                     int p = v * 4;
                     verts[v] = (
-                        p     < cols ? flat[rowOff + p]     : 0.0,
-                        p + 1 < cols ? flat[rowOff + p + 1] : 0.0,
-                        p + 2 < cols ? flat[rowOff + p + 2] : 0.0,
-                        p + 3 < cols ? flat[rowOff + p + 3] : 0.0);
+                        p     < cols ? thresholded[p]     : 0.0,
+                        p + 1 < cols ? thresholded[p + 1] : 0.0,
+                        p + 2 < cols ? thresholded[p + 2] : 0.0,
+                        p + 3 < cols ? thresholded[p + 3] : 0.0);
                 }
                 session.Batch.AddPhysicalityLineString4d(neuron, "contour", verts.AsSpan());
 
@@ -159,7 +161,7 @@ internal sealed partial class FfnNeuronPass : IModelAnalysisPass
                 // substrate.sequence carries ordinal_position as INT (32-bit
                 // signed) — handles vocab-scale hidden dims comfortably.
                 session.Batch.AddSequence(
-                    parent: tensorHandle,
+                    parentEntityId: t.EntityId,
                     child:  neuron,
                     position: rowIdx,
                     count: 1);

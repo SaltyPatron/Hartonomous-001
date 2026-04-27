@@ -153,13 +153,28 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
 
         // ── Stream entries from the JSONL file in chunks. ──
         List<WiktEntry> chunk = new(EntryChunkSize);
-
+        bool wiktExists = System.IO.File.Exists(_jsonlPath);
+        long wiktSize = wiktExists ? new System.IO.FileInfo(_jsonlPath).Length : -1;
+        Log.Diag(Logger, _jsonlPath, wiktExists, wiktSize);
+        long parsedRaw = 0;
+        long langRejected = 0;
+        long firstFew = 0;
         foreach (WiktEntry entry in WiktionaryJsonlParser.Parse(_jsonlPath))
         {
             ct.ThrowIfCancellationRequested();
-
+            parsedRaw++;
+            if (firstFew < 3)
+            {
+                Log.DiagEntry(Logger, parsedRaw, entry.Word, entry.LangCode, entry.Pos);
+                firstFew++;
+            }
             if (!LanguageAllowed(entry.LangCode))
             {
+                langRejected++;
+                if (langRejected == 1)
+                {
+                    Log.DiagFirstReject(Logger, entry.LangCode);
+                }
                 continue;
             }
 
@@ -190,6 +205,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
 
         Log.StreamComplete(Logger, _entriesProcessed, _entityCount, _edgeCount);
         Log.JunctionsWritten(Logger, (int)totalPosWritten, (int)totalLangWritten, (int)totalMorphWritten);
+        Log.DiagSummary(Logger, parsedRaw, langRejected, _entriesProcessed);
 
         if (_entriesProcessed == 0)
         {
@@ -917,6 +933,18 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Wiktionary junction flush at entry {Entries}: {Pos} pos, {Lang} language, {Morph} morph")]
         public static partial void JunctionsFlushed(ILogger logger, long entries, int pos, int lang, int morph);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Wikt diagnostic: _jsonlPath='{Path}', Exists={Exists}, Size={Size}")]
+        public static partial void Diag(ILogger logger, string path, bool exists, long size);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Wikt parsed entry {Idx}: word='{Word}' langCode='{Lang}' pos='{Pos}'")]
+        public static partial void DiagEntry(ILogger logger, long idx, string word, string lang, string pos);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Wikt first lang-rejected: code='{Lang}'")]
+        public static partial void DiagFirstReject(ILogger logger, string lang);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Wikt summary: parsedRaw={Parsed}, langRejected={Rej}, processed={Proc}")]
+        public static partial void DiagSummary(ILogger logger, long parsed, long rej, long proc);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Wiktionary junctions: {Pos} entity_pos, {Lang} entity_language, {Morph} entity_morph_feature")]
         public static partial void JunctionsWritten(ILogger logger, int pos, int lang, int morph);

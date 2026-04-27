@@ -59,7 +59,26 @@ public sealed partial class UdDecomposer : BaseDecomposer
         IProgressReporter reporter,
         CancellationToken ct)
     {
+        bool rootExists = System.IO.Directory.Exists(_rootDir);
+        Log.DiagRoot(Logger, _rootDir, rootExists);
+        if (rootExists)
+        {
+            int allDirs = 0;
+            int udDirs = 0;
+            foreach (string d in System.IO.Directory.EnumerateDirectories(_rootDir, "*", System.IO.SearchOption.TopDirectoryOnly))
+            {
+                allDirs++;
+                if (allDirs <= 3) { string n = System.IO.Path.GetFileName(d); Log.DiagAny(Logger, allDirs, n); }
+            }
+            foreach (string d in System.IO.Directory.EnumerateDirectories(_rootDir, "UD_*", System.IO.SearchOption.TopDirectoryOnly))
+            {
+                udDirs++;
+                if (udDirs <= 3) { string n = System.IO.Path.GetFileName(d); Log.DiagUd(Logger, udDirs, n); }
+            }
+            Log.DiagPreScan(Logger, allDirs, udDirs);
+        }
         List<UdTreebankInfo> banksAll = UdTreebankScanner.Scan(_rootDir);
+        Log.DiagScanned(Logger, banksAll.Count);
         if (banksAll.Count == 0)
         {
             // Fail loud: a clean exit with 0 treebanks would silently mark the
@@ -513,6 +532,21 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Information, Message = "UD junctions: {Pos} entity_pos, {Morph} entity_morph_feature, {Lang} entity_language")]
         public static partial void JunctionsWritten(ILogger logger, int pos, int morph, int lang);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "UD scanner diagnostic: _rootDir='{Root}', Exists={Exists}")]
+        public static partial void DiagRoot(ILogger logger, string root, bool exists);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "  any dir [{Idx}]: {Name}")]
+        public static partial void DiagAny(ILogger logger, int idx, string name);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "  UD_* [{Idx}]: {Name}")]
+        public static partial void DiagUd(ILogger logger, int idx, string name);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "UD pre-scan: total={Total}, UD_*={UdMatches}")]
+        public static partial void DiagPreScan(ILogger logger, int total, int udMatches);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "UD scanner returned {Count} banks")]
+        public static partial void DiagScanned(ILogger logger, int count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "UD chunk [{Start}..{End}] junction flush: {Pos} pos, {Morph} morph, {Lang} lang")]
         public static partial void ChunkJunctionsFlushed(ILogger logger, int start, int end, int pos, int morph, int lang);

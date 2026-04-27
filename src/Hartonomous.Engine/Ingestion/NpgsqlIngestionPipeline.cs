@@ -566,8 +566,9 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             for (int i = 0; i < batch.Sequences.Count; i++)
             {
                 SequenceEntry seq = batch.Sequences[i];
+                long parentId = seq.ParentEntityId ?? batch.ResolveHandle(seq.ParentHandle!.Value);
                 await writer.StartRowAsync(ct);
-                await writer.WriteAsync(batch.ResolveHandle(seq.Parent), NpgsqlTypes.NpgsqlDbType.Bigint, ct);
+                await writer.WriteAsync(parentId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
                 await writer.WriteAsync(batch.ResolveHandle(seq.Child), NpgsqlTypes.NpgsqlDbType.Bigint, ct);
                 await writer.WriteAsync(seq.Position, NpgsqlTypes.NpgsqlDbType.Integer, ct);
                 await writer.WriteAsync(seq.Count, NpgsqlTypes.NpgsqlDbType.Integer, ct);

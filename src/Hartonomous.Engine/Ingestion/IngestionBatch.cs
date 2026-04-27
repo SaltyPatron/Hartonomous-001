@@ -87,6 +87,11 @@ internal sealed class IngestionBatch : IIngestionBatch
         _sequences.Add(new SequenceEntry(parent, child, position, count));
     }
 
+    public void AddSequence(long parentEntityId, EntityHandle child, int position, int count = 1)
+    {
+        _sequences.Add(new SequenceEntry(parentEntityId, child, position, count));
+    }
+
     public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu)
     {
         _significances.Add(new SignificanceEntry(entity, contextTypeCode, initialMu));

@@ -55,11 +55,12 @@ internal sealed partial class LogitHeadPass : IModelAnalysisPass
 
             Log.TensorStart(_logger, t.Info.Name, rows, cols);
 
-            EntityHandle tensorHandle = session.Batch.AddEntity(t.ContentHash, "tensor");
             double[] flat = SafetensorsReader.ReadTensorAsDouble(t.Info);
+            double noiseFloor = PerRowContentPass.ComputeAdaptiveNoiseFloor(flat);
 
             int emitted = 0;
             int skippedSparse = 0;
+            double[] thresholded = new double[cols];
             for (int rowIdx = 0; rowIdx < rows; rowIdx++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -69,7 +70,9 @@ internal sealed partial class LogitHeadPass : IModelAnalysisPass
                 double sumSq = 0;
                 for (int c = 0; c < cols; c++)
                 {
-                    double v = flat[rowOff + c];
+                    double raw = flat[rowOff + c];
+                    double v = Math.Abs(raw) < noiseFloor ? 0.0 : raw;
+                    thresholded[c] = v;
                     sumSq += v * v;
                 }
                 if (Math.Sqrt(sumSq) < SparsityThreshold)
@@ -81,7 +84,7 @@ internal sealed partial class LogitHeadPass : IModelAnalysisPass
                 CanonicalSignatureBuilder b = new(context.Compute.Common, "lgth");
                 for (int c = 0; c < cols; c++)
                 {
-                    b.WriteDouble(flat[rowOff + c]);
+                    b.WriteDouble(thresholded[c]);
                 }
                 byte[] projHash = b.Finalize();
 
@@ -94,10 +97,10 @@ internal sealed partial class LogitHeadPass : IModelAnalysisPass
                 {
                     int p = v * 4;
                     verts[v] = (
-                        p     < cols ? flat[rowOff + p]     : 0.0,
-                        p + 1 < cols ? flat[rowOff + p + 1] : 0.0,
-                        p + 2 < cols ? flat[rowOff + p + 2] : 0.0,
-                        p + 3 < cols ? flat[rowOff + p + 3] : 0.0);
+                        p     < cols ? thresholded[p]     : 0.0,
+                        p + 1 < cols ? thresholded[p + 1] : 0.0,
+                        p + 2 < cols ? thresholded[p + 2] : 0.0,
+                        p + 3 < cols ? thresholded[p + 3] : 0.0);
                 }
                 session.Batch.AddPhysicalityLineString4d(proj, "contour", verts.AsSpan());
 
@@ -107,7 +110,7 @@ internal sealed partial class LogitHeadPass : IModelAnalysisPass
                     new EdgeMemberSpec(proj, null, "target", 1),
                 ]);
 
-                session.Batch.AddSequence(parent: tensorHandle, child: proj, position: rowIdx, count: 1);
+                session.Batch.AddSequence(parentEntityId: t.EntityId, child: proj, position: rowIdx, count: 1);
 
                 emitted++;
                 await session.MaybeFlushAsync(FlushThreshold, ct);

@@ -920,33 +920,16 @@ internal static class Program
             getDefaultValue: DefaultConnectionString,
             description: "Npgsql connection string.");
 
-        Option<int> maxDepthOpt = new("--max-depth", () => 4,
-            description: "Maximum traversal depth.");
-        Option<int> maxResultsOpt = new("--max-results", () => 10,
-            description: "Maximum number of paths to return.");
-        Option<string> arenaOpt = new("--arena", () => "lexical_disambiguation",
-            description: "Significance arena for path scoring.");
-        Option<int> costBudgetOpt = new("--cost-budget", () => 100,
-            description: "Maximum total cost of a path before it's pruned.");
-
-        Argument<string[]> textArg = new("text", "Query text. Tokenized into seeds against the substrate.");
+        Argument<string[]> textArg = new("text", "Prompt. Decomposed into substrate entities; the substrate's A* traversal IS the forward pass.");
         textArg.Arity = ArgumentArity.OneOrMore;
 
-        Command query = new("query", "Inference query against the substrate. Decomposes text → seeds → A* traversal → recomposed answer paths.");
+        Command query = new("query", "Run a forward pass through the substrate. The prompt becomes substrate content and the substrate's significance-weighted A* traversal across all arenas produces the recomposed answer. No caller-specified arena, depth, cost-budget, or result-cap — those would compromise the invention.");
         query.AddOption(connOpt);
-        query.AddOption(maxDepthOpt);
-        query.AddOption(maxResultsOpt);
-        query.AddOption(arenaOpt);
-        query.AddOption(costBudgetOpt);
         query.AddArgument(textArg);
 
         query.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
         {
             string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
-            int maxDepth = ctx.ParseResult.GetValueForOption(maxDepthOpt);
-            int maxResults = ctx.ParseResult.GetValueForOption(maxResultsOpt);
-            string arena = ctx.ParseResult.GetValueForOption(arenaOpt)!;
-            int costBudget = ctx.ParseResult.GetValueForOption(costBudgetOpt);
             string[] textParts = ctx.ParseResult.GetValueForArgument(textArg);
             string text = string.Join(' ', textParts);
 
@@ -958,48 +941,40 @@ internal static class Program
             using Microsoft.Extensions.Logging.ILoggerFactory lf =
                 Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Warning));
             Hartonomous.Engine.Inference.SubstrateInferenceEngine engine = new(
-                traversal, entityReader, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
+                traversal, entityReader, ds, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
 
-            Hartonomous.Core.Engine.InferenceQuery q = new()
-            {
-                Text = text,
-                MaxDepth = maxDepth,
-                MaxResults = maxResults,
-                SignificanceThreshold = 0.0,
-                CostBudget = costBudget,
-                ArenaCode = arena,
-            };
+            Hartonomous.Core.Engine.InferenceQuery q = new() { Text = text };
 
-            Console.WriteLine($"=== Inference Query ===");
-            Console.WriteLine($"  text: {text}");
-            Console.WriteLine($"  arena: {arena}, max_depth: {maxDepth}, max_results: {maxResults}, cost_budget: {costBudget}");
+            Console.WriteLine($"=== Forward pass ===");
+            Console.WriteLine($"  prompt: {text}");
             Console.WriteLine();
 
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
             Hartonomous.Core.Engine.InferenceResult result = await engine.InferAsync(q, CancellationToken.None);
             sw.Stop();
 
-            Console.WriteLine($"=== Result ===");
-            Console.WriteLine($"  seeds resolved: {result.SeedEntityIds.Count}");
-            Console.WriteLine($"  paths returned: {result.Paths.Count}");
-            Console.WriteLine($"  nodes visited:  {result.NodesVisited}");
-            Console.WriteLine($"  elapsed: {sw.Elapsed.TotalMilliseconds:F1} ms");
+            Console.WriteLine($"=== Substrate output ===");
+            Console.WriteLine($"  answer: {(string.IsNullOrEmpty(result.Answer) ? "(no path — honest abstention)" : result.Answer)}");
             Console.WriteLine();
+            Console.WriteLine($"=== Trace ===");
+            Console.WriteLine($"  seeds activated:  {result.SeedEntityIds.Count}");
+            Console.WriteLine($"  composite paths:  {result.Paths.Count}");
+            Console.WriteLine($"  nodes visited:    {result.NodesVisited}");
+            Console.WriteLine($"  elapsed:          {sw.Elapsed.TotalMilliseconds:F1} ms");
 
             if (result.Paths.Count == 0)
             {
-                Console.WriteLine("(no paths)");
                 return;
             }
-
+            Console.WriteLine();
+            Console.WriteLine($"=== Top {Math.Min(5, result.Paths.Count)} contributing paths ===");
             await using Npgsql.NpgsqlConnection rconn = await ds.OpenConnectionAsync(CancellationToken.None);
-            int idx = 0;
-            foreach (Hartonomous.Core.Engine.TraversalPath path in result.Paths)
+            for (int i = 0; i < Math.Min(5, result.Paths.Count); i++)
             {
-                idx++;
+                Hartonomous.Core.Engine.TraversalPath path = result.Paths[i];
                 long targetId = path.Steps.Count > 0 ? path.Steps[^1].EntityId : 0;
                 string targetText = await TryRecomposeAsync(rconn, targetId);
-                Console.WriteLine($"[{idx}] significance={path.PathSignificance:F4} depth={path.Steps.Count - 1} → {targetText}");
+                Console.WriteLine($"  [{i+1}] significance={path.PathSignificance:F4} depth={path.Steps.Count - 1} → {targetText}");
             }
         });
 

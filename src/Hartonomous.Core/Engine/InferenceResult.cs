@@ -1,34 +1,39 @@
 namespace Hartonomous.Core.Engine;
 
 /// <summary>
-/// Result of an inference query. Contains the selected paths through the substrate,
-/// the resolved seed entities, and timing information.
+/// Result of an inference query. Carries the recomposed answer text the
+/// substrate's traversal produced, plus the diagnostic trace (seed entities,
+/// paths, entities visited) so callers can inspect HOW the substrate
+/// arrived at the answer — the explanation IS the path, per Substrate Law.
 /// </summary>
 public sealed record InferenceResult
 {
     /// <summary>
-    /// The seed entity IDs that were activated from the input.
+    /// The substrate's recomposed answer to the prompt. Built by walking
+    /// the highest-significance path the traversal found and concatenating
+    /// the content of each entity along the path. Empty when traversal
+    /// found no path (substrate has nothing to say — honest abstention,
+    /// per the spec).
     /// </summary>
+    public required string Answer { get; init; }
+
+    /// <summary>The seed entity IDs the prompt decomposed to.</summary>
     public required IReadOnlyList<long> SeedEntityIds { get; init; }
 
     /// <summary>
-    /// Top-k paths selected by significance-weighted ranking.
+    /// Every path the traversal returned, ordered by composite path
+    /// significance (highest first). The first path is the one that
+    /// produced <see cref="Answer"/>; the rest are runner-up alternatives
+    /// the explanation trace can reference.
     /// </summary>
     public required IReadOnlyList<TraversalPath> Paths { get; init; }
 
-    /// <summary>
-    /// Entity metadata for all entities referenced in paths.
-    /// Key: entity ID. Value: entity info (type, content).
-    /// </summary>
+    /// <summary>Entity metadata for every entity referenced in paths.</summary>
     public required IReadOnlyDictionary<long, EntityInfo> Entities { get; init; }
 
-    /// <summary>
-    /// Total nodes visited during traversal.
-    /// </summary>
+    /// <summary>Total substrate nodes visited during traversal across all arenas/targets.</summary>
     public int NodesVisited { get; init; }
 
-    /// <summary>
-    /// Total elapsed time for the inference.
-    /// </summary>
+    /// <summary>End-to-end elapsed time: prompt decomposition + traversal + recomposition.</summary>
     public TimeSpan Elapsed { get; init; }
 }

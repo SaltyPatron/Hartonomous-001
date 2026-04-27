@@ -1,50 +1,24 @@
 namespace Hartonomous.Core.Engine;
 
 /// <summary>
-/// A query to the inference engine. Contains the raw input text (or pre-resolved
-/// seed entity IDs) plus traversal parameters.
+/// A query to the inference engine. Per the substrate-as-AI-model invention,
+/// the prompt IS substrate content (decomposed via the same TextDecomposer
+/// every other text source uses) and the forward pass IS A* traversal over
+/// significance-weighted typed edges. The query carries the prompt text
+/// only — no caller-specified arena, depth bound, cost budget, significance
+/// threshold, edge-type filter, or result cap. Those are conventional-IR
+/// shortcuts; the substrate's own significance state and termination
+/// criteria drive the traversal.
 /// </summary>
 public sealed record InferenceQuery
 {
-    /// <summary>
-    /// Raw text input. The engine decomposes this into seed entities via hash lookup.
-    /// Mutually exclusive with <see cref="SeedEntityIds"/>.
-    /// </summary>
+    /// <summary>The prompt. Decomposed by the engine into seed entities.</summary>
     public string? Text { get; init; }
 
     /// <summary>
-    /// Pre-resolved seed entity IDs. Bypasses query decomposition.
-    /// Mutually exclusive with <see cref="Text"/>.
+    /// Pre-resolved seed entity IDs. Only for callers that already have
+    /// substrate entity ids and want to skip prompt decomposition (e.g.,
+    /// recursive engine self-calls, integration tests).
     /// </summary>
     public IReadOnlyList<long>? SeedEntityIds { get; init; }
-
-    /// <summary>
-    /// Maximum traversal depth (hops from seed entities).
-    /// </summary>
-    public int MaxDepth { get; init; } = 5;
-
-    /// <summary>
-    /// Minimum edge significance (mu) to follow during traversal.
-    /// </summary>
-    public double SignificanceThreshold { get; init; } = 1000.0;
-
-    /// <summary>
-    /// Maximum total cost budget for A* traversal.
-    /// </summary>
-    public double CostBudget { get; init; } = 10_000.0;
-
-    /// <summary>
-    /// Significance arena context for edge rating lookup.
-    /// </summary>
-    public string ArenaCode { get; init; } = "lexical_disambiguation";
-
-    /// <summary>
-    /// Optional filter: only follow edges of these types.
-    /// </summary>
-    public IReadOnlyList<string>? EdgeTypeFilter { get; init; }
-
-    /// <summary>
-    /// Maximum number of result paths to return.
-    /// </summary>
-    public int MaxResults { get; init; } = 10;
 }

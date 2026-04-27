@@ -24,6 +24,39 @@ internal static class PerRowContentPass
     public const double DefaultSparsityThreshold = 1e-6;
     public const int DefaultFlushThreshold = 5_000;
 
+    /// <summary>
+    /// Computes the noise floor for ONE tensor adaptively from its own
+    /// value-magnitude distribution. Substrate Law #11: gradient jitter is
+    /// not content. The "what is jitter" boundary is per-tensor — an
+    /// embedding tensor's noise floor is a different magnitude than an FFN
+    /// tensor's noise floor than a layer-norm scale's. A single repo-wide
+    /// constant is conventional pattern-match wrong.
+    ///
+    /// The measurement: floor = noiseFraction · mean(|x|) over all elements
+    /// of the tensor. Single-pass O(n), no sort, no histogram. Values whose
+    /// |x| is below this floor are gradient jitter relative to the tensor's
+    /// own scale — they get written as 0 into the row's content hash AND
+    /// the contour physicality, so two models whose meaningful signal is
+    /// the same but whose post-training jitter differs collapse to ONE
+    /// entity.
+    ///
+    /// noiseFraction defaults to 0.10 — values that are less than 10% of
+    /// the tensor's own average magnitude are noise. This is per-tensor
+    /// adaptive, not a global constant.
+    /// </summary>
+    public static double ComputeAdaptiveNoiseFloor(double[] flat, double noiseFraction = 0.10)
+    {
+        if (flat.Length == 0) { return 0.0; }
+        double sumAbs = 0.0;
+        for (int i = 0; i < flat.Length; i++)
+        {
+            sumAbs += Math.Abs(flat[i]);
+        }
+        double meanAbs = sumAbs / flat.Length;
+        return meanAbs * noiseFraction;
+    }
+
+
     public static async Task<(long Emitted, long SkippedSparse)> RunPerRowAsync(
         ModelPassContext context,
         IPassSession session,
@@ -33,7 +66,8 @@ internal static class PerRowContentPass
         string edgeTypeCode,
         double sparsityThreshold,
         int flushThreshold,
-        CancellationToken ct)
+        CancellationToken ct,
+        double? noiseFloorOverride = null)
     {
         if (t.Info.Shape.Length != 2)
         {
@@ -47,11 +81,15 @@ internal static class PerRowContentPass
             return (0, 0);
         }
 
-        EntityHandle tensorHandle = session.Batch.AddEntity(t.ContentHash, "tensor");
         double[] flat = SafetensorsReader.ReadTensorAsDouble(t.Info);
+        // Per-tensor adaptive noise floor (Substrate Law #11) — computed from
+        // THIS tensor's own |x| distribution, not a hardcoded constant.
+        double noiseFloor = noiseFloorOverride ?? ComputeAdaptiveNoiseFloor(flat);
 
         int emitted = 0;
         int skippedSparse = 0;
+        // Reusable thresholded-row buffer.
+        double[] thresholded = new double[cols];
         for (int rowIdx = 0; rowIdx < rows; rowIdx++)
         {
             ct.ThrowIfCancellationRequested();
@@ -61,7 +99,9 @@ internal static class PerRowContentPass
             double sumSq = 0;
             for (int c = 0; c < cols; c++)
             {
-                double v = flat[rowOff + c];
+                double raw = flat[rowOff + c];
+                double v = Math.Abs(raw) < noiseFloor ? 0.0 : raw;
+                thresholded[c] = v;
                 sumSq += v * v;
             }
             if (Math.Sqrt(sumSq) < sparsityThreshold)
@@ -73,25 +113,23 @@ internal static class PerRowContentPass
             CanonicalSignatureBuilder b = new(context.Compute.Common, canonicalKindTag4);
             for (int c = 0; c < cols; c++)
             {
-                b.WriteDouble(flat[rowOff + c]);
+                b.WriteDouble(thresholded[c]);
             }
             byte[] hash = b.Finalize();
 
             EntityHandle row = session.Batch.AddEntity(hash, entityTypeCode);
             session.Batch.AddEntityModelSource(row, context.Source.ModelSourceId);
 
-            // Row content as contour physicality so the recomposer can scatter
-            // the values back into a target tensor at distillation.
             int vertexCount = (cols + 3) / 4;
             (double, double, double, double)[] verts = new (double, double, double, double)[vertexCount];
             for (int v = 0; v < vertexCount; v++)
             {
                 int p = v * 4;
                 verts[v] = (
-                    p     < cols ? flat[rowOff + p]     : 0.0,
-                    p + 1 < cols ? flat[rowOff + p + 1] : 0.0,
-                    p + 2 < cols ? flat[rowOff + p + 2] : 0.0,
-                    p + 3 < cols ? flat[rowOff + p + 3] : 0.0);
+                    p     < cols ? thresholded[p]     : 0.0,
+                    p + 1 < cols ? thresholded[p + 1] : 0.0,
+                    p + 2 < cols ? thresholded[p + 2] : 0.0,
+                    p + 3 < cols ? thresholded[p + 3] : 0.0);
             }
             session.Batch.AddPhysicalityLineString4d(row, "contour", verts.AsSpan());
 
@@ -101,7 +139,13 @@ internal static class PerRowContentPass
                 new EdgeMemberSpec(row, null, "target", 1),
             ]);
 
-            session.Batch.AddSequence(parent: tensorHandle, child: row, position: rowIdx, count: 1);
+            // Use t.EntityId (the orchestrator-resolved tensor entity_id) directly —
+            // not a per-batch handle that flush invalidates. Without this, ~5/6 of
+            // sequence rows ended up linked to the wrong parent (a random
+            // embedding_position entity instead of the tensor) because each new
+            // batch's first AddEntity got a fresh BatchIndex that resolved to
+            // whatever entity happened to be in that ord slot.
+            session.Batch.AddSequence(parentEntityId: t.EntityId, child: row, position: rowIdx, count: 1);
 
             emitted++;
             await session.MaybeFlushAsync(flushThreshold, ct);
@@ -127,7 +171,8 @@ internal static class PerRowContentPass
         string edgeTypeCode,
         double sparsityThreshold,
         int flushThreshold,
-        CancellationToken ct)
+        CancellationToken ct,
+        double? noiseFloorOverride = null)
     {
         if (t.Info.Shape.Length < 2)
         {
@@ -146,11 +191,13 @@ internal static class PerRowContentPass
         }
         int cols = (int)cols64;
 
-        EntityHandle tensorHandle = session.Batch.AddEntity(t.ContentHash, "tensor");
         double[] flat = SafetensorsReader.ReadTensorAsDouble(t.Info);
+        // Per-tensor adaptive noise floor — same Law #11 rule as RunPerRowAsync.
+        double noiseFloor = noiseFloorOverride ?? ComputeAdaptiveNoiseFloor(flat);
 
         int emitted = 0;
         int skippedSparse = 0;
+        double[] thresholded = new double[cols];
         for (int outerIdx = 0; outerIdx < outer; outerIdx++)
         {
             ct.ThrowIfCancellationRequested();
@@ -160,7 +207,9 @@ internal static class PerRowContentPass
             double sumSq = 0;
             for (int c = 0; c < cols; c++)
             {
-                double v = flat[rowOff + c];
+                double raw = flat[rowOff + c];
+                double v = Math.Abs(raw) < noiseFloor ? 0.0 : raw;
+                thresholded[c] = v;
                 sumSq += v * v;
             }
             if (Math.Sqrt(sumSq) < sparsityThreshold)
@@ -172,7 +221,7 @@ internal static class PerRowContentPass
             CanonicalSignatureBuilder b = new(context.Compute.Common, canonicalKindTag4);
             for (int c = 0; c < cols; c++)
             {
-                b.WriteDouble(flat[rowOff + c]);
+                b.WriteDouble(thresholded[c]);
             }
             byte[] hash = b.Finalize();
 
@@ -185,10 +234,10 @@ internal static class PerRowContentPass
             {
                 int p = v * 4;
                 verts[v] = (
-                    p     < cols ? flat[rowOff + p]     : 0.0,
-                    p + 1 < cols ? flat[rowOff + p + 1] : 0.0,
-                    p + 2 < cols ? flat[rowOff + p + 2] : 0.0,
-                    p + 3 < cols ? flat[rowOff + p + 3] : 0.0);
+                    p     < cols ? thresholded[p]     : 0.0,
+                    p + 1 < cols ? thresholded[p + 1] : 0.0,
+                    p + 2 < cols ? thresholded[p + 2] : 0.0,
+                    p + 3 < cols ? thresholded[p + 3] : 0.0);
             }
             session.Batch.AddPhysicalityLineString4d(unit, "contour", verts.AsSpan());
 
@@ -198,7 +247,7 @@ internal static class PerRowContentPass
                 new EdgeMemberSpec(unit, null, "target", 1),
             ]);
 
-            session.Batch.AddSequence(parent: tensorHandle, child: unit, position: outerIdx, count: 1);
+            session.Batch.AddSequence(parentEntityId: t.EntityId, child: unit, position: outerIdx, count: 1);
 
             emitted++;
             await session.MaybeFlushAsync(flushThreshold, ct);

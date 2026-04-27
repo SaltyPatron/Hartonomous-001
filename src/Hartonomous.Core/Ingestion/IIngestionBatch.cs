@@ -65,6 +65,24 @@ public interface IIngestionBatch
         int position,
         int count = 1);
 
+    /// <summary>
+    /// Same as <see cref="AddSequence(EntityHandle, EntityHandle, int, int)"/>
+    /// but takes the parent's already-resolved <c>substrate.entity.id</c>
+    /// directly instead of a per-batch <see cref="EntityHandle"/>. Use this
+    /// when the parent is known via stable substrate id (e.g. a TensorHandle's
+    /// EntityId in safetensors decomposition) so the sequence row is not at
+    /// the mercy of cross-batch handle remapping. Fixes the silent miswrite
+    /// where flush invalidated the tensor handle and subsequent sequence
+    /// rows pointed at the WRONG entity (e.g. 4998 of 30522 embedding rows
+    /// linked to the tensor; the rest pointed at random embedding_position
+    /// entities promoted by the post-flush handle reuse).
+    /// </summary>
+    void AddSequence(
+        long parentEntityId,
+        EntityHandle child,
+        int position,
+        int count = 1);
+
     void AddSignificance(
         EntityHandle entity,
         string contextTypeCode,

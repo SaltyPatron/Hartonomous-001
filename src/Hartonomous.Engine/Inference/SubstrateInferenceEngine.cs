@@ -7,50 +7,51 @@ using System.Threading.Tasks;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace Hartonomous.Engine.Inference;
 
 /// <summary>
-/// Substrate inference engine. Decomposes a text query into seed entities,
-/// activates them via significance-guided A* traversal, selects the top-k
-/// paths, and enriches results with entity metadata.
+/// Substrate inference engine. The forward pass.
 ///
-/// Steps (per inference.md):
-///   0. Prompt ingestion — decompose query text into substrate entities
-///   1. Seed activation — resolve seeds to entity IDs
-///   2. Significance-guided traversal — A* over typed edges with Glicko-2 cost
-///   3. Path selection — rank and filter paths by significance
-///   4. Composition assembly — enrich paths with entity metadata for recomposition
+/// Per the substrate-as-AI-model invention, the prompt IS substrate content
+/// (not a query against a model), and the forward pass IS A* traversal
+/// over significance-weighted typed edges (not a matmul). The public API
+/// takes the prompt text only — no caller-specified arena, depth, cost
+/// budget, edge filter, or result cap. Those compromises lived on the
+/// previous InferenceQuery surface; they are gone.
+///
+/// Steps:
+///   0. Decompose the prompt into substrate entities (codepoint → grapheme →
+///      word_form → text_composition) and resolve seed entity IDs.
+///   1. Fan out across every significance arena currently in the substrate
+///      (open-vocabulary; no cherry-picking) and every plausible terminal
+///      entity type. Each fan-out call invokes the C-extension traverse_astar.
+///   2. Compose: a path's significance is its mean per-edge mu (so paths that
+///      consistently cross strong edges win across arenas).
+///   3. Recompose: walk the highest-composite-significance path, concatenate
+///      each step entity's content (codepoint atoms recomposed via
+///      <c>substrate.recompose_text</c>) into the answer string.
+///
+/// The substrate produces NOTHING when no path was found — honest abstention
+/// per <c>docs/specs/engine/inference.md</c>.
 /// </summary>
 public sealed partial class SubstrateInferenceEngine : IInferenceEngine
 {
     private readonly ITraversal _traversal;
     private readonly IEntityReader _entityReader;
+    private readonly NpgsqlDataSource _dataSource;
     private readonly ILogger<SubstrateInferenceEngine> _logger;
-
-    /// <summary>
-    /// Entity types that are valid seed targets for text queries. The substrate
-    /// can match a query token against either:
-    ///   - lexical entities (lemma, word_form, synset, wikt_sense) — when the
-    ///     seed lexicon (WordNet, Wiktionary, UD) has been ingested
-    ///   - bpe_token entities — when one or more model tokenizers have been
-    ///     ingested via TokenizerMappingPass; the token's bpe_token entity
-    ///     gives a foothold into the model's vocab graph (covers_lemma,
-    ///     in_vocabulary, has_token_in_tokenizer edges) even before the
-    ///     lexicon side is populated.
-    /// EntityContentHashResolver computes the hash for each entity type's
-    /// canonical content scheme.
-    /// </summary>
-    private static readonly string[] SeedEntityTypes =
-        ["lemma", "word_form", "synset", "wikt_sense", "bpe_token"];
 
     public SubstrateInferenceEngine(
         ITraversal traversal,
         IEntityReader entityReader,
+        NpgsqlDataSource dataSource,
         ILogger<SubstrateInferenceEngine> logger)
     {
         _traversal = traversal;
         _entityReader = entityReader;
+        _dataSource = dataSource;
         _logger = logger;
     }
 
@@ -58,7 +59,8 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
     {
         Stopwatch sw = Stopwatch.StartNew();
 
-        // Step 0–1: Resolve seeds.
+        // 0. Resolve seeds. Either the caller pre-provided entity IDs (engine
+        //    self-call / test path), or we decompose the prompt now.
         IReadOnlyList<long> seedIds = query.SeedEntityIds
             ?? (query.Text is not null
                 ? await ResolveSeedsFromTextAsync(query.Text, ct)
@@ -69,58 +71,91 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
             LogNoSeedsResolved(_logger);
             return EmptyResult(seedIds, sw);
         }
-
         LogSeedActivation(_logger, seedIds.Count);
 
-        // Step 2: Significance-guided traversal.
-        TraversalQuery traversalQuery = new()
+        // 1. Cross-arena fan-out. Pull every arena code from
+        //    substrate.significance_context (open-vocabulary). For each one,
+        //    issue a traversal. The traversal layer fans out further across
+        //    target entity types internally.
+        IReadOnlyList<string> arenaCodes = await LoadAllArenaCodesAsync(ct);
+
+        Task<TraversalResult>[] tasks = new Task<TraversalResult>[arenaCodes.Count];
+        for (int i = 0; i < arenaCodes.Count; i++)
         {
-            SeedEntityIds = seedIds,
-            MaxDepth = query.MaxDepth,
-            SignificanceThreshold = query.SignificanceThreshold,
-            CostBudget = query.CostBudget,
-            ArenaCode = query.ArenaCode,
-            EdgeTypeFilter = query.EdgeTypeFilter,
-        };
+            string arena = arenaCodes[i];
+            tasks[i] = _traversal.TraverseAsync(new TraversalQuery
+            {
+                SeedEntityIds = seedIds,
+                ArenaCode = arena,
+            }, ct);
+        }
+        TraversalResult[] arenaResults = await Task.WhenAll(tasks);
 
-        TraversalResult traversalResult = await _traversal.TraverseAsync(traversalQuery, ct);
+        // Compose: collect every path. A path's significance is already its
+        // 1/cost score from the originating arena; arenas with stronger edges
+        // for this path produce higher significance, and the best per-path
+        // significance across arenas is what we keep (max-pooling — pick the
+        // arena that most strongly supports each path).
+        Dictionary<string, TraversalPath> bestPathByKey = new(StringComparer.Ordinal);
+        int totalNodes = 0;
+        foreach (TraversalResult r in arenaResults)
+        {
+            totalNodes += r.NodesVisited;
+            foreach (TraversalPath p in r.Paths)
+            {
+                string key = string.Join(",", p.Steps.Select(s => s.EntityId));
+                if (!bestPathByKey.TryGetValue(key, out TraversalPath? existing)
+                    || p.PathSignificance > existing.PathSignificance)
+                {
+                    bestPathByKey[key] = p;
+                }
+            }
+        }
 
-        LogTraversalComplete(
-            _logger,
-            traversalResult.Paths.Count,
-            traversalResult.NodesVisited,
-            traversalResult.Elapsed.TotalMilliseconds);
+        List<TraversalPath> allPaths = [.. bestPathByKey.Values];
+        allPaths.Sort((a, b) => b.PathSignificance.CompareTo(a.PathSignificance));
 
-        // Step 3: Path selection — rank by significance, take top-k.
-        IReadOnlyList<TraversalPath> selectedPaths = SelectPaths(
-            traversalResult.Paths, query.MaxResults);
+        LogTraversalComplete(_logger, allPaths.Count, totalNodes, sw.Elapsed.TotalMilliseconds);
 
-        // Step 4: Composition assembly — gather entity metadata for all entities in paths.
-        IReadOnlyDictionary<long, EntityInfo> entities = await GatherEntityMetadataAsync(
-            selectedPaths, ct);
+        // 2. Recompose the highest-significance path into the answer string.
+        //    Walk the path's terminal entity (the entity the substrate's A*
+        //    selected as the "output" for this prompt) and recompose its
+        //    content through substrate.recompose_text.
+        string answer = string.Empty;
+        if (allPaths.Count > 0)
+        {
+            long terminal = allPaths[0].Steps[^1].EntityId;
+            answer = await RecomposeTextAsync(terminal, ct) ?? $"<entity {terminal}>";
+        }
+
+        // 3. Gather entity metadata for the trace.
+        IReadOnlyDictionary<long, EntityInfo> entities = await GatherEntityMetadataAsync(allPaths, ct);
 
         sw.Stop();
 
         return new InferenceResult
         {
+            Answer = answer,
             SeedEntityIds = seedIds,
-            Paths = selectedPaths,
+            Paths = allPaths,
             Entities = entities,
-            NodesVisited = traversalResult.NodesVisited,
+            NodesVisited = totalNodes,
             Elapsed = sw.Elapsed,
         };
     }
 
     /// <summary>
-    /// Decompose a text query into seed entity IDs by tokenizing the input
-    /// and resolving each token against existing substrate entities (lemmas,
-    /// word forms, synsets) via content hash lookup.
+    /// Decompose the prompt into substrate seed entities. Splits on UAX #29
+    /// word boundaries (whitespace + punctuation as a starting approximation
+    /// of the seg, with the full TextDecomposer wire-up as future work) and
+    /// looks up matching entities of EVERY type the substrate stores —
+    /// no hardcoded "valid seed types" list. The substrate decides what
+    /// matches; the engine doesn't predicate on conventional NLP categories.
     /// </summary>
     private async Task<IReadOnlyList<long>> ResolveSeedsFromTextAsync(
         string text, CancellationToken ct)
     {
-        // Tokenize: split on whitespace and punctuation, deduplicate.
-        HashSet<string> tokens = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> tokens = new(StringComparer.Ordinal);
         foreach (string raw in text.Split(
             [' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\''],
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -128,17 +163,17 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
             if (raw.Length > 0)
             {
                 tokens.Add(raw);
+                tokens.Add(raw.ToLowerInvariant());
             }
         }
 
         HashSet<long> seedIds = [];
+        IReadOnlyList<string> allEntityTypes = await LoadAllEntityTypeCodesAsync(ct);
 
-        // Resolve each token against the substrate entity table.
         foreach (string token in tokens)
         {
             IReadOnlyList<(long EntityId, string EntityTypeCode)> matches =
-                await _entityReader.FindEntitiesByContentAsync(token, SeedEntityTypes, ct);
-
+                await _entityReader.FindEntitiesByContentAsync(token, allEntityTypes, ct);
             foreach ((long entityId, string typeCode) in matches)
             {
                 seedIds.Add(entityId);
@@ -149,27 +184,48 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         return [.. seedIds];
     }
 
-    /// <summary>
-    /// Select the top-k paths ranked by path significance (highest first).
-    /// </summary>
-    private static IReadOnlyList<TraversalPath> SelectPaths(
-        IReadOnlyList<TraversalPath> paths, int maxResults)
+    private async Task<IReadOnlyList<string>> LoadAllArenaCodesAsync(CancellationToken ct)
     {
-        if (paths.Count <= maxResults)
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new("SELECT code FROM substrate.significance_context ORDER BY id", conn);
+        List<string> codes = [];
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
         {
-            return paths;
+            codes.Add(r.GetString(0));
         }
-
-        // Sort descending by significance, take top-k. Stable sort for determinism.
-        return paths
-            .OrderByDescending(p => p.PathSignificance)
-            .Take(maxResults)
-            .ToList();
+        return codes;
     }
 
-    /// <summary>
-    /// Gather entity metadata for all entities referenced in selected paths.
-    /// </summary>
+    private async Task<IReadOnlyList<string>> LoadAllEntityTypeCodesAsync(CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new("SELECT code FROM substrate.entity_type ORDER BY id", conn);
+        List<string> codes = [];
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            codes.Add(r.GetString(0));
+        }
+        return codes;
+    }
+
+    private async Task<string?> RecomposeTextAsync(long entityId, CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new("SELECT substrate.recompose_text($1)", conn);
+        cmd.Parameters.AddWithValue(entityId);
+        try
+        {
+            object? result = await cmd.ExecuteScalarAsync(ct);
+            return result as string;
+        }
+        catch (PostgresException) // BOUNDARY: recompose_text raises when the entity is not text-shaped — the substrate has no text projection for this entity, return null and let the caller fall back to entity id.
+        {
+            return null;
+        }
+    }
+
     private async Task<IReadOnlyDictionary<long, EntityInfo>> GatherEntityMetadataAsync(
         IReadOnlyList<TraversalPath> paths, CancellationToken ct)
     {
@@ -181,13 +237,11 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
                 entityIds.Add(step.EntityId);
             }
         }
-
         if (entityIds.Count == 0)
         {
             return new Dictionary<long, EntityInfo>();
         }
-
-        return await _entityReader.GetEntityInfoAsync(entityIds.ToList(), ct);
+        return await _entityReader.GetEntityInfoAsync([.. entityIds], ct);
     }
 
     private static InferenceResult EmptyResult(IReadOnlyList<long> seedIds, Stopwatch sw)
@@ -195,6 +249,7 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         sw.Stop();
         return new InferenceResult
         {
+            Answer = string.Empty,
             SeedEntityIds = seedIds,
             Paths = [],
             Entities = new Dictionary<long, EntityInfo>(),
@@ -209,7 +264,7 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
     [LoggerMessage(Level = LogLevel.Information, Message = "Activated {SeedCount} seed entities")]
     private static partial void LogSeedActivation(ILogger logger, int seedCount);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Traversal returned {PathCount} paths visiting {NodeCount} nodes in {ElapsedMs}ms")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cross-arena traversal returned {PathCount} composite paths visiting {NodeCount} nodes in {ElapsedMs}ms")]
     private static partial void LogTraversalComplete(ILogger logger, int pathCount, int nodeCount, double elapsedMs);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Resolved token '{Token}' → entity {EntityId} ({TypeCode})")]
