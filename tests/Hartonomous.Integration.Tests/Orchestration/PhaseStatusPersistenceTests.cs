@@ -180,6 +180,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4) { }
         public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices) { }
         public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1) { }
+        public void AddSequence(long parentEntityId, EntityHandle child, int position, int count = 1) { }
         public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu) { }
         public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }
     }

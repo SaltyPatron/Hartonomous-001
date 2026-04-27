@@ -188,7 +188,15 @@ pg_neighbors(PG_FUNCTION_ARGS)
                 if (found)
                     continue;
 
-                new_path = palloc(sizeof(int64) * (cur.path_len + 1));
+                /* Allocate path in multi_call_memory_ctx so it survives SPI_finish.
+                 * Plain palloc here would land in the SPI procedure context, which
+                 * SPI_finish frees at end-of-firstcall — leaving results[].path and
+                 * queue[].path dangling. SRF_PERCALL_SETUP later dereferences those
+                 * freed pages and the backend's stack canary fires on whichever
+                 * frame returns next. Identical bug shape to the prior pg_traverse_astar
+                 * UAF (lines 604/609 of this file already use this pattern). */
+                new_path = MemoryContextAlloc(funcctx->multi_call_memory_ctx,
+                                              sizeof(int64) * (cur.path_len + 1));
                 memcpy(new_path, cur.path, sizeof(int64) * cur.path_len);
                 new_path[cur.path_len] = nbr_entity_id;
 

@@ -87,7 +87,16 @@ public sealed class InterfaceShapeTests
         Assert.Equal(typeof(void), Method(t, "AddEdge").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddJunction").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicality").ReturnType);
-        Assert.Equal(typeof(void), Method(t, "AddSequence").ReturnType);
+
+        // AddSequence has two overloads: one for in-batch parents (EntityHandle)
+        // and one for pre-resolved parents (long substrate.entity.id) — both
+        // return void.
+        MethodInfo[] addSequence = t.GetMethods()
+            .Where(m => m.Name == "AddSequence")
+            .ToArray();
+        Assert.Equal(2, addSequence.Length);
+        Assert.All(addSequence, m => Assert.Equal(typeof(void), m.ReturnType));
+
         Assert.Equal(typeof(void), Method(t, "AddSignificance").ReturnType);
         Assert.Equal(typeof(int), Property(t, "EntityCount").PropertyType);
         Assert.Equal(typeof(int), Property(t, "EdgeCount").PropertyType);

@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Microsoft.Extensions.Logging;
-using Npgsql;
 
 namespace Hartonomous.Engine.Inference;
 
@@ -40,18 +39,21 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
 {
     private readonly ITraversal _traversal;
     private readonly IEntityReader _entityReader;
-    private readonly NpgsqlDataSource _dataSource;
+    private readonly IReferenceDataReader _referenceData;
+    private readonly ITextRecompositionReader? _textReader;
     private readonly ILogger<SubstrateInferenceEngine> _logger;
 
     public SubstrateInferenceEngine(
         ITraversal traversal,
         IEntityReader entityReader,
-        NpgsqlDataSource dataSource,
-        ILogger<SubstrateInferenceEngine> logger)
+        IReferenceDataReader referenceData,
+        ILogger<SubstrateInferenceEngine> logger,
+        ITextRecompositionReader? textReader = null)
     {
         _traversal = traversal;
         _entityReader = entityReader;
-        _dataSource = dataSource;
+        _referenceData = referenceData;
+        _textReader = textReader;
         _logger = logger;
     }
 
@@ -186,44 +188,25 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
 
     private async Task<IReadOnlyList<string>> LoadAllArenaCodesAsync(CancellationToken ct)
     {
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT code FROM substrate.significance_context ORDER BY id", conn);
-        List<string> codes = [];
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct))
-        {
-            codes.Add(r.GetString(0));
-        }
-        return codes;
+        Dictionary<string, int> map = await _referenceData.LoadCodeMapAsync(
+            "significance_context", initialCapacity: 16, ct);
+        return [.. map.OrderBy(kv => kv.Value).Select(kv => kv.Key)];
     }
 
     private async Task<IReadOnlyList<string>> LoadAllEntityTypeCodesAsync(CancellationToken ct)
     {
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT code FROM substrate.entity_type ORDER BY id", conn);
-        List<string> codes = [];
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct))
-        {
-            codes.Add(r.GetString(0));
-        }
-        return codes;
+        Dictionary<string, int> map = await _referenceData.LoadCodeMapAsync(
+            "entity_type", initialCapacity: 32, ct);
+        return [.. map.OrderBy(kv => kv.Value).Select(kv => kv.Key)];
     }
 
     private async Task<string?> RecomposeTextAsync(long entityId, CancellationToken ct)
     {
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT substrate.recompose_text($1)", conn);
-        cmd.Parameters.AddWithValue(entityId);
-        try
-        {
-            object? result = await cmd.ExecuteScalarAsync(ct);
-            return result as string;
-        }
-        catch (PostgresException) // BOUNDARY: recompose_text raises when the entity is not text-shaped — the substrate has no text projection for this entity, return null and let the caller fall back to entity id.
+        if (_textReader is null)
         {
             return null;
         }
+        return await _textReader.RecomposeTextAsync(entityId, maxDepth: int.MaxValue, ct);
     }
 
     private async Task<IReadOnlyDictionary<long, EntityInfo>> GatherEntityMetadataAsync(

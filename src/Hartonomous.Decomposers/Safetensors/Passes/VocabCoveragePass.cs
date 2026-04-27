@@ -225,7 +225,7 @@ internal sealed partial class VocabCoveragePass : IModelAnalysisPass
             UTF8Encoding strict = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
             return strict.GetString(bytes);
         }
-        catch (DecoderFallbackException)
+        catch (DecoderFallbackException) // BOUNDARY: tokenizer byte-fallback tokens (raw 0x80–0xFF without a valid UTF-8 lead) are valid vocab entries that simply have no UTF-8-string projection — they cannot bind to lemmas, return null and let the caller skip.
         {
             return null;
         }

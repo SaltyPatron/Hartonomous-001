@@ -941,7 +941,7 @@ internal static class Program
             using Microsoft.Extensions.Logging.ILoggerFactory lf =
                 Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Warning));
             Hartonomous.Engine.Inference.SubstrateInferenceEngine engine = new(
-                traversal, entityReader, ds, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
+                traversal, entityReader, refReader, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
 
             Hartonomous.Core.Engine.InferenceQuery q = new() { Text = text };
 

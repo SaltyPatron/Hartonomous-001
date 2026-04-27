@@ -149,6 +149,18 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                         TextSegmentationEmitter.EmitTextComposition(
                             batch, definition, _codepointProperties, "text_composition", TrustPriorMu);
                     EmitContourPhysicality(batch, glossEntity, definition);
+                    // Inline has_gloss edge — synset → text_composition. Both sides are
+                    // EntityHandles in this batch, so the pipeline remaps them at flush
+                    // without phase-wide ResolveEntityIdsAsync. The Pass-2 has_gloss step
+                    // remains as a fallback (ON CONFLICT dedupes), but if Pass 2 dies
+                    // partway through, every committed Pass-1 batch still has its
+                    // gloss edges populated.
+                    batch.AddEdge("has_gloss", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(synsetEntity, null, "source", 0),
+                        new EdgeMemberSpec(glossEntity, null, "target", 1),
+                    ]);
+                    edgeCount++;
                     glossEntries.Add((synsetKey, glossHash));
                     entityCount++;
                 }
@@ -159,6 +171,13 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                         TextSegmentationEmitter.EmitTextComposition(
                             batch, example, _codepointProperties, "text_composition", TrustPriorMu);
                     EmitContourPhysicality(batch, exampleEntity, example);
+                    // Inline has_example edge — same reasoning as has_gloss above.
+                    batch.AddEdge("has_example", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(synsetEntity, null, "source", 0),
+                        new EdgeMemberSpec(exampleEntity, null, "target", 1),
+                    ]);
+                    edgeCount++;
                     exampleEntries.Add((synsetKey, exampleHash));
                     entityCount++;
                 }
@@ -178,11 +197,25 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                     List<(double, double, double, double)> lemmaVertices =
                         PhysicalityEmitter.SurfaceFormVertices(lemmaKey);
 
-                    if (!lemmaToHash.ContainsKey(lemmaKey))
+                    EntityHandle lemmaEntity;
+                    if (lemmaToHash.TryGetValue(lemmaKey, out byte[]? cachedLemmaHash))
                     {
-                        // EmitLemmaMaybeCompound: monolexical → single lemma; multi-word
-                        // ("high_rise") → lemma + part word_forms + lexicalized_compound edge.
-                        (EntityHandle lemmaEntity, byte[] lemmaHash) =
+                        // Repeat occurrence: re-add the entity to THIS batch so we have
+                        // a handle for the inline has_sense edge. The pipeline's
+                        // ON CONFLICT (hash, entity_type_id) DO NOTHING upsert dedupes
+                        // to the existing substrate row — same hash maps to the same id
+                        // across batches. No double-counting of significance or
+                        // physicality (those landed on first occurrence).
+                        lemmaEntity = batch.AddEntity(cachedLemmaHash, "lemma");
+                    }
+                    else
+                    {
+                        // First occurrence in this phase: full emission with significance
+                        // and physicality. EmitLemmaMaybeCompound: monolexical → single
+                        // lemma; multi-word ("high_rise") → lemma + part word_forms +
+                        // lexicalized_compound edge.
+                        byte[] lemmaHash;
+                        (lemmaEntity, lemmaHash) =
                             EmitLemmaMaybeCompound(batch, lemmaKey, ProvenanceCode);
                         lemmaToHash[lemmaKey] = lemmaHash;
                         batch.AddSignificance(lemmaEntity, "source_authority", TrustPriorMu);
@@ -191,6 +224,14 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
                         entityCount++;
                     }
+
+                    // Inline has_sense edge — lemma → synset, in this batch.
+                    batch.AddEdge("has_sense", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(lemmaEntity, null, "source", 0),
+                        new EdgeMemberSpec(synsetEntity, null, "target", 1),
+                    ]);
+                    edgeCount++;
 
                     // Record POS evidence for EVERY synset this lemma appears in,
                     // not just the first. "rake" as noun AND verb both accumulate.

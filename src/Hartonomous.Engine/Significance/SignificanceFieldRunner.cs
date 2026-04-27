@@ -66,13 +66,17 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
         await conn.OpenAsync(ct);
 
         // Idempotent: only insert rows that don't already exist.
+        // CAST(NULL AS BIGINT) on entity_id — same bug shape as migration
+        // 0064. Cross-product against EVERY arena currently in
+        // significance_context (no IN-list cherry-pick) per rule 45 AP-1
+        // (arenas are open-vocabulary; new arenas added later must
+        // backfill onto existing edges automatically).
         const string PrimeSql = @"
             INSERT INTO substrate.significance (entity_id, edge_id, context_type_id, mu, sigma, volatility, games)
-            SELECT NULL, e.id, sc.id, p.initial_mu, 350.0, 0.06, 0
+            SELECT CAST(NULL AS BIGINT), e.id, sc.id, p.initial_mu, 350.0, 0.06, 0
             FROM substrate.edge e
             JOIN substrate.provenance p ON p.id = e.provenance_id
             CROSS JOIN substrate.significance_context sc
-            WHERE sc.code IN ('semantic_relevance', 'lexical_disambiguation')
             ON CONFLICT DO NOTHING
         ";
 

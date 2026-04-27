@@ -228,7 +228,7 @@ public sealed class IngestionBatchTests
         batch.AddSequence(parent, child, 3, 1);
 
         Assert.Single(batch.Sequences);
-        Assert.Equal(parent, batch.Sequences[0].Parent);
+        Assert.Equal(parent, batch.Sequences[0].ParentHandle);
         Assert.Equal(child, batch.Sequences[0].Child);
         Assert.Equal(3, batch.Sequences[0].Position);
         Assert.Equal(1, batch.Sequences[0].Count);

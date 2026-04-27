@@ -30,7 +30,14 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
     public NpgsqlIngestionPipeline(string connectionString, IReferenceDataReader referenceDataReader, ILogger<NpgsqlIngestionPipeline> logger)
     {
-        NpgsqlDataSourceBuilder builder = new(connectionString);
+        // Include Error Detail surfaces the offending row in CHECK / FK / NOT NULL
+        // violations so the diagnostic actually points at the bad data instead of
+        // the generic redacted message. Trade-off: errors may carry user content
+        // into logs — acceptable here because the substrate's content is the
+        // identity of every entity (BLAKE3 hashes are not sensitive) and the
+        // ingestion pipeline is not exposed to untrusted callers.
+        NpgsqlConnectionStringBuilder csb = new(connectionString) { IncludeErrorDetail = true };
+        NpgsqlDataSourceBuilder builder = new(csb.ConnectionString);
         _dataSource = builder.Build();
         _codeResolver = new CodeResolver(referenceDataReader);
         _logger = logger;
@@ -254,19 +261,34 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await insertCmd.ExecuteNonQueryAsync(ct);
         }
 
-        // Resolve all (hash, type_id) → entity_id. Pure set-based join, no
-        // correlated subqueries. The previous EXISTS-on-entity_model_source
-        // path crashed Postgres backends under UCD-scale load (SIGSEGV during
-        // query execution; reproducible across multiple runs). Corroboration
-        // evidence accumulation needs to be rebuilt as a separate, batched
-        // pass that runs after entity resolution — not inline in the ID
-        // resolution query.
-        await using (NpgsqlCommand selectCmd = new(@"
-            SELECT s.ord, e.id
-              FROM staging_entity s
-              JOIN substrate.entity e
-                ON e.hash = s.hash AND e.entity_type_id = s.entity_type_id", conn))
+        // Resolve all (hash, type_id) → entity_id. PG 18.3 SIGSEGVs
+        // (reproducible) when this JOIN expands across multiple LIST
+        // partitions of substrate.entity in one query — WordNet's first
+        // batch hits lemma+synset+word_sense+text_composition partitions
+        // simultaneously and the partitionwise-join planner crashes the
+        // backend. Splitting by entity_type_id forces each query to a
+        // single partition (predicate `e.entity_type_id = $1` prunes the
+        // append node to one child), which the planner handles cleanly.
+        HashSet<int> uniqueTypes = new();
+        for (int i = 0; i < typeIds.Length; i++)
         {
+            uniqueTypes.Add(typeIds[i]);
+        }
+
+        foreach (int typeId in uniqueTypes)
+        {
+            await using NpgsqlCommand selectCmd = new(@"
+                SELECT s.ord, e.id
+                  FROM staging_entity s
+                  JOIN substrate.entity e
+                    ON e.hash = s.hash AND e.entity_type_id = $1
+                 WHERE s.entity_type_id = $1", conn);
+            selectCmd.Parameters.Add(new NpgsqlParameter
+            {
+                Value = typeId,
+                NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
+            });
+
             await using NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -650,9 +672,16 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await writer.CompleteAsync(ct);
         }
 
+        // CAST(NULL AS BIGINT) — same fix shape as migration 0064 for
+        // substrate.prime_edge_significance. PG 18 with cached plans +
+        // LIST-partitioned target table (substrate.significance is
+        // partitioned by context_type_id) resolves a bare NULL to the
+        // wrong column type, allowing the bit pattern of a sibling
+        // float8 literal (0.06) to leak into the BIGINT edge_id slot.
+        // Symptom: SIGSEGV inside partition routing on this exact INSERT.
         await using NpgsqlCommand cmd = new(
             "INSERT INTO substrate.significance (entity_id, edge_id, context_type_id, mu, sigma, volatility, games) " +
-            "SELECT entity_id, NULL, context_type_id, mu, 350.0, 0.06, 0 " +
+            "SELECT entity_id, CAST(NULL AS BIGINT), context_type_id, mu, 350.0, 0.06, 0 " +
             "FROM staging_significance " +
             "ON CONFLICT DO NOTHING", conn);
         await cmd.ExecuteNonQueryAsync(ct);

@@ -38,6 +38,7 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
         _engine = new SubstrateInferenceEngine(
             _traversal,
             _entityReader,
+            _refReader,
             NullLogger<SubstrateInferenceEngine>.Instance);
         return Task.CompletedTask;
     }
@@ -56,11 +57,6 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
         InferenceQuery query = new()
         {
             Text = "break",
-            MaxDepth = 3,
-            MaxResults = 5,
-            SignificanceThreshold = 0.0,
-            CostBudget = 100,
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await _engine.InferAsync(query, CancellationToken.None);

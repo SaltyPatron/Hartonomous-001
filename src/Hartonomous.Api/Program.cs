@@ -43,7 +43,9 @@ builder.Services.AddSingleton<IEntityReader>(sp => new NpgsqlEntityReader(
 builder.Services.AddSingleton<IInferenceEngine>(sp => new SubstrateInferenceEngine(
     sp.GetRequiredService<ITraversal>(),
     sp.GetRequiredService<IEntityReader>(),
-    sp.GetRequiredService<ILogger<SubstrateInferenceEngine>>()));
+    sp.GetRequiredService<IReferenceDataReader>(),
+    sp.GetRequiredService<ILogger<SubstrateInferenceEngine>>(),
+    sp.GetService<ITextRecompositionReader>()));
 builder.Services.AddSingleton<IRecomposer<string>>(sp => new TextRecomposer(
     sp.GetRequiredService<IEntityReader>()));
 builder.Services.AddSingleton<IPhysicalityReader>(sp => new NpgsqlPhysicalityReader(

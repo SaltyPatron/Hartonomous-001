@@ -9,12 +9,16 @@ public sealed class SubstrateInferenceEngineTests
 {
     private static SubstrateInferenceEngine CreateEngine(
         FakeTraversal? traversal = null,
-        FakeEntityReader? entityReader = null)
+        FakeEntityReader? entityReader = null,
+        FakeReferenceData? referenceData = null,
+        FakeTextRecompositionReader? textReader = null)
     {
         return new SubstrateInferenceEngine(
             traversal ?? new FakeTraversal(),
             entityReader ?? new FakeEntityReader(),
-            NullLogger<SubstrateInferenceEngine>.Instance);
+            referenceData ?? new FakeReferenceData(),
+            NullLogger<SubstrateInferenceEngine>.Instance,
+            textReader);
     }
 
     [Fact]
@@ -27,7 +31,6 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             SeedEntityIds = [100L, 200L],
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -50,7 +53,6 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             Text = "Hello, World!",
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -69,7 +71,6 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             Text = "xyzzy",
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -80,7 +81,7 @@ public sealed class SubstrateInferenceEngineTests
     }
 
     [Fact]
-    public async Task InferAsync_PathSelection_ReturnsTopK()
+    public async Task InferAsync_PathSelection_DeduplicatesAndSortsBySignificance()
     {
         FakeTraversal traversal = new();
         for (int i = 0; i < 20; i++)
@@ -97,16 +98,17 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             SeedEntityIds = [1L],
-            ArenaCode = "lexical_disambiguation",
-            MaxResults = 5,
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
-        Assert.Equal(5, result.Paths.Count);
-        // Should be sorted descending by significance.
-        Assert.True(result.Paths[0].PathSignificance >= result.Paths[1].PathSignificance);
-        Assert.True(result.Paths[1].PathSignificance >= result.Paths[2].PathSignificance);
+        // Per the substrate-as-AI invention the engine returns ALL distinct
+        // paths, ordered descending by composite significance — no caller cap.
+        Assert.Equal(20, result.Paths.Count);
+        for (int i = 1; i < result.Paths.Count; i++)
+        {
+            Assert.True(result.Paths[i - 1].PathSignificance >= result.Paths[i].PathSignificance);
+        }
     }
 
     [Fact]
@@ -140,7 +142,6 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             SeedEntityIds = [10L],
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -148,30 +149,6 @@ public sealed class SubstrateInferenceEngineTests
         Assert.Equal(2, result.Entities.Count);
         Assert.Equal("lemma", result.Entities[10].EntityTypeCode);
         Assert.Equal("synset", result.Entities[20].EntityTypeCode);
-    }
-
-    [Fact]
-    public async Task InferAsync_FewerPathsThanMaxResults_ReturnsAll()
-    {
-        FakeTraversal traversal = new();
-        traversal.Result.Paths.Add(new TraversalPath
-        {
-            Steps = [new TraversalStep { EntityId = 1 }],
-            PathSignificance = 50.0,
-        });
-
-        SubstrateInferenceEngine engine = CreateEngine(traversal);
-
-        InferenceQuery query = new()
-        {
-            SeedEntityIds = [1L],
-            ArenaCode = "lexical_disambiguation",
-            MaxResults = 100,
-        };
-
-        InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
-
-        Assert.Single(result.Paths);
     }
 
     [Fact]
@@ -187,7 +164,6 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             Text = "Don't stop!",
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -207,42 +183,41 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             Text = "The the THE",
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
-        // "the" should be resolved once (case-insensitive dedup), but the
-        // entity may appear once per match.
         Assert.Contains(1L, result.SeedEntityIds);
-        Assert.True(reader.FindCallCount <= 1,
-            "Duplicate tokens should be deduplicated before resolution");
+        // The engine emits both the original surface form and its lower-case
+        // variant per token (case-preserving entities and case-folded entities
+        // are both valid substrate matches), then deduplicates the union. For
+        // "The the THE" the set is {"The", "the", "THE"} — 3 distinct lookups.
+        Assert.True(reader.FindCallCount <= 3,
+            "Duplicate surface tokens should collapse before resolution.");
     }
 
     [Fact]
-    public async Task InferAsync_PassesTraversalParameters()
+    public async Task InferAsync_FansOutAcrossEveryArena()
     {
         FakeTraversal traversal = new();
-        SubstrateInferenceEngine engine = CreateEngine(traversal);
+        FakeReferenceData refs = new();
+        refs.SignificanceContextCodes["lexical_disambiguation"] = 1;
+        refs.SignificanceContextCodes["syntactic_role_fitness"] = 2;
+        refs.SignificanceContextCodes["semantic_relevance"] = 3;
+
+        SubstrateInferenceEngine engine = CreateEngine(traversal, referenceData: refs);
 
         InferenceQuery query = new()
         {
             SeedEntityIds = [42L],
-            MaxDepth = 3,
-            SignificanceThreshold = 1200.0,
-            CostBudget = 5000.0,
-            ArenaCode = "translation_quality",
-            EdgeTypeFilter = ["has_sense", "has_lemma"],
         };
 
         await engine.InferAsync(query, CancellationToken.None);
 
-        Assert.NotNull(traversal.LastQuery);
-        Assert.Equal(3, traversal.LastQuery.MaxDepth);
-        Assert.Equal(1200.0, traversal.LastQuery.SignificanceThreshold);
-        Assert.Equal(5000.0, traversal.LastQuery.CostBudget);
-        Assert.Equal("translation_quality", traversal.LastQuery.ArenaCode);
-        Assert.Equal(["has_sense", "has_lemma"], traversal.LastQuery.EdgeTypeFilter);
+        Assert.Equal(3, traversal.AllArenas.Count);
+        Assert.Contains("lexical_disambiguation", traversal.AllArenas);
+        Assert.Contains("syntactic_role_fitness", traversal.AllArenas);
+        Assert.Contains("semantic_relevance", traversal.AllArenas);
     }
 
     [Fact]
@@ -253,7 +228,6 @@ public sealed class SubstrateInferenceEngineTests
         InferenceQuery query = new()
         {
             SeedEntityIds = [1L],
-            ArenaCode = "lexical_disambiguation",
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -268,11 +242,16 @@ public sealed class SubstrateInferenceEngineTests
         public FakeTraversalResult Result { get; } = new();
         public bool TraverseCalled { get; private set; }
         public TraversalQuery? LastQuery { get; private set; }
+        public List<string> AllArenas { get; } = [];
 
         public Task<TraversalResult> TraverseAsync(TraversalQuery query, CancellationToken ct)
         {
             TraverseCalled = true;
             LastQuery = query;
+            if (query.ArenaCode is not null)
+            {
+                AllArenas.Add(query.ArenaCode);
+            }
             return Task.FromResult<TraversalResult>(new TraversalResult
             {
                 Paths = Result.Paths,
@@ -286,6 +265,60 @@ public sealed class SubstrateInferenceEngineTests
     internal sealed class FakeTraversalResult
     {
         public List<TraversalPath> Paths { get; } = [];
+    }
+
+    internal sealed class FakeReferenceData : IReferenceDataReader
+    {
+        public Dictionary<string, int> SignificanceContextCodes { get; } = new(StringComparer.Ordinal)
+        {
+            ["lexical_disambiguation"] = 1,
+        };
+        public Dictionary<string, int> EntityTypeCodes { get; } = new(StringComparer.Ordinal)
+        {
+            ["lemma"] = 1,
+            ["word_form"] = 2,
+            ["synset"] = 3,
+        };
+
+        public Task<Dictionary<string, int>> LoadCodeMapAsync(
+            string tableName, int initialCapacity, CancellationToken ct)
+        {
+            Dictionary<string, int> result = tableName switch
+            {
+                "significance_context" => new Dictionary<string, int>(SignificanceContextCodes, StringComparer.Ordinal),
+                "entity_type" => new Dictionary<string, int>(EntityTypeCodes, StringComparer.Ordinal),
+                _ => new Dictionary<string, int>(StringComparer.Ordinal),
+            };
+            return Task.FromResult(result);
+        }
+
+        public Task<Dictionary<(string Key, string Value), int>> LoadKeyValueMapAsync(
+            string tableName, string keyColumn, string valueColumn,
+            int initialCapacity, CancellationToken ct)
+            => Task.FromResult(new Dictionary<(string Key, string Value), int>());
+
+        public Task<Dictionary<string, string>> LoadCodeTextMapAsync(
+            string tableName, string valueColumn, int initialCapacity, CancellationToken ct)
+            => Task.FromResult(new Dictionary<string, string>(StringComparer.Ordinal));
+
+        public Task<HashSet<long>> LoadInt64SetAsync(
+            string tableName, string columnName, CancellationToken ct)
+            => Task.FromResult(new HashSet<long>());
+
+        public Task<int> LoadIdByCodeAsync(
+            string tableName, string code, CancellationToken ct)
+            => Task.FromResult(0);
+    }
+
+    internal sealed class FakeTextRecompositionReader : ITextRecompositionReader
+    {
+        public Dictionary<long, string> Texts { get; } = [];
+
+        public Task<string?> RecomposeTextAsync(long entityId, int maxDepth, CancellationToken ct)
+        {
+            Texts.TryGetValue(entityId, out string? text);
+            return Task.FromResult<string?>(text);
+        }
     }
 
     internal sealed class FakeEntityReader : IEntityReader

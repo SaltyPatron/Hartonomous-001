@@ -77,20 +77,53 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             int batchNum = 0;
             int filesProcessed = 0;
 
-            // Track all created lemma hashes for entity_language junction population.
-            // Key: lemmaHash → (langIds to assign).
-            Dictionary<string, byte[]> lemmaKeyToHash = new(500_000, StringComparer.Ordinal);
-            Dictionary<string, HashSet<int>> lemmaKeyToLangIds = new(500_000, StringComparer.Ordinal);
-
-            // Track POS assignments per lemma. Key: lemmaKey → set of UD POS strings
-            // ("NOUN", "VERB", "ADJ", "ADV"). Same lemma in multiple synsets of different POS
-            // accumulates all POS — "rake" is both NOUN and VERB.
-            Dictionary<string, HashSet<string>> lemmaKeyToUdPos = new(500_000, StringComparer.Ordinal);
-
-            // Track alignment edges to create: (lemmaHash, synsetHash).
-            List<(byte[] LemmaHash, byte[] SynsetHash, double TrustMu)> alignments = new(3_000_000);
-
+            // Per-batch state. Each batch carries lemma entities + their inline
+            // entity_language / entity_pos junctions, and the cross-phase
+            // aligned_to_synset edges (lemma in this batch → synset already
+            // committed by the WordNetDecomposer in the prior phase).
+            // Synset IDs for the batch are resolved at flush via the pipeline's
+            // batch-scoped resolver — NOT a phase-wide hash list. Rules:
+            // .claude/rules/00-hartonomous-core.md § "Banned patterns".
             IIngestionBatch batch = pipeline.CreateBatch();
+            Dictionary<string, EntityHandle> batchLemmaHandles = new(StringComparer.Ordinal);
+            HashSet<byte[]> batchSynsetHashes = new(ByteArrayEqualityComparer.Instance);
+            List<(EntityHandle LemmaHandle, byte[] SynsetHash, double TrustMu)> batchAlignments = new();
+
+            async Task FlushBatchAsync()
+            {
+                if (batch.EntityCount == 0 && batch.EdgeCount == 0 && batchAlignments.Count == 0)
+                {
+                    return;
+                }
+
+                if (batchAlignments.Count > 0 && batchSynsetHashes.Count > 0)
+                {
+                    IReadOnlyDictionary<byte[], long> synsetIds =
+                        await pipeline.ResolveEntityIdsAsync([.. batchSynsetHashes], ct);
+
+                    foreach ((EntityHandle lemmaHandle, byte[] synsetHash, double _) in batchAlignments)
+                    {
+                        if (!synsetIds.TryGetValue(synsetHash, out long synsetId))
+                        {
+                            continue;
+                        }
+                        batch.AddEdge("aligned_to_synset", ProvenanceCode,
+                        [
+                            new EdgeMemberSpec(lemmaHandle, null, "source", 0),
+                            new EdgeMemberSpec(null, synsetId, "target", 1),
+                        ]);
+                        edgeCount++;
+                    }
+                }
+
+                batchNum++;
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
+
+                batch = pipeline.CreateBatch();
+                batchLemmaHandles.Clear();
+                batchSynsetHashes.Clear();
+                batchAlignments.Clear();
+            }
 
             foreach (OmwSourceInfo source in sources)
             {
@@ -111,65 +144,54 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                         continue;
                     }
 
-                    // Resolve language.
                     string langCode = entry.LangCode;
                     if (!langIdMap.TryGetValue(langCode, out int langId))
                     {
                         continue;
                     }
 
-                    // Compute synset hash matching WordNet decomposer convention:
-                    // synset identity = ComputeHash(synsetCode) where synsetCode is
-                    // "XXXXXXXX-p" (Princeton WordNet's stable concept identifier).
-                    // Synsets are concepts, not text — their canonical identity is the
-                    // offset+POS, NOT the gloss (which is one of many attached text_compositions).
+                    // Synset identity matches WordNetDecomposer's hashing of the
+                    // synsetCode "XXXXXXXX-p" — already in substrate from the
+                    // prior WordNet phase. We resolve its substrate id at flush.
                     byte[] synsetHash = ComputeHash(entry.SynsetCode);
 
-                    // Compute lemma hash.
                     string lemmaWord = entry.Word;
                     string lemmaKey = $"{lemmaWord}:{langCode}";
 
-                    if (!lemmaKeyToHash.TryGetValue(lemmaKey, out byte[]? lemmaHash))
+                    EntityHandle lemmaHandle;
+                    if (batchLemmaHandles.TryGetValue(lemmaKey, out EntityHandle existing))
                     {
-                        (EntityHandle lemmaEntity, byte[] mHash) =
+                        lemmaHandle = existing;
+                    }
+                    else
+                    {
+                        (EntityHandle h, byte[] _) =
                             EmitLemmaMaybeCompound(batch, lemmaWord, ProvenanceCode);
-                        lemmaHash = mHash;
-                        lemmaKeyToHash[lemmaKey] = lemmaHash;
-                        batch.AddSignificance(lemmaEntity, "source_authority", trustMu);
-
-                        EmitContourPhysicality(batch, lemmaEntity, lemmaWord);
-
+                        lemmaHandle = h;
+                        batch.AddSignificance(lemmaHandle, "source_authority", trustMu);
+                        EmitContourPhysicality(batch, lemmaHandle, lemmaWord);
+                        batchLemmaHandles[lemmaKey] = lemmaHandle;
                         entityCount++;
+
+                        // entity_language junction inline.
+                        batch.AddJunction("entity_language", lemmaHandle, langId);
                     }
 
-                    // Track language assignment.
-                    if (!lemmaKeyToLangIds.TryGetValue(lemmaKey, out HashSet<int>? langIds))
-                    {
-                        langIds = [];
-                        lemmaKeyToLangIds[lemmaKey] = langIds;
-                    }
-                    langIds.Add(langId);
-
-                    // Track POS assignment derived from the synset code suffix
-                    // ("XXXXXXXX-p" where p ∈ {n,v,a,r,s}).
+                    // POS junction derived from the synset code suffix.
                     string udPos = SynsetCodeToUdPos(entry.SynsetCode);
-                    if (udPos != "X")
+                    if (udPos != "X" && posIdMap.TryGetValue(udPos, out int posId))
                     {
-                        if (!lemmaKeyToUdPos.TryGetValue(lemmaKey, out HashSet<string>? posSet))
-                        {
-                            posSet = new HashSet<string>(StringComparer.Ordinal);
-                            lemmaKeyToUdPos[lemmaKey] = posSet;
-                        }
-                        posSet.Add(udPos);
+                        batch.AddJunction("entity_pos", lemmaHandle, posId, trustMu);
                     }
 
-                    alignments.Add((lemmaHash, synsetHash, trustMu));
+                    // aligned_to_synset edge: source = lemma (this batch), target =
+                    // synset (resolved at flush from substrate.entity).
+                    batchSynsetHashes.Add(synsetHash);
+                    batchAlignments.Add((lemmaHandle, synsetHash, trustMu));
 
-                    if (batch.EntityCount >= BatchSize)
+                    if (batch.EntityCount >= BatchSize || batchAlignments.Count >= BatchSize)
                     {
-                        batchNum++;
-                        await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
-                        batch = pipeline.CreateBatch();
+                        await FlushBatchAsync();
                     }
                 }
 
@@ -180,114 +202,10 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                 }
             }
 
-            // Submit remaining entities.
-            if (batch.EntityCount > 0)
-            {
-                batchNum++;
-                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
-            }
+            await FlushBatchAsync();
 
             Log.EntitiesCreated(Logger, entityCount, batchNum, filesProcessed);
-
-            // ── Resolve entity IDs ──
-            HashSet<byte[]> allHashes = new(ByteArrayEqualityComparer.Instance);
-            foreach (byte[] h in lemmaKeyToHash.Values)
-            {
-                allHashes.Add(h);
-            }
-
-            // Collect unique synset hashes.
-            HashSet<byte[]> synsetHashes = new(ByteArrayEqualityComparer.Instance);
-            foreach ((byte[] _, byte[] synsetHash, double _) in alignments)
-            {
-                synsetHashes.Add(synsetHash);
-            }
-            foreach (byte[] h in synsetHashes)
-            {
-                allHashes.Add(h);
-            }
-
-            Log.ResolvingIds(Logger, allHashes.Count);
-            IReadOnlyDictionary<byte[], long> entityIdMap =
-                await pipeline.ResolveEntityIdsAsync([.. allHashes], ct);
-            Log.IdsResolved(Logger, entityIdMap.Count);
-
-            // ── Create alignment edges ──
-            batch = pipeline.CreateBatch();
-            foreach ((byte[] lemmaHash, byte[] synsetHash, double _) in alignments)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                if (!entityIdMap.TryGetValue(lemmaHash, out long lemmaId) ||
-                    !entityIdMap.TryGetValue(synsetHash, out long synsetId))
-                {
-                    continue;
-                }
-
-                batch.AddEdge("aligned_to_synset", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(null, lemmaId, "source", 0),
-                    new EdgeMemberSpec(null, synsetId, "target", 1),
-                ]);
-                edgeCount++;
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            if (batch.EdgeCount > 0 || batch.EntityCount > 0)
-            {
-                batchNum++;
-                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
-            }
-
             Log.EdgesCreated(Logger, edgeCount);
-
-            // ── entity_language junctions ──
-            List<(long EntityId, int LangId)> langJunctions = new(lemmaKeyToLangIds.Count * 2);
-            foreach (KeyValuePair<string, HashSet<int>> kv in lemmaKeyToLangIds)
-            {
-                if (!lemmaKeyToHash.TryGetValue(kv.Key, out byte[]? hash) ||
-                    !entityIdMap.TryGetValue(hash, out long entityId))
-                {
-                    continue;
-                }
-
-                foreach (int langId in kv.Value)
-                {
-                    langJunctions.Add((entityId, langId));
-                }
-            }
-
-            await refWriter.WriteEntityLanguageJunctionsAsync(langJunctions, ct);
-            Log.LanguageJunctionsWritten(Logger, langJunctions.Count);
-
-            // ── entity_pos junctions for each (lemma, UD POS) pair ──
-            List<(long EntityId, int PosId)> posJunctions = new(lemmaKeyToUdPos.Count * 2);
-            foreach (KeyValuePair<string, HashSet<string>> kv in lemmaKeyToUdPos)
-            {
-                if (!lemmaKeyToHash.TryGetValue(kv.Key, out byte[]? hash) ||
-                    !entityIdMap.TryGetValue(hash, out long entityId))
-                {
-                    continue;
-                }
-
-                foreach (string udPos in kv.Value)
-                {
-                    if (posIdMap.TryGetValue(udPos, out int posId))
-                    {
-                        posJunctions.Add((entityId, posId));
-                    }
-                }
-            }
-
-            await refWriter.WriteEntityPosJunctionsAsync(posJunctions, ct);
-            Log.PosJunctionsWritten(Logger, posJunctions.Count);
-
             Log.DecompositionComplete(Logger, entityCount, edgeCount, filesProcessed);
         }
         finally

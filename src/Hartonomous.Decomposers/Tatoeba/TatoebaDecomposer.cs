@@ -105,14 +105,15 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         long edgeCount = 0;
         int batchNum = 0;
 
-        HashSet<byte[]> needIds = new(ByteArrayEqualityComparer.Instance);
-        List<(byte[] Hash, int LangId)> perSentenceLang = new(262144);
-
         // Map Tatoeba integer IDs to content hashes so pass 2 (links) and pass 3 (audio)
         // can resolve sentences by ID without hashing source-specific identifiers.
         Dictionary<int, byte[]> sentenceIdToHash = new(8_000_000);
 
         // ── Pass 1: sentences ──
+        // Each batch carries: tatoeba_sentence + text_composition + has_text edge +
+        // entity_language junction — all using EntityHandles in the same batch.
+        // No phase-wide ResolveEntityIdsAsync; the pipeline's ON CONFLICT (hash,
+        // entity_type_id) DO NOTHING dedupes repeated emissions across passes.
         IIngestionBatch batch = pipeline.CreateBatch();
         long pass1Count = 0;
         long pass1Filtered = 0;
@@ -134,7 +135,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 batch = pipeline.CreateBatch();
             }
 
-            EmitSentence(batch, row, _codepointProperties, languageMap, needIds, perSentenceLang, sentenceIdToHash,
+            EmitSentence(batch, row, _codepointProperties, languageMap, sentenceIdToHash,
                 ref entityCount, ref edgeCount);
             pass1Count++;
             if (pass1Count % 500_000 == 0)
@@ -152,6 +153,10 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         Log.Pass1Complete(Logger, pass1Count, entityCount, edgeCount);
 
         // ── Pass 2: translation links ──
+        // Both endpoints are tatoeba_sentence entities the prior pass already
+        // committed. Re-emit both AddEntity calls in this batch; ON CONFLICT
+        // dedupe gives us in-batch handles that map to the existing substrate
+        // rows. translation_link edge uses those handles inline.
         batch = pipeline.CreateBatch();
         long pass2Count = 0;
         long pass2Skipped = 0;
@@ -206,7 +211,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                     batch = pipeline.CreateBatch();
                 }
 
-                EmitAudio(batch, ar, _codepointProperties, sentenceIdToHash, needIds, ref entityCount, ref edgeCount);
+                EmitAudio(batch, ar, _codepointProperties, sentenceIdToHash, ref entityCount, ref edgeCount);
                 pass3Count++;
                 if (pass3Count % 250_000 == 0)
                 {
@@ -226,21 +231,6 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             Log.AudioManifestMissing(Logger, audioPath);
         }
         Log.Pass3Complete(Logger, pass3Count, entityCount, edgeCount);
-
-        // ── Junctions ──
-        IReadOnlyDictionary<byte[], long> ids =
-            await pipeline.ResolveEntityIdsAsync([.. needIds], ct);
-
-        List<(long EntityId, int LangId)> langEntries = new(perSentenceLang.Count);
-        foreach ((byte[] hash, int langId) in perSentenceLang)
-        {
-            if (ids.TryGetValue(hash, out long eid))
-            {
-                langEntries.Add((eid, langId));
-            }
-        }
-        await refWriter.WriteEntityLanguageJunctionsAsync(langEntries, ct);
-        Log.JunctionsWritten(Logger, langEntries.Count);
     }
 
     private static void EmitSentence(
@@ -248,8 +238,6 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         TatoebaSentenceRow row,
         ICodepointProperties codepointProperties,
         Dictionary<string, int> languageMap,
-        HashSet<byte[]> needIds,
-        List<(byte[] Hash, int LangId)> perSentenceLang,
         Dictionary<int, byte[]> sentenceIdToHash,
         ref long entityCount,
         ref long edgeCount)
@@ -292,11 +280,12 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         }
 
         sentenceIdToHash[row.SentenceId] = sentHash;
-        needIds.Add(sentHash);
 
+        // entity_language junction inline. Pipeline resolves the in-batch
+        // EntityHandle to substrate.entity.id at flush; no phase-wide hash list.
         if (languageMap.TryGetValue(row.Lang, out int langId))
         {
-            perSentenceLang.Add((sentHash, langId));
+            batch.AddJunction("entity_language", sentEntity, langId);
         }
     }
 
@@ -328,12 +317,10 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         TatoebaAudioRow row,
         ICodepointProperties codepointProperties,
         Dictionary<int, byte[]> sentenceIdToHash,
-        HashSet<byte[]> needIds,
         ref long entityCount,
         ref long edgeCount)
     {
         byte[] audioHash = ComputeHash($"tatoeba_audio:{row.AudioId}");
-        needIds.Add(audioHash);
         EntityHandle audioEntity = batch.AddEntity(audioHash, "audio_recording");
         batch.AddSignificance(audioEntity, "source_authority", TrustPriorMu);
         entityCount++;
@@ -356,10 +343,9 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             // Contributor handle decomposes via the canonical Merkle path so the
             // text_composition converges with any other Merkle-hashed occurrence
             // of the same handle (e.g. mention in a Wiktionary citation).
-            (EntityHandle contribEntity, byte[] contribHash) =
+            (EntityHandle contribEntity, byte[] _) =
                 TextSegmentationEmitter.EmitTextComposition(
                     batch, row.Contributor, codepointProperties, "text_composition", TrustPriorMu);
-            needIds.Add(contribHash);
             EmitContourPhysicality(batch, contribEntity, row.Contributor);
             entityCount++;
 
@@ -397,8 +383,5 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Warning, Message = "Tatoeba audio manifest missing at {Path} — pass 3 skipped")]
         public static partial void AudioManifestMissing(ILogger logger, string path);
-
-        [LoggerMessage(Level = LogLevel.Information, Message = "Tatoeba junctions: {Lang} entity_language")]
-        public static partial void JunctionsWritten(ILogger logger, int lang);
     }
 }

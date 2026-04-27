@@ -1,10 +1,8 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Hartonomous.Core;
 using Hartonomous.Core.Compute.Common;
@@ -24,14 +22,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
     public override IReadOnlyList<Phase> Phases => [Phase.UniversalDeps];
 
     private const double TrustPriorMu = 92000.0;
-
-    /// <summary>
-    /// Process files in chunks to bound junction accumulator memory. Each chunk goes
-    /// through the full produce→consume→junction-flush cycle, then accumulators are cleared.
-    /// UD 2.17 has ~686 .conllu files across 339 treebanks; 10 files per chunk
-    /// keeps junction memory bounded even for the largest treebanks (e.g. Czech-PDTC ≈ 343 MB).
-    /// </summary>
-    private const int FileChunkSize = 10;
 
     private readonly string _rootDir;
     private readonly IReferenceDataReader? _referenceDataReader;
@@ -111,13 +101,17 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
         await using UdReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
 
-        // ── Pass 1: scan for distinct deprels, morph features (parallel). ──
-        ConcurrentDictionary<string, byte> deprelsBag = new(StringComparer.Ordinal);
-        ConcurrentDictionary<(string Key, string Value), byte> morphFeatsBag = new();
+        // ── Pass 1: scan for distinct deprels, morph features.
+        // Sequential walk per the substrate's banned-pattern rule
+        // (".claude/rules/00-hartonomous-core.md" — decomposers must NOT own
+        // Channel.CreateBounded / Parallel.ForEachAsync; the pipeline owns
+        // batching + threading). This is metadata discovery only, no DB writes,
+        // so the cost is bounded by parser throughput. ──
+        HashSet<string> deprels = new(StringComparer.Ordinal);
+        HashSet<(string Key, string Value)> morphFeats = new();
         long pass1Sentences = 0;
         long pass1Tokens = 0;
 
-        // Build flat list of all files with their bank context for parallel iteration.
         List<(UdTreebankInfo Bank, string File)> allFiles = new(banks.Count * 10);
         foreach (UdTreebankInfo bank in banks)
         {
@@ -127,36 +121,27 @@ public sealed partial class UdDecomposer : BaseDecomposer
             }
         }
 
-        Parallel.ForEach(allFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct },
-            () => (Sentences: 0L, Tokens: 0L),
-            (item, _, local) =>
+        foreach ((UdTreebankInfo _, string file) in allFiles)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (UdSentenceRecord sent in UdConllUParser.Parse(file))
             {
-                foreach (UdSentenceRecord sent in UdConllUParser.Parse(item.File))
+                pass1Sentences++;
+                foreach (UdTokenRecord tok in sent.Tokens)
                 {
-                    local.Sentences++;
-                    foreach (UdTokenRecord tok in sent.Tokens)
+                    pass1Tokens++;
+                    if (tok.Deprel is not null)
                     {
-                        local.Tokens++;
-                        if (tok.Deprel is not null)
-                        {
-                            deprelsBag.TryAdd(tok.Deprel, 0);
-                        }
-                        foreach (UdMorphFeature f in tok.Feats)
-                        {
-                            morphFeatsBag.TryAdd((f.Key, f.Value), 0);
-                        }
+                        deprels.Add(tok.Deprel);
+                    }
+                    foreach (UdMorphFeature f in tok.Feats)
+                    {
+                        morphFeats.Add((f.Key, f.Value));
                     }
                 }
-                return local;
-            },
-            local =>
-            {
-                Interlocked.Add(ref pass1Sentences, local.Sentences);
-                Interlocked.Add(ref pass1Tokens, local.Tokens);
-            });
+            }
+        }
 
-        HashSet<string> deprels = new(deprelsBag.Keys, StringComparer.Ordinal);
-        HashSet<(string Key, string Value)> morphFeats = new(morphFeatsBag.Keys);
         Log.Pass1Scanned(Logger, pass1Sentences, pass1Tokens, deprels.Count, morphFeats.Count);
 
         // ── Populate reference tables + edge types. ──
@@ -171,9 +156,11 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
         Log.ReferenceDataPopulated(Logger, deprelMap.Count, morphFeatMap.Count);
 
-        // ── Pass 2: emit entities via parallel producers, serial DB consumer. ──
-        // Files are processed in chunks to bound junction accumulator memory.
-        // Each chunk goes through produce→consume→junction-flush, then accumulators clear.
+        // ── Pass 2: serial file iteration, per-sentence inline emission.
+        // Each batch carries entities + their edges + their junctions all in
+        // the same flush — no phase-wide pipeline.ResolveEntityIdsAsync, no
+        // decomposer-owned channels. The pipeline's ON CONFLICT (hash, type)
+        // dedupe handles repeated word_form / lemma hashes across batches. ──
         long entityCount = 0;
         long edgeCount = 0;
         int batchNum = 0;
@@ -181,175 +168,52 @@ public sealed partial class UdDecomposer : BaseDecomposer
         long totalMorphWritten = 0;
         long totalLangWritten = 0;
 
-        int totalFiles = allFiles.Count;
-        int maxProducers = Math.Max(1, Environment.ProcessorCount - 1);
+        IIngestionBatch batch = pipeline.CreateBatch();
+        string lastBank = string.Empty;
 
-        for (int chunkStart = 0; chunkStart < totalFiles; chunkStart += FileChunkSize)
+        foreach ((UdTreebankInfo bank, string file) in allFiles)
         {
-            int chunkEnd = Math.Min(chunkStart + FileChunkSize, totalFiles);
-            var chunkFiles = allFiles.GetRange(chunkStart, chunkEnd - chunkStart);
+            ct.ThrowIfCancellationRequested();
 
-            ConcurrentBag<(byte[] Hash, string Upos)> perTokenUpos = [];
-            ConcurrentBag<(byte[] Hash, List<int> Feats)> perTokenMorphFeats = [];
-            ConcurrentBag<(byte[] Hash, int LangId)> perSentenceLang = [];
-            ConcurrentDictionary<byte[], byte> needIdsDict = new(ByteArrayEqualityComparer.Instance);
+            int? langId = bank.LanguageCode is not null && languageMap.TryGetValue(bank.LanguageCode, out int lid)
+                ? lid
+                : null;
+            string subProvenance = $"{ProvenanceCode}/v2.17/{bank.DirectoryName}";
+            string fileKey = Path.GetFileName(file);
+            lastBank = bank.DirectoryName;
 
-            // Bounded channel: producers fill batches, consumer submits to DB.
-            Channel<(IIngestionBatch Batch, string BankName)> batchChannel =
-                Channel.CreateBounded<(IIngestionBatch, string)>(
-                    new BoundedChannelOptions(Environment.ProcessorCount * 2)
-                    {
-                        SingleReader = true,
-                        FullMode = BoundedChannelFullMode.Wait,
-                    });
-
-            // ── Consumer: serial batch submission. ──
-            Task consumerTask = Task.Run(async () =>
+            foreach (UdSentenceRecord sent in UdConllUParser.Parse(file))
             {
-                await foreach ((IIngestionBatch b, string bankName) in batchChannel.Reader.ReadAllAsync(ct))
+                ct.ThrowIfCancellationRequested();
+
+                if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
                 {
-                    int num = Interlocked.Increment(ref batchNum);
-                    long ents = Interlocked.Read(ref entityCount);
-                    long edgs = Interlocked.Read(ref edgeCount);
-                    await ReportProgressAsync(pipeline, reporter, b, ents, edgs, num, bankName, ct);
+                    batchNum++;
+                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, lastBank, ct);
+                    batch = pipeline.CreateBatch();
                 }
-            }, ct);
 
-            // ── Producers: parallel file processing for this chunk. ──
-            await Parallel.ForEachAsync(chunkFiles, new ParallelOptions { MaxDegreeOfParallelism = maxProducers, CancellationToken = ct },
-                async (item, innerCt) =>
-                {
-                    UdTreebankInfo bank = item.Bank;
-                    string file = item.File;
+                (int posWritten, int morphWritten, int langWritten) = EmitSentenceInline(
+                    batch, bank, fileKey, sent, subProvenance,
+                    posMap, morphFeatMap, langId,
+                    ref entityCount, ref edgeCount);
+                totalPosWritten += posWritten;
+                totalMorphWritten += morphWritten;
+                totalLangWritten += langWritten;
+            }
+        }
 
-                    int? langId = bank.LanguageCode is not null && languageMap.TryGetValue(bank.LanguageCode, out int lid)
-                        ? lid
-                        : null;
-                    string subProvenance = $"{ProvenanceCode}/v2.17/{bank.DirectoryName}";
-                    string fileKey = Path.GetFileName(file);
-
-                    // Thread-local accumulators to avoid contention.
-                    List<(byte[] Hash, string Upos)> localUpos = new(4096);
-                    List<(byte[] Hash, List<int> Feats)> localMorphFeats = new(4096);
-                    List<(byte[] Hash, int LangId)> localLang = new(256);
-                    List<byte[]> localNeedIds = new(4096);
-                    long localEntities = 0;
-                    long localEdges = 0;
-
-                    IIngestionBatch batch = pipeline.CreateBatch();
-
-                    foreach (UdSentenceRecord sent in UdConllUParser.Parse(file))
-                    {
-                        innerCt.ThrowIfCancellationRequested();
-
-                        if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
-                        {
-                            await batchChannel.Writer.WriteAsync((batch, bank.DirectoryName), innerCt);
-                            batch = pipeline.CreateBatch();
-                        }
-
-                        EmitSentence(
-                            batch, bank, fileKey, sent, subProvenance,
-                            posMap, morphFeatMap, langId,
-                            localUpos, localMorphFeats, localLang, localNeedIds,
-                            ref localEntities, ref localEdges);
-                    }
-
-                    if (batch.EntityCount > 0 || batch.EdgeCount > 0)
-                    {
-                        await batchChannel.Writer.WriteAsync((batch, bank.DirectoryName), innerCt);
-                    }
-
-                    // Merge thread-local accumulators into concurrent collections.
-                    foreach (var entry in localUpos)
-                    {
-                        perTokenUpos.Add(entry);
-                    }
-                    foreach (var entry in localMorphFeats)
-                    {
-                        perTokenMorphFeats.Add(entry);
-                    }
-                    foreach (var entry in localLang)
-                    {
-                        perSentenceLang.Add(entry);
-                    }
-                    foreach (byte[] h in localNeedIds)
-                    {
-                        needIdsDict.TryAdd(h, 0);
-                    }
-                    Interlocked.Add(ref entityCount, localEntities);
-                    Interlocked.Add(ref edgeCount, localEdges);
-                });
-
-            batchChannel.Writer.Complete();
-            await consumerTask;
-
-            // ── Flush junctions for this chunk. ──
-            HashSet<byte[]> needIds = new(needIdsDict.Keys, ByteArrayEqualityComparer.Instance);
-            (int pos, int morph, int lang) = await FlushJunctionsAsync(
-                pipeline, refWriter, posMap, perTokenUpos, perTokenMorphFeats, perSentenceLang, needIds, ct);
-            totalPosWritten += pos;
-            totalMorphWritten += morph;
-            totalLangWritten += lang;
-
-            Log.ChunkJunctionsFlushed(Logger, chunkStart, chunkEnd, pos, morph, lang);
+        if (batch.EntityCount > 0 || batch.EdgeCount > 0)
+        {
+            batchNum++;
+            await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, lastBank, ct);
         }
 
         Log.EntitiesEmitted(Logger, entityCount, edgeCount);
         Log.JunctionsWritten(Logger, (int)totalPosWritten, (int)totalMorphWritten, (int)totalLangWritten);
     }
 
-    private static async Task<(int Pos, int Morph, int Lang)> FlushJunctionsAsync(
-        IIngestionPipeline pipeline,
-        BaseReferenceTableWriter refWriter,
-        Dictionary<string, int> posMap,
-        ConcurrentBag<(byte[] Hash, string Upos)> perTokenUpos,
-        ConcurrentBag<(byte[] Hash, List<int> Feats)> perTokenMorphFeats,
-        ConcurrentBag<(byte[] Hash, int LangId)> perSentenceLang,
-        HashSet<byte[]> needIds,
-        CancellationToken ct)
-    {
-        IReadOnlyDictionary<byte[], long> ids = await pipeline.ResolveEntityIdsAsync(
-            [.. needIds], ct);
-
-        List<(long EntityId, int PosId)> posEntries = new(perTokenUpos.Count);
-        foreach ((byte[] hash, string upos) in perTokenUpos)
-        {
-            if (ids.TryGetValue(hash, out long eid) && posMap.TryGetValue(upos, out int pid))
-            {
-                posEntries.Add((eid, pid));
-            }
-        }
-        await refWriter.WriteEntityPosJunctionsAsync(posEntries, ct);
-
-        List<(long EntityId, int MorphFeatureId)> morphEntries = new(perTokenMorphFeats.Count * 2);
-        foreach ((byte[] hash, List<int> feats) in perTokenMorphFeats)
-        {
-            if (!ids.TryGetValue(hash, out long eid))
-            {
-                continue;
-            }
-            foreach (int mfId in feats)
-            {
-                morphEntries.Add((eid, mfId));
-            }
-        }
-        await refWriter.WriteEntityMorphFeatureJunctionsAsync(morphEntries, ct);
-
-        List<(long EntityId, int LangId)> langEntries = new(perSentenceLang.Count);
-        foreach ((byte[] hash, int lang) in perSentenceLang)
-        {
-            if (ids.TryGetValue(hash, out long eid))
-            {
-                langEntries.Add((eid, lang));
-            }
-        }
-        await refWriter.WriteEntityLanguageJunctionsAsync(langEntries, ct);
-
-        return (posEntries.Count, morphEntries.Count, langEntries.Count);
-    }
-
-    private static void EmitSentence(
+    private static (int Pos, int Morph, int Lang) EmitSentenceInline(
         IIngestionBatch batch,
         UdTreebankInfo bank,
         string fileKey,
@@ -358,10 +222,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
         Dictionary<string, int> posMap,
         Dictionary<(string, string), int> morphFeatMap,
         int? langId,
-        List<(byte[] Hash, string Upos)> perTokenUpos,
-        List<(byte[] Hash, List<int> Feats)> perTokenMorphFeats,
-        List<(byte[] Hash, int LangId)> perSentenceLang,
-        List<byte[]> needIds,
         ref long entityCount,
         ref long edgeCount)
     {
@@ -369,6 +229,10 @@ public sealed partial class UdDecomposer : BaseDecomposer
         EntityHandle[] tokenHandles = new EntityHandle[sent.Tokens.Count];
         byte[][] tokenHashes = new byte[sent.Tokens.Count][];
         Dictionary<string, int> tokenIdIndex = new(sent.Tokens.Count, StringComparer.Ordinal);
+
+        int posWritten = 0;
+        int morphWritten = 0;
+        int langWritten = 0;
 
         for (int ti = 0; ti < sent.Tokens.Count; ti++)
         {
@@ -378,7 +242,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
             // Word form entity: Merkle DAG (codepoints → grapheme_clusters → word_form).
             (EntityHandle wfHandle, byte[] wfHash) = EmitWordFormMerkle(batch, tok.Form);
             EmitContourPhysicality(batch, wfHandle, tok.Form);
-            needIds.Add(wfHash);
             entityCount++;
 
             // ud_token entity: same Merkle hash as word_form, different entity type.
@@ -400,8 +263,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
             if (tok.Lemma is not null && tok.Lemma.Length > 0)
             {
                 string lemmaForm = tok.Lemma;
-                (EntityHandle lemmaEntity, byte[] lemmaHash) = EmitWordFormMerkle(batch, lemmaForm, "lemma");
-                needIds.Add(lemmaHash);
+                (EntityHandle lemmaEntity, byte[] _) = EmitWordFormMerkle(batch, lemmaForm, "lemma");
                 EmitContourPhysicality(batch, lemmaEntity, lemmaForm);
                 entityCount++;
 
@@ -413,26 +275,25 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 edgeCount++;
             }
 
-            // POS and morph feature evidence — keyed by word_form hash so junction
-            // records accumulate on the structural form entity, not placement-specific tokens.
-            if (tok.Upos is not null && posMap.ContainsKey(tok.Upos))
+            // POS and morph feature evidence — written inline as junction rows
+            // on the in-batch word_form handle. The pipeline resolves the handle
+            // to substrate.entity.id at flush; no phase-wide hash list, no
+            // separate FlushJunctionsAsync pass.
+            if (tok.Upos is not null && posMap.TryGetValue(tok.Upos, out int posId))
             {
-                perTokenUpos.Add((wfHash, tok.Upos));
+                batch.AddJunction("entity_pos", wfHandle, posId, TrustPriorMu);
+                posWritten++;
             }
 
             if (tok.Feats.Count > 0)
             {
-                List<int> featIds = new(tok.Feats.Count);
                 foreach (UdMorphFeature f in tok.Feats)
                 {
                     if (morphFeatMap.TryGetValue((f.Key, f.Value), out int mfId))
                     {
-                        featIds.Add(mfId);
+                        batch.AddJunction("entity_morph_feature", wfHandle, mfId);
+                        morphWritten++;
                     }
-                }
-                if (featIds.Count > 0)
-                {
-                    perTokenMorphFeats.Add((wfHash, featIds));
                 }
             }
 
@@ -445,11 +306,11 @@ public sealed partial class UdDecomposer : BaseDecomposer
         EntityHandle sentEntity = batch.AddEntity(sentHash, "ud_sentence");
         batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
         entityCount++;
-        needIds.Add(sentHash);
 
         if (langId is int sentLang)
         {
-            perSentenceLang.Add((sentHash, sentLang));
+            batch.AddJunction("entity_language", sentEntity, sentLang);
+            langWritten++;
         }
 
         // Sequence: sentence → tokens in order.
@@ -497,6 +358,8 @@ public sealed partial class UdDecomposer : BaseDecomposer
             ]);
             edgeCount++;
         }
+
+        return (posWritten, morphWritten, langWritten);
     }
 
     /// <summary>
