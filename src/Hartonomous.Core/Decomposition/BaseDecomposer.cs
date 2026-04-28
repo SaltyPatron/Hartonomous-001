@@ -205,14 +205,13 @@ public abstract partial class BaseDecomposer : IDecomposer
                     gcCentroid = MeanCentroid(verts.AsSpan());
                 }
 
-                // Emit has_constituent edge from grapheme_cluster → codepoints
-                // in left-to-right order. Required for substrate.recompose_text
-                // to walk children. Single-codepoint graphemes have no
-                // distinct constituent to record beyond identity.
-                if (cpCount > 1)
-                {
-                    EmitHasConstituentEdge(batch, gcHandle, cpHandleBuf.AsSpan(0, cpCount));
-                }
+                // Emit substrate.sequence rows: grapheme_cluster → codepoints
+                // in left-to-right order, 1-based ordinal. Repetitions
+                // ("aaa") are preserved by distinct ordinals pointing to the
+                // same codepoint entity. Single-codepoint graphemes ARE the
+                // codepoint geometrically, but still record one sequence row
+                // so the walk surface is uniform.
+                EmitSequence(batch, gcHandle, cpHandleBuf.AsSpan(0, cpCount));
 
                 if (gcCount >= gcHashBuf.Length)
                 {
@@ -244,16 +243,10 @@ public abstract partial class BaseDecomposer : IDecomposer
                 wfCentroid = MeanCentroid(verts.AsSpan());
             }
 
-            // Emit has_constituent edge from word_form → grapheme_clusters in
+            // Emit substrate.sequence rows: word_form → grapheme_clusters in
             // left-to-right order. The substrate.recompose_text recursive walk
-            // bottoms out at codepoint leaves through this edge family; without
-            // it, the new schema's compositional walk has no parent → children
-            // traversal record. Single-grapheme word_forms still get an edge
-            // (one source + one target) so the walk surface is uniform.
-            if (gcCount >= 1)
-            {
-                EmitHasConstituentEdge(batch, wfHandle, gcHandleBuf.AsSpan(0, gcCount));
-            }
+            // bottoms out at codepoint leaves through this sequence chain.
+            EmitSequence(batch, wfHandle, gcHandleBuf.AsSpan(0, gcCount));
 
             return (wfHandle, wfHash, wfCentroid);
         }
@@ -269,31 +262,25 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     /// <summary>
-    /// Emit a has_constituent edge from <paramref name="parent"/> (source role,
-    /// position 0) to each child in <paramref name="children"/> (target role,
-    /// positions 1..N in supplied order). This is the substrate-side parent →
-    /// children record that <c>substrate.get_composition_children</c> walks
-    /// for recompose / structural traversal. Provenance defaults to the same
-    /// session-scoped trust prior the caller is operating under; callers
-    /// should override if their decomposer has a stronger provenance.
+    /// Emit substrate.sequence rows recording the ordered children of
+    /// <paramref name="parent"/> as supplied in <paramref name="children"/>,
+    /// 1-based ordinals. Contiguous runs of the same child are NOT
+    /// auto-collapsed here — pass distinct rows; if a decomposer wants RLE
+    /// compression for a long refrain it should call
+    /// <see cref="IIngestionBatch.AddSequence"/> directly with rleCount &gt; 1.
+    /// Repeated entities at distinct ordinals (the "green eggs and ham × 3"
+    /// case) are preserved exactly because the sequence row PK is
+    /// (parent_type, parent_hash, ordinal) — repeats don't collide.
     /// </summary>
-    public static void EmitHasConstituentEdge(
+    public static void EmitSequence(
         IIngestionBatch batch,
         EntityHandle parent,
-        ReadOnlySpan<EntityHandle> children,
-        string provenanceCode = "system_computed")
+        ReadOnlySpan<EntityHandle> children)
     {
-        if (children.Length == 0)
-        {
-            return;
-        }
-        EdgeMemberSpec[] members = new EdgeMemberSpec[children.Length + 1];
-        members[0] = new EdgeMemberSpec(parent, "source", 0);
         for (int i = 0; i < children.Length; i++)
         {
-            members[i + 1] = new EdgeMemberSpec(children[i], "target", (short)(i + 1));
+            batch.AddSequence(parent, ordinal: i + 1, child: children[i], rleCount: 1);
         }
-        batch.AddEdge("has_constituent", provenanceCode, members.AsSpan());
     }
 
     /// <summary>

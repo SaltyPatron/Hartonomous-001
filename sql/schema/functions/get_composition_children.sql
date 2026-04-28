@@ -26,7 +26,7 @@ RETURNS TABLE (
     child_type_id   INT,
     child_type_code VARCHAR,
     child_hash      BYTEA,
-    position        INT
+    ordinal         INT
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $$
@@ -51,7 +51,7 @@ AS $$
         em.entity_hash         AS child_hash,
         ROW_NUMBER() OVER (
             ORDER BY em.entity_hash
-        )::int                  AS position
+        )::int                  AS ordinal
     FROM parent_constituent_edges pe
     JOIN substrate.edge_member em
       ON em.edge_type_id = pe.edge_type_id
@@ -60,7 +60,7 @@ AS $$
       ON role.id = em.edge_role_id
      AND role.code = 'target'
     JOIN substrate.entity_type et ON et.id = em.entity_type_id
-    ORDER BY position;
+    ORDER BY ordinal;
 $$;
 
 COMMENT ON FUNCTION substrate.get_composition_children(INT, BYTEA) IS

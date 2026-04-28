@@ -17,6 +17,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     private readonly List<EdgeEntry> _edges = [];
     private readonly List<JunctionEntry> _junctions = [];
     private readonly List<PhysicalityEntry> _physicalities = [];
+    private readonly List<SequenceEntry> _sequences = [];
     private readonly List<SignificanceEntry> _significances = [];
     private readonly List<EntityModelSourceEntry> _entityModelSources = [];
 
@@ -27,6 +28,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     public IReadOnlyList<EdgeEntry>              Edges               => _edges;
     public IReadOnlyList<JunctionEntry>          Junctions           => _junctions;
     public IReadOnlyList<PhysicalityEntry>       Physicalities       => _physicalities;
+    public IReadOnlyList<SequenceEntry>          Sequences           => _sequences;
     public IReadOnlyList<SignificanceEntry>      Significances       => _significances;
     public IReadOnlyList<EntityModelSourceEntry> EntityModelSources  => _entityModelSources;
 
@@ -76,6 +78,11 @@ internal sealed class IngestionBatch : IIngestionBatch
             entity,
             physicalityTypeCode,
             PostGisWkbBuilder.LineStringZM(vertices)));
+    }
+
+    public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
+    {
+        _sequences.Add(new SequenceEntry(parent, ordinal, child, rleCount));
     }
 
     public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu)

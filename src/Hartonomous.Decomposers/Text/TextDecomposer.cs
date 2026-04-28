@@ -195,7 +195,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
                     // has_constituent: grapheme_cluster → ordered codepoints.
                     // The substrate.recompose_text walk bottoms out at codepoint
                     // leaves through this edge family.
-                    BaseDecomposer.EmitHasConstituentEdge(batch, gcEntity, cpSequence.AsSpan());
+                    BaseDecomposer.EmitSequence(batch, gcEntity, cpSequence.AsSpan());
 
                     // Recursive child-centroid trajectory for grapheme_cluster
                     // is now emitted inside EmitWordFormMerkle (which TextDecomposer
@@ -257,7 +257,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 wordEntity = batch.AddEntity(wordHash, "word_form");
                 batch.AddSignificance(wordEntity, "source_authority", trustMu);
                 // has_constituent: word_form → ordered grapheme_clusters.
-                BaseDecomposer.EmitHasConstituentEdge(
+                BaseDecomposer.EmitSequence(
                     batch, wordEntity, CollectionsMarshal.AsSpan(childHandles));
 
                 wordHandlesByHash[wordHash] = wordEntity;
@@ -347,7 +347,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 sentEntity = batch.AddEntity(sentHash, "text_composition");
                 batch.AddSignificance(sentEntity, "source_authority", trustMu);
                 // has_constituent: text_composition → ordered word_forms / raw spans.
-                BaseDecomposer.EmitHasConstituentEdge(
+                BaseDecomposer.EmitSequence(
                     batch, sentEntity, CollectionsMarshal.AsSpan(sentChildHandles));
 
                 sentenceHandlesByHash[sentHash] = sentEntity;
@@ -413,7 +413,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
         entityCount++;
 
         // has_constituent: document → ordered text_compositions.
-        BaseDecomposer.EmitHasConstituentEdge(
+        BaseDecomposer.EmitSequence(
             batch, docEntity, CollectionsMarshal.AsSpan(documentChildHandles));
 
         return new TextIngestionResult(docEntity, docHash, entityCount);

@@ -27,7 +27,7 @@ AS $$
         SELECT
             c.child_type_id,
             c.child_hash,
-            walk.ord_path || c.position,
+            walk.ord_path || c.ordinal,
             walk.depth + 1
         FROM walk
         CROSS JOIN LATERAL substrate.get_composition_children(

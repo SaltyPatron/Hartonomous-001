@@ -88,6 +88,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await CreateEdgesAsync(conn, b, ct);
             await PopulateJunctionsAsync(conn, b, ct);
             await CreatePhysicalitiesAsync(conn, b, ct);
+            await PopulateSequencesAsync(conn, b, ct);
             await InitializeEntitySignificanceAsync(conn, b, ct);
             await LinkEntityModelSourcesAsync(conn, b, ct);
 
@@ -438,6 +439,59 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         await using NpgsqlCommand flushPhys = new(
             "SELECT substrate.flush_physicality_from_staging()", conn);
         await flushPhys.ExecuteNonQueryAsync(ct);
+    }
+
+    // ── PopulateSequencesAsync ─────────────────────────────────────────────
+    // Drains batch.Sequences into substrate.sequence via the per-batch
+    // staging_sequence TEMP table + named substrate function (AP-2).
+    // (parent_type_id, parent_hash, ordinal) is unique by construction —
+    // ON CONFLICT DO NOTHING keeps re-ingestion idempotent. RLE compression
+    // is preserved verbatim from the producer; the staging row says
+    // "this child fills positions ordinal..ordinal+rle_count-1 of this parent."
+    private async Task PopulateSequencesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
+    {
+        if (batch.Sequences.Count == 0)
+        {
+            return;
+        }
+
+        await using (NpgsqlCommand createTemp = new(
+            "CREATE TEMP TABLE staging_sequence (" +
+            "  parent_entity_type_id INT NOT NULL, " +
+            "  parent_entity_hash BYTEA NOT NULL, " +
+            "  ordinal INT NOT NULL, " +
+            "  child_entity_type_id INT NOT NULL, " +
+            "  child_entity_hash BYTEA NOT NULL, " +
+            "  rle_count INT NOT NULL DEFAULT 1" +
+            ") ON COMMIT DROP", conn))
+        {
+            await createTemp.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
+            "COPY staging_sequence (parent_entity_type_id, parent_entity_hash, " +
+            "ordinal, child_entity_type_id, child_entity_hash, rle_count) " +
+            "FROM STDIN (FORMAT binary)", ct))
+        {
+            foreach (SequenceEntry s in batch.Sequences)
+            {
+                int parentTypeId = await _codeResolver.EntityTypeIdAsync(s.Parent.EntityTypeCode, ct);
+                int childTypeId  = await _codeResolver.EntityTypeIdAsync(s.Child.EntityTypeCode, ct);
+
+                await writer.StartRowAsync(ct);
+                await writer.WriteAsync(parentTypeId,    NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(s.Parent.Hash,   NpgsqlDbType.Bytea,   ct);
+                await writer.WriteAsync(s.Ordinal,       NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(childTypeId,     NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(s.Child.Hash,    NpgsqlDbType.Bytea,   ct);
+                await writer.WriteAsync(s.RleCount,      NpgsqlDbType.Integer, ct);
+            }
+            await writer.CompleteAsync(ct);
+        }
+
+        await using NpgsqlCommand flush = new(
+            "SELECT substrate.flush_sequence_from_staging()", conn);
+        await flush.ExecuteNonQueryAsync(ct);
     }
 
     // ── InitializeEntitySignificanceAsync ──────────────────────────────────

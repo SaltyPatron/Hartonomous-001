@@ -75,6 +75,25 @@ public interface IIngestionBatch
         ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices);
 
     /// <summary>
+    /// Append a sequence row recording that <paramref name="parent"/> contains
+    /// <paramref name="child"/> at <paramref name="ordinal"/> (1-based).
+    /// <paramref name="rleCount"/> compresses contiguous runs of the same
+    /// child — a refrain of three identical sentences in a row collapses to
+    /// one sequence row with rleCount=3, lookup at any ordinal in the run
+    /// still hits the row via <c>ordinal &lt;= N AND ordinal + rle_count &gt; N</c>.
+    ///
+    /// This is THE record of "where does X sit inside Y?". The parent's
+    /// LINESTRINGZM physicality remains the geometric truth for similarity
+    /// queries; substrate.sequence is the indexed identity-and-ordinal record
+    /// that powers microsecond random access by position.
+    /// </summary>
+    void AddSequence(
+        EntityHandle parent,
+        int ordinal,
+        EntityHandle child,
+        int rleCount = 1);
+
+    /// <summary>
     /// Append an entity-significance prime row in the given arena.
     /// Edge significance is primed in bulk by a separate substrate
     /// procedure, not per-batch.
