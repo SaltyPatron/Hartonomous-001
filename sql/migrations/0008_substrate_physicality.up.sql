@@ -1,0 +1,8 @@
+-- Stage 0009: substrate.physicality with per-partition geometry-subtype CHECKs.
+-- @include schema/tables/core/physicality.sql
+-- @include schema/tables/core/physicality_s3.sql
+-- @include schema/tables/core/physicality_hilbert.sql
+-- @include schema/tables/core/physicality_audio.sql
+-- @include schema/tables/core/physicality_model.sql
+-- @include schema/tables/core/physicality_contour.sql
+-- @include schema/tables/core/physicality_default.sql

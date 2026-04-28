@@ -1,0 +1,36 @@
+-- Stage 0014: substrate functions for reference-table population, model
+-- registry upserts, and edge-type management. These are thin wrappers
+-- around INSERT statements; the C# layer calls them by name (per AP-2,
+-- no inline SQL in C# beyond bulk binary COPY).
+-- @include schema/functions/reference_code_map.sql
+-- @include schema/functions/reference_key_value_map.sql
+-- @include schema/functions/reference_code_text_map.sql
+-- @include schema/functions/reference_int64_set.sql
+-- @include schema/functions/reference_id_by_code.sql
+-- @include schema/functions/populate_general_categories.sql
+-- @include schema/functions/populate_scripts.sql
+-- @include schema/functions/populate_blocks.sql
+-- @include schema/functions/populate_break_properties.sql
+-- @include schema/functions/populate_languages.sql
+-- @include schema/functions/populate_morph_features.sql
+-- @include schema/functions/populate_deprels.sql
+-- populate_senses removed: substrate.sense reference table no longer exists;
+-- WordNet senses are has_sense edges (lemma → synset), not reference rows.
+-- @include schema/functions/upsert_reference_edge_type.sql
+-- @include schema/functions/upsert_homogeneous_edge_types.sql
+-- @include schema/functions/upsert_architecture_class.sql
+-- @include schema/functions/upsert_model_registry.sql
+-- @include schema/functions/upsert_model_publisher.sql
+-- @include schema/functions/upsert_model_source.sql
+-- @include schema/functions/upsert_model_pass_checkpoint.sql
+-- @include schema/functions/populate_edge_trajectories.sql
+-- @include schema/functions/load_wordnet_offset_synset_map.sql
+-- Per-partition staging-flush functions (AP-2): C# COPYs into temp staging
+-- tables, then calls these substrate functions which iterate distinct
+-- partition keys and INSERT one partition at a time, bypassing PG18.3's
+-- multi-partition tuple-routing crash.
+-- @include schema/functions/flush_entities_from_staging.sql
+-- @include schema/functions/flush_edges_from_staging.sql
+-- @include schema/functions/flush_edge_members_from_staging.sql
+-- @include schema/functions/flush_physicality_from_staging.sql
+-- @include schema/functions/flush_entity_significance_from_staging.sql

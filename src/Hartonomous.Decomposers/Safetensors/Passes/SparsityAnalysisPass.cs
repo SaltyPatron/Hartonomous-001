@@ -81,8 +81,8 @@ internal sealed partial class SparsityAnalysisPass : IModelAnalysisPass
 
             session.Batch.AddEdge("has_sparsity_profile", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(profile, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(profile, "target", 1),
             ]);
 
             Log.TensorProfiled(_logger, tensorOrdinal, t.Info.Name, elements, nearZeroFraction);

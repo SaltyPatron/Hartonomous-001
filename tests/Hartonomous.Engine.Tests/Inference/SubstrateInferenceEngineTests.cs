@@ -308,6 +308,9 @@ public sealed class SubstrateInferenceEngineTests
         public Task<int> LoadIdByCodeAsync(
             string tableName, string code, CancellationToken ct)
             => Task.FromResult(0);
+
+        public Task<Dictionary<byte[], byte[]>> LoadWordNetOffsetSynsetMapAsync(CancellationToken ct)
+            => Task.FromResult(new Dictionary<byte[], byte[]>());
     }
 
     internal sealed class FakeTextRecompositionReader : ITextRecompositionReader

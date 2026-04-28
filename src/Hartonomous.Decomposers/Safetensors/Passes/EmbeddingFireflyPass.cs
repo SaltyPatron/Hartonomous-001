@@ -164,8 +164,8 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
                 // target ordinal.
                 session.Batch.AddEdge("has_token_id", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                    new EdgeMemberSpec(bpeToken, null, "target", 1),
+                    new EdgeMemberSpec(t.Entity, "source", 0),
+                    new EdgeMemberSpec(bpeToken, "target", 1),
                 ]);
 
                 anchored++;

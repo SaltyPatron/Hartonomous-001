@@ -59,10 +59,6 @@ public sealed partial class OmwDecomposer : BaseDecomposer
         List<OmwSourceInfo> sources = OmwParser.DiscoverTabFiles(wnsDir);
         Log.SourcesDiscovered(Logger, sources.Count);
 
-        // Load synset hash lookup from WordNet phase.
-        // Synset keys are "offset:pos" — we need to resolve synsetCode "XXXXXXXX-p" to the hash.
-        // Build lookup: "XXXXXXXX-p" → byte[] hash (matching WordNet decomposer's hashing).
-        // Also load language code → id map for entity_language junctions.
         OmwReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
@@ -71,6 +67,15 @@ public sealed partial class OmwDecomposer : BaseDecomposer
 
             // Load UD POS code → id map so we can write entity_pos junctions for each lemma.
             Dictionary<string, int> posIdMap = await refWriter.LoadPosMapAsync(ct);
+
+            // Bridge from WordNet's authoring offset string to the substrate's
+            // content-pure synset_hash. Built by WordNet's has_wordnet_offset
+            // edges in the prior pass; queried here via a single substrate
+            // function. Key = ComputeHash("XXXXXXXX-p") — the same hash WordNet
+            // used for the offset text_composition entity.
+            Dictionary<byte[], byte[]> offsetDocHashToSynsetHash =
+                await _referenceDataReader!.LoadWordNetOffsetSynsetMapAsync(ct);
+            Log.OffsetMapLoaded(Logger, offsetDocHashToSynsetHash.Count);
 
             long entityCount = 0;
             long edgeCount = 0;
@@ -96,21 +101,21 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                     return;
                 }
 
-                if (batchAlignments.Count > 0 && batchSynsetHashes.Count > 0)
+                if (batchAlignments.Count > 0)
                 {
-                    IReadOnlyDictionary<byte[], long> synsetIds =
-                        await pipeline.ResolveEntityIdsAsync([.. batchSynsetHashes], ct);
-
+                    // Hash-as-PK substrate: synset entities are identified by
+                    // (entity_type_id, hash). The WordNet phase already wrote
+                    // them; the OMW alignment edge writes (lemma_hash → synset_hash)
+                    // directly, no resolve step. ON CONFLICT in substrate.entity
+                    // makes re-emitting the synset entity here idempotent if a
+                    // particular synset wasn't seen in WordNet.
                     foreach ((EntityHandle lemmaHandle, byte[] synsetHash, double _) in batchAlignments)
                     {
-                        if (!synsetIds.TryGetValue(synsetHash, out long synsetId))
-                        {
-                            continue;
-                        }
+                        EntityHandle synsetHandle = batch.AddEntity(synsetHash, "synset");
                         batch.AddEdge("aligned_to_synset", ProvenanceCode,
                         [
-                            new EdgeMemberSpec(lemmaHandle, null, "source", 0),
-                            new EdgeMemberSpec(null, synsetId, "target", 1),
+                            new EdgeMemberSpec(lemmaHandle, "source", 0),
+                            new EdgeMemberSpec(synsetHandle, "target", 1),
                         ]);
                         edgeCount++;
                     }
@@ -150,10 +155,18 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                         continue;
                     }
 
-                    // Synset identity matches WordNetDecomposer's hashing of the
-                    // synsetCode "XXXXXXXX-p" — already in substrate from the
-                    // prior WordNet phase. We resolve its substrate id at flush.
-                    byte[] synsetHash = ComputeHash(entry.SynsetCode);
+                    // Resolve substrate's content-pure synset hash from the
+                    // OMW-supplied offset code via the bridge map. The offset
+                    // string ("XXXXXXXX-p") is hashed as a text_composition by
+                    // WordNet's has_wordnet_offset emission; we compute the
+                    // same hash and look up the linked synset_hash. Skip
+                    // entries whose offset isn't in the substrate (e.g. OMW
+                    // referencing synsets WordNet didn't include).
+                    byte[] offsetDocHash = ComputeHash(entry.SynsetCode);
+                    if (!offsetDocHashToSynsetHash.TryGetValue(offsetDocHash, out byte[]? synsetHash))
+                    {
+                        continue;
+                    }
 
                     string lemmaWord = entry.Word;
                     string lemmaKey = $"{lemmaWord}:{langCode}";
@@ -165,11 +178,10 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                     }
                     else
                     {
-                        (EntityHandle h, byte[] _) =
+                        (EntityHandle h, byte[] _, _) =
                             EmitLemmaMaybeCompound(batch, lemmaWord, ProvenanceCode);
                         lemmaHandle = h;
                         batch.AddSignificance(lemmaHandle, "source_authority", trustMu);
-                        EmitContourPhysicality(batch, lemmaHandle, lemmaWord);
                         batchLemmaHandles[lemmaKey] = lemmaHandle;
                         entityCount++;
 
@@ -250,6 +262,9 @@ public sealed partial class OmwDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Loaded {Count} language codes")]
         public static partial void LanguagesLoaded(ILogger logger, int count);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Loaded {Count} WordNet offset → synset hash bridges")]
+        public static partial void OffsetMapLoaded(ILogger logger, int count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Files processed: {Done}/{Total}")]
         public static partial void FilesProcessed(ILogger logger, int done, int total);

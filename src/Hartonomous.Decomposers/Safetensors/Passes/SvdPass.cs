@@ -131,8 +131,8 @@ internal sealed partial class SvdPass : IModelAnalysisPass
             session.Batch.AddEntityModelSource(spectrum, context.Source.ModelSourceId);
             session.Batch.AddEdge("has_spectrum", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(spectrum, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(spectrum, "target", 1),
             ]);
 
             // Per-rank components (migration 0043): for each rank, emit one
@@ -234,8 +234,8 @@ internal sealed partial class SvdPass : IModelAnalysisPass
             session.Batch.AddEntityModelSource(comp, context.Source.ModelSourceId);
             session.Batch.AddEdge("has_rank_component", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(comp, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(comp, "target", 1),
             ]);
 
             // Pack σ⊕U⊕V into linestring4d 4-tuples. Layout: index 0 = σ,

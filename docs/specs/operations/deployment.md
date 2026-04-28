@@ -116,9 +116,9 @@ Runs all phases in dependency order. Takes hours to days depending on data volum
 FROM postgis/postgis:17-3.5
 
 # Install hartonomous extension
-COPY ext/pg/hartonomous.so /usr/lib/postgresql/17/lib/
-COPY ext/pg/hartonomous.control /usr/share/postgresql/17/extension/
-COPY ext/pg/hartonomous--1.0.sql /usr/share/postgresql/17/extension/
+COPY ext/pg/hartonomous.so /opt/pg18/lib/
+COPY ext/pg/hartonomous.control /opt/pg18/share/extension/
+COPY ext/pg/hartonomous--1.0.sql /opt/pg18/share/extension/
 
 # Init script
 COPY ext/sql/init.sql /docker-entrypoint-initdb.d/

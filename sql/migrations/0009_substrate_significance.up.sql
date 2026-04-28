@@ -1,0 +1,26 @@
+-- Stage 0011: substrate.entity_significance + substrate.edge_significance,
+-- split tables (no XOR discriminator). Both partitioned by context_type_id.
+-- @include schema/tables/core/entity_significance.sql
+-- @include schema/tables/core/entity_significance_lexical.sql
+-- @include schema/tables/core/entity_significance_syntactic.sql
+-- @include schema/tables/core/entity_significance_translation.sql
+-- @include schema/tables/core/entity_significance_model.sql
+-- @include schema/tables/core/entity_significance_authority.sql
+-- @include schema/tables/core/entity_significance_relevance.sql
+-- @include schema/tables/core/entity_significance_corroboration.sql
+-- @include schema/tables/core/entity_significance_frequency.sql
+-- @include schema/tables/core/entity_significance_attention.sql
+-- @include schema/tables/core/entity_significance_morphological.sql
+-- @include schema/tables/core/entity_significance_default.sql
+-- @include schema/tables/core/edge_significance.sql
+-- @include schema/tables/core/edge_significance_lexical.sql
+-- @include schema/tables/core/edge_significance_syntactic.sql
+-- @include schema/tables/core/edge_significance_translation.sql
+-- @include schema/tables/core/edge_significance_model.sql
+-- @include schema/tables/core/edge_significance_authority.sql
+-- @include schema/tables/core/edge_significance_relevance.sql
+-- @include schema/tables/core/edge_significance_corroboration.sql
+-- @include schema/tables/core/edge_significance_frequency.sql
+-- @include schema/tables/core/edge_significance_attention.sql
+-- @include schema/tables/core/edge_significance_morphological.sql
+-- @include schema/tables/core/edge_significance_default.sql

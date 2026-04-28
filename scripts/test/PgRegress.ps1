@@ -12,9 +12,9 @@ docker cp ext/hartonomous_pg/test/expected/hartonomous_test.out ${container}:/tm
 # Use a unique DB name per run so we don't collide with prior runs.
 $dbname = "regress_$(Get-Random -Maximum 99999)"
 $cmd = @"
-cd /tmp/regress && /usr/lib/postgresql/17/lib/pgxs/src/test/regress/pg_regress \
+cd /tmp/regress && /opt/pg18/lib/pgxs/src/test/regress/pg_regress \
     --inputdir=test \
-    --bindir=/usr/lib/postgresql/17/bin \
+    --bindir=/opt/pg18/bin \
     --user=hartonomous \
     --dbname=$dbname \
     hartonomous_test 2>&1

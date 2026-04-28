@@ -1,0 +1,6 @@
+-- Stage 0013: model registry / publisher / source / pass checkpoints + entity_model_source.
+-- @include schema/tables/models/model_registry.sql
+-- @include schema/tables/models/model_publisher.sql
+-- @include schema/tables/models/model_source.sql
+-- @include schema/tables/models/model_pass_checkpoint.sql
+-- @include schema/tables/models/entity_model_source.sql

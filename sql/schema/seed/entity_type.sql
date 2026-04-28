@@ -1,0 +1,28 @@
+-- Entity types: 25 rows in canonical insertion order. SERIAL ids 1..25 must
+-- match partition declarations in tables/core/entity_*.sql.
+INSERT INTO substrate.entity_type (code, modality) VALUES
+    ('codepoint',           'text'),
+    ('grapheme_cluster',    'text'),
+    ('word_form',           'text'),
+    ('morpheme',            'text'),
+    ('lemma',               'text'),
+    ('ud_sentence',         'text'),
+    ('ud_token',            'text'),
+    ('tatoeba_sentence',    'text'),
+    ('text_composition',    'text'),
+    ('paragraph',           'text'),
+    ('document',            'text'),
+    ('bpe_token',           'text'),
+    ('synset',              'text'),
+    ('word_sense',          'text'),
+    ('wikt_sense',          'text'),
+    ('inflected_form',      'text'),
+    ('collation_element',   'text'),
+    ('language_name',       'text'),
+    ('pixel_region',        'image'),
+    ('audio_recording',     'audio'),
+    ('audio_chunk',         'audio'),
+    ('video_frame',         'video'),
+    ('tensor',              'model_weights'),
+    ('model_architecture',  'model_weights'),
+    ('attention_pattern',   'model_weights');

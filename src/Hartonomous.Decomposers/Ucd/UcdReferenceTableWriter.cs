@@ -74,7 +74,8 @@ internal sealed class UcdReferenceTableWriter : BaseReferenceTableWriter
         }
 
         List<(
-            long EntityId,
+            int EntityTypeId,
+            byte[] EntityHash,
             int CodepointValue,
             int GeneralCategoryId,
             int ScriptId,
@@ -92,7 +93,8 @@ internal sealed class UcdReferenceTableWriter : BaseReferenceTableWriter
         foreach (CodepointPropertyRow row in rows)
         {
             copyRows.Add((
-                row.EntityId,
+                row.EntityTypeId,
+                row.EntityHash,
                 row.CodepointValue,
                 row.GeneralCategoryId,
                 row.ScriptId,
@@ -111,9 +113,6 @@ internal sealed class UcdReferenceTableWriter : BaseReferenceTableWriter
 
         await WriteCodepointPropertiesCoreAsync(copyRows, ct);
     }
-
-    public Task<HashSet<long>> LoadCodepointPropertyEntityIdsAsync(CancellationToken ct) =>
-        LoadInt64SetAsync("substrate.codepoint_property", "entity_id", ct);
 
     private static string GetGeneralCategoryDescription(string code)
     {

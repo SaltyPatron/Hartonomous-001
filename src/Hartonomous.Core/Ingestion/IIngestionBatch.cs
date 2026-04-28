@@ -2,15 +2,38 @@ using System;
 
 namespace Hartonomous.Core.Ingestion;
 
+/// <summary>
+/// Producer-side surface that decomposers stream tuples into. Pure values:
+/// hashes + reference codes + geometry payloads. The pipeline owns batching,
+/// transactions, partitioning, and ordering. There is no ResolveHandle and
+/// no RemapHandle in the hash-as-PK substrate — handles ARE the foreign keys.
+/// </summary>
 public interface IIngestionBatch
 {
+    /// <summary>
+    /// Append an entity. Returns a handle that carries the hash + type code;
+    /// downstream Add* calls reference this handle to express FKs. Same
+    /// (hash, type_code) added twice is idempotent at flush via
+    /// ON CONFLICT DO NOTHING on substrate.entity's composite PK.
+    /// </summary>
     EntityHandle AddEntity(byte[] hash, string entityTypeCode);
 
+    /// <summary>
+    /// Append an n-ary edge. The pipeline computes the edge hash from
+    /// (edge_type_id, ordered participant hashes) at flush. Each member
+    /// references its participating entity by handle.
+    /// </summary>
     void AddEdge(
         string edgeTypeCode,
         string provenanceCode,
         ReadOnlySpan<EdgeMemberSpec> members);
 
+    /// <summary>
+    /// Append a junction row (entity_pos, entity_sense, entity_language,
+    /// entity_morph_feature, codepoint_property, model_architecture_class,
+    /// tensor_tensor_role, pattern_deprel). Junction tables FK on
+    /// (entity_type_id, entity_hash) directly.
+    /// </summary>
     void AddJunction(
         string junctionTable,
         EntityHandle entity,
@@ -18,11 +41,11 @@ public interface IIngestionBatch
         double? mu = null);
 
     /// <summary>
-    /// Append a PostGIS-typed physicality row. Only valid for physicality types
-    /// whose <c>physicality_type.dimensionality</c> is 2 or 3 (waveform, FFT,
-    /// STFT, MFCC, chromagram, formant trajectory, SVD spectrum, etc.). The
-    /// pipeline routes the WKB into the <c>geom</c> column via
-    /// <c>ST_GeomFromWKB(g, 4326)</c>.
+    /// Append a physicality row with raw PostGIS WKB. Used for 2D/3D
+    /// audio physicality types whose vertex layout doesn't fit POINTZM /
+    /// LINESTRINGZM (waveform, FFT, STFT, MFCC, chromagram, formant
+    /// trajectory, etc.). The pipeline routes the WKB into the geom column
+    /// via ST_GeomFromWKB.
     /// </summary>
     void AddPhysicality(
         EntityHandle entity,
@@ -30,13 +53,8 @@ public interface IIngestionBatch
         byte[] geomWkb);
 
     /// <summary>
-    /// Append a substrate-native 4D point physicality row. Used for every type
-    /// whose <c>physicality_type.dimensionality</c> is 4 and whose realization
-    /// is a single point: <c>s3_position</c>, <c>hilbert_value</c>,
-    /// <c>weight_distribution</c>, <c>embedding_firefly</c>,
-    /// <c>codec_codevector_position</c>. The pipeline routes the four
-    /// coordinates into the <c>geom geometry(GeometryZM)</c> column via
-    /// <c>ST_MakePoint(x, y, z, m)</c> (post-migration 0048).
+    /// Append a 4D POINTZM physicality row (s3_position, hilbert_value,
+    /// weight_distribution single-point variants, etc.).
     /// </summary>
     void AddPhysicalityPoint4d(
         EntityHandle entity,
@@ -47,58 +65,32 @@ public interface IIngestionBatch
         double x4);
 
     /// <summary>
-    /// Append a substrate-native 4D polyline physicality row. Used for every
-    /// 4D trajectory physicality (currently <c>contour</c>). The pipeline
-    /// routes the vertices into the <c>geom geometry(GeometryZM)</c> column
-    /// as a LINESTRINGZM via PostGIS native constructors (post-migration 0048).
+    /// Append a 4D LINESTRINGZM physicality row (contour, weight_distribution
+    /// trajectory variants, etc.). Vertices in trajectory order; at least one
+    /// vertex required.
     /// </summary>
-    /// <param name="vertices">Vertices in trajectory order. Must contain at
-    /// least one vertex; each vertex is a 4-tuple (x1, x2, x3, x4).</param>
     void AddPhysicalityLineString4d(
         EntityHandle entity,
         string physicalityTypeCode,
         ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices);
 
-    void AddSequence(
-        EntityHandle parent,
-        EntityHandle child,
-        int position,
-        int count = 1);
-
     /// <summary>
-    /// Same as <see cref="AddSequence(EntityHandle, EntityHandle, int, int)"/>
-    /// but takes the parent's already-resolved <c>substrate.entity.id</c>
-    /// directly instead of a per-batch <see cref="EntityHandle"/>. Use this
-    /// when the parent is known via stable substrate id (e.g. a TensorHandle's
-    /// EntityId in safetensors decomposition) so the sequence row is not at
-    /// the mercy of cross-batch handle remapping. Fixes the silent miswrite
-    /// where flush invalidated the tensor handle and subsequent sequence
-    /// rows pointed at the WRONG entity (e.g. 4998 of 30522 embedding rows
-    /// linked to the tensor; the rest pointed at random embedding_position
-    /// entities promoted by the post-flush handle reuse).
+    /// Append an entity-significance prime row in the given arena.
+    /// Edge significance is primed in bulk by a separate substrate
+    /// procedure, not per-batch.
     /// </summary>
-    void AddSequence(
-        long parentEntityId,
-        EntityHandle child,
-        int position,
-        int count = 1);
-
     void AddSignificance(
         EntityHandle entity,
         string contextTypeCode,
         double initialMu);
 
     /// <summary>
-    /// Record that <paramref name="entity"/> was observed in the given model_source.
-    /// Per-model identity (registry, publisher, slug, revision) is captured in the
-    /// model_source row; this method links the entity to that row via the
-    /// substrate.entity_model_source junction. Same entity hash appearing in N models =
-    /// one entity, N junction rows.
+    /// Record that <paramref name="entity"/> was observed in the given
+    /// model_source. Same entity hash appearing in N model sources = one
+    /// substrate.entity row, N substrate.entity_model_source rows.
     /// </summary>
     void AddEntityModelSource(EntityHandle entity, long modelSourceId);
 
     int EntityCount { get; }
-
     int EdgeCount { get; }
 }
-

@@ -37,7 +37,13 @@ work_mem = 64MB
 maintenance_work_mem = 256MB
 max_wal_size = 8GB
 synchronous_commit = off
-shared_preload_libraries = 'hartonomous'
+# hartonomous extension loaded lazily via CREATE EXTENSION + per-call dlopen,
+# NOT via shared_preload_libraries. Preloading runs the extension's
+# _PG_init() in every backend at fork time and corrupts backend memory
+# state even when subsequent queries (e.g. INSERT INTO substrate.entity)
+# don't call any extension function. The seed phases use only stock PG +
+# PostGIS; extension functions are needed at query/inference time and
+# load on demand when those functions are first invoked in a session.
 EOF
 
     # Start postgres temporarily to run role/db creation + init scripts.

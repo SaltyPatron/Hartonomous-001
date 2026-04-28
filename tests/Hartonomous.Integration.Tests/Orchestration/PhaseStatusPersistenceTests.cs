@@ -159,13 +159,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public PipelineStats Stats => new();
         public IIngestionBatch CreateBatch() => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
-
-        public Task<IReadOnlyDictionary<byte[], long>> ResolveEntityIdsAsync(
-            IReadOnlyList<byte[]> hashes, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyDictionary<byte[], long>>(new Dictionary<byte[], long>());
-
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
-
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -173,14 +167,12 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
     {
         public int EntityCount => 0;
         public int EdgeCount => 0;
-        public EntityHandle AddEntity(byte[] hash, string entityTypeCode) => new(0);
+        public EntityHandle AddEntity(byte[] hash, string entityTypeCode) => new(hash, entityTypeCode);
         public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members) { }
         public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null) { }
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }
         public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4) { }
         public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices) { }
-        public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1) { }
-        public void AddSequence(long parentEntityId, EntityHandle child, int position, int count = 1) { }
         public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu) { }
         public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }
     }

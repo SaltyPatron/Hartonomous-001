@@ -1,0 +1,15 @@
+DROP FUNCTION IF EXISTS substrate.upsert_model_pass_checkpoint(INT, TEXT, TEXT, BIGINT, TEXT, JSONB);
+DROP FUNCTION IF EXISTS substrate.upsert_model_source(INT, INT, TEXT, BYTEA);
+DROP FUNCTION IF EXISTS substrate.upsert_model_publisher(INT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS substrate.upsert_model_registry(TEXT, TEXT);
+DROP FUNCTION IF EXISTS substrate.upsert_architecture_class(TEXT);
+DROP FUNCTION IF EXISTS substrate.upsert_homogeneous_edge_types(TEXT[], TEXT, TEXT);
+DROP FUNCTION IF EXISTS substrate.upsert_reference_edge_type(TEXT, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS substrate.populate_senses(TEXT[], TEXT[], INT[], INT[]);
+DROP FUNCTION IF EXISTS substrate.populate_deprels(TEXT[]);
+DROP FUNCTION IF EXISTS substrate.populate_morph_features(TEXT[], TEXT[]);
+DROP FUNCTION IF EXISTS substrate.populate_languages(TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[]);
+DROP FUNCTION IF EXISTS substrate.populate_break_properties(TEXT[], TEXT[]);
+DROP FUNCTION IF EXISTS substrate.populate_blocks(TEXT[], INT[], INT[]);
+DROP FUNCTION IF EXISTS substrate.populate_scripts(TEXT[]);
+DROP FUNCTION IF EXISTS substrate.populate_general_categories(TEXT[], TEXT[], TEXT[]);

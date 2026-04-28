@@ -135,8 +135,8 @@ internal static class PerRowContentPass
 
             session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(row, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(row, "target", 1),
             ]);
 
             // Use t.EntityId (the orchestrator-resolved tensor entity_id) directly —
@@ -145,7 +145,6 @@ internal static class PerRowContentPass
             // embedding_position entity instead of the tensor) because each new
             // batch's first AddEntity got a fresh BatchIndex that resolved to
             // whatever entity happened to be in that ord slot.
-            session.Batch.AddSequence(parentEntityId: t.EntityId, child: row, position: rowIdx, count: 1);
 
             emitted++;
             await session.MaybeFlushAsync(flushThreshold, ct);
@@ -243,11 +242,10 @@ internal static class PerRowContentPass
 
             session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(unit, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(unit, "target", 1),
             ]);
 
-            session.Batch.AddSequence(parentEntityId: t.EntityId, child: unit, position: outerIdx, count: 1);
 
             emitted++;
             await session.MaybeFlushAsync(flushThreshold, ct);

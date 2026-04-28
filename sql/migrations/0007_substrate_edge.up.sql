@@ -1,0 +1,15 @@
+-- Stage 0008: substrate.edge + substrate.edge_member, both partitioned by edge_type_id.
+-- @include schema/tables/core/edge.sql
+-- @include schema/tables/core/edge_structural.sql
+-- @include schema/tables/core/edge_cross_lingual.sql
+-- @include schema/tables/core/edge_cross_modal.sql
+-- @include schema/tables/core/edge_unicode.sql
+-- @include schema/tables/core/edge_model.sql
+-- @include schema/tables/core/edge_default.sql
+-- @include schema/tables/core/edge_member.sql
+-- @include schema/tables/core/edge_member_structural.sql
+-- @include schema/tables/core/edge_member_cross_lingual.sql
+-- @include schema/tables/core/edge_member_cross_modal.sql
+-- @include schema/tables/core/edge_member_unicode.sql
+-- @include schema/tables/core/edge_member_model.sql
+-- @include schema/tables/core/edge_member_default.sql

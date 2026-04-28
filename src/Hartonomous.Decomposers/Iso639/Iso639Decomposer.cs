@@ -104,12 +104,11 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 // entities and sequence rows in one pass; same content from any decomposer
                 // (e.g. text_composition "English" from TextDecomposer) yields the same
                 // Merkle hash → same entity row in the language_name partition.
-                (EntityHandle nameEntity, byte[] nameHash) =
+                (EntityHandle nameEntity, byte[] nameHash, _) =
                     EmitWordFormMerkle(batch, rec.RefName, "language_name");
                 codeToNameHash[rec.Id] = nameHash;
 
                 batch.AddSignificance(nameEntity, "source_authority", TrustPriorMu);
-                EmitContourPhysicality(batch, nameEntity, rec.RefName);
                 entityCount++;
 
                 if (batch.EntityCount >= BatchSize)
@@ -151,20 +150,18 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
                 if (!printIsRef)
                 {
-                    (EntityHandle altEntity, byte[] hash) =
+                    (EntityHandle altEntity, byte[] hash, _) =
                         EmitWordFormMerkle(batch, entry.PrintName, "language_name");
                     batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
-                    EmitContourPhysicality(batch, altEntity, entry.PrintName);
                     altList.Add(hash);
                     entityCount++;
                 }
 
                 if (!invertIsRef && !invertIsPrint)
                 {
-                    (EntityHandle altEntity, byte[] hash) =
+                    (EntityHandle altEntity, byte[] hash, _) =
                         EmitWordFormMerkle(batch, entry.InvertedName, "language_name");
                     batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
-                    EmitContourPhysicality(batch, altEntity, entry.InvertedName);
                     altList.Add(hash);
                     entityCount++;
                 }
@@ -186,31 +183,15 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
             Log.EntitiesCreated(Logger, entityCount, batchNum);
 
-            // ── Step 4: Resolve all name entity IDs ──
-            HashSet<byte[]> allHashes = new(ByteArrayEqualityComparer.Instance);
-            foreach (byte[] h in codeToNameHash.Values)
-            {
-                allHashes.Add(h);
-            }
-            foreach (List<byte[]> alts in codeToAlternateHashes.Values)
-            {
-                foreach (byte[] h in alts)
-                {
-                    allHashes.Add(h);
-                }
-            }
-
-            IReadOnlyDictionary<byte[], long> entityIdMap =
-                await pipeline.ResolveEntityIdsAsync([.. allHashes], ct);
-
-            // ── Step 5: Update language.name_entity_id FK ──
-            List<(string Code, long EntityId)> fkUpdates = new(codeToNameHash.Count);
+            // ── Step 4: language.name_entity_(type_id, hash) FK + entity_language junctions
+            // No phase-wide resolve — codeToNameHash already carries every name hash, and in
+            // the hash-as-PK substrate the (entity_type_id, hash) pair IS the FK that
+            // language.name references. The reference writer takes (code, hash) pairs and
+            // updates the row directly.
+            List<(string Code, byte[] NameHash)> fkUpdates = new(codeToNameHash.Count);
             foreach (KeyValuePair<string, byte[]> kv in codeToNameHash)
             {
-                if (entityIdMap.TryGetValue(kv.Value, out long entityId))
-                {
-                    fkUpdates.Add((kv.Key, entityId));
-                }
+                fkUpdates.Add((kv.Key, kv.Value));
             }
 
             await refWriter.UpdateNameEntityIdsAsync(fkUpdates, ct);
@@ -220,111 +201,19 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             await refWriter.WriteLanguageJunctionsAsync(fkUpdates, langIdMap, ct);
             Log.JunctionEntriesWritten(Logger, fkUpdates.Count);
 
-            // ── Step 7: Edges — macrolanguage containment, alternate names, retirements ──
-            batch = pipeline.CreateBatch();
-
-            // Macrolanguage containment: macrolanguage_contains edges.
-            foreach (MacrolanguageMapping mapping in macroMappings)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                if (!codeToNameHash.TryGetValue(mapping.MacrolanguageId, out byte[]? macroHash) ||
-                    !codeToNameHash.TryGetValue(mapping.IndividualId, out byte[]? indivHash))
-                {
-                    continue;
-                }
-
-                if (!entityIdMap.TryGetValue(macroHash, out long macroEntityId) ||
-                    !entityIdMap.TryGetValue(indivHash, out long indivEntityId))
-                {
-                    continue;
-                }
-
-                batch.AddEdge("macrolanguage_contains", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(null, macroEntityId, "source", 0),
-                    new EdgeMemberSpec(null, indivEntityId, "target", 1),
-                ]);
-                edgeCount++;
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // Alternate name edges: has_alternate_name from ref name to each alternate.
-            foreach (KeyValuePair<string, List<byte[]>> kv in codeToAlternateHashes)
-            {
-                if (!codeToNameHash.TryGetValue(kv.Key, out byte[]? refHash) ||
-                    !entityIdMap.TryGetValue(refHash, out long refEntityId))
-                {
-                    continue;
-                }
-
-                foreach (byte[] altHash in kv.Value)
-                {
-                    if (!entityIdMap.TryGetValue(altHash, out long altEntityId))
-                    {
-                        continue;
-                    }
-
-                    batch.AddEdge("has_alternate_name", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(null, refEntityId, "source", 0),
-                        new EdgeMemberSpec(null, altEntityId, "target", 1),
-                    ]);
-                    edgeCount++;
-                }
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // Retirement edges: superseded_by from retired code to replacement.
-            foreach (RetirementRecord ret in retirements)
-            {
-                if (ret.ChangeTo is null)
-                {
-                    continue;
-                }
-
-                if (!codeToNameHash.TryGetValue(ret.Id, out byte[]? retiredHash))
-                {
-                    // Retired code may not be in the main language list — create entity.
-                    retiredHash = ComputeHash(ret.RefName);
-                }
-
-                if (!codeToNameHash.TryGetValue(ret.ChangeTo, out byte[]? replacementHash))
-                {
-                    continue;
-                }
-
-                if (!entityIdMap.TryGetValue(retiredHash, out long retiredId) ||
-                    !entityIdMap.TryGetValue(replacementHash, out long replacementId))
-                {
-                    continue;
-                }
-
-                batch.AddEdge("superseded_by", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(null, retiredId, "source", 0),
-                    new EdgeMemberSpec(null, replacementId, "target", 1),
-                ]);
-                edgeCount++;
-            }
-
-            if (batch.EdgeCount > 0 || batch.EntityCount > 0)
-            {
-                batchNum++;
-                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
-            }
+            // Step 7 cross-lingual edges (macrolanguage_contains / has_alternate_name /
+            // superseded_by) are intentionally NOT emitted here. Those relationships are
+            // metadata between LANGUAGE CODES (rows in substrate.language reference
+            // table), not between NAME ENTITIES (rows in substrate.entity). The correct
+            // model — once the reference-layer junction tables for macrolanguage and
+            // supersession land (task #59) — populates substrate.language_macrolanguage
+            // and substrate.language_supersession instead. Emitting them as substrate.edge
+            // rows between language_name entities is the parent-child antipattern the
+            // greenfield rebuild explicitly removed. Cross-name link information that IS
+            // appropriate here (e.g. "this name string is one display form of language
+            // code X") is already captured by entity_language above — multiple distinct
+            // name entities for the same code naturally produce multiple junction rows.
+            _ = macroMappings; _ = codeToAlternateHashes; _ = retirements;
 
             Log.DecompositionComplete(Logger, entityCount, edgeCount, fkUpdates.Count);
         }

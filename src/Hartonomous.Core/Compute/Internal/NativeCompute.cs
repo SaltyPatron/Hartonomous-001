@@ -51,6 +51,10 @@ internal static partial class NativeCompute
     internal static partial int S3Centroid(
         ReadOnlySpan<double> points, nuint pointCount, Span<double> result);
 
+    [LibraryImport(Library, EntryPoint = "hartonomous_centroid_4d")]
+    internal static partial int Centroid4d(
+        ReadOnlySpan<double> points, nuint pointCount, Span<double> result);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_karcher_mean_s3")]
     internal static partial int KarcherMeanS3(
         ReadOnlySpan<double> points, nuint pointCount,

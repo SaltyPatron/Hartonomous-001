@@ -102,8 +102,8 @@ internal sealed partial class TokenizerMappingPass : IModelAnalysisPass
 
         session.Batch.AddEdge("has_tokenizer_model", context.ProvenanceCode,
         [
-            new EdgeMemberSpec(session.ModelEntity, null, "source", 0),
-            new EdgeMemberSpec(tokenizerEntity, null, "target", 1),
+            new EdgeMemberSpec(session.ModelEntity, "source", 0),
+            new EdgeMemberSpec(tokenizerEntity, "target", 1),
         ]);
 
         long tokenCount = 0;
@@ -129,13 +129,13 @@ internal sealed partial class TokenizerMappingPass : IModelAnalysisPass
 
             session.Batch.AddEdge("has_token_in_tokenizer", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(tokenizerEntity, null, "source", 0),
-                new EdgeMemberSpec(tokenEntity, null, "target", 1),
+                new EdgeMemberSpec(tokenizerEntity, "source", 0),
+                new EdgeMemberSpec(tokenEntity, "target", 1),
             ]);
             session.Batch.AddEdge("in_vocabulary", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(tokenEntity, null, "source", 0),
-                new EdgeMemberSpec(session.ModelEntity, null, "target", 1),
+                new EdgeMemberSpec(tokenEntity, "source", 0),
+                new EdgeMemberSpec(session.ModelEntity, "target", 1),
             ]);
 
             // Compose the bpe_token from its constituent codepoint atoms via
@@ -147,7 +147,6 @@ internal sealed partial class TokenizerMappingPass : IModelAnalysisPass
             {
                 EntityHandle cpEntity = session.Batch.AddEntity(
                     BaseDecomposer.HashCodepoint(cp), "codepoint");
-                session.Batch.AddSequence(tokenEntity, cpEntity, ordinal, 1);
                 ordinal++;
                 sequenceRows++;
             }

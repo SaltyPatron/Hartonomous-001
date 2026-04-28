@@ -126,16 +126,16 @@ internal sealed partial class FfnEdgeDecompositionPass : IModelAnalysisPass
                     {
                         session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
                         [
-                            new EdgeMemberSpec(neuron, null, "source", 0),
-                            new EdgeMemberSpec(direction, null, "target", 1),
+                            new EdgeMemberSpec(neuron, "source", 0),
+                            new EdgeMemberSpec(direction, "target", 1),
                         ]);
                     }
                     else
                     {
                         session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
                         [
-                            new EdgeMemberSpec(direction, null, "source", 0),
-                            new EdgeMemberSpec(neuron, null, "target", 1),
+                            new EdgeMemberSpec(direction, "source", 0),
+                            new EdgeMemberSpec(neuron, "target", 1),
                         ]);
                     }
                     edgesThisTensor++;

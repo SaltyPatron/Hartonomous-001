@@ -1,0 +1,11 @@
+-- Stage 0006: phase 1 seed data. Order matters — entity_type before edge_type
+-- because edge_type's source/target FK look up entity_type rows by code.
+-- @include schema/seed/entity_type.sql
+-- @include schema/seed/physicality_type.sql
+-- @include schema/seed/edge_role.sql
+-- @include schema/seed/significance_context.sql
+-- @include schema/seed/provenance.sql
+-- @include schema/seed/lexname.sql
+-- @include schema/seed/pos.sql
+-- @include schema/seed/edge_type.sql
+-- @include schema/seed/validate.sql

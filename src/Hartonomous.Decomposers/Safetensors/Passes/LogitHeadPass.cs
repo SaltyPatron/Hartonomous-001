@@ -106,11 +106,10 @@ internal sealed partial class LogitHeadPass : IModelAnalysisPass
 
                 session.Batch.AddEdge("has_logit_projection", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                    new EdgeMemberSpec(proj, null, "target", 1),
+                    new EdgeMemberSpec(t.Entity, "source", 0),
+                    new EdgeMemberSpec(proj, "target", 1),
                 ]);
 
-                session.Batch.AddSequence(parentEntityId: t.EntityId, child: proj, position: rowIdx, count: 1);
 
                 emitted++;
                 await session.MaybeFlushAsync(FlushThreshold, ct);

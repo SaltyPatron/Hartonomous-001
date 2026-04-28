@@ -144,8 +144,8 @@ internal sealed partial class VocabCoveragePass : IModelAnalysisPass
 
             session.Batch.AddEdge("covers_lemma", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(bpeTokenEntity, null, "source", 0),
-                new EdgeMemberSpec(lemmaEntity, null, "target", 1),
+                new EdgeMemberSpec(bpeTokenEntity, "source", 0),
+                new EdgeMemberSpec(lemmaEntity, "target", 1),
             ]);
 
             matched++;
@@ -169,8 +169,8 @@ internal sealed partial class VocabCoveragePass : IModelAnalysisPass
 
         session.Batch.AddEdge("has_vocab_coverage", context.ProvenanceCode,
         [
-            new EdgeMemberSpec(session.ModelEntity, null, "source", 0),
-            new EdgeMemberSpec(profileEntity, null, "target", 1),
+            new EdgeMemberSpec(session.ModelEntity, "source", 0),
+            new EdgeMemberSpec(profileEntity, "target", 1),
         ]);
 
         Log.PassComplete(_logger, context.Source.ModelId, total, matched, special, byteFallback, empty);

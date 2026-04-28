@@ -1,0 +1,3 @@
+-- Stage 0004: composite types used in function signatures and traversal results.
+-- @include schema/types/entity_ref.sql
+-- @include schema/types/edge_ref.sql

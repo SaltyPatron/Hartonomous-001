@@ -14,7 +14,18 @@ services:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./.crash_dumps:/var/lib/postgresql/cores
     shm_size: 8g
+    # Enable core dumps so SEGV / stack-smashing inside the hartonomous
+    # extension produces a usable backtrace (task #86 — find the crashing
+    # frame in the C extension code).
+    ulimits:
+      core: -1
+    # Postgres writes core dumps to its working directory. Tell the kernel
+    # to put cores under /var/lib/postgresql/cores (bind-mounted to host
+    # ./.crash_dumps so gdb can read them outside the container).
+    sysctls:
+      kernel.core_pattern: "/var/lib/postgresql/cores/core.%e.%p.%t"
     # Tuned for: 14900KS (24 logical cores), 48GB DDR5 host, NVMe RAID0 (~14 GB/s).
     # Total Postgres memory budget: ~24GB (12GB shared + 8GB work distributed + 4GB maintenance),
     # leaving ~24GB for the OS, the C# decomposers running in parallel, and page cache.

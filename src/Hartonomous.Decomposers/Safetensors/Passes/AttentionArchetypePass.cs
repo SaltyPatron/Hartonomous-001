@@ -188,13 +188,13 @@ internal sealed partial class AttentionArchetypePass : IModelAnalysisPass
                 // tensor_tensor_role.
                 session.Batch.AddEdge("encodes_archetype", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, q.EntityId, "source", 0),
-                    new EdgeMemberSpec(arch, null, "target", 1),
+                    new EdgeMemberSpec(q.Entity, "source", 0),
+                    new EdgeMemberSpec(arch, "target", 1),
                 ]);
                 session.Batch.AddEdge("encodes_archetype", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, k.EntityId, "source", 0),
-                    new EdgeMemberSpec(arch, null, "target", 1),
+                    new EdgeMemberSpec(k.Entity, "source", 0),
+                    new EdgeMemberSpec(arch, "target", 1),
                 ]);
 
                 Log.HeadArchetype(_logger, layer, head, qSing[0], kSing[0], alignment, posBias);

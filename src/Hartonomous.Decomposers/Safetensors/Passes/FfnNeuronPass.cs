@@ -153,19 +153,13 @@ internal sealed partial class FfnNeuronPass : IModelAnalysisPass
                 // Edge from tensor → neuron, marking the relation type.
                 session.Batch.AddEdge("has_ffn_neuron", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                    new EdgeMemberSpec(neuron, null, "target", 1),
+                    new EdgeMemberSpec(t.Entity, "source", 0),
+                    new EdgeMemberSpec(neuron, "target", 1),
                 ]);
 
-                // Placement: which row of THIS tensor this neuron came from.
-                // substrate.sequence carries ordinal_position as INT (32-bit
-                // signed) — handles vocab-scale hidden dims comfortably.
-                session.Batch.AddSequence(
-                    parentEntityId: t.EntityId,
-                    child:  neuron,
-                    position: rowIdx,
-                    count: 1);
-
+                // Placement is encoded by the parent tensor's LINESTRINGZM physicality
+                // (vertices in row-index order); the neuron's hash already encodes its
+                // row position via the Merkle of (tensor_hash, row_index_bytes).
                 emitted++;
                 await session.MaybeFlushAsync(FlushThreshold, ct);
             }

@@ -99,8 +99,8 @@ internal sealed partial class LayerNormPass : IModelAnalysisPass
             // tensor_tensor_role junction and in_layer edge when populated.
             session.Batch.AddEdge("has_layer_norm_scale", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(scale, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(scale, "target", 1),
             ]);
 
             processed++;

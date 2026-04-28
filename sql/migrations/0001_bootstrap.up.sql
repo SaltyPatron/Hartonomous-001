@@ -1,0 +1,10 @@
+-- Stage 0001: bootstrap. Extensions, schemas, and the migration ledger itself.
+-- The runner inserts into substrate.schema_version at the end of every
+-- migration's apply, so this table must exist before the ledger record is
+-- written for migration 1.
+-- @include schema/extensions/postgis.sql
+-- @include schema/extensions/btree_gist.sql
+-- @include schema/extensions/pg_trgm.sql
+-- @include schema/schemas/substrate.sql
+-- @include schema/schemas/monitor.sql
+-- @include schema/tables/meta/schema_version.sql

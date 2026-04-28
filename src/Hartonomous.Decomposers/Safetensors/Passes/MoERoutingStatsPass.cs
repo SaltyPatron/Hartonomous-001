@@ -127,8 +127,8 @@ internal sealed partial class MoERoutingStatsPass : IModelAnalysisPass
             session.Batch.AddEntityModelSource(profile, context.Source.ModelSourceId);
             session.Batch.AddEdge("has_moe_routing", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(profile, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(profile, "target", 1),
             ]);
 
             Log.LayerProfiled(_logger, layer.Value, experts, deadExperts, entropy);

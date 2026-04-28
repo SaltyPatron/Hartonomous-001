@@ -1,3 +1,4 @@
+using Hartonomous.Core;
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
@@ -124,8 +125,8 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     byte[] targetHash = HashCodepoint(cp.SimpleLowercase.Value);
                     EntityHandle target = batch.AddEntity(targetHash, "codepoint");
                     batch.AddEdge("maps_to_lowercase", ProvenanceCode,
-                        [new EdgeMemberSpec(entity, null, "source", 0),
-                         new EdgeMemberSpec(target, null, "target", 1)]);
+                        [new EdgeMemberSpec(entity, "source", 0),
+                         new EdgeMemberSpec(target, "target", 1)]);
                     edgeCount++;
                 }
 
@@ -134,8 +135,8 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     byte[] targetHash = HashCodepoint(cp.SimpleCaseFolding.Value);
                     EntityHandle target = batch.AddEntity(targetHash, "codepoint");
                     batch.AddEdge("case_folds_to", ProvenanceCode,
-                        [new EdgeMemberSpec(entity, null, "source", 0),
-                         new EdgeMemberSpec(target, null, "target", 1)]);
+                        [new EdgeMemberSpec(entity, "source", 0),
+                         new EdgeMemberSpec(target, "target", 1)]);
                     edgeCount++;
                 }
 
@@ -152,8 +153,8 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     byte[] ceHash = HashCollationElement(weights);
                     EntityHandle ceEntity = batch.AddEntity(ceHash, "collation_element");
                     batch.AddEdge("has_collation_weight", ProvenanceCode,
-                        [new EdgeMemberSpec(entity, null, "source", 0),
-                         new EdgeMemberSpec(ceEntity, null, "target", 1)]);
+                        [new EdgeMemberSpec(entity, "source", 0),
+                         new EdgeMemberSpec(ceEntity, "target", 1)]);
                     edgeCount++;
 
                     // Collation element physicality is emitted once per unique CE hash, not per
@@ -191,18 +192,14 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
 
             Log.EntitiesCreated(Logger, entityCount, edgeCount, batchNum);
 
-            // ── Phase 5: Resolve entity IDs and write codepoint_property junction table ──
-            Log.ResolvingEntityIds(Logger);
-
-            List<byte[]> allHashes = cpHashMap.Values.ToList();
-            IReadOnlyDictionary<byte[], long> entityIdMap =
-                await pipeline.ResolveEntityIdsAsync(allHashes, ct);
-
-            HashSet<long> existingPropertyEntityIds = await refWriter.LoadCodepointPropertyEntityIdsAsync(ct);
-            Log.ExistingPropertyRows(Logger, existingPropertyEntityIds.Count);
+            // ── Phase 5: write codepoint_property junction table ──
+            // Hash-as-PK substrate eliminates the resolve step. The codepoint
+            // entity_type_id is fixed (1, "codepoint" partition); each
+            // codepoint's hash is already in cpHashMap.
+            const int CodepointEntityTypeId = 1;
 
             List<CodepointPropertyRow> propertyRows = new(allCodepoints.Count);
-            HashSet<long> seenEntityIds = new(allCodepoints.Count);
+            HashSet<byte[]> seenHashes = new(ByteArrayEqualityComparer.Instance);
             int resolved = 0;
             int unresolved = 0;
             int duplicates = 0;
@@ -215,13 +212,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     continue;
                 }
 
-                if (!entityIdMap.TryGetValue(hash, out long entityId))
-                {
-                    unresolved++;
-                    continue;
-                }
-
-                if (existingPropertyEntityIds.Contains(entityId) || !seenEntityIds.Add(entityId))
+                if (!seenHashes.Add(hash))
                 {
                     duplicates++;
                     continue;
@@ -269,7 +260,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                 }
 
                 propertyRows.Add(new CodepointPropertyRow(
-                    entityId, cp.Value, gcId, scriptId, blockId, gcbId, wbId, sbId, lbId,
+                    CodepointEntityTypeId, hash, cp.Value, gcId, scriptId, blockId, gcbId, wbId, sbId, lbId,
                     cp.IsExtendedPictographic,
                     (short)cp.CanonicalCombiningClass,
                     cp.DecompositionType,

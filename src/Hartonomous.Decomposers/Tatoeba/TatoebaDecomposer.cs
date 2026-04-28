@@ -257,7 +257,6 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 TextSegmentationEmitter.EmitTextComposition(
                     batch, row.Text, codepointProperties, "text_composition", TrustPriorMu);
             sentHash = textHash;
-            EmitContourPhysicality(batch, textEntity, row.Text);
             entityCount++;
 
             sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
@@ -266,8 +265,8 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
             batch.AddEdge(EdgeHasText, "tatoeba",
             [
-                new EdgeMemberSpec(sentEntity, null, "source", 0),
-                new EdgeMemberSpec(textEntity, null, "target", 1),
+                new EdgeMemberSpec(sentEntity, "source", 0),
+                new EdgeMemberSpec(textEntity, "target", 1),
             ]);
             edgeCount++;
         }
@@ -306,8 +305,8 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
         batch.AddEdge(EdgeTranslationLink, "tatoeba",
         [
-            new EdgeMemberSpec(src, null, "source", 0),
-            new EdgeMemberSpec(tgt, null, "target", 1),
+            new EdgeMemberSpec(src, "source", 0),
+            new EdgeMemberSpec(tgt, "target", 1),
         ]);
         edgeCount++;
     }
@@ -333,8 +332,8 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
         batch.AddEdge(EdgeRecordingOf, "tatoeba",
         [
-            new EdgeMemberSpec(audioEntity, null, "source", 0),
-            new EdgeMemberSpec(sentEntity, null, "target", 1),
+            new EdgeMemberSpec(audioEntity, "source", 0),
+            new EdgeMemberSpec(sentEntity, "target", 1),
         ]);
         edgeCount++;
 
@@ -346,13 +345,12 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             (EntityHandle contribEntity, byte[] _) =
                 TextSegmentationEmitter.EmitTextComposition(
                     batch, row.Contributor, codepointProperties, "text_composition", TrustPriorMu);
-            EmitContourPhysicality(batch, contribEntity, row.Contributor);
             entityCount++;
 
             batch.AddEdge(EdgeHasContributor, "tatoeba",
             [
-                new EdgeMemberSpec(audioEntity, null, "source", 0),
-                new EdgeMemberSpec(contribEntity, null, "target", 1),
+                new EdgeMemberSpec(audioEntity, "source", 0),
+                new EdgeMemberSpec(contribEntity, "target", 1),
             ]);
             edgeCount++;
         }

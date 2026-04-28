@@ -42,16 +42,20 @@ internal sealed class Iso639ReferenceTableWriter : BaseReferenceTableWriter
     }
 
     public async Task WriteLanguageJunctionsAsync(
-        IReadOnlyList<(string Code, long EntityId)> nameEntities,
+        IReadOnlyList<(string Code, byte[] NameHash)> nameEntities,
         Dictionary<string, int> langIdMap,
         CancellationToken ct)
     {
-        List<(long EntityId, int LangId)> entries = new(nameEntities.Count);
-        foreach ((string code, long entityId) in nameEntities)
+        // language_name entities live in entity partition 18 (entity_unicode).
+        // Build the (entity_type_id, entity_hash, language_id) triples directly
+        // — no resolve, no surrogate id.
+        const int LanguageNameEntityTypeId = 18;
+        List<(int EntityTypeId, byte[] EntityHash, int LangId)> entries = new(nameEntities.Count);
+        foreach ((string code, byte[] nameHash) in nameEntities)
         {
             if (langIdMap.TryGetValue(code, out int langId))
             {
-                entries.Add((entityId, langId));
+                entries.Add((LanguageNameEntityTypeId, nameHash, langId));
             }
         }
 
@@ -59,6 +63,6 @@ internal sealed class Iso639ReferenceTableWriter : BaseReferenceTableWriter
     }
 
     public Task UpdateNameEntityIdsAsync(
-        IReadOnlyList<(string Code, long EntityId)> updates, CancellationToken ct) =>
+        IReadOnlyList<(string Code, byte[] NameHash)> updates, CancellationToken ct) =>
         UpdateLanguageNameEntityIdsCoreAsync(updates, ct);
 }

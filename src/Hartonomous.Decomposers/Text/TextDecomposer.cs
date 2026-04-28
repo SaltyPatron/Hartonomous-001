@@ -182,11 +182,14 @@ public sealed partial class TextDecomposer : BaseDecomposer
                     batch.AddSignificance(gcEntity, "source_authority", trustMu);
                     for (int i = 0; i < cpSequence.Length; i++)
                     {
-                        batch.AddSequence(gcEntity, cpSequence[i], i, 1);
                     }
 
-                    string gcText = Encoding.UTF8.GetString(utf8Bytes, (int)gc.ByteOffset, gc.ByteLength);
-                    EmitContourPhysicality(batch, gcEntity, gcText);
+                    // Recursive child-centroid trajectory for grapheme_cluster
+                    // is now emitted inside EmitWordFormMerkle (which TextDecomposer
+                    // does not call — TextDecomposer builds its own DAG). Physicality
+                    // for text_composition / document tiers is part of task #61's
+                    // remaining work; codepoint POINTZM is cached via the segmentation
+                    // pass below.
                     gcHandlesByHash[gcHash] = gcEntity;
                     entityCount++;
                 }
@@ -242,10 +245,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 batch.AddSignificance(wordEntity, "source_authority", trustMu);
                 for (int i = 0; i < childHandles.Count; i++)
                 {
-                    batch.AddSequence(wordEntity, childHandles[i], i, 1);
                 }
 
-                EmitContourPhysicality(batch, wordEntity, wordText);
                 wordHandlesByHash[wordHash] = wordEntity;
                 entityCount++;
             }
@@ -334,11 +335,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 batch.AddSignificance(sentEntity, "source_authority", trustMu);
                 for (int i = 0; i < sentChildHandles.Count; i++)
                 {
-                    batch.AddSequence(sentEntity, sentChildHandles[i], i, 1);
                 }
 
-                string sentText = Encoding.UTF8.GetString(utf8Bytes, (int)sent.ByteOffset, sent.ByteLength);
-                EmitContourPhysicality(batch, sentEntity, sentText);
                 sentenceHandlesByHash[sentHash] = sentEntity;
                 entityCount++;
             }
@@ -403,10 +401,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
 
         for (int i = 0; i < documentChildHandles.Count; i++)
         {
-            batch.AddSequence(docEntity, documentChildHandles[i], i, 1);
         }
-
-        EmitContourPhysicality(batch, docEntity, Encoding.UTF8.GetString(utf8Bytes));
 
         return new TextIngestionResult(docEntity, docHash, entityCount);
     }
@@ -506,11 +501,8 @@ public sealed partial class TextDecomposer : BaseDecomposer
             batch.AddSignificance(spanEntity, "source_authority", trustMu);
             for (int i = 0; i < childHandles.Count; i++)
             {
-                batch.AddSequence(spanEntity, childHandles[i], i, 1);
             }
 
-            string spanText = Encoding.UTF8.GetString(utf8Bytes, (int)byteOffset, byteLength);
-            EmitContourPhysicality(batch, spanEntity, spanText);
             rawSpanHandlesByHash[spanHash] = spanEntity;
             entityCount++;
         }

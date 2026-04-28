@@ -103,8 +103,8 @@ internal sealed partial class ActivationRangePass : IModelAnalysisPass
             session.Batch.AddEntityModelSource(range, context.Source.ModelSourceId);
             session.Batch.AddEdge("has_activation_range", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(range, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(range, "target", 1),
             ]);
 
             Log.TensorRanged(_logger, tensorOrdinal, t.Info.Name, l2, linf, estMin, estMax);

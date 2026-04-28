@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS substrate.entity CASCADE;

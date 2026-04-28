@@ -1,16 +1,31 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using Hartonomous.Core;
+using NpgsqlTypes;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Engine.Ingestion;
 
+/// <summary>
+/// Hash-as-PK ingestion pipeline. Every COPY writes
+/// (entity_type_id, entity_hash) or (edge_type_id, edge_hash) directly into
+/// substrate tables. There is no staging table for entity ID resolution —
+/// the hash the decomposer computed IS the foreign key. The pipeline never
+/// JOINs back to substrate.entity to discover a surrogate id; the surrogate
+/// id does not exist.
+///
+/// Single transaction per batch. Order: entities, edges + edge_members,
+/// junctions, physicality, sequence, entity_significance, entity_model_source.
+/// Edge trajectories and edge_significance priming happen in dedicated phase
+/// runners after the per-batch transactions commit.
+/// </summary>
 public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 {
     private readonly NpgsqlDataSource _dataSource;
@@ -21,21 +36,19 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
     private long _edgesSubmitted;
     private long _junctionsSubmitted;
     private long _physicalitiesSubmitted;
-    private long _sequencesSubmitted;
     private long _significanceInitialized;
     private long _entityModelSourcesLinked;
     private long _batchesCommitted;
     private long _batchesFailed;
     private TimeSpan _totalCommitTime;
 
-    public NpgsqlIngestionPipeline(string connectionString, IReferenceDataReader referenceDataReader, ILogger<NpgsqlIngestionPipeline> logger)
+    public NpgsqlIngestionPipeline(
+        string connectionString,
+        IReferenceDataReader referenceDataReader,
+        ILogger<NpgsqlIngestionPipeline> logger)
     {
-        // Include Error Detail surfaces the offending row in CHECK / FK / NOT NULL
-        // violations so the diagnostic actually points at the bad data instead of
-        // the generic redacted message. Trade-off: errors may carry user content
-        // into logs — acceptable here because the substrate's content is the
-        // identity of every entity (BLAKE3 hashes are not sensitive) and the
-        // ingestion pipeline is not exposed to untrusted callers.
+        // IncludeErrorDetail surfaces the offending row in CHECK / FK / NOT NULL
+        // violations. Hashes are not sensitive content.
         NpgsqlConnectionStringBuilder csb = new(connectionString) { IncludeErrorDetail = true };
         NpgsqlDataSourceBuilder builder = new(csb.ConnectionString);
         _dataSource = builder.Build();
@@ -45,22 +58,18 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
     public PipelineStats Stats => new()
     {
-        EntitiesSubmitted = _entitiesSubmitted,
-        EdgesSubmitted = _edgesSubmitted,
-        JunctionsSubmitted = _junctionsSubmitted,
-        PhysicalitiesSubmitted = _physicalitiesSubmitted,
-        SequencesSubmitted = _sequencesSubmitted,
-        SignificanceInitialized = _significanceInitialized,
+        EntitiesSubmitted        = _entitiesSubmitted,
+        EdgesSubmitted           = _edgesSubmitted,
+        JunctionsSubmitted       = _junctionsSubmitted,
+        PhysicalitiesSubmitted   = _physicalitiesSubmitted,
+        SignificanceInitialized  = _significanceInitialized,
         EntityModelSourcesLinked = _entityModelSourcesLinked,
-        BatchesCommitted = _batchesCommitted,
-        BatchesFailed = _batchesFailed,
-        TotalCommitTime = _totalCommitTime,
+        BatchesCommitted         = _batchesCommitted,
+        BatchesFailed            = _batchesFailed,
+        TotalCommitTime          = _totalCommitTime,
     };
 
-    public IIngestionBatch CreateBatch()
-    {
-        return new IngestionBatch();
-    }
+    public IIngestionBatch CreateBatch() => new IngestionBatch();
 
     public async Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct)
     {
@@ -70,29 +79,25 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         }
 
         Stopwatch sw = Stopwatch.StartNew();
-
         try
         {
             await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
             await using NpgsqlTransaction tx = await conn.BeginTransactionAsync(ct);
 
             await UpsertEntitiesAsync(conn, b, ct);
-            await DetectCorroborationsAsync(conn, b, ct);
             await CreateEdgesAsync(conn, b, ct);
             await PopulateJunctionsAsync(conn, b, ct);
             await CreatePhysicalitiesAsync(conn, b, ct);
-            await CreateSequencesAsync(conn, b, ct);
-            await InitializeSignificanceAsync(conn, b, ct);
+            await InitializeEntitySignificanceAsync(conn, b, ct);
             await LinkEntityModelSourcesAsync(conn, b, ct);
 
             await tx.CommitAsync(ct);
 
-            Interlocked.Add(ref _entitiesSubmitted, b.EntityCount);
-            Interlocked.Add(ref _edgesSubmitted, b.EdgeCount);
-            Interlocked.Add(ref _junctionsSubmitted, b.Junctions.Count);
-            Interlocked.Add(ref _physicalitiesSubmitted, b.Physicalities.Count);
-            Interlocked.Add(ref _sequencesSubmitted, b.Sequences.Count);
-            Interlocked.Add(ref _significanceInitialized, b.Significances.Count);
+            Interlocked.Add(ref _entitiesSubmitted,        b.EntityCount);
+            Interlocked.Add(ref _edgesSubmitted,           b.EdgeCount);
+            Interlocked.Add(ref _junctionsSubmitted,       b.Junctions.Count);
+            Interlocked.Add(ref _physicalitiesSubmitted,   b.Physicalities.Count);
+            Interlocked.Add(ref _significanceInitialized,  b.Significances.Count);
             Interlocked.Add(ref _entityModelSourcesLinked, b.EntityModelSources.Count);
             Interlocked.Increment(ref _batchesCommitted);
 
@@ -110,103 +115,14 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         }
     }
 
-    public async Task<IReadOnlyDictionary<byte[], long>> ResolveEntityIdsAsync(
-        IReadOnlyList<byte[]> hashes, CancellationToken ct)
-    {
-        Dictionary<byte[], long> result = new(ByteArrayEqualityComparer.Instance);
-        if (hashes.Count == 0)
-        {
-            return result;
-        }
-
-        // Replaces the prior SELECT ... WHERE hash = ANY($1) bytea[] pattern,
-        // which OOM-killed postgres backends at WordNet scale (millions of
-        // hashes against a LIST-partitioned table — array expansion + 16-way
-        // partition scan exhausted backend memory). Pattern: binary COPY all
-        // hashes into a TEMP staging table once, then JOIN against
-        // substrate.entity by hash. The JOIN uses the unique (hash,
-        // entity_type_id) index per partition, scaling linearly in result
-        // count instead of quadratically in (input × partitions).
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-
-        // CREATE TEMP TABLE ... ON COMMIT DROP must run inside an explicit
-        // transaction or the implicit autocommit fires immediately and drops
-        // the table before the COPY can populate it. Wrap the whole resolve
-        // (create / copy / select) in one transaction so all three statements
-        // see the same staging table.
-        await using NpgsqlTransaction tx = await conn.BeginTransactionAsync(ct);
-
-        await using (NpgsqlCommand createTemp = new(
-            "CREATE TEMP TABLE staging_resolve_hash (hash BYTEA NOT NULL) ON COMMIT DROP", conn, tx))
-        {
-            await createTemp.ExecuteNonQueryAsync(ct);
-        }
-
-        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY staging_resolve_hash (hash) FROM STDIN (FORMAT binary)", ct))
-        {
-            foreach (byte[] hash in hashes)
-            {
-                await writer.StartRowAsync(ct);
-                await writer.WriteAsync(hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-            }
-            await writer.CompleteAsync(ct);
-        }
-
-        await using NpgsqlCommand selectCmd = new(
-            "SELECT e.hash, e.id FROM substrate.entity e " +
-            "JOIN staging_resolve_hash s ON e.hash = s.hash", conn, tx);
-        selectCmd.CommandTimeout = 600;
-
-        await using (NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct))
-        {
-            while (await reader.ReadAsync(ct))
-            {
-                byte[] hash = (byte[])reader[0];
-                long id = reader.GetInt64(1);
-                result[hash] = id;
-            }
-        }
-
-        await tx.CommitAsync(ct);
-        return result;
-    }
-
     public async ValueTask DisposeAsync()
     {
         await _dataSource.DisposeAsync();
     }
 
-    /// <summary>
-    /// Fires Glicko-2 corroboration updates for entities in this batch that
-    /// some OTHER model_source has previously contributed. Delegates entirely
-    /// to substrate.detect_and_record_corroborations (migration 0050) — no
-    /// inline SQL, set-based join against staging_entity, one round-trip per
-    /// distinct contributing model_source_id.
-    /// </summary>
-    private static async Task DetectCorroborationsAsync(
-        NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
-    {
-        if (batch.EntityModelSources.Count == 0)
-        {
-            return;
-        }
-
-        HashSet<long> distinctModelSources = new();
-        for (int i = 0; i < batch.EntityModelSources.Count; i++)
-        {
-            distinctModelSources.Add(batch.EntityModelSources[i].ModelSourceId);
-        }
-
-        foreach (long modelSourceId in distinctModelSources)
-        {
-            await using NpgsqlCommand cmd = new(
-                "SELECT substrate.detect_and_record_corroborations($1)", conn);
-            cmd.Parameters.AddWithValue(modelSourceId);
-            await cmd.ExecuteScalarAsync(ct);
-        }
-    }
-
+    // ── UpsertEntitiesAsync ────────────────────────────────────────────────
+    // Direct COPY into substrate.entity. ON CONFLICT (entity_type_id, hash) DO NOTHING.
+    // No staging table, no resolve, no remap — the hash IS the FK.
     private async Task UpsertEntitiesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
         if (batch.Entities.Count == 0)
@@ -214,91 +130,53 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             return;
         }
 
-        // Pre-resolve entity_type ids to int once to avoid per-row dictionary lookups
-        // inside the binary writer hot loop.
+        // Pre-resolve type codes once.
         int[] typeIds = new int[batch.Entities.Count];
         for (int i = 0; i < batch.Entities.Count; i++)
         {
-            typeIds[i] = await _codeResolver.EntityTypeIdAsync(
-                batch.Entities[i].EntityTypeCode, ct);
+            typeIds[i] = await _codeResolver.EntityTypeIdAsync(batch.Entities[i].EntityTypeCode, ct);
         }
 
-        // Binary COPY into a transaction-local staging table, then dedup-INSERT
-        // into substrate.entity. Replaces the prior INSERT...SELECT FROM unnest()
-        // pattern which (a) hit a Postgres segfault on the LIST-partitioned
-        // entity table at Wiktionary-scale volume, and (b) was 5–10× slower than
-        // binary COPY for batches > ~5K rows. Staging table includes an `ord`
-        // column so we can round-trip the BatchIndex back to the caller for
-        // EntityHandle remapping without an array-of-bytea round trip.
+        // PG won't COPY directly into a partitioned table with ON CONFLICT,
+        // but it will if the conflict target is the table's PK / unique
+        // constraint. Use INSERT-from-temp instead: COPY into a staging
+        // table, then INSERT...SELECT...DISTINCT...ON CONFLICT DO NOTHING.
+        // The staging table is small and ephemeral; it does NOT participate
+        // in ID resolution — entities go straight to substrate.entity by hash.
         await using (NpgsqlCommand createTemp = new(
             "CREATE TEMP TABLE staging_entity (" +
-            "  ord INT NOT NULL, " +
-            "  hash BYTEA NOT NULL, " +
-            "  entity_type_id INT NOT NULL" +
+            "  entity_type_id INT NOT NULL, " +
+            "  hash BYTEA NOT NULL" +
             ") ON COMMIT DROP", conn))
         {
             await createTemp.ExecuteNonQueryAsync(ct);
         }
 
         await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY staging_entity (ord, hash, entity_type_id) FROM STDIN (FORMAT binary)", ct))
+            "COPY staging_entity (entity_type_id, hash) FROM STDIN (FORMAT binary)", ct))
         {
             for (int i = 0; i < batch.Entities.Count; i++)
             {
                 await writer.StartRowAsync(ct);
-                await writer.WriteAsync(i, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(batch.Entities[i].Hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                await writer.WriteAsync(typeIds[i], NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(typeIds[i], NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(batch.Entities[i].Hash, NpgsqlDbType.Bytea, ct);
             }
             await writer.CompleteAsync(ct);
         }
 
-        await using (NpgsqlCommand insertCmd = new(
-            "INSERT INTO substrate.entity (hash, entity_type_id) " +
-            "SELECT DISTINCT hash, entity_type_id FROM staging_entity " +
-            "ON CONFLICT (hash, entity_type_id) DO NOTHING", conn))
-        {
-            await insertCmd.ExecuteNonQueryAsync(ct);
-        }
-
-        // Resolve all (hash, type_id) → entity_id. PG 18.3 SIGSEGVs
-        // (reproducible) when this JOIN expands across multiple LIST
-        // partitions of substrate.entity in one query — WordNet's first
-        // batch hits lemma+synset+word_sense+text_composition partitions
-        // simultaneously and the partitionwise-join planner crashes the
-        // backend. Splitting by entity_type_id forces each query to a
-        // single partition (predicate `e.entity_type_id = $1` prunes the
-        // append node to one child), which the planner handles cleanly.
-        HashSet<int> uniqueTypes = new();
-        for (int i = 0; i < typeIds.Length; i++)
-        {
-            uniqueTypes.Add(typeIds[i]);
-        }
-
-        foreach (int typeId in uniqueTypes)
-        {
-            await using NpgsqlCommand selectCmd = new(@"
-                SELECT s.ord, e.id
-                  FROM staging_entity s
-                  JOIN substrate.entity e
-                    ON e.hash = s.hash AND e.entity_type_id = $1
-                 WHERE s.entity_type_id = $1", conn);
-            selectCmd.Parameters.Add(new NpgsqlParameter
-            {
-                Value = typeId,
-                NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
-            });
-
-            await using NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                int ordinal = reader.GetInt32(0);
-                long entityId = reader.GetInt64(1);
-                batch.RemapHandle(ordinal, entityId);
-            }
-        }
+        // Drain staging into substrate.entity via the named substrate
+        // function (AP-2: no inline INSERT SQL in C#). The function loops
+        // over distinct entity_type_ids and INSERTs one partition at a
+        // time, sidestepping PG's multi-partition tuple-router corruption
+        // under bulk load with the hartonomous extension.
+        await using NpgsqlCommand flush = new(
+            "SELECT substrate.flush_entities_from_staging()", conn);
+        await flush.ExecuteNonQueryAsync(ct);
     }
 
+    // ── CreateEdgesAsync ───────────────────────────────────────────────────
+    // Compute edge hash from (edge_type_id, ordered participant hashes).
+    // COPY edge rows + edge_member rows with composite hash FKs.
     private async Task CreateEdgesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
         if (batch.Edges.Count == 0)
@@ -306,145 +184,125 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             return;
         }
 
-        byte[][] edgeHashes = new byte[batch.Edges.Count][];
+        // Pre-resolve type/role/provenance ids and build edge hashes.
         int[] edgeTypeIds = new int[batch.Edges.Count];
         int[] provenanceIds = new int[batch.Edges.Count];
-        long[][] allMemberEntityIds = new long[batch.Edges.Count][];
-        int[][] allMemberRoleIds = new int[batch.Edges.Count][];
+        byte[][] edgeHashes = new byte[batch.Edges.Count][];
+        int[][] memberRoleIds = new int[batch.Edges.Count][];
 
         for (int i = 0; i < batch.Edges.Count; i++)
         {
             EdgeEntry edge = batch.Edges[i];
-            edgeTypeIds[i] = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
+            edgeTypeIds[i]   = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
             provenanceIds[i] = await _codeResolver.ProvenanceIdAsync(edge.ProvenanceCode, ct);
 
-            long[] memberEntityIds = new long[edge.Members.Length];
-            int[] memberRoleIds = new int[edge.Members.Length];
-            for (int j = 0; j < edge.Members.Length; j++)
-            {
-                memberEntityIds[j] = batch.ResolveHandleOrExisting(
-                    edge.Members[j].Handle, edge.Members[j].ExistingEntityId);
-                memberRoleIds[j] = await _codeResolver.EdgeRoleIdAsync(edge.Members[j].RoleCode, ct);
-            }
+            // Sort members by Position so edge hash is deterministic regardless
+            // of insertion order in the decomposer.
+            EdgeMemberSpec[] sorted = (EdgeMemberSpec[])edge.Members.Clone();
+            Array.Sort(sorted, (a, b) => a.Position.CompareTo(b.Position));
 
-            allMemberEntityIds[i] = memberEntityIds;
-            allMemberRoleIds[i] = memberRoleIds;
-            edgeHashes[i] = ComputeEdgeHash(edgeTypeIds[i], memberEntityIds);
+            byte[][] orderedHashes = new byte[sorted.Length][];
+            int[] roleIds = new int[sorted.Length];
+            for (int j = 0; j < sorted.Length; j++)
+            {
+                orderedHashes[j] = sorted[j].Entity.Hash;
+                roleIds[j] = await _codeResolver.EdgeRoleIdAsync(sorted[j].RoleCode, ct);
+            }
+            edgeHashes[i] = ComputeEdgeHash(edgeTypeIds[i], orderedHashes);
+            memberRoleIds[i] = roleIds;
         }
 
-        // Binary COPY into staging — same rationale as UpsertEntitiesAsync. Avoids
-        // the partitioned-table-with-array-unnest segfault and is 5-10× faster
-        // for batches above a few thousand rows.
-        await using (NpgsqlCommand createTemp = new(
+        // ── COPY substrate.edge ──────────────────────────────────────────
+        await using (NpgsqlCommand createEdgeStaging = new(
             "CREATE TEMP TABLE staging_edge (" +
-            "  ord INT NOT NULL, " +
-            "  hash BYTEA NOT NULL, " +
             "  edge_type_id INT NOT NULL, " +
+            "  hash BYTEA NOT NULL, " +
             "  provenance_id INT NOT NULL" +
             ") ON COMMIT DROP", conn))
         {
-            await createTemp.ExecuteNonQueryAsync(ct);
+            await createEdgeStaging.ExecuteNonQueryAsync(ct);
         }
 
-        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY staging_edge (ord, hash, edge_type_id, provenance_id) FROM STDIN (FORMAT binary)", ct))
+        await using (NpgsqlBinaryImporter edgeWriter = await conn.BeginBinaryImportAsync(
+            "COPY staging_edge (edge_type_id, hash, provenance_id) FROM STDIN (FORMAT binary)", ct))
         {
             for (int i = 0; i < batch.Edges.Count; i++)
             {
-                await writer.StartRowAsync(ct);
-                await writer.WriteAsync(i, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(edgeHashes[i], NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                await writer.WriteAsync(edgeTypeIds[i], NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(provenanceIds[i], NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                await edgeWriter.StartRowAsync(ct);
+                await edgeWriter.WriteAsync(edgeTypeIds[i],   NpgsqlDbType.Integer, ct);
+                await edgeWriter.WriteAsync(edgeHashes[i],    NpgsqlDbType.Bytea,   ct);
+                await edgeWriter.WriteAsync(provenanceIds[i], NpgsqlDbType.Integer, ct);
             }
-            await writer.CompleteAsync(ct);
+            await edgeWriter.CompleteAsync(ct);
         }
 
-        await using (NpgsqlCommand insertCmd = new(
-            "INSERT INTO substrate.edge (hash, edge_type_id, provenance_id) " +
-            "SELECT DISTINCT ON (hash, edge_type_id) hash, edge_type_id, provenance_id " +
-            "FROM staging_edge " +
-            "ON CONFLICT (hash, edge_type_id) DO NOTHING", conn))
+        // Drain staging_edge via named substrate function (AP-2).
+        await using (NpgsqlCommand flushEdges = new(
+            "SELECT substrate.flush_edges_from_staging()", conn))
         {
-            await insertCmd.ExecuteNonQueryAsync(ct);
+            await flushEdges.ExecuteNonQueryAsync(ct);
         }
 
-        long[] resolvedEdgeIds = new long[batch.Edges.Count];
-        await using (NpgsqlCommand selectCmd = new(
-            "SELECT s.ord, e.id FROM staging_edge s " +
-            "JOIN substrate.edge e ON e.hash = s.hash AND e.edge_type_id = s.edge_type_id", conn))
-        await using (NpgsqlDataReader reader = await selectCmd.ExecuteReaderAsync(ct))
-        {
-            while (await reader.ReadAsync(ct))
-            {
-                int ordinal = reader.GetInt32(0);
-                long edgeId = reader.GetInt64(1);
-                resolvedEdgeIds[ordinal] = edgeId;
-            }
-        }
-
-        // ── edge_member binary COPY ──────────────────────────────────────
+        // ── COPY substrate.edge_member ───────────────────────────────────
+        // edge_member is partitioned by edge_type_id and FKs both to edge
+        // (composite) and entity (composite). Direct binary COPY.
         int totalMembers = 0;
         for (int i = 0; i < batch.Edges.Count; i++)
         {
-            totalMembers += allMemberEntityIds[i].Length;
+            totalMembers += batch.Edges[i].Members.Length;
         }
         if (totalMembers == 0)
         {
             return;
         }
 
-        await using (NpgsqlCommand createMemberTemp = new(
+        await using (NpgsqlCommand createMemberStaging = new(
             "CREATE TEMP TABLE staging_edge_member (" +
-            "  edge_id BIGINT NOT NULL, " +
-            "  entity_id BIGINT NOT NULL, " +
+            "  edge_type_id INT NOT NULL, " +
+            "  edge_hash BYTEA NOT NULL, " +
+            "  entity_type_id INT NOT NULL, " +
+            "  entity_hash BYTEA NOT NULL, " +
             "  edge_role_id INT NOT NULL" +
             ") ON COMMIT DROP", conn))
         {
-            await createMemberTemp.ExecuteNonQueryAsync(ct);
+            await createMemberStaging.ExecuteNonQueryAsync(ct);
         }
 
         await using (NpgsqlBinaryImporter memberWriter = await conn.BeginBinaryImportAsync(
-            "COPY staging_edge_member (edge_id, entity_id, edge_role_id) FROM STDIN (FORMAT binary)", ct))
+            "COPY staging_edge_member (edge_type_id, edge_hash, entity_type_id, entity_hash, edge_role_id) FROM STDIN (FORMAT binary)", ct))
         {
             for (int i = 0; i < batch.Edges.Count; i++)
             {
-                long edgeId = resolvedEdgeIds[i];
-                long[] memberEntityIds = allMemberEntityIds[i];
-                int[] memberRoleIds = allMemberRoleIds[i];
-                for (int j = 0; j < memberEntityIds.Length; j++)
+                EdgeEntry edge = batch.Edges[i];
+                EdgeMemberSpec[] sorted = (EdgeMemberSpec[])edge.Members.Clone();
+                Array.Sort(sorted, (a, b) => a.Position.CompareTo(b.Position));
+                int[] roleIds = memberRoleIds[i];
+
+                for (int j = 0; j < sorted.Length; j++)
                 {
+                    int entityTypeId = await _codeResolver.EntityTypeIdAsync(sorted[j].Entity.EntityTypeCode, ct);
                     await memberWriter.StartRowAsync(ct);
-                    await memberWriter.WriteAsync(edgeId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                    await memberWriter.WriteAsync(memberEntityIds[j], NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                    await memberWriter.WriteAsync(memberRoleIds[j], NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                    await memberWriter.WriteAsync(edgeTypeIds[i],     NpgsqlDbType.Integer, ct);
+                    await memberWriter.WriteAsync(edgeHashes[i],      NpgsqlDbType.Bytea,   ct);
+                    await memberWriter.WriteAsync(entityTypeId,       NpgsqlDbType.Integer, ct);
+                    await memberWriter.WriteAsync(sorted[j].Entity.Hash, NpgsqlDbType.Bytea, ct);
+                    await memberWriter.WriteAsync(roleIds[j],         NpgsqlDbType.Integer, ct);
                 }
             }
             await memberWriter.CompleteAsync(ct);
         }
 
-        await using (NpgsqlCommand memberInsert = new(
-            "INSERT INTO substrate.edge_member (edge_id, entity_id, edge_role_id) " +
-            "SELECT DISTINCT edge_id, entity_id, edge_role_id FROM staging_edge_member " +
-            "ON CONFLICT DO NOTHING", conn))
+        // Drain staging_edge_member via named substrate function (AP-2).
+        await using (NpgsqlCommand flushMembers = new(
+            "SELECT substrate.flush_edge_members_from_staging()", conn))
         {
-            await memberInsert.ExecuteNonQueryAsync(ct);
-        }
-
-        // Prime edge significance from provenance trust prior across every
-        // arena currently in substrate.significance_context. Delegated to
-        // substrate.prime_edge_significance_for_staging (migration 0052) so
-        // C# does not construct SQL — per AP-2 in .claude/rules/45-anti-patterns.md.
-        // Open-vocabulary: new arenas added later get backfilled into existing
-        // edges via substrate.backfill_edge_significance_for_arena(code).
-        await using (NpgsqlCommand primeSig = new(
-            "SELECT substrate.prime_edge_significance_for_staging()", conn))
-        {
-            await primeSig.ExecuteNonQueryAsync(ct);
+            await flushMembers.ExecuteNonQueryAsync(ct);
         }
     }
 
-    private static async Task PopulateJunctionsAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
+    // ── PopulateJunctionsAsync ─────────────────────────────────────────────
+    // Group by table, COPY composite hash FK + reference id.
+    private async Task PopulateJunctionsAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
         if (batch.Junctions.Count == 0)
         {
@@ -452,59 +310,81 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         }
 
         Dictionary<string, List<JunctionEntry>> grouped = new(StringComparer.Ordinal);
-        foreach (JunctionEntry junction in batch.Junctions)
+        foreach (JunctionEntry j in batch.Junctions)
         {
-            if (!grouped.TryGetValue(junction.JunctionTable, out List<JunctionEntry>? list))
+            if (!grouped.TryGetValue(j.JunctionTable, out List<JunctionEntry>? list))
             {
                 list = [];
-                grouped[junction.JunctionTable] = list;
+                grouped[j.JunctionTable] = list;
             }
-            list.Add(junction);
+            list.Add(j);
         }
 
-        foreach (KeyValuePair<string, List<JunctionEntry>> kv in grouped)
+        foreach ((string table, List<JunctionEntry> entries) in grouped)
         {
-            string table = kv.Key;
             string refCol = GetJunctionRefColumn(table);
-            List<JunctionEntry> entries = kv.Value;
-
-            long[] entityIds = new long[entries.Count];
-            int[] refIds = new int[entries.Count];
-            double?[] mus = new double?[entries.Count];
             bool hasMu = false;
-
-            for (int i = 0; i < entries.Count; i++)
+            foreach (JunctionEntry e in entries)
             {
-                entityIds[i] = batch.ResolveHandle(entries[i].Entity);
-                refIds[i] = entries[i].ReferenceId;
-                mus[i] = entries[i].Mu;
-                hasMu |= entries[i].Mu.HasValue;
+                if (e.Mu.HasValue) { hasMu = true; break; }
             }
 
-            if (hasMu)
+            string stagingCols = hasMu
+                ? "entity_type_id INT NOT NULL, entity_hash BYTEA NOT NULL, ref_id INT NOT NULL, mu FLOAT8"
+                : "entity_type_id INT NOT NULL, entity_hash BYTEA NOT NULL, ref_id INT NOT NULL";
+
+            string stagingTable = $"staging_{table}";
+            await using (NpgsqlCommand createTemp = new(
+                $"CREATE TEMP TABLE {stagingTable} ({stagingCols}) ON COMMIT DROP", conn))
             {
-                await using NpgsqlCommand cmd = new(
-                    $"INSERT INTO substrate.{table} (entity_id, {refCol}, mu) " +
-                    $"SELECT * FROM unnest($1::bigint[], $2::int[], $3::float8[]) " +
-                    $"ON CONFLICT DO NOTHING", conn);
-                cmd.Parameters.AddWithValue(entityIds);
-                cmd.Parameters.AddWithValue(refIds);
-                cmd.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Double, mus);
-                await cmd.ExecuteNonQueryAsync(ct);
+                await createTemp.ExecuteNonQueryAsync(ct);
             }
-            else
+
+            string copyCols = hasMu
+                ? "entity_type_id, entity_hash, ref_id, mu"
+                : "entity_type_id, entity_hash, ref_id";
+
+            await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
+                $"COPY {stagingTable} ({copyCols}) FROM STDIN (FORMAT binary)", ct))
             {
-                await using NpgsqlCommand cmd = new(
-                    $"INSERT INTO substrate.{table} (entity_id, {refCol}) " +
-                    $"SELECT * FROM unnest($1::bigint[], $2::int[]) " +
-                    $"ON CONFLICT DO NOTHING", conn);
-                cmd.Parameters.AddWithValue(entityIds);
-                cmd.Parameters.AddWithValue(refIds);
-                await cmd.ExecuteNonQueryAsync(ct);
+                foreach (JunctionEntry e in entries)
+                {
+                    int entityTypeId = await _codeResolver.EntityTypeIdAsync(e.Entity.EntityTypeCode, ct);
+                    await writer.StartRowAsync(ct);
+                    await writer.WriteAsync(entityTypeId,   NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(e.Entity.Hash,  NpgsqlDbType.Bytea,   ct);
+                    await writer.WriteAsync(e.ReferenceId,  NpgsqlDbType.Integer, ct);
+                    if (hasMu)
+                    {
+                        if (e.Mu.HasValue)
+                        {
+                            await writer.WriteAsync(e.Mu.Value, NpgsqlDbType.Double, ct);
+                        }
+                        else
+                        {
+                            await writer.WriteNullAsync(ct);
+                        }
+                    }
+                }
+                await writer.CompleteAsync(ct);
             }
+
+            string insertSql = hasMu
+                ? $"INSERT INTO substrate.{table} (entity_type_id, entity_hash, {refCol}, mu) " +
+                  $"SELECT DISTINCT entity_type_id, entity_hash, ref_id, COALESCE(mu, 1500.0) " +
+                  $"FROM {stagingTable} ON CONFLICT DO NOTHING"
+                : $"INSERT INTO substrate.{table} (entity_type_id, entity_hash, {refCol}) " +
+                  $"SELECT DISTINCT entity_type_id, entity_hash, ref_id " +
+                  $"FROM {stagingTable} ON CONFLICT DO NOTHING";
+
+            await using NpgsqlCommand insertCmd = new(insertSql, conn);
+            await insertCmd.ExecuteNonQueryAsync(ct);
         }
     }
 
+    // ── CreatePhysicalitiesAsync ───────────────────────────────────────────
+    // COPY (physicality_type_id, entity_type_id, entity_hash, content_hash, geom)
+    // content_hash = BLAKE3(WKB) deduplicates within (type, entity).
     private async Task CreatePhysicalitiesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
         if (batch.Physicalities.Count == 0)
@@ -512,146 +392,59 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             return;
         }
 
-        // Single coordinate surface: every PhysicalityEntry carries WKB bytes
-        // for substrate.physicality.geom. PostGIS's ST_GeomFromWKB accepts
-        // POINT/POINTZ/POINTZM/LINESTRING/LINESTRINGZ/LINESTRINGZM uniformly;
-        // per-partition CHECKs (migration 0048) reject geometries whose
-        // dimensionality doesn't match the partition's declared type.
-        if (batch.Physicalities.Count == 0)
-        {
-            return;
-        }
-
         await using (NpgsqlCommand createTemp = new(
             "CREATE TEMP TABLE staging_physicality (" +
-            "  entity_id BIGINT NOT NULL, " +
             "  physicality_type_id INT NOT NULL, " +
-            "  wkb BYTEA NOT NULL, " +
-            "  content_hash BYTEA NOT NULL" +
+            "  entity_type_id INT NOT NULL, " +
+            "  entity_hash BYTEA NOT NULL, " +
+            "  content_hash BYTEA NOT NULL, " +
+            "  wkb BYTEA NOT NULL" +
             ") ON COMMIT DROP", conn))
         {
             await createTemp.ExecuteNonQueryAsync(ct);
         }
 
         await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY staging_physicality (entity_id, physicality_type_id, wkb, content_hash) FROM STDIN (FORMAT binary)", ct))
+            "COPY staging_physicality (physicality_type_id, entity_type_id, entity_hash, content_hash, wkb) FROM STDIN (FORMAT binary)", ct))
         {
-            for (int i = 0; i < batch.Physicalities.Count; i++)
+            foreach (PhysicalityEntry phys in batch.Physicalities)
             {
-                PhysicalityEntry phys = batch.Physicalities[i];
-                long entityId = batch.ResolveHandle(phys.Entity);
-                int typeId = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
-                byte[] hash = Hartonomous.Core.Compute.Common.Blake3.Hash(phys.Wkb);
+                int physTypeId    = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
+                int entityTypeId  = await _codeResolver.EntityTypeIdAsync(phys.Entity.EntityTypeCode, ct);
+                byte[] contentHash = Blake3.Hash(phys.Wkb);
 
                 await writer.StartRowAsync(ct);
-                await writer.WriteAsync(entityId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                await writer.WriteAsync(typeId, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(phys.Wkb, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
-                await writer.WriteAsync(hash, NpgsqlTypes.NpgsqlDbType.Bytea, ct);
+                await writer.WriteAsync(physTypeId,        NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(entityTypeId,      NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(phys.Entity.Hash,  NpgsqlDbType.Bytea,   ct);
+                await writer.WriteAsync(contentHash,       NpgsqlDbType.Bytea,   ct);
+                await writer.WriteAsync(phys.Wkb,          NpgsqlDbType.Bytea,   ct);
             }
             await writer.CompleteAsync(ct);
         }
 
-        await using NpgsqlCommand insertCmd = new(
-            "INSERT INTO substrate.physicality (entity_id, physicality_type_id, geom, content_hash) " +
-            "SELECT entity_id, physicality_type_id, ST_GeomFromWKB(wkb), content_hash " +
-            "FROM staging_physicality " +
-            "ON CONFLICT (entity_id, physicality_type_id, content_hash) DO NOTHING", conn);
-        await insertCmd.ExecuteNonQueryAsync(ct);
+        // Drain staging_physicality via named substrate function (AP-2).
+        await using NpgsqlCommand flushPhys = new(
+            "SELECT substrate.flush_physicality_from_staging()", conn);
+        await flushPhys.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task CreateSequencesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
-    {
-        if (batch.Sequences.Count == 0)
-        {
-            return;
-        }
-
-        // Binary COPY into staging — sequence rows can grow into the millions for
-        // a single Moby-Dick-class document (21K text_compositions × ~30 children
-        // = 600K+ rows). The unnest() pattern serializes the entire array into a
-        // single command parameter; binary COPY streams row-by-row.
-        await using (NpgsqlCommand createTemp = new(
-            "CREATE TEMP TABLE staging_sequence (" +
-            "  parent_id BIGINT NOT NULL, " +
-            "  child_id BIGINT NOT NULL, " +
-            "  ordinal_position INT NOT NULL, " +
-            "  rle_count INT NOT NULL" +
-            ") ON COMMIT DROP", conn))
-        {
-            await createTemp.ExecuteNonQueryAsync(ct);
-        }
-
-        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY staging_sequence (parent_id, child_id, ordinal_position, rle_count) FROM STDIN (FORMAT binary)", ct))
-        {
-            for (int i = 0; i < batch.Sequences.Count; i++)
-            {
-                SequenceEntry seq = batch.Sequences[i];
-                long parentId = seq.ParentEntityId ?? batch.ResolveHandle(seq.ParentHandle!.Value);
-                await writer.StartRowAsync(ct);
-                await writer.WriteAsync(parentId, NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                await writer.WriteAsync(batch.ResolveHandle(seq.Child), NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                await writer.WriteAsync(seq.Position, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(seq.Count, NpgsqlTypes.NpgsqlDbType.Integer, ct);
-            }
-            await writer.CompleteAsync(ct);
-        }
-
-        await using NpgsqlCommand cmd = new(
-            "INSERT INTO substrate.sequence (parent_id, child_id, ordinal_position, rle_count) " +
-            "SELECT DISTINCT ON (parent_id, ordinal_position) parent_id, child_id, ordinal_position, rle_count " +
-            "FROM staging_sequence " +
-            "ON CONFLICT (parent_id, ordinal_position) DO NOTHING", conn);
-        await cmd.ExecuteNonQueryAsync(ct);
-    }
-
-    private async Task LinkEntityModelSourcesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
-    {
-        if (batch.EntityModelSources.Count == 0)
-        {
-            return;
-        }
-
-        long[] entityIds = new long[batch.EntityModelSources.Count];
-        int[] entityTypeIds = new int[batch.EntityModelSources.Count];
-        long[] sourceIds = new long[batch.EntityModelSources.Count];
-        for (int i = 0; i < batch.EntityModelSources.Count; i++)
-        {
-            EntityModelSourceEntry link = batch.EntityModelSources[i];
-            entityIds[i] = batch.ResolveHandle(link.Entity);
-            string typeCode = batch.Entities[link.Entity.BatchIndex].EntityTypeCode;
-            entityTypeIds[i] = await _codeResolver.EntityTypeIdAsync(typeCode, ct);
-            sourceIds[i] = link.ModelSourceId;
-        }
-
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.link_entity_model_sources($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(entityIds);
-        cmd.Parameters.AddWithValue(entityTypeIds);
-        cmd.Parameters.AddWithValue(sourceIds);
-        await cmd.ExecuteScalarAsync(ct);
-    }
-
-    private async Task InitializeSignificanceAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
+    // ── InitializeEntitySignificanceAsync ──────────────────────────────────
+    // Writes only entity_significance rows. Edge significance is primed in
+    // bulk by SignificanceFieldRunner against substrate.edge_significance —
+    // not per-batch.
+    private async Task InitializeEntitySignificanceAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
         if (batch.Significances.Count == 0)
         {
             return;
         }
 
-        // Pre-resolve context_type ids before the binary writer hot loop.
-        int[] contextIds = new int[batch.Significances.Count];
-        for (int i = 0; i < batch.Significances.Count; i++)
-        {
-            contextIds[i] = await _codeResolver.SignificanceContextIdAsync(
-                batch.Significances[i].ContextTypeCode, ct);
-        }
-
         await using (NpgsqlCommand createTemp = new(
-            "CREATE TEMP TABLE staging_significance (" +
-            "  entity_id BIGINT NOT NULL, " +
+            "CREATE TEMP TABLE staging_entity_significance (" +
             "  context_type_id INT NOT NULL, " +
+            "  entity_type_id INT NOT NULL, " +
+            "  entity_hash BYTEA NOT NULL, " +
             "  mu FLOAT8 NOT NULL" +
             ") ON COMMIT DROP", conn))
         {
@@ -659,168 +452,154 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         }
 
         await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY staging_significance (entity_id, context_type_id, mu) FROM STDIN (FORMAT binary)", ct))
+            "COPY staging_entity_significance (context_type_id, entity_type_id, entity_hash, mu) FROM STDIN (FORMAT binary)", ct))
         {
-            for (int i = 0; i < batch.Significances.Count; i++)
+            foreach (SignificanceEntry sig in batch.Significances)
             {
-                SignificanceEntry sig = batch.Significances[i];
+                int contextId    = await _codeResolver.SignificanceContextIdAsync(sig.ContextTypeCode, ct);
+                int entityTypeId = await _codeResolver.EntityTypeIdAsync(sig.Entity.EntityTypeCode, ct);
+
                 await writer.StartRowAsync(ct);
-                await writer.WriteAsync(batch.ResolveHandle(sig.Entity), NpgsqlTypes.NpgsqlDbType.Bigint, ct);
-                await writer.WriteAsync(contextIds[i], NpgsqlTypes.NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(sig.InitialMu, NpgsqlTypes.NpgsqlDbType.Double, ct);
+                await writer.WriteAsync(contextId,        NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(entityTypeId,     NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(sig.Entity.Hash,  NpgsqlDbType.Bytea,   ct);
+                await writer.WriteAsync(sig.InitialMu,    NpgsqlDbType.Double,  ct);
             }
             await writer.CompleteAsync(ct);
         }
 
-        // CAST(NULL AS BIGINT) — same fix shape as migration 0064 for
-        // substrate.prime_edge_significance. PG 18 with cached plans +
-        // LIST-partitioned target table (substrate.significance is
-        // partitioned by context_type_id) resolves a bare NULL to the
-        // wrong column type, allowing the bit pattern of a sibling
-        // float8 literal (0.06) to leak into the BIGINT edge_id slot.
-        // Symptom: SIGSEGV inside partition routing on this exact INSERT.
-        await using NpgsqlCommand cmd = new(
-            "INSERT INTO substrate.significance (entity_id, edge_id, context_type_id, mu, sigma, volatility, games) " +
-            "SELECT entity_id, CAST(NULL AS BIGINT), context_type_id, mu, 350.0, 0.06, 0 " +
-            "FROM staging_significance " +
-            "ON CONFLICT DO NOTHING", conn);
-        await cmd.ExecuteNonQueryAsync(ct);
+        // Drain staging_entity_significance via named substrate function (AP-2).
+        await using NpgsqlCommand flushSig = new(
+            "SELECT substrate.flush_entity_significance_from_staging()", conn);
+        await flushSig.ExecuteNonQueryAsync(ct);
     }
 
-    private static byte[][] HashesToByteArrays(IReadOnlyList<byte[]> hashes)
+    // ── LinkEntityModelSourcesAsync ────────────────────────────────────────
+    private async Task LinkEntityModelSourcesAsync(NpgsqlConnection conn, IngestionBatch batch, CancellationToken ct)
     {
-        byte[][] result = new byte[hashes.Count][];
-        for (int i = 0; i < hashes.Count; i++)
-        {
-            result[i] = hashes[i];
-        }
-        return result;
-    }
-
-    public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
-    {
-        // substrate.populate_edge_trajectories(p_id_low, p_id_high) (migration
-        // 0038) does a single bounded UPDATE over edge ids in [low, high)
-        // whose geom IS NULL. The caller drives id-range iteration so each
-        // invocation is one bounded transaction — chunk size caps planner
-        // memory and a crash inside one chunk only loses that chunk's work.
-        //
-        // Endpoints are resolved per-edge through substrate.entity_s3_point,
-        // which reads the GeometryZM POINTZM for s3_position and falls back
-        // to centroid_s3 over contour LINESTRINGZM vertices (post-0048).
-        //
-        // Parallel workers disabled per-session: PostGIS geometry constructors
-        // invoked from parallel worker backends have crashed the server
-        // (signal 11) on freshly ingested phase data.
-        //
-        // Chunk size dropped from 50K to 5K — populate_edge_trajectories has
-        // a history of OOM-killing the postgres backend (signal 9) on
-        // freshly-ingested model phase data because per-edge centroid resolution
-        // pulls 4D physicality geometry into the planner's working set. At 50K
-        // chunks across 30K+ ingested edges per model the cumulative pressure
-        // still tips PG over. 5K keeps the working set firmly bounded.
-        const long ChunkSize = 5_000L;
-
-        long maxId;
-        await using (NpgsqlConnection probeConn = await _dataSource.OpenConnectionAsync(ct))
-        await using (NpgsqlCommand maxCmd = new(
-            "SELECT COALESCE(MAX(id), 0) FROM substrate.edge", probeConn))
-        {
-            maxCmd.CommandTimeout = 600;
-            object? raw = await maxCmd.ExecuteScalarAsync(ct);
-            maxId = raw is long l ? l : 0L;
-        }
-
-        if (maxId <= 0)
+        if (batch.EntityModelSources.Count == 0)
         {
             return;
         }
 
-        // Each chunk runs on its OWN connection — if PG dies inside one
-        // chunk's UPDATE (OOM, signal 11), the multiplexed reader for that
-        // connection is dead but the next chunk gets a fresh one. Earlier
-        // single-connection design propagated one chunk's crash into a
-        // "Timeout during reading attempt" multiplexing failure that
-        // prevented every subsequent chunk from running.
-        long totalUpdated = 0;
-        long failedChunks = 0;
-        for (long low = 1; low <= maxId; low += ChunkSize)
+        await using (NpgsqlCommand createTemp = new(
+            "CREATE TEMP TABLE staging_entity_model_source (" +
+            "  entity_type_id INT NOT NULL, " +
+            "  entity_hash BYTEA NOT NULL, " +
+            "  model_source_id INT NOT NULL" +
+            ") ON COMMIT DROP", conn))
         {
-            long high = low + ChunkSize;
-            try
-            {
-                await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-                await using (NpgsqlCommand setCmd = new(
-                    "SET max_parallel_workers_per_gather = 0; "
-                    + "SET max_parallel_maintenance_workers = 0; "
-                    + "SET work_mem = '256MB';",
-                    conn))
-                {
-                    await setCmd.ExecuteNonQueryAsync(ct);
-                }
+            await createTemp.ExecuteNonQueryAsync(ct);
+        }
 
-                await using NpgsqlCommand updateCmd = new(
-                    "SELECT substrate.populate_edge_trajectories($1, $2)", conn);
-                updateCmd.Parameters.Add(new NpgsqlParameter { Value = low });
-                updateCmd.Parameters.Add(new NpgsqlParameter { Value = high });
-                updateCmd.CommandTimeout = 600;
-                object? result = await updateCmd.ExecuteScalarAsync(ct);
-                long updated = result is long u ? u : 0L;
-                totalUpdated += updated;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) // BOUNDARY: per-chunk isolation — one bad chunk doesn't block remaining chunks; reported aggregate failure count at end.
+        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
+            "COPY staging_entity_model_source (entity_type_id, entity_hash, model_source_id) FROM STDIN (FORMAT binary)", ct))
+        {
+            foreach (EntityModelSourceEntry e in batch.EntityModelSources)
             {
-                failedChunks++;
-                Log.EdgeTrajectoryChunkFailed(_logger, low, high, ex.Message);
+                int entityTypeId = await _codeResolver.EntityTypeIdAsync(e.Entity.EntityTypeCode, ct);
+                await writer.StartRowAsync(ct);
+                await writer.WriteAsync(entityTypeId,       NpgsqlDbType.Integer, ct);
+                await writer.WriteAsync(e.Entity.Hash,      NpgsqlDbType.Bytea,   ct);
+                await writer.WriteAsync((int)e.ModelSourceId, NpgsqlDbType.Integer, ct);
             }
+            await writer.CompleteAsync(ct);
+        }
+
+        await using NpgsqlCommand insertCmd = new(
+            "INSERT INTO substrate.entity_model_source (entity_type_id, entity_hash, model_source_id) " +
+            "SELECT DISTINCT entity_type_id, entity_hash, model_source_id " +
+            "FROM staging_entity_model_source " +
+            "ON CONFLICT DO NOTHING", conn);
+        await insertCmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // ── PopulateEdgeTrajectoriesAsync ──────────────────────────────────────
+    // Calls a substrate function (defined alongside the schema in a later
+    // migration) that processes WHERE geom IS NULL in LIMIT-bounded chunks
+    // until none remain. No BIGINT id-range arithmetic — there is no id.
+    public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
+    {
+        const int ChunkSize = 5_000;
+
+        long totalUpdated = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+            await using (NpgsqlCommand setCmd = new(
+                "SET max_parallel_workers_per_gather = 0; " +
+                "SET max_parallel_maintenance_workers = 0; " +
+                "SET work_mem = '256MB';", conn))
+            {
+                await setCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await using NpgsqlCommand updateCmd = new(
+                "SELECT substrate.populate_edge_trajectories($1)", conn);
+            updateCmd.Parameters.Add(new NpgsqlParameter { Value = ChunkSize });
+            updateCmd.CommandTimeout = 600;
+
+            object? raw = await updateCmd.ExecuteScalarAsync(ct);
+            long updated = raw is long u ? u : (raw is int i ? i : 0L);
+            if (updated <= 0)
+            {
+                break;
+            }
+            totalUpdated += updated;
         }
 
         if (totalUpdated > 0)
         {
             Log.EdgeTrajectoriesPopulated(_logger, totalUpdated);
         }
-        if (failedChunks > 0)
-        {
-            Log.EdgeTrajectoryChunksFailed(_logger, failedChunks);
-        }
     }
 
-    private static byte[] ComputeEdgeHash(int edgeTypeId, long[] memberEntityIds)
+    // ── ComputeEdgeHash ────────────────────────────────────────────────────
+    // BLAKE3 over [edge_type_id (4 LE bytes) | hash1 (32 bytes) | hash2 ...].
+    // Stable identity for a typed n-ary edge: same participants in the same
+    // role-ordered sequence under the same edge type produce the same hash.
+    private static byte[] ComputeEdgeHash(int edgeTypeId, byte[][] orderedMemberHashes)
     {
-        byte[] buffer = new byte[4 + (memberEntityIds.Length * 8)];
-        BitConverter.TryWriteBytes(buffer.AsSpan(0, 4), edgeTypeId);
-        for (int i = 0; i < memberEntityIds.Length; i++)
+        int len = 4;
+        for (int i = 0; i < orderedMemberHashes.Length; i++)
         {
-            BitConverter.TryWriteBytes(buffer.AsSpan(4 + (i * 8), 8), memberEntityIds[i]);
+            len += orderedMemberHashes[i].Length;
         }
-        return Hartonomous.Core.Compute.Common.Blake3.Hash(buffer);
+        byte[] buffer = new byte[len];
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(0, 4), edgeTypeId);
+        int offset = 4;
+        for (int i = 0; i < orderedMemberHashes.Length; i++)
+        {
+            orderedMemberHashes[i].CopyTo(buffer.AsSpan(offset));
+            offset += orderedMemberHashes[i].Length;
+        }
+        return Blake3.Hash(buffer);
     }
 
-    private static readonly HashSet<string> AllowedJunctionTables = new(StringComparer.OrdinalIgnoreCase)
+    // ── Junction allowlist + ref column mapping ────────────────────────────
+    // Junction allowlist. entity_sense was REMOVED — sense is captured by
+    // has_sense edges (lemma → synset) and rated via substrate.edge_significance,
+    // not via a parallel junction. entity_lexname ADDED — bounded-vocabulary
+    // lexname classification (45 lexicographer files), polymorphic on entity_type.
+    private static readonly HashSet<string> AllowedJunctionTables = new(StringComparer.Ordinal)
     {
-        "entity_pos", "entity_sense", "entity_language", "entity_morph_feature",
-        "model_architecture_class", "tensor_tensor_role", "pattern_deprel"
+        "entity_pos", "entity_lexname", "entity_language", "entity_morph_feature",
+        "model_architecture_class", "tensor_tensor_role", "pattern_deprel",
     };
 
-    private static string GetJunctionRefColumn(string table)
+    private static string GetJunctionRefColumn(string table) => table switch
     {
-        if (!AllowedJunctionTables.Contains(table))
-        {
-            throw new ArgumentException($"Unknown junction table: '{table}'");
-        }
-
-        return table switch
-        {
-            "entity_pos" => "pos_id",
-            "entity_sense" => "sense_id",
-            "entity_language" => "language_id",
-            "entity_morph_feature" => "morph_feature_id",
-            "model_architecture_class" => "architecture_class_id",
-            "tensor_tensor_role" => "tensor_role_id",
-            "pattern_deprel" => "deprel_id",
-            _ => throw new ArgumentException($"Unknown junction table: '{table}'")
-        };
-    }
+        "entity_pos"               => "pos_id",
+        "entity_lexname"           => "lexname_id",
+        "entity_language"          => "language_id",
+        "entity_morph_feature"     => "morph_feature_id",
+        "model_architecture_class" => "architecture_class_id",
+        "tensor_tensor_role"       => "tensor_role_id",
+        "pattern_deprel"           => "deprel_id",
+        _ => throw new ArgumentException($"Unknown junction table: '{table}'", nameof(table)),
+    };
 
     private static partial class Log
     {
@@ -829,12 +608,6 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Edge trajectories populated: {Count} edges updated")]
         public static partial void EdgeTrajectoriesPopulated(ILogger logger, long count);
-
-        [LoggerMessage(Level = LogLevel.Warning, Message = "Edge trajectory chunk [{Low},{High}) failed: {Reason} — skipped, continuing with remaining chunks")]
-        public static partial void EdgeTrajectoryChunkFailed(ILogger logger, long low, long high, string reason);
-
-        [LoggerMessage(Level = LogLevel.Warning, Message = "Edge trajectory population finished with {ChunkCount} failed chunks (re-runnable via `phases run --phase ModelDecomp --force` or `ops trajectories`)")]
-        public static partial void EdgeTrajectoryChunksFailed(ILogger logger, long chunkCount);
 
         [LoggerMessage(Level = LogLevel.Error, Message = "Batch failed: {EntityCount} entities")]
         public static partial void BatchFailed(ILogger logger, int entityCount, Exception ex);

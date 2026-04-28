@@ -4,7 +4,7 @@
   Execute an arbitrary command inside the Postgres container.
 
 .EXAMPLE
-  pwsh scripts/docker/Exec.ps1 -Command 'bash -lc "ls /usr/lib/postgresql/17/lib/hartonomous.so"'
+  pwsh scripts/docker/Exec.ps1 -Command 'bash -lc "ls /opt/pg18/lib/hartonomous.so"'
   pwsh scripts/docker/Exec.ps1 -- apt list --installed
 #>
 [CmdletBinding()]

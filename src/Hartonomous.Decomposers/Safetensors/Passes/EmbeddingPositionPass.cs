@@ -128,11 +128,10 @@ internal sealed partial class EmbeddingPositionPass : IModelAnalysisPass
 
                 session.Batch.AddEdge("has_embedding_position", context.ProvenanceCode,
                 [
-                    new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                    new EdgeMemberSpec(pos, null, "target", 1),
+                    new EdgeMemberSpec(t.Entity, "source", 0),
+                    new EdgeMemberSpec(pos, "target", 1),
                 ]);
 
-                session.Batch.AddSequence(parentEntityId: t.EntityId, child: pos, position: rowIdx, count: 1);
 
                 emitted++;
                 await session.MaybeFlushAsync(FlushThreshold, ct);

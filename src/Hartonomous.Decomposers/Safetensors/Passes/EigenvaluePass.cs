@@ -98,8 +98,8 @@ internal sealed partial class EigenvaluePass : IModelAnalysisPass
             session.Batch.AddEntityModelSource(spectrum, context.Source.ModelSourceId);
             session.Batch.AddEdge("has_eigenvalue_spectrum", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(spectrum, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(spectrum, "target", 1),
             ]);
 
             Log.TensorComplete(_logger, t.Info.Name, k, sorted[0], sorted[k - 1], result.Converged);

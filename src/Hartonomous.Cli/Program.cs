@@ -292,6 +292,14 @@ internal static class Program
                // backend fork + C extension init) is paid once at startup, not
                // repeatedly per query. Targets the 14900KS/24-core host.
                "Minimum Pool Size=8;Maximum Pool Size=32;Multiplexing=true;" +
+               // Heavy seed-phase batches (WordNet/Wiktionary/Tatoeba) include
+               // tens of thousands of entities + edges + junctions per batch;
+               // the substrate function commit can run several minutes server-
+               // side as indexes grow. Default Npgsql timeout (30s) cuts the
+               // client wire on `tx.CommitAsync` while the server is still
+               // working. 600s gives the server ample headroom; queries that
+               // legitimately hang remain bounded.
+               "Command Timeout=600;" +
                "Application Name=hartonomous-cli;";
     }
 
@@ -457,12 +465,20 @@ internal static class Program
         {
             SourceDirectory = Path.Combine(sourceRoot, "omw"),
             ConnectionString = conn,
+            // T0: English alignments only.
+            LanguageFilter = new[] { "en", "eng" },
         };
 
         DecomposerConfig udConfig = new()
         {
             SourceDirectory = Path.Combine(sourceRoot, "ud-treebanks", "ud-treebanks-v2.17"),
             ConnectionString = conn,
+            // T0 plan: ingest English treebanks first; expand language coverage in later
+            // tiers once the seed chain is verified end-to-end. UD uses ISO 639-1 (2-letter)
+            // prefixes on .conllu filenames ("en_ewt-ud-train.conllu"); the language
+            // reference table uses ISO 639-3 (3-letter) codes. Include both forms so
+            // the filter matches regardless of which code surface the decomposer compares.
+            LanguageFilter = new[] { "en", "eng" },
         };
 
         DecomposerConfig modelConfig = new()
@@ -475,12 +491,16 @@ internal static class Program
         {
             SourceDirectory = Path.Combine(sourceRoot, "wiktionary", "raw-wiktextract-data.jsonl"),
             ConnectionString = conn,
+            // T0: English entries only.
+            LanguageFilter = new[] { "en", "eng" },
         };
 
         DecomposerConfig tatoebaConfig = new()
         {
             SourceDirectory = Path.Combine(sourceRoot, "tatoeba"),
             ConnectionString = conn,
+            // T0: English sentences only.
+            LanguageFilter = new[] { "en", "eng" },
         };
 
         // TextDecomp: point at the test_data/text directory. Each .txt file is a document.

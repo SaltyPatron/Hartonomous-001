@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,11 +13,39 @@ using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
 using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Decomposers.Iso639;
+using Hartonomous.Decomposers.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.WordNet;
 
+/// <summary>
+/// Princeton WordNet 3.0 decomposer with content-pure synset identity.
+///
+/// Synset identity = BLAKE3 Merkle of (sorted member lemma hashes ‖ gloss
+/// byte hash). The WordNet file offset and lex_filenum are placement
+/// metadata, not content, so they do NOT enter the synset's identity hash.
+/// Two synsets with the same lemma group + same gloss collapse to one
+/// substrate.entity row even from different lexicons.
+///
+/// Senses are has_sense edges (lemma → synset). No separate word_sense
+/// entity exists — the relation IS the sense. Per-arena Glicko ratings
+/// for each sense live on substrate.edge_significance keyed by the
+/// has_sense edge.
+///
+/// External identifiers (WordNet offsets) are recorded as substrate content
+/// via has_wordnet_offset edges (synset → text_composition for the offset
+/// string). OMW joins via these edges to find synsets by their authoring
+/// offset, instead of computing matching identity hashes from placement.
+///
+/// Per-sense verb sentence frames are n-ary has_frame edges
+/// (lemma=source + frame_text=target + synset=context). The context role
+/// disambiguates which sense's frame is being attested without needing
+/// an intermediate word_sense entity.
+///
+/// WordNet's 24 pointer-relation types (hypernym/hyponym/holonym/meronym/
+/// antonym/etc.) become substrate.edge rows synset → synset, all of which
+/// use the offset → synset_hash map built in pass 1.
+/// </summary>
 public sealed partial class WordNetDecomposer : BaseDecomposer
 {
     public override string ProvenanceCode => "princeton_wordnet";
@@ -61,633 +90,347 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         IProgressReporter reporter,
         CancellationToken ct)
     {
-        // ── Parse all source files ──
         Log.Parsing(Logger);
-
-        List<SynsetRecord> nounSynsets = WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.noun"));
-        List<SynsetRecord> verbSynsets = WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.verb"));
-        List<SynsetRecord> adjSynsets = WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.adj"));
-        List<SynsetRecord> advSynsets = WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.adv"));
-
-        List<SenseIndexEntry> senseIndex = WordNetParser.ParseSenseIndex(Path.Combine(_dictDir, "index.sense"));
+        List<SynsetRecord> synsets = [];
+        synsets.AddRange(WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.noun")));
+        synsets.AddRange(WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.verb")));
+        synsets.AddRange(WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.adj")));
+        synsets.AddRange(WordNetParser.ParseDataFile(Path.Combine(_dictDir, "data.adv")));
 
         List<MorphException> morphExceptions = [];
-        morphExceptions.AddRange(WordNetParser.ParseExceptionFile(Path.Combine(_dictDir, "noun.exc"), 'n'));
-        morphExceptions.AddRange(WordNetParser.ParseExceptionFile(Path.Combine(_dictDir, "verb.exc"), 'v'));
-        morphExceptions.AddRange(WordNetParser.ParseExceptionFile(Path.Combine(_dictDir, "adj.exc"), 'a'));
-        morphExceptions.AddRange(WordNetParser.ParseExceptionFile(Path.Combine(_dictDir, "adv.exc"), 'r'));
+        foreach ((string file, char pos) in new[]
+        {
+            ("noun.exc", 'n'), ("verb.exc", 'v'), ("adj.exc", 'a'), ("adv.exc", 'r'),
+        })
+        {
+            string path = Path.Combine(_dictDir, file);
+            if (File.Exists(path))
+            {
+                morphExceptions.AddRange(WordNetParser.ParseExceptionFile(path, pos));
+            }
+        }
 
-        List<VerbSentence> verbSentences = WordNetParser.ParseSentences(Path.Combine(_dictDir, "sents.vrb"));
-        List<VerbSentenceIndex> verbSentIdx = WordNetParser.ParseSentenceIndex(Path.Combine(_dictDir, "sentidx.vrb"));
+        List<VerbSentence> verbSentences = [];
+        List<VerbSentenceIndex> verbSentenceIndex = [];
+        string sentsPath = Path.Combine(_dictDir, "sents.vrb");
+        string sentidxPath = Path.Combine(_dictDir, "sentidx.vrb");
+        if (File.Exists(sentsPath))
+        {
+            verbSentences = WordNetParser.ParseSentences(sentsPath);
+        }
+        if (File.Exists(sentidxPath))
+        {
+            verbSentenceIndex = WordNetParser.ParseSentenceIndex(sentidxPath);
+        }
 
-        // Merge all synsets into one list per POS-keyed lookup.
-        List<(SynsetRecord Synset, char Pos)> allSynsets = new(
-            nounSynsets.Count + verbSynsets.Count + adjSynsets.Count + advSynsets.Count);
-        foreach (SynsetRecord s in nounSynsets) { allSynsets.Add((s, 'n')); }
-        foreach (SynsetRecord s in verbSynsets) { allSynsets.Add((s, 'v')); }
-        foreach (SynsetRecord s in adjSynsets) { allSynsets.Add((s, 'a')); }
-        foreach (SynsetRecord s in advSynsets) { allSynsets.Add((s, 'r')); }
+        Log.Parsed(Logger, synsets.Count, 0, morphExceptions.Count);
 
-        Log.Parsed(Logger, allSynsets.Count, senseIndex.Count, morphExceptions.Count);
-
-        WordNetReferenceTableWriter refWriter = new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
+        WordNetReferenceTableWriter refWriter =
+            new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
-            // ── Load reference data ──
-            Dictionary<string, int> lexnameMap = await refWriter.LoadLexnameMapAsync(ct);
-            Dictionary<string, int> posMap = await refWriter.LoadPosMapAsync(ct);
+            Dictionary<string, int> posIdMap = await refWriter.LoadPosMapAsync(ct);
+            Dictionary<string, int> lexnameIdMap = await refWriter.LoadLexnameMapAsync(ct);
             int engLangId = await refWriter.LoadEnglishLanguageIdAsync(ct);
 
-            // ── Build synset key → offset lookup (POS-qualified) ──
-            // Key: "offset:pos" → unique synset identifier
-            Dictionary<string, byte[]> synsetKeyToHash = new(allSynsets.Count, StringComparer.Ordinal);
-            Dictionary<string, byte[]> lemmaToHash = new(150_000, StringComparer.Ordinal);
-            Dictionary<string, byte[]> senseKeyToHash = new(senseIndex.Count, StringComparer.Ordinal);
-
-            // Build sense key → (synset offset, pos) lookup for word-level pointer resolution.
-            Dictionary<string, (int Offset, char Pos)> senseKeyLookup = new(senseIndex.Count, StringComparer.Ordinal);
-            foreach (SenseIndexEntry si in senseIndex)
+            Dictionary<int, string> verbFrameTextById = new(verbSentences.Count);
+            foreach (VerbSentence vs in verbSentences)
             {
-                char ssType = ParseSsTypeFromSenseKey(si.SenseKey);
-                senseKeyLookup[si.SenseKey] = (si.SynsetOffset, WordNetParser.SsTypeToPos(ssType));
+                verbFrameTextById[vs.Id] = vs.Template;
+            }
+            Dictionary<string, IReadOnlyList<int>> frameIdsBySenseKey =
+                new(verbSentenceIndex.Count, StringComparer.Ordinal);
+            foreach (VerbSentenceIndex vsi in verbSentenceIndex)
+            {
+                frameIdsBySenseKey[vsi.SenseKey] = vsi.SentenceIds;
             }
 
-            // ── Step 1: Create synset + lemma + word_sense entities ──
             long entityCount = 0;
             long edgeCount = 0;
             int batchNum = 0;
+            int synsetsProcessed = 0;
+            Dictionary<string, long> edgeCountByType = new(StringComparer.Ordinal);
+
+            // offsetCode → content-pure synset_hash. Built in pass 1, consumed
+            // in pass 2 (pointer resolution) and by OMW via has_wordnet_offset.
+            Dictionary<string, byte[]> offsetToSynsetHash =
+                new(synsets.Count, StringComparer.Ordinal);
 
             IIngestionBatch batch = pipeline.CreateBatch();
 
-            // Track for junction table population.
-            List<(string SynsetKey, string UdPos)> synsetPosEntries = new(allSynsets.Count);
-            List<(string LemmaKey, string UdPos)> lemmaPosEntries = new(200_000);
+            async Task FlushBatchAsync()
+            {
+                if (batch.EntityCount == 0 && batch.EdgeCount == 0)
+                {
+                    return;
+                }
+                batchNum++;
+                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
+                    batchNum, "wordnet", ct);
+                batch = pipeline.CreateBatch();
+            }
 
-            // Track gloss/example text_composition hashes for edge creation after ID resolution.
-            List<(string SynsetKey, byte[] GlossHash)> glossEntries = new(allSynsets.Count);
-            List<(string SynsetKey, byte[] ExampleHash)> exampleEntries = new(allSynsets.Count * 2);
+            void Bump(string code)
+            {
+                edgeCountByType.TryGetValue(code, out long c);
+                edgeCountByType[code] = c + 1;
+                edgeCount++;
+            }
 
-            foreach ((SynsetRecord synset, char pos) in allSynsets)
+            // ── Pass 1: emit lemmas + synsets with content-pure hashes,
+            //           glosses, has_sense edges, junctions, has_wordnet_offset.
+            foreach (SynsetRecord syn in synsets)
             {
                 ct.ThrowIfCancellationRequested();
 
-                string synsetKey = $"{synset.Offset}:{pos}";
-                string synsetCode = $"{synset.Offset:D8}-{pos}";
-                byte[] synsetHash = ComputeHash(synsetCode);
-                synsetKeyToHash[synsetKey] = synsetHash;
+                string offsetCode = $"{syn.Offset:D8}-{syn.SsType}";
 
-                EntityHandle synsetEntity = batch.AddEntity(synsetHash, "synset");
-                batch.AddSignificance(synsetEntity, "source_authority", TrustPriorMu);
+                List<EntityHandle> memberHandles = new(syn.Words.Count);
+                List<byte[]> memberHashes = new(syn.Words.Count);
+                foreach (SynsetWord sw in syn.Words)
+                {
+                    (EntityHandle h, byte[] lemmaHash, _) =
+                        EmitLemmaMaybeCompound(batch, sw.Word, ProvenanceCode);
+                    batch.AddSignificance(h, "source_authority", TrustPriorMu);
+                    memberHandles.Add(h);
+                    memberHashes.Add(lemmaHash);
+                    entityCount++;
+                }
+
+                // Synset content hash: Merkle over sorted member lemma hashes
+                // plus gloss byte hash. Sorting drops member-order from the
+                // identity (the order survives via has_sense edge member
+                // positions, not in the synset's content). Gloss enters as
+                // BLAKE3(utf8 bytes) — the canonical authored definition is
+                // the synset's distinguishing content beyond its lemma group.
+                byte[][] sortedLemmaHashes = memberHashes
+                    .OrderBy(h => h, ByteArraySortComparer.Instance)
+                    .ToArray();
+                byte[] glossBytesHash = ComputeHash(syn.Gloss);
+
+                byte[][] synsetContent = new byte[sortedLemmaHashes.Length + 1][];
+                Array.Copy(sortedLemmaHashes, synsetContent, sortedLemmaHashes.Length);
+                synsetContent[sortedLemmaHashes.Length] = glossBytesHash;
+                byte[] synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
+
+                EntityHandle synsetHandle = batch.AddEntity(synsetHash, "synset");
+                batch.AddSignificance(synsetHandle, "source_authority", TrustPriorMu);
                 entityCount++;
 
-                // Decompose gloss into definition + examples → text_composition entities.
-                (string definition, List<string> examples) = WordNetParser.ParseGloss(synset.Gloss);
+                offsetToSynsetHash[offsetCode] = synsetHash;
 
+                // External-id bridge edge for OMW + cross-lexicon resolution.
+                // The offset string ("00001740-n") is a structured identifier,
+                // not a natural-language sentence. Hash directly via
+                // ComputeHash(utf8_bytes) — OMW computes the same hash to
+                // resolve synset_hash by querying has_wordnet_offset's target
+                // entity. Routing this synthetic identifier through
+                // TextDecomposer's full DAG (codepoints → graphemes →
+                // word_forms → sentence → document) would be wasteful and
+                // make the lookup harder to reproduce on the OMW side.
+                byte[] offsetDocHash = ComputeHash(offsetCode);
+                EntityHandle offsetDoc = batch.AddEntity(offsetDocHash, "text_composition");
+                batch.AddEdge("has_wordnet_offset", ProvenanceCode,
+                [
+                    new EdgeMemberSpec(synsetHandle, "source", 0),
+                    new EdgeMemberSpec(offsetDoc,    "target", 1),
+                ]);
+                Bump("has_wordnet_offset");
+
+                // Synset-level POS classification (one POS per synset).
+                string udPos = WordNetParser.PosCharToUdPos(WordNetParser.SsTypeToPos(syn.SsType));
+                if (posIdMap.TryGetValue(udPos, out int posId))
+                {
+                    batch.AddJunction("entity_pos", synsetHandle, posId, TrustPriorMu);
+                }
+
+                // Synset-level lexname classification (one lexname per synset).
+                string lexnameCode = GetLexname(syn.LexFileNum);
+                if (lexnameIdMap.TryGetValue(lexnameCode, out int lexnameId))
+                {
+                    batch.AddJunction("entity_lexname", synsetHandle, lexnameId);
+                }
+
+                // has_sense edges: each member lemma → synset. The edge IS
+                // the sense; per-arena Glicko ratings live on edge_significance.
+                for (int i = 0; i < memberHandles.Count; i++)
+                {
+                    batch.AddEdge("has_sense", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(memberHandles[i], "source", 0),
+                        new EdgeMemberSpec(synsetHandle,     "target", 1),
+                    ]);
+                    Bump("has_sense");
+                    batch.AddJunction("entity_language", memberHandles[i], engLangId);
+                }
+
+                // has_gloss + has_example edges. The gloss bytes are already
+                // part of the synset's identity; these edges surface the text
+                // entities for navigation, recompose, and example attestation.
+                (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
                 if (definition.Length > 0)
                 {
-                    (EntityHandle glossEntity, byte[] glossHash) =
-                        TextSegmentationEmitter.EmitTextComposition(
-                            batch, definition, _codepointProperties, "text_composition", TrustPriorMu);
-                    EmitContourPhysicality(batch, glossEntity, definition);
-                    // Inline has_gloss edge — synset → text_composition. Both sides are
-                    // EntityHandles in this batch, so the pipeline remaps them at flush
-                    // without phase-wide ResolveEntityIdsAsync. The Pass-2 has_gloss step
-                    // remains as a fallback (ON CONFLICT dedupes), but if Pass 2 dies
-                    // partway through, every committed Pass-1 batch still has its
-                    // gloss edges populated.
+                    EntityHandle defDoc = IngestText(batch, definition);
                     batch.AddEdge("has_gloss", ProvenanceCode,
                     [
-                        new EdgeMemberSpec(synsetEntity, null, "source", 0),
-                        new EdgeMemberSpec(glossEntity, null, "target", 1),
+                        new EdgeMemberSpec(synsetHandle, "source", 0),
+                        new EdgeMemberSpec(defDoc,       "target", 1),
                     ]);
-                    edgeCount++;
-                    glossEntries.Add((synsetKey, glossHash));
-                    entityCount++;
+                    Bump("has_gloss");
                 }
-
                 foreach (string example in examples)
                 {
-                    (EntityHandle exampleEntity, byte[] exampleHash) =
-                        TextSegmentationEmitter.EmitTextComposition(
-                            batch, example, _codepointProperties, "text_composition", TrustPriorMu);
-                    EmitContourPhysicality(batch, exampleEntity, example);
-                    // Inline has_example edge — same reasoning as has_gloss above.
+                    if (example.Length == 0)
+                    {
+                        continue;
+                    }
+                    EntityHandle exDoc = IngestText(batch, example);
                     batch.AddEdge("has_example", ProvenanceCode,
                     [
-                        new EdgeMemberSpec(synsetEntity, null, "source", 0),
-                        new EdgeMemberSpec(exampleEntity, null, "target", 1),
+                        new EdgeMemberSpec(synsetHandle, "source", 0),
+                        new EdgeMemberSpec(exDoc,        "target", 1),
                     ]);
-                    edgeCount++;
-                    exampleEntries.Add((synsetKey, exampleHash));
-                    entityCount++;
+                    Bump("has_example");
                 }
 
-                string udPos = WordNetParser.PosCharToUdPos(pos);
-                synsetPosEntries.Add((synsetKey, udPos));
-
-                // Collect per-lemma vertex lists so the synset itself can emit a
-                // MULTILINESTRINGZM trajectory that unions every member spelling.
-                List<IReadOnlyList<(double X, double Y, double Z, double M)>> synsetMemberContours = new();
-
-                // Lemmas in this synset.
-                foreach (SynsetWord word in synset.Words)
+                synsetsProcessed++;
+                if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
                 {
-                    string lemmaKey = word.Word;
+                    await FlushBatchAsync();
+                }
+            }
+            await FlushBatchAsync();
+            Log.Pass1Done(Logger, synsetsProcessed, entityCount, edgeCount);
 
-                    List<(double, double, double, double)> lemmaVertices =
-                        PhysicalityEmitter.SurfaceFormVertices(lemmaKey);
+            // ── Pass 2: pointer relations (synset → synset) using the offset map. ──
+            int pointerCount = 0;
+            int frameEdgeCount = 0;
+            foreach (SynsetRecord syn in synsets)
+            {
+                ct.ThrowIfCancellationRequested();
 
-                    EntityHandle lemmaEntity;
-                    if (lemmaToHash.TryGetValue(lemmaKey, out byte[]? cachedLemmaHash))
+                string offsetCode = $"{syn.Offset:D8}-{syn.SsType}";
+                if (!offsetToSynsetHash.TryGetValue(offsetCode, out byte[]? srcHash))
+                {
+                    continue;
+                }
+                EntityHandle srcHandle = batch.AddEntity(srcHash, "synset");
+
+                foreach (PointerRecord ptr in syn.Pointers)
+                {
+                    string relationCode = WordNetParser.PointerSymbolToRelation(ptr.Symbol);
+                    if (relationCode.StartsWith("unknown_", StringComparison.Ordinal))
                     {
-                        // Repeat occurrence: re-add the entity to THIS batch so we have
-                        // a handle for the inline has_sense edge. The pipeline's
-                        // ON CONFLICT (hash, entity_type_id) DO NOTHING upsert dedupes
-                        // to the existing substrate row — same hash maps to the same id
-                        // across batches. No double-counting of significance or
-                        // physicality (those landed on first occurrence).
-                        lemmaEntity = batch.AddEntity(cachedLemmaHash, "lemma");
+                        continue;
                     }
-                    else
+                    string targetOffset = $"{ptr.TargetOffset:D8}-{ptr.TargetPos}";
+                    if (!offsetToSynsetHash.TryGetValue(targetOffset, out byte[]? targetHash))
                     {
-                        // First occurrence in this phase: full emission with significance
-                        // and physicality. EmitLemmaMaybeCompound: monolexical → single
-                        // lemma; multi-word ("high_rise") → lemma + part word_forms +
-                        // lexicalized_compound edge.
-                        byte[] lemmaHash;
-                        (lemmaEntity, lemmaHash) =
-                            EmitLemmaMaybeCompound(batch, lemmaKey, ProvenanceCode);
-                        lemmaToHash[lemmaKey] = lemmaHash;
-                        batch.AddSignificance(lemmaEntity, "source_authority", TrustPriorMu);
-
-                        EmitContourPhysicality(batch, lemmaEntity, lemmaKey);
-
-                        entityCount++;
+                        continue;
                     }
+                    EntityHandle targetHandle = batch.AddEntity(targetHash, "synset");
 
-                    // Inline has_sense edge — lemma → synset, in this batch.
-                    batch.AddEdge("has_sense", ProvenanceCode,
+                    batch.AddEdge(relationCode, ProvenanceCode,
                     [
-                        new EdgeMemberSpec(lemmaEntity, null, "source", 0),
-                        new EdgeMemberSpec(synsetEntity, null, "target", 1),
+                        new EdgeMemberSpec(srcHandle,    "source", 0),
+                        new EdgeMemberSpec(targetHandle, "target", 1),
                     ]);
-                    edgeCount++;
-
-                    // Record POS evidence for EVERY synset this lemma appears in,
-                    // not just the first. "rake" as noun AND verb both accumulate.
-                    lemmaPosEntries.Add((lemmaKey, udPos));
-
-                    if (lemmaVertices.Count > 0)
-                    {
-                        synsetMemberContours.Add(lemmaVertices);
-                    }
+                    Bump(relationCode);
+                    pointerCount++;
                 }
 
-                // Synset physicality = the S³ centroid of every member-lemma
-                // vertex. The synset is one concept at one place on S³; the
-                // member lemmas already preserve their own trajectories. We
-                // average all (x, y, z, m) coordinates across every member
-                // contour, then L2-normalize so the result lands on the unit
-                // 3-sphere.
-                if (synsetMemberContours.Count > 0)
+                // Verb sentence frames per (lemma, synset) pair. The has_frame
+                // edge is n-ary: source=lemma + target=frame_text + context=synset.
+                // The context role makes the frame attestation specific to this
+                // sense (i.e., this lemma's appearance in this synset), without
+                // needing a word_sense intermediate entity.
+                if (syn.SsType == 'v')
                 {
-                    double sx = 0, sy = 0, sz = 0, sm = 0;
-                    int n = 0;
-                    foreach (IReadOnlyList<(double X, double Y, double Z, double M)> contour in synsetMemberContours)
+                    foreach (SynsetWord sw in syn.Words)
                     {
-                        foreach ((double X, double Y, double Z, double M) v in contour)
+                        // Reconstruct the WordNet sense_key for this (lemma, synset).
+                        // Format: "lemma%ss_type:lex_filenum:lex_id:head_word:head_id"
+                        // For verbs ss_type=2; head_word/head_id are empty.
+                        string senseKey =
+                            $"{sw.Word}%2:{syn.LexFileNum:D2}:{sw.LexId:D2}::";
+                        if (!frameIdsBySenseKey.TryGetValue(senseKey, out IReadOnlyList<int>? fids))
                         {
-                            sx += v.X; sy += v.Y; sz += v.Z; sm += v.M;
-                            n++;
+                            continue;
                         }
-                    }
-                    if (n > 0)
-                    {
-                        double cx = sx / n, cy = sy / n, cz = sz / n, cm = sm / n;
-                        double norm = Math.Sqrt(cx * cx + cy * cy + cz * cz + cm * cm);
-                        if (norm > 0)
+
+                        (EntityHandle lemmaHandle, _, _) =
+                            EmitLemmaMaybeCompound(batch, sw.Word, ProvenanceCode);
+
+                        foreach (int fid in fids)
                         {
-                            cx /= norm; cy /= norm; cz /= norm; cm /= norm;
-                            batch.AddPhysicalityPoint4d(synsetEntity, "s3_position", cx, cy, cz, cm);
+                            if (!verbFrameTextById.TryGetValue(fid, out string? frameTxt))
+                            {
+                                continue;
+                            }
+                            EntityHandle frameDoc = IngestText(batch, frameTxt);
+                            batch.AddEdge("has_frame", ProvenanceCode,
+                            [
+                                new EdgeMemberSpec(lemmaHandle, "source",  0),
+                                new EdgeMemberSpec(frameDoc,    "target",  1),
+                                new EdgeMemberSpec(srcHandle,   "context", 2),
+                            ]);
+                            Bump("has_frame");
+                            frameEdgeCount++;
                         }
                     }
                 }
 
-                if (batch.EntityCount >= BatchSize)
+                if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
                 {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
+                    await FlushBatchAsync();
                 }
             }
+            await FlushBatchAsync();
+            Log.Pass2Done(Logger, pointerCount, frameEdgeCount);
 
-            // Word sense entities from index.sense.
-            foreach (SenseIndexEntry si in senseIndex)
+            // ── Pass 3: morph exceptions → inflected_form + inflection_of. ──
+            int morphEntityCount = 0;
+            foreach (MorphException mex in morphExceptions)
             {
                 ct.ThrowIfCancellationRequested();
 
-                // Word sense identity = Merkle(lemma_hash, synset_hash).
-                // The sense key encodes the lemma (before '%') and synset offset + pos.
-                int pctSense = si.SenseKey.IndexOf('%');
-                string senseLemmaStr = pctSense > 0 ? si.SenseKey[..pctSense] : si.SenseKey;
-                char sensePos = WordNetParser.SsTypeToPos(ParseSsTypeFromSenseKey(si.SenseKey));
-                string senseSynKey = $"{si.SynsetOffset}:{sensePos}";
-                byte[] senseLemmaHash = ComputeWordFormHash(senseLemmaStr);
-                byte[] senseSynHash = synsetKeyToHash.TryGetValue(senseSynKey, out byte[]? existingSynHash)
-                    ? existingSynHash
-                    : ComputeHash(""); // fallback — should not happen
-                byte[] senseHash = ComputeMerkleHash(new[] { senseLemmaHash, senseSynHash }.AsSpan());
-                senseKeyToHash[si.SenseKey] = senseHash;
-
-                EntityHandle senseEntity = batch.AddEntity(senseHash, "word_sense");
-                double mu = si.TagCount > 0 ? TrustPriorMu + (si.TagCount * 10.0) : TrustPriorMu;
-                batch.AddSignificance(senseEntity, "lexical_disambiguation", mu);
+                (EntityHandle inflectedHandle, _, _) =
+                    EmitWordFormMerkle(batch, mex.InflectedForm, "inflected_form");
+                batch.AddSignificance(inflectedHandle, "source_authority", TrustPriorMu);
+                morphEntityCount++;
                 entityCount++;
 
-                // word_sense trajectory = the spelling of its lemma (the part of the sense key
-                // before the first '%'). Same geometric trajectory as the underlying lemma but
-                // attached as an independent physicality on the sense entity.
-                EmitContourPhysicality(batch, senseEntity, senseLemmaStr);
-
-                if (batch.EntityCount >= BatchSize)
+                if (posIdMap.TryGetValue(WordNetParser.PosCharToUdPos(mex.Pos), out int infPosId))
                 {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
+                    batch.AddJunction("entity_pos", inflectedHandle, infPosId, TrustPriorMu);
                 }
-            }
+                batch.AddJunction("entity_language", inflectedHandle, engLangId);
 
-            // Morph exception lemma entities (inflected forms that may not be in synsets).
-            foreach (MorphException exc in morphExceptions)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                string inflKey = exc.InflectedForm;
-                if (!lemmaToHash.ContainsKey(inflKey))
+                foreach (string baseForm in mex.BaseForms)
                 {
-                    (EntityHandle entity, byte[] hash) =
-                        EmitLemmaMaybeCompound(batch, inflKey, ProvenanceCode);
-                    lemmaToHash[inflKey] = hash;
-                    batch.AddSignificance(entity, "source_authority", TrustPriorMu);
+                    (EntityHandle baseHandle, _, _) =
+                        EmitLemmaMaybeCompound(batch, baseForm, ProvenanceCode);
 
-                    EmitContourPhysicality(batch, entity, inflKey);
-                    entityCount++;
-                }
-
-                foreach (string baseForm in exc.BaseForms)
-                {
-                    string baseKey = baseForm;
-                    if (!lemmaToHash.ContainsKey(baseKey))
-                    {
-                        (EntityHandle entity, byte[] hash) =
-                            EmitLemmaMaybeCompound(batch, baseKey, ProvenanceCode);
-                        lemmaToHash[baseKey] = hash;
-                        batch.AddSignificance(entity, "source_authority", TrustPriorMu);
-
-                        EmitContourPhysicality(batch, entity, baseKey);
-                        entityCount++;
-                    }
-                }
-
-                if (batch.EntityCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // Verb frame template entities. Templates are real text (e.g. "Somebody ----s")
-            // → emit through the canonical Merkle path so identical strings from
-            // Wiktionary citations or text corpora collapse onto the same text_composition.
-            Dictionary<int, byte[]> frameIdToHash = new(verbSentences.Count);
-            foreach (VerbSentence vs in verbSentences)
-            {
-                (EntityHandle entity, byte[] hash) =
-                    TextSegmentationEmitter.EmitTextComposition(
-                        batch, vs.Template, _codepointProperties, "text_composition", TrustPriorMu);
-                frameIdToHash[vs.Id] = hash;
-
-                // text_composition trajectory = contour through every codepoint of the template.
-                EmitContourPhysicality(batch, entity, vs.Template);
-
-                entityCount++;
-            }
-
-            // Submit remaining entities.
-            if (batch.EntityCount > 0)
-            {
-                batchNum++;
-                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-            }
-
-            Log.EntitiesCreated(Logger, entityCount, batchNum);
-
-            // ── Step 2: Resolve all entity IDs ──
-            HashSet<byte[]> allHashes = new(ByteArrayEqualityComparer.Instance);
-            foreach (byte[] h in synsetKeyToHash.Values) { allHashes.Add(h); }
-            foreach (byte[] h in lemmaToHash.Values) { allHashes.Add(h); }
-            foreach (byte[] h in senseKeyToHash.Values) { allHashes.Add(h); }
-            foreach (byte[] h in frameIdToHash.Values) { allHashes.Add(h); }
-            foreach ((_, byte[] h) in glossEntries) { allHashes.Add(h); }
-            foreach ((_, byte[] h) in exampleEntries) { allHashes.Add(h); }
-
-            IReadOnlyDictionary<byte[], long> entityIdMap =
-                await pipeline.ResolveEntityIdsAsync([.. allHashes], ct);
-
-            Log.IdsResolved(Logger, entityIdMap.Count);
-
-            // ── Step 3: Populate sense reference table ──
-            List<(string Code, string Gloss, int LexnameId, int PosId)> senseRows = new(allSynsets.Count);
-            foreach ((SynsetRecord synset, char pos) in allSynsets)
-            {
-                string udPos = WordNetParser.PosCharToUdPos(pos);
-                string lexname = GetLexname(synset.LexFileNum);
-                int lexnameId = lexnameMap.GetValueOrDefault(lexname, 0);
-                int posId = posMap.GetValueOrDefault(udPos, 0);
-
-                if (lexnameId == 0 || posId == 0)
-                {
-                    continue;
-                }
-
-                string synsetCode = $"{synset.Offset:D8}-{pos}";
-                senseRows.Add((synsetCode, synset.Gloss, lexnameId, posId));
-            }
-            await refWriter.PopulateSensesAsync(senseRows, ct);
-            Dictionary<string, int> senseDbMap = await refWriter.LoadSenseMapAsync(ct);
-            Log.SensesPopulated(Logger, senseRows.Count);
-
-            // ── Step 4: entity_pos and entity_sense junctions ──
-            List<(long EntityId, int PosId)> posJunctions = new(allSynsets.Count + lemmaPosEntries.Count);
-            foreach ((string synsetKey, string udPos) in synsetPosEntries)
-            {
-                if (synsetKeyToHash.TryGetValue(synsetKey, out byte[]? hash) &&
-                    entityIdMap.TryGetValue(hash, out long eid) &&
-                    posMap.TryGetValue(udPos, out int posId))
-                {
-                    posJunctions.Add((eid, posId));
-                }
-            }
-            foreach ((string lemmaKey, string udPos) in lemmaPosEntries)
-            {
-                if (lemmaToHash.TryGetValue(lemmaKey, out byte[]? hash) &&
-                    entityIdMap.TryGetValue(hash, out long eid) &&
-                    posMap.TryGetValue(udPos, out int posId))
-                {
-                    posJunctions.Add((eid, posId));
-                }
-            }
-            await refWriter.WriteEntityPosJunctionsAsync(posJunctions, ct);
-            Log.PosJunctionsWritten(Logger, posJunctions.Count);
-
-            List<(long EntityId, int SenseId, double Mu)> senseJunctions = new(senseIndex.Count);
-            foreach (SenseIndexEntry si in senseIndex)
-            {
-                char ssType = ParseSsTypeFromSenseKey(si.SenseKey);
-                char pos = WordNetParser.SsTypeToPos(ssType);
-                string synsetCode = $"{si.SynsetOffset:D8}-{pos}";
-
-                if (senseKeyToHash.TryGetValue(si.SenseKey, out byte[]? wsHash) &&
-                    entityIdMap.TryGetValue(wsHash, out long wsEid) &&
-                    senseDbMap.TryGetValue(synsetCode, out int senseId))
-                {
-                    double mu = si.TagCount > 0 ? TrustPriorMu + (si.TagCount * 10.0) : TrustPriorMu;
-                    senseJunctions.Add((wsEid, senseId, mu));
-                }
-            }
-            await refWriter.WriteEntitySenseJunctionsAsync(senseJunctions, ct);
-            Log.SenseJunctionsWritten(Logger, senseJunctions.Count);
-
-            // ── Step 5: entity_language for synsets (English) ──
-            List<long> synsetEntityIds = new(synsetKeyToHash.Count);
-            foreach (byte[] h in synsetKeyToHash.Values)
-            {
-                if (entityIdMap.TryGetValue(h, out long eid))
-                {
-                    synsetEntityIds.Add(eid);
-                }
-            }
-            await refWriter.WriteEntityLanguageJunctionsAsync(synsetEntityIds, engLangId, ct);
-            Log.LanguageJunctionsWritten(Logger, synsetEntityIds.Count);
-
-            // ── Step 6: Edges — semantic relations ──
-            batch = pipeline.CreateBatch();
-
-            foreach ((SynsetRecord synset, char pos) in allSynsets)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                string srcKey = $"{synset.Offset}:{pos}";
-                if (!synsetKeyToHash.TryGetValue(srcKey, out byte[]? srcHash) ||
-                    !entityIdMap.TryGetValue(srcHash, out long srcId))
-                {
-                    continue;
-                }
-
-                foreach (PointerRecord ptr in synset.Pointers)
-                {
-                    string relation = WordNetParser.PointerSymbolToRelation(ptr.Symbol);
-                    char tgtPos = ptr.TargetPos;
-                    string tgtKey = $"{ptr.TargetOffset}:{tgtPos}";
-
-                    bool isWordLevel = ptr.SourceWordNum != 0;
-
-                    if (isWordLevel)
-                    {
-                        // Word-level pointer: resolve to word_sense entities.
-                        // We need the sense keys for the specific words.
-                        // Skip if we can't resolve — word_sense resolution requires sense key matching.
-                        continue;
-                    }
-
-                    if (!synsetKeyToHash.TryGetValue(tgtKey, out byte[]? tgtHash) ||
-                        !entityIdMap.TryGetValue(tgtHash, out long tgtId))
-                    {
-                        continue;
-                    }
-
-                    batch.AddEdge(relation, ProvenanceCode,
+                    batch.AddEdge("inflection_of", ProvenanceCode,
                     [
-                        new EdgeMemberSpec(null, srcId, "source", 0),
-                        new EdgeMemberSpec(null, tgtId, "target", 1),
+                        new EdgeMemberSpec(inflectedHandle, "source", 0),
+                        new EdgeMemberSpec(baseHandle,      "target", 1),
                     ]);
-                    edgeCount++;
-
-                    if (batch.EdgeCount >= BatchSize)
-                    {
-                        batchNum++;
-                        await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                        batch = pipeline.CreateBatch();
-                    }
+                    Bump("inflection_of");
+                }
+                if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
+                {
+                    await FlushBatchAsync();
                 }
             }
+            await FlushBatchAsync();
+            Log.MorphDone(Logger, morphEntityCount);
 
-            // ── Step 7: has_sense edges (lemma → synset) ──
-            foreach ((SynsetRecord synset, char pos) in allSynsets)
+            foreach (KeyValuePair<string, long> kv in edgeCountByType)
             {
-                ct.ThrowIfCancellationRequested();
-
-                string synsetKey = $"{synset.Offset}:{pos}";
-                if (!synsetKeyToHash.TryGetValue(synsetKey, out byte[]? synsetHash) ||
-                    !entityIdMap.TryGetValue(synsetHash, out long synsetId))
-                {
-                    continue;
-                }
-
-                foreach (SynsetWord word in synset.Words)
-                {
-                    string lemmaKey = word.Word;
-                    if (!lemmaToHash.TryGetValue(lemmaKey, out byte[]? lemmaHash) ||
-                        !entityIdMap.TryGetValue(lemmaHash, out long lemmaId))
-                    {
-                        continue;
-                    }
-
-                    // has_sense: lemma → synset (schema edge type id=1).
-                    batch.AddEdge("has_sense", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(null, lemmaId, "source", 0),
-                        new EdgeMemberSpec(null, synsetId, "target", 1),
-                    ]);
-                    edgeCount++;
-                }
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
-                }
+                Log.EdgesByType(Logger, kv.Key, kv.Value);
             }
-
-            // ── Step 8: Morphological exception edges ──
-            foreach (MorphException exc in morphExceptions)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                string inflKey = exc.InflectedForm;
-                if (!lemmaToHash.TryGetValue(inflKey, out byte[]? inflHash) ||
-                    !entityIdMap.TryGetValue(inflHash, out long inflId))
-                {
-                    continue;
-                }
-
-                foreach (string baseForm in exc.BaseForms)
-                {
-                    string baseKey = baseForm;
-                    if (!lemmaToHash.TryGetValue(baseKey, out byte[]? baseHash) ||
-                        !entityIdMap.TryGetValue(baseHash, out long baseId))
-                    {
-                        continue;
-                    }
-
-                    batch.AddEdge("irregular_morphology", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(null, inflId, "source", 0),
-                        new EdgeMemberSpec(null, baseId, "target", 1),
-                    ]);
-                    edgeCount++;
-                }
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // ── Step 9: Verb sentence example edges ──
-            Dictionary<string, List<int>> senseKeyToSentIds = new(verbSentIdx.Count, StringComparer.Ordinal);
-            foreach (VerbSentenceIndex vsi in verbSentIdx)
-            {
-                senseKeyToSentIds[vsi.SenseKey] = new List<int>(vsi.SentenceIds);
-            }
-
-            foreach (KeyValuePair<string, List<int>> kv in senseKeyToSentIds)
-            {
-                if (!senseKeyToHash.TryGetValue(kv.Key, out byte[]? wsHash) ||
-                    !entityIdMap.TryGetValue(wsHash, out long wsId))
-                {
-                    continue;
-                }
-
-                foreach (int sentId in kv.Value)
-                {
-                    if (!frameIdToHash.TryGetValue(sentId, out byte[]? frameHash) ||
-                        !entityIdMap.TryGetValue(frameHash, out long frameId))
-                    {
-                        continue;
-                    }
-
-                    batch.AddEdge("has_verb_example", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(null, wsId, "source", 0),
-                        new EdgeMemberSpec(null, frameId, "target", 1),
-                    ]);
-                    edgeCount++;
-                }
-            }
-
-            // ── Step 10: has_gloss edges (synset → text_composition) ──
-            foreach ((string synsetKey, byte[] glossHash) in glossEntries)
-            {
-                if (!synsetKeyToHash.TryGetValue(synsetKey, out byte[]? synsetHash2) ||
-                    !entityIdMap.TryGetValue(synsetHash2, out long synsetId) ||
-                    !entityIdMap.TryGetValue(glossHash, out long glossId))
-                {
-                    continue;
-                }
-
-                batch.AddEdge("has_gloss", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(null, synsetId, "source", 0),
-                    new EdgeMemberSpec(null, glossId, "target", 1),
-                ]);
-                edgeCount++;
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // ── Step 11: has_example edges (synset → text_composition) ──
-            foreach ((string synsetKey, byte[] exampleHash) in exampleEntries)
-            {
-                if (!synsetKeyToHash.TryGetValue(synsetKey, out byte[]? synsetHash3) ||
-                    !entityIdMap.TryGetValue(synsetHash3, out long synsetId) ||
-                    !entityIdMap.TryGetValue(exampleHash, out long exampleId))
-                {
-                    continue;
-                }
-
-                batch.AddEdge("has_example", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(null, synsetId, "source", 0),
-                    new EdgeMemberSpec(null, exampleId, "target", 1),
-                ]);
-                edgeCount++;
-
-                if (batch.EdgeCount >= BatchSize)
-                {
-                    batchNum++;
-                    await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-                    batch = pipeline.CreateBatch();
-                }
-            }
-
-            // Submit final batch.
-            if (batch.EdgeCount > 0 || batch.EntityCount > 0)
-            {
-                batchNum++;
-                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "wordnet-3.0", ct);
-            }
-
-            Log.DecompositionComplete(Logger, entityCount, edgeCount, allSynsets.Count);
+            Log.DecompositionComplete(Logger, entityCount, edgeCount, synsetsProcessed);
         }
         finally
         {
@@ -695,22 +438,34 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         }
     }
 
-    private static char ParseSsTypeFromSenseKey(string senseKey)
+    private EntityHandle IngestText(IIngestionBatch batch, string text)
     {
-        int pctIdx = senseKey.IndexOf('%');
-        if (pctIdx < 0 || pctIdx + 1 >= senseKey.Length)
-        {
-            return 'n';
-        }
+        byte[] utf8 = Encoding.UTF8.GetBytes(text);
+        TextDecomposer.TextIngestionResult r = TextDecomposer.IngestUtf8DocumentIntoBatch(
+            batch, utf8, _codepointProperties, TrustPriorMu, Logger, CancellationToken.None);
+        return r.DocumentHandle;
+    }
 
-        return senseKey[pctIdx + 1] switch
+    /// <summary>
+    /// Lexicographic byte-array comparer for stable Merkle ordering of
+    /// member-lemma hashes. Two hashes with the same prefix sort by their
+    /// continuation byte. Equal lengths assumed (BLAKE3 always 32 bytes).
+    /// </summary>
+    private sealed class ByteArraySortComparer : IComparer<byte[]>
+    {
+        public static readonly ByteArraySortComparer Instance = new();
+        public int Compare(byte[]? a, byte[]? b)
         {
-            '1' => 'n',
-            '2' => 'v',
-            '3' or '5' => 'a',
-            '4' => 'r',
-            _ => 'n',
-        };
+            if (a is null) { return b is null ? 0 : -1; }
+            if (b is null) { return 1; }
+            int len = Math.Min(a.Length, b.Length);
+            for (int i = 0; i < len; i++)
+            {
+                int diff = a[i] - b[i];
+                if (diff != 0) { return diff; }
+            }
+            return a.Length - b.Length;
+        }
     }
 
     private static string GetLexname(int lexFileNum) => lexFileNum switch
@@ -742,23 +497,17 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
         [LoggerMessage(Level = LogLevel.Information, Message = "Parsed: {Synsets} synsets, {Senses} sense index entries, {Morphs} morph exceptions")]
         public static partial void Parsed(ILogger logger, int synsets, int senses, int morphs);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Entities created: {Count} in {Batches} batches")]
-        public static partial void EntitiesCreated(ILogger logger, long count, int batches);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Pass 1 complete: {Synsets} synsets, {Entities} entities, {Edges} edges")]
+        public static partial void Pass1Done(ILogger logger, int synsets, long entities, long edges);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Entity IDs resolved: {Count}")]
-        public static partial void IdsResolved(ILogger logger, int count);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Pass 2 complete: {Pointers} pointer edges, {Frames} has_frame edges")]
+        public static partial void Pass2Done(ILogger logger, int pointers, int frames);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Sense reference table: {Count} rows")]
-        public static partial void SensesPopulated(ILogger logger, int count);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Morph exceptions: {Count} inflected_form entities + inflection_of edges")]
+        public static partial void MorphDone(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "entity_pos junctions: {Count}")]
-        public static partial void PosJunctionsWritten(ILogger logger, int count);
-
-        [LoggerMessage(Level = LogLevel.Information, Message = "entity_sense junctions: {Count}")]
-        public static partial void SenseJunctionsWritten(ILogger logger, int count);
-
-        [LoggerMessage(Level = LogLevel.Information, Message = "entity_language junctions: {Count} (eng)")]
-        public static partial void LanguageJunctionsWritten(ILogger logger, int count);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Edges by type: {Code}={Count}")]
+        public static partial void EdgesByType(ILogger logger, string code, long count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "WordNet 3.0 complete: {Entities} entities, {Edges} edges, {Synsets} synsets")]
         public static partial void DecompositionComplete(ILogger logger, long entities, long edges, int synsets);

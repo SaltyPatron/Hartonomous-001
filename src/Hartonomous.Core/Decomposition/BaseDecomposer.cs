@@ -123,31 +123,40 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     /// <summary>
-    /// Builds a word_form entity as a Merkle DAG: codepoints → grapheme_clusters → word_form.
-    /// Creates all intermediate entities (codepoint, grapheme_cluster) and sequence relationships.
-    /// Returns the word_form <see cref="EntityHandle"/> and its Merkle hash.
-    /// <para>
-    /// Every decomposer that needs a word_form entity calls this single method. UAX #29 grapheme
-    /// cluster segmentation ensures that combining characters (accents, Devanagari conjuncts, emoji
-    /// sequences) are grouped correctly. Same surface form from any decomposer produces the same
-    /// Merkle hash → one entity.
-    /// </para>
+    /// Builds a word_form entity as a Merkle DAG: codepoints → grapheme_clusters → word_form,
+    /// emitting recursive child-centroid trajectories at each tier per
+    /// <c>.claude/rules/25-physicality-4d.md § "Recursive centroid composition"</c>:
+    /// <list type="bullet">
+    ///   <item>codepoint atom → POINTZM at its <c>CodepointS3Position</c>; centroid = that point.</item>
+    ///   <item>grapheme_cluster (multi-codepoint) → LINESTRINGZM whose vertices are its
+    ///     constituent codepoint centroids in order; centroid = mean of those vertices.
+    ///     Single-codepoint graphemes ARE the codepoint and reuse its centroid.</item>
+    ///   <item>word_form → LINESTRINGZM whose vertices are grapheme_cluster centroids in
+    ///     order; centroid = mean of those vertices.</item>
+    /// </list>
+    /// The trajectory IS the geometry of the entity — Fréchet/Hausdorff queries hit
+    /// <c>substrate.physicality.geom</c> directly. Returning the centroid lets a parent
+    /// composition (text_composition, document, lemma) build its own trajectory through
+    /// THIS word_form's centroid as one of its vertices, without recomputing.
     /// </summary>
-    protected static (EntityHandle Handle, byte[] Hash) EmitWordFormMerkle(
-        IIngestionBatch batch,
-        string form,
-        string entityType = "word_form")
+    protected static (EntityHandle Handle, byte[] Hash, (double X, double Y, double Z, double M) Centroid)
+        EmitWordFormMerkle(
+            IIngestionBatch batch,
+            string form,
+            string entityType = "word_form")
     {
-        // Most words have ≤64 grapheme clusters and ≤4 codepoints per cluster.
-        // Rent pooled arrays to avoid per-call List allocations.
         const int InitialCapacity = 64;
 
         byte[][] gcHashBuf = ArrayPool<byte[]>.Shared.Rent(InitialCapacity);
         EntityHandle[] gcHandleBuf = ArrayPool<EntityHandle>.Shared.Rent(InitialCapacity);
+        (double X, double Y, double Z, double M)[] gcCentroidBuf =
+            ArrayPool<(double, double, double, double)>.Shared.Rent(InitialCapacity);
         int gcCount = 0;
 
         byte[][] cpHashBuf = ArrayPool<byte[]>.Shared.Rent(8);
         EntityHandle[] cpHandleBuf = ArrayPool<EntityHandle>.Shared.Rent(8);
+        (double X, double Y, double Z, double M)[] cpCentroidBuf =
+            ArrayPool<(double, double, double, double)>.Shared.Rent(8);
 
         try
         {
@@ -156,7 +165,6 @@ public abstract partial class BaseDecomposer : IDecomposer
             {
                 string gc = tee.GetTextElement();
 
-                // Codepoints within this grapheme cluster.
                 int cpCount = 0;
                 foreach (Rune rune in gc.EnumerateRunes())
                 {
@@ -164,53 +172,108 @@ public abstract partial class BaseDecomposer : IDecomposer
                     {
                         GrowPooledArray(ref cpHashBuf, cpCount);
                         GrowPooledArray(ref cpHandleBuf, cpCount);
+                        GrowPooledArray(ref cpCentroidBuf, cpCount);
                     }
                     byte[] cpHash = HashCodepoint(rune.Value);
                     EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
+                    (double cx, double cy, double cz, double cm) =
+                        PhysicalityEmitter.CodepointS3Position(rune.Value);
+                    // Codepoint atom: POINTZM at its S³ position. Centroid = the point.
+                    batch.AddPhysicalityPoint4d(cpHandle, "s3_position", cx, cy, cz, cm);
                     cpHashBuf[cpCount] = cpHash;
                     cpHandleBuf[cpCount] = cpHandle;
+                    cpCentroidBuf[cpCount] = (cx, cy, cz, cm);
                     cpCount++;
                 }
 
-                // Grapheme cluster = Merkle(codepoint hashes).
                 byte[] gcHash = ComputeMerkleHash(cpHashBuf.AsSpan(0, cpCount));
                 EntityHandle gcHandle = batch.AddEntity(gcHash, "grapheme_cluster");
 
-                // Sequence: grapheme_cluster → codepoints in order.
-                for (int i = 0; i < cpCount; i++)
+                (double X, double Y, double Z, double M) gcCentroid;
+                if (cpCount == 1)
                 {
-                    batch.AddSequence(gcHandle, cpHandleBuf[i], i, 1);
+                    // Single-codepoint grapheme is the codepoint geometrically.
+                    gcCentroid = cpCentroidBuf[0];
+                }
+                else
+                {
+                    // grapheme_cluster trajectory = LINESTRINGZM through codepoint centroids.
+                    (double, double, double, double)[] verts =
+                        new (double, double, double, double)[cpCount];
+                    Array.Copy(cpCentroidBuf, verts, cpCount);
+                    batch.AddPhysicalityLineString4d(gcHandle, "contour", verts.AsSpan());
+                    gcCentroid = MeanCentroid(verts.AsSpan());
                 }
 
                 if (gcCount >= gcHashBuf.Length)
                 {
                     GrowPooledArray(ref gcHashBuf, gcCount);
                     GrowPooledArray(ref gcHandleBuf, gcCount);
+                    GrowPooledArray(ref gcCentroidBuf, gcCount);
                 }
                 gcHashBuf[gcCount] = gcHash;
                 gcHandleBuf[gcCount] = gcHandle;
+                gcCentroidBuf[gcCount] = gcCentroid;
                 gcCount++;
             }
 
-            // Word form = Merkle(grapheme cluster hashes).
             byte[] wfHash = ComputeMerkleHash(gcHashBuf.AsSpan(0, gcCount));
             EntityHandle wfHandle = batch.AddEntity(wfHash, entityType);
 
-            // Sequence: word_form → grapheme clusters in order.
-            for (int i = 0; i < gcCount; i++)
+            (double X, double Y, double Z, double M) wfCentroid;
+            if (gcCount == 1)
             {
-                batch.AddSequence(wfHandle, gcHandleBuf[i], i, 1);
+                wfCentroid = gcCentroidBuf[0];
+            }
+            else
+            {
+                (double, double, double, double)[] verts =
+                    new (double, double, double, double)[gcCount];
+                Array.Copy(gcCentroidBuf, verts, gcCount);
+                // word_form trajectory = LINESTRINGZM through grapheme_cluster centroids.
+                batch.AddPhysicalityLineString4d(wfHandle, "contour", verts.AsSpan());
+                wfCentroid = MeanCentroid(verts.AsSpan());
             }
 
-            return (wfHandle, wfHash);
+            return (wfHandle, wfHash, wfCentroid);
         }
         finally
         {
             ArrayPool<byte[]>.Shared.Return(gcHashBuf);
             ArrayPool<EntityHandle>.Shared.Return(gcHandleBuf);
+            ArrayPool<(double, double, double, double)>.Shared.Return(gcCentroidBuf);
             ArrayPool<byte[]>.Shared.Return(cpHashBuf);
             ArrayPool<EntityHandle>.Shared.Return(cpHandleBuf);
+            ArrayPool<(double, double, double, double)>.Shared.Return(cpCentroidBuf);
         }
+    }
+
+    /// <summary>
+    /// 4D arithmetic mean of an ordered vertex span — the recursive-centroid law
+    /// from <c>.claude/rules/25-physicality-4d.md</c>. Routes through the native
+    /// <c>hartonomous_centroid_4d</c> primitive via <see cref="S3Geometry.Mean4d"/>
+    /// per <c>.claude/rules/30-native-and-determinism.md</c> (no C# duplication
+    /// of numerical primitives — keeps reductions cross-platform deterministic).
+    /// </summary>
+    public static (double X, double Y, double Z, double M) MeanCentroid(
+        ReadOnlySpan<(double X, double Y, double Z, double M)> vertices)
+    {
+        if (vertices.Length == 0)
+        {
+            throw new ArgumentException("MeanCentroid requires at least one vertex.", nameof(vertices));
+        }
+        // Pack 4D tuples into the contiguous double[] layout the native call expects.
+        double[] flat = new double[vertices.Length * 4];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            flat[i * 4 + 0] = vertices[i].X;
+            flat[i * 4 + 1] = vertices[i].Y;
+            flat[i * 4 + 2] = vertices[i].Z;
+            flat[i * 4 + 3] = vertices[i].M;
+        }
+        Span<double> result = stackalloc double[4];
+        S3Geometry.Mean4d(flat, vertices.Length, result);
+        return (result[0], result[1], result[2], result[3]);
     }
 
     /// <summary>
@@ -225,33 +288,25 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     /// <summary>
-    /// Emit physicality geometry for a surface-form string. For ≥2 codepoints
-    /// the entity gets a <c>contour</c> physicality typed as a substrate-native
-    /// 4D linestring through each codepoint's S³ position. For a single
-    /// codepoint the entity gets an <c>s3_position</c> physicality typed as a
-    /// substrate-native 4D point. Empty strings emit nothing. This is the
-    /// single authoritative contour-physicality path; every decomposer calls
-    /// it, none reimplement it.
+    /// DELETED: emitting a contour through an entity's raw codepoints is wrong
+    /// at every tier above codepoint. A word_form's geometry is a LINESTRINGZM
+    /// through its <em>grapheme_cluster centroids</em>; a sentence's geometry is
+    /// through its <em>word_form centroids</em>; a document's geometry is through
+    /// its <em>text_composition centroids</em> — the recursive-centroid law
+    /// from <c>.claude/rules/25-physicality-4d.md</c>. The proper emission path
+    /// runs inside <see cref="EmitWordFormMerkle"/>, <see cref="EmitLemmaMaybeCompound"/>,
+    /// <see cref="EmitLexicalizedCompound"/>, and (for sentence/paragraph/document
+    /// tiers) inside the text decomposer's composition pass. Decomposers MUST NOT
+    /// emit contour physicality on higher-tier entities themselves.
+    ///
+    /// This stub remains so old callers fail loudly during the migration. Remove
+    /// the call; rely on the structured emission methods to populate physicality
+    /// at every tier.
     /// </summary>
+    [Obsolete("Use EmitWordFormMerkle / EmitLemmaMaybeCompound / EmitLexicalizedCompound — they emit recursive child-centroid trajectories at every tier. Sentence and document tiers are handled inside the text decomposer's composition pass.", error: true)]
     public static void EmitContourPhysicality(IIngestionBatch batch, EntityHandle entity, string surfaceForm)
-    {
-        List<(double X, double Y, double Z, double M)> vertices =
-            PhysicalityEmitter.SurfaceFormVertices(surfaceForm);
-        if (vertices.Count >= 2)
-        {
-            (double, double, double, double)[] arr = new (double, double, double, double)[vertices.Count];
-            for (int i = 0; i < vertices.Count; i++)
-            {
-                arr[i] = vertices[i];
-            }
-            batch.AddPhysicalityLineString4d(entity, "contour", arr.AsSpan());
-        }
-        else if (vertices.Count == 1)
-        {
-            (double x, double y, double z, double m) = vertices[0];
-            batch.AddPhysicalityPoint4d(entity, "s3_position", x, y, z, m);
-        }
-    }
+        => throw new InvalidOperationException(
+            "EmitContourPhysicality removed. Use the recursive child-centroid emission path.");
 
     /// <summary>
     /// Emit a character sequence for a surface-form string. For each Rune in <paramref name="surfaceForm"/>
@@ -271,7 +326,6 @@ public abstract partial class BaseDecomposer : IDecomposer
         {
             byte[] cpHash = HashCodepoint(rune.Value);
             EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
-            batch.AddSequence(entity, cpHandle, position, 1);
             position++;
         }
     }
@@ -290,26 +344,21 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// dropped (e.g. leading or trailing separators).
     /// </para>
     /// </summary>
-    protected static (EntityHandle Handle, byte[] Hash) EmitLemmaMaybeCompound(
-        IIngestionBatch batch,
-        string surfaceForm,
-        string provenanceCode)
+    protected static (EntityHandle Handle, byte[] Hash, (double X, double Y, double Z, double M) Centroid)
+        EmitLemmaMaybeCompound(
+            IIngestionBatch batch,
+            string surfaceForm,
+            string provenanceCode)
     {
-        // Fast path: no separator → simple monolexical lemma.
         if (surfaceForm.IndexOf('_') < 0 && surfaceForm.IndexOf(' ') < 0)
         {
             return EmitWordFormMerkle(batch, surfaceForm, "lemma");
         }
-
-        // Split and drop empty parts. If after dropping there is ≤1 non-empty part,
-        // fall back to monolexical (the separators are still preserved in the
-        // whole-form Merkle hash because EmitWordFormMerkle hashes them as codepoints).
         string[] rawParts = surfaceForm.Split(['_', ' '], StringSplitOptions.RemoveEmptyEntries);
         if (rawParts.Length < 2)
         {
             return EmitWordFormMerkle(batch, surfaceForm, "lemma");
         }
-
         return EmitLexicalizedCompound(batch, surfaceForm, rawParts, provenanceCode, "lemma");
     }
 
@@ -340,12 +389,13 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// <param name="provenanceCode">Provenance code for the lexicalized_compound edge.</param>
     /// <param name="wholeEntityType">Entity type of the whole (default "lemma").</param>
     /// <returns>The whole entity's handle and Merkle hash.</returns>
-    protected static (EntityHandle Handle, byte[] Hash) EmitLexicalizedCompound(
-        IIngestionBatch batch,
-        string surfaceForm,
-        IReadOnlyList<string> parts,
-        string provenanceCode,
-        string wholeEntityType = "lemma")
+    protected static (EntityHandle Handle, byte[] Hash, (double X, double Y, double Z, double M) Centroid)
+        EmitLexicalizedCompound(
+            IIngestionBatch batch,
+            string surfaceForm,
+            IReadOnlyList<string> parts,
+            string provenanceCode,
+            string wholeEntityType = "lemma")
     {
         if (parts.Count < 2)
         {
@@ -354,19 +404,20 @@ public abstract partial class BaseDecomposer : IDecomposer
                 nameof(parts));
         }
 
-        (EntityHandle wholeHandle, byte[] wholeHash) =
+        (EntityHandle wholeHandle, byte[] wholeHash, (double X, double Y, double Z, double M) wholeCentroid) =
             EmitWordFormMerkle(batch, surfaceForm, wholeEntityType);
 
         EdgeMemberSpec[] members = new EdgeMemberSpec[parts.Count + 1];
-        members[0] = new EdgeMemberSpec(wholeHandle, null, "source", 0);
+        members[0] = new EdgeMemberSpec(wholeHandle, "source", 0);
         for (int i = 0; i < parts.Count; i++)
         {
-            (EntityHandle partHandle, _) = EmitWordFormMerkle(batch, parts[i], "word_form");
-            members[i + 1] = new EdgeMemberSpec(partHandle, null, "target", (short)(i + 1));
+            (EntityHandle partHandle, byte[] _, (double, double, double, double) _) =
+                EmitWordFormMerkle(batch, parts[i], "word_form");
+            members[i + 1] = new EdgeMemberSpec(partHandle, "target", (short)(i + 1));
         }
 
         batch.AddEdge("lexicalized_compound", provenanceCode, members.AsSpan());
-        return (wholeHandle, wholeHash);
+        return (wholeHandle, wholeHash, wholeCentroid);
     }
 
     /// <summary>

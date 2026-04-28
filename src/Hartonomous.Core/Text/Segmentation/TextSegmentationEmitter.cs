@@ -113,7 +113,6 @@ public static class TextSegmentationEmitter
                 batch.AddSignificance(gcEntity, "source_authority", trustMu);
                 for (int i = 0; i < cpSequence.Length; i++)
                 {
-                    batch.AddSequence(gcEntity, cpSequence[i], i, 1);
                 }
                 gcHandlesByHash[gcHash] = gcEntity;
             }
@@ -170,7 +169,6 @@ public static class TextSegmentationEmitter
                 batch.AddSignificance(wordEntity, "source_authority", trustMu);
                 for (int i = 0; i < childHandles.Count; i++)
                 {
-                    batch.AddSequence(wordEntity, childHandles[i], i, 1);
                 }
                 wordHandlesByHash[wordHash] = wordEntity;
             }
@@ -219,7 +217,6 @@ public static class TextSegmentationEmitter
         batch.AddSignificance(rootEntity, "source_authority", trustMu);
         for (int i = 0; i < textChildHandles.Count; i++)
         {
-            batch.AddSequence(rootEntity, textChildHandles[i], i, 1);
         }
         return (rootEntity, rootHash);
     }
@@ -347,7 +344,6 @@ public static class TextSegmentationEmitter
             batch.AddSignificance(spanEntity, "source_authority", trustMu);
             for (int i = 0; i < childHandles.Count; i++)
             {
-                batch.AddSequence(spanEntity, childHandles[i], i, 1);
             }
             rawSpanHandlesByHash[spanHash] = spanEntity;
         }

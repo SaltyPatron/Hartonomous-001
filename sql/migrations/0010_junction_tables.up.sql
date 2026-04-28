@@ -1,0 +1,20 @@
+-- Stage 0012: 8 junction tables (hash composite, FK enforcement at app layer
+-- per PG18.3 partitionwise-FK SEGV pattern documented on each table).
+--
+-- entity_sense REMOVED: was redundant with the has_sense edge (lemma → synset
+-- already captures the binding; per-arena Glicko ratings live on
+-- substrate.edge_significance for that edge). Dropping the junction also lets
+-- substrate.sense reference table be removed entirely (sense_keys were
+-- placement-bearing strings that don't belong as content identity).
+--
+-- entity_lexname ADDED: WordNet synsets get one lexname (lexicographer file
+-- classification, 45 bounded values). Polymorphic on entity_type so other
+-- senses-of-meaning entities can also bear lexnames if/when they appear.
+-- @include schema/tables/junctions/entity_pos.sql
+-- @include schema/tables/junctions/entity_lexname.sql
+-- @include schema/tables/junctions/entity_language.sql
+-- @include schema/tables/junctions/entity_morph_feature.sql
+-- @include schema/tables/junctions/codepoint_property.sql
+-- @include schema/tables/junctions/model_architecture_class.sql
+-- @include schema/tables/junctions/tensor_tensor_role.sql
+-- @include schema/tables/junctions/pattern_deprel.sql

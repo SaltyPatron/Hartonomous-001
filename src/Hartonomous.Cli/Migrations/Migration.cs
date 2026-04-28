@@ -1,7 +1,8 @@
 using System;
 using System.IO;
-using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Cli.Migrations;
 
@@ -11,13 +12,17 @@ internal sealed record Migration(int Version, string Name, string UpPath, string
         @"^(?<version>\d{4})_(?<name>.+)\.(?<dir>up|down)\.sql$",
         RegexOptions.Compiled);
 
-    public string ReadUp() => File.ReadAllText(UpPath);
+    public string ReadUp() => MigrationFileLoader.LoadResolved(UpPath);
 
-    public string ReadDown() => File.ReadAllText(DownPath);
+    public string ReadDown() => MigrationFileLoader.LoadResolved(DownPath);
 
     public string UpChecksum()
     {
-        byte[] hash = SHA256.HashData(File.ReadAllBytes(UpPath));
+        // Checksum the EXPANDED content so changes to any included schema/* file
+        // trigger drift detection — without this, schema edits would silently
+        // diverge from applied substrate state. BLAKE3 is the substrate's only
+        // hash function; SHA-256 has no business being in this codebase.
+        byte[] hash = Blake3.Hash(Encoding.UTF8.GetBytes(ReadUp()));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 

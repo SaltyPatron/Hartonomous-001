@@ -103,8 +103,8 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
 
             session.Batch.AddEdge(edgeCode, context.ProvenanceCode,
             [
-                new EdgeMemberSpec(session.ModelEntity, null, "source", 0),
-                new EdgeMemberSpec(result.DocumentHandle, null, "target", 1),
+                new EdgeMemberSpec(session.ModelEntity, "source", 0),
+                new EdgeMemberSpec(result.DocumentHandle, "target", 1),
             ]);
 
             artifactsIngested++;

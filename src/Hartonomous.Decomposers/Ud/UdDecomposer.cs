@@ -240,22 +240,20 @@ public sealed partial class UdDecomposer : BaseDecomposer
             tokenIdIndex[tok.Id] = ti;
 
             // Word form entity: Merkle DAG (codepoints → grapheme_clusters → word_form).
-            (EntityHandle wfHandle, byte[] wfHash) = EmitWordFormMerkle(batch, tok.Form);
-            EmitContourPhysicality(batch, wfHandle, tok.Form);
+            // EmitWordFormMerkle emits the recursive child-centroid trajectory at
+            // every tier (codepoint POINTZM, grapheme_cluster LINESTRINGZM through
+            // codepoint centroids, word_form LINESTRINGZM through grapheme centroids).
+            (EntityHandle wfHandle, byte[] wfHash, _) = EmitWordFormMerkle(batch, tok.Form);
             entityCount++;
 
             // ud_token entity: same Merkle hash as word_form, different entity type.
-            // Same content = same hash. ud_token is the syntactic role; word_form is the morphological form.
+            // Same content = same hash. ud_token is the syntactic role; word_form
+            // is the morphological form. The word_form physicality row already
+            // carries the trajectory; ud_token reuses it via the shared hash.
             EntityHandle tokEntity = batch.AddEntity(wfHash, "ud_token");
             tokenHandles[ti] = tokEntity;
             tokenHashes[ti] = wfHash;
             batch.AddSignificance(tokEntity, "source_authority", TrustPriorMu);
-            // ud_token gets its own contour physicality row. Physicality is
-            // keyed by entity_id (not just hash); without this row, head→
-            // dependent edges (the bulk of UD's edge volume) have no
-            // resolvable endpoint geometry in substrate.entity_pointzm and
-            // therefore can never receive a trajectory.
-            EmitContourPhysicality(batch, tokEntity, tok.Form);
             entityCount++;
 
             // Lemma entity: Merkle hash (codepoints → grapheme clusters → lemma) for convergence
@@ -263,14 +261,13 @@ public sealed partial class UdDecomposer : BaseDecomposer
             if (tok.Lemma is not null && tok.Lemma.Length > 0)
             {
                 string lemmaForm = tok.Lemma;
-                (EntityHandle lemmaEntity, byte[] _) = EmitWordFormMerkle(batch, lemmaForm, "lemma");
-                EmitContourPhysicality(batch, lemmaEntity, lemmaForm);
+                (EntityHandle lemmaEntity, byte[] _, _) = EmitWordFormMerkle(batch, lemmaForm, "lemma");
                 entityCount++;
 
                 batch.AddEdge("has_lemma", subProvenance,
                 [
-                    new EdgeMemberSpec(wfHandle, null, "source", 0),
-                    new EdgeMemberSpec(lemmaEntity, null, "target", 1),
+                    new EdgeMemberSpec(wfHandle, "source", 0),
+                    new EdgeMemberSpec(lemmaEntity, "target", 1),
                 ]);
                 edgeCount++;
             }
@@ -313,11 +310,10 @@ public sealed partial class UdDecomposer : BaseDecomposer
             langWritten++;
         }
 
-        // Sequence: sentence → tokens in order.
-        for (int ti = 0; ti < tokenHandles.Length; ti++)
-        {
-            batch.AddSequence(sentEntity, tokenHandles[ti], ti, 1);
-        }
+        // Token order is encoded by the sentence's LINESTRINGZM physicality
+        // (sentVertices below) — vertex index = ud_token position. The
+        // sentence's Merkle hash also encodes order via the ordered list of
+        // child token hashes. No substrate.sequence row needed.
 
         if (sentVertices.Count >= 2)
         {
@@ -353,8 +349,8 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
             batch.AddEdge(tok.Deprel, subProvenance,
             [
-                new EdgeMemberSpec(tokenHandles[ti], null, "dependent", 0),
-                new EdgeMemberSpec(tokenHandles[headIdx], null, "head", 1),
+                new EdgeMemberSpec(tokenHandles[ti], "dependent", 0),
+                new EdgeMemberSpec(tokenHandles[headIdx], "head", 1),
             ]);
             edgeCount++;
         }

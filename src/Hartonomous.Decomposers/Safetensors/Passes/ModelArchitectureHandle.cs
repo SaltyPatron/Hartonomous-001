@@ -1,14 +1,16 @@
+using Hartonomous.Core.Ingestion;
+
 namespace Hartonomous.Decomposers.Safetensors.Passes;
 
 /// <summary>
-/// The per-model <c>model_architecture</c> entity, already created and persisted
-/// by the orchestrator's pre-pass setup. Carries the architecture content hash
-/// and the resolved entity_id so passes can attach edges via
-/// <see cref="Hartonomous.Core.Ingestion.EdgeMemberSpec"/> with
-/// <c>ExistingEntityId</c> set rather than re-creating the entity in their batch.
+/// The per-model <c>model_architecture</c> entity, already created and
+/// persisted by the orchestrator's pre-pass setup. Carries the architecture
+/// content hash and the substrate <see cref="EntityHandle"/> (hash + type
+/// code) so passes can attach edges by referencing the architecture as a
+/// regular EdgeMemberSpec — no surrogate id, no cross-batch resolve.
 /// </summary>
 public sealed record ModelArchitectureHandle(
     ModelArchitecture Architecture,
     int ArchitectureClassId,
     byte[] ContentHash,
-    long EntityId);
+    EntityHandle Entity);

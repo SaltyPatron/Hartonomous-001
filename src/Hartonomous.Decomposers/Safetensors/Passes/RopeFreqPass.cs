@@ -87,8 +87,8 @@ internal sealed partial class RopeFreqPass : IModelAnalysisPass
 
             session.Batch.AddEdge("has_rope_freqs", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(freq, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(freq, "target", 1),
             ]);
 
             processed++;

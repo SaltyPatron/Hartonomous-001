@@ -4,33 +4,36 @@ using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Engine.Ingestion;
 
+/// <summary>
+/// In-memory accumulator for one ingestion transaction. Pure value carrier:
+/// every Add* call captures the spec; the pipeline reads the typed lists at
+/// flush and emits COPY-stream rows. There is no RemapHandle, no
+/// ResolveHandle, no _handleToEntityId dictionary in the hash-as-PK
+/// substrate — handles are foreign keys, written directly.
+/// </summary>
 internal sealed class IngestionBatch : IIngestionBatch
 {
     private readonly List<EntityEntry> _entities = [];
     private readonly List<EdgeEntry> _edges = [];
     private readonly List<JunctionEntry> _junctions = [];
     private readonly List<PhysicalityEntry> _physicalities = [];
-    private readonly List<SequenceEntry> _sequences = [];
     private readonly List<SignificanceEntry> _significances = [];
     private readonly List<EntityModelSourceEntry> _entityModelSources = [];
-    private readonly Dictionary<int, long> _handleToEntityId = [];
 
     public int EntityCount => _entities.Count;
     public int EdgeCount => _edges.Count;
 
-    public IReadOnlyList<EntityEntry> Entities => _entities;
-    public IReadOnlyList<EdgeEntry> Edges => _edges;
-    public IReadOnlyList<JunctionEntry> Junctions => _junctions;
-    public IReadOnlyList<PhysicalityEntry> Physicalities => _physicalities;
-    public IReadOnlyList<SequenceEntry> Sequences => _sequences;
-    public IReadOnlyList<SignificanceEntry> Significances => _significances;
-    public IReadOnlyList<EntityModelSourceEntry> EntityModelSources => _entityModelSources;
+    public IReadOnlyList<EntityEntry>            Entities            => _entities;
+    public IReadOnlyList<EdgeEntry>              Edges               => _edges;
+    public IReadOnlyList<JunctionEntry>          Junctions           => _junctions;
+    public IReadOnlyList<PhysicalityEntry>       Physicalities       => _physicalities;
+    public IReadOnlyList<SignificanceEntry>      Significances       => _significances;
+    public IReadOnlyList<EntityModelSourceEntry> EntityModelSources  => _entityModelSources;
 
     public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
     {
-        int index = _entities.Count;
         _entities.Add(new EntityEntry(hash, entityTypeCode));
-        return new EntityHandle(index);
+        return new EntityHandle(hash, entityTypeCode);
     }
 
     public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
@@ -51,15 +54,8 @@ internal sealed class IngestionBatch : IIngestionBatch
     public void AddPhysicalityPoint4d(
         EntityHandle entity,
         string physicalityTypeCode,
-        double x1,
-        double x2,
-        double x3,
-        double x4)
+        double x1, double x2, double x3, double x4)
     {
-        // 4D physicality stored as PostGIS POINTZM (X, Y, Z, M).
-        // The substrate's `substrate.st_4d_*` family treats M as a real
-        // spatial axis; PostGIS's `gist_geometry_ops_nd` indexes all four
-        // coordinates in the GIDX bounding box.
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
@@ -82,16 +78,6 @@ internal sealed class IngestionBatch : IIngestionBatch
             PostGisWkbBuilder.LineStringZM(vertices)));
     }
 
-    public void AddSequence(EntityHandle parent, EntityHandle child, int position, int count = 1)
-    {
-        _sequences.Add(new SequenceEntry(parent, child, position, count));
-    }
-
-    public void AddSequence(long parentEntityId, EntityHandle child, int position, int count = 1)
-    {
-        _sequences.Add(new SequenceEntry(parentEntityId, child, position, count));
-    }
-
     public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu)
     {
         _significances.Add(new SignificanceEntry(entity, contextTypeCode, initialMu));
@@ -100,37 +86,5 @@ internal sealed class IngestionBatch : IIngestionBatch
     public void AddEntityModelSource(EntityHandle entity, long modelSourceId)
     {
         _entityModelSources.Add(new EntityModelSourceEntry(entity, modelSourceId));
-    }
-
-    public void RemapHandle(int batchIndex, long entityId)
-    {
-        _handleToEntityId[batchIndex] = entityId;
-    }
-
-    public long ResolveHandle(EntityHandle handle)
-    {
-        if (_handleToEntityId.TryGetValue(handle.BatchIndex, out long id))
-        {
-            return id;
-        }
-        throw new InvalidOperationException($"EntityHandle {handle.BatchIndex} has not been remapped to a real entity ID.");
-    }
-
-    public long ResolveHandleOrExisting(EntityHandle? handle, long? existingId)
-    {
-        if (existingId.HasValue)
-        {
-            return existingId.Value;
-        }
-        if (handle.HasValue)
-        {
-            return ResolveHandle(handle.Value);
-        }
-        throw new InvalidOperationException("Edge member must have either a Handle or an ExistingEntityId.");
-    }
-
-    public byte[] GetEntityHash(int batchIndex)
-    {
-        return _entities[batchIndex].Hash;
     }
 }

@@ -94,8 +94,8 @@ internal sealed partial class WeightDistributionPass : IModelAnalysisPass
             session.Batch.AddEntityModelSource(dist, context.Source.ModelSourceId);
             session.Batch.AddEdge("has_weight_distribution", context.ProvenanceCode,
             [
-                new EdgeMemberSpec(null, t.EntityId, "source", 0),
-                new EdgeMemberSpec(dist, null, "target", 1),
+                new EdgeMemberSpec(t.Entity, "source", 0),
+                new EdgeMemberSpec(dist, "target", 1),
             ]);
 
             Log.TensorDistributed(_logger, tensorOrdinal, t.Info.Name, mean, std, skew, kurtosis);

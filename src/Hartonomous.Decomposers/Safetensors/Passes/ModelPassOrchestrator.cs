@@ -160,8 +160,8 @@ internal sealed partial class ModelPassOrchestrator
                     batch, archNameBytes, _codepointProperties, ModelDerivedTrustMu, _logger, ct);
                 batch.AddEdge("has_architecture_name", _provenanceCode,
                 [
-                    new EdgeMemberSpec(modelEntity, null, "source", 0),
-                    new EdgeMemberSpec(archNameResult.DocumentHandle, null, "target", 1),
+                    new EdgeMemberSpec(modelEntity, "source", 0),
+                    new EdgeMemberSpec(archNameResult.DocumentHandle, "target", 1),
                 ]);
             }
         }
@@ -173,9 +173,10 @@ internal sealed partial class ModelPassOrchestrator
         }
         Log.TensorsFound(_logger, rawTensors.Count, model.SafetensorsFiles.Count);
 
-        // Hash + classify each tensor; queue the (info, hash, classification) triples
-        // so we can resolve their entity_ids in one shot after the bootstrap batches commit.
-        List<(SafetensorsTensorInfo Info, TensorClassification Classification, byte[] Hash)> staged = [];
+        // Hash + classify each tensor. We track the EntityHandle returned by
+        // batch.AddEntity directly — no cross-batch resolve, since the hash
+        // IS the substrate FK.
+        List<(SafetensorsTensorInfo Info, TensorClassification Classification, byte[] Hash, EntityHandle Entity)> staged = [];
         int tensorIdx = 0;
         foreach (SafetensorsTensorInfo tensor in rawTensors)
         {
@@ -201,8 +202,8 @@ internal sealed partial class ModelPassOrchestrator
             }
             batch.AddEdge("has_tensor", _provenanceCode,
             [
-                new EdgeMemberSpec(modelEntity, null, "source", 0),
-                new EdgeMemberSpec(tensorH, null, "target", 1),
+                new EdgeMemberSpec(modelEntity, "source", 0),
+                new EdgeMemberSpec(tensorH, "target", 1),
             ]);
 
             // Tensor name + dtype + shape as substrate documents (seed-uses-core).
@@ -214,7 +215,7 @@ internal sealed partial class ModelPassOrchestrator
             {
                 EmitTensorMetadataDocuments(batch, tensorH, tensor, ct);
             }
-            staged.Add((tensor, cls, tensorHash));
+            staged.Add((tensor, cls, tensorHash, tensorH));
 
             if (batch.EntityCount >= _batchSize || batch.EdgeCount >= _batchSize)
             {
@@ -230,21 +231,15 @@ internal sealed partial class ModelPassOrchestrator
             await _pipeline.SubmitBatchAsync(batch, ct);
         }
 
-        List<byte[]> hashesToResolve = new(staged.Count + 1) { archHash };
-        foreach (var s in staged)
-        {
-            hashesToResolve.Add(s.Hash);
-        }
-        IReadOnlyDictionary<byte[], long> idMap = await _pipeline.ResolveEntityIdsAsync(hashesToResolve, ct);
-
-        long modelEntityId = LookupId(idMap, archHash, "model_architecture");
-        ModelArchitectureHandle archHandle = new(arch, archClassId, archHash, modelEntityId);
+        // Construct handles directly from the EntityHandles we already captured
+        // when emitting entities. No resolve, no LookupId — hash is the FK.
+        ModelArchitectureHandle archHandle = new(arch, archClassId, archHash,
+            new EntityHandle(archHash, "model_architecture"));
 
         List<TensorHandle> tensorHandles = new(staged.Count);
         foreach (var s in staged)
         {
-            long id = LookupId(idMap, s.Hash, $"tensor:{s.Info.Name}");
-            tensorHandles.Add(new TensorHandle(s.Info, s.Classification, s.Hash, id));
+            tensorHandles.Add(new TensorHandle(s.Info, s.Classification, s.Hash, s.Entity));
         }
 
         ModelSourceHandle sourceHandle = new(
@@ -262,15 +257,7 @@ internal sealed partial class ModelPassOrchestrator
             ProvenanceCode: _provenanceCode);
     }
 
-    private static long LookupId(IReadOnlyDictionary<byte[], long> map, byte[] hash, string label)
-    {
-        if (map.TryGetValue(hash, out long id))
-        {
-            return id;
-        }
-        throw new InvalidOperationException(
-            $"Bootstrap could not resolve substrate entity_id for {label} (hash {Convert.ToHexString(hash)}).");
-    }
+    // LookupId removed — hash-as-PK substrate eliminates surrogate-id resolution.
 
     /// <summary>
     /// Topological sort over <see cref="IModelAnalysisPass.Dependencies"/>, filtered
@@ -416,8 +403,8 @@ internal sealed partial class ModelPassOrchestrator
             batch, bytes, _codepointProperties, ModelDerivedTrustMu, _logger, ct);
         batch.AddEdge(edgeCode, _provenanceCode,
         [
-            new EdgeMemberSpec(source, null, "source", 0),
-            new EdgeMemberSpec(result.DocumentHandle, null, "target", 1),
+            new EdgeMemberSpec(source, "source", 0),
+            new EdgeMemberSpec(result.DocumentHandle, "target", 1),
         ]);
     }
 

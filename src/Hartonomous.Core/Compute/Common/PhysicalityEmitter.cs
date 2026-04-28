@@ -15,7 +15,9 @@ namespace Hartonomous.Core.Compute.Common;
 /// through those positions in surface-form order; callers feed the vertex list to
 /// <see cref="Hartonomous.Core.Ingestion.IIngestionBatch.AddPhysicalityLineString4d"/> for ≥2 vertices
 /// or <see cref="Hartonomous.Core.Ingestion.IIngestionBatch.AddPhysicalityPoint4d"/> for a single vertex.
-/// No PostGIS WKB is produced — the substrate-native point4d / linestring4d types own all 4D physicality.
+/// The pipeline encodes those vertices as PostGIS WKB POINTZM / LINESTRINGZM at batch
+/// flush; substrate.physicality.geom is geometry(GeometryZM) and the per-partition
+/// CHECK constraints (sql/schema/tables/core/physicality_*.sql) enforce the dimensionality.
 /// </summary>
 public static class PhysicalityEmitter
 {
