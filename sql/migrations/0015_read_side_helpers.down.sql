@@ -1,3 +1,7 @@
+-- Note: substrate.populate_edge_trajectories(INT) is restored to its stub
+-- form by re-running migration 0013's @include (out of scope for this down).
+-- Drop entity_centroid_4d here — it was added in 0015.
+DROP FUNCTION IF EXISTS substrate.entity_centroid_4d(INT, BYTEA);
 DROP FUNCTION IF EXISTS substrate.entity_neighbors(INT, BYTEA, TEXT);
 DROP FUNCTION IF EXISTS substrate.backfill_edge_significance_for_arena(TEXT);
 DROP FUNCTION IF EXISTS substrate.prime_edge_significance_for_staging();

@@ -45,6 +45,16 @@ public sealed partial class TextDecomposer : BaseDecomposer
     public override string DisplayName => "Text Decomposer";
     public override IReadOnlyList<Phase> Phases => [Phase.TextDecomp];
 
+    /// <summary>
+    /// Composite handle of the last document this decomposer ingested. Set
+    /// by <see cref="DecomposeCoreAsync"/> after a successful decomposition.
+    /// Hash-as-PK addressing — integration tests read this to obtain the
+    /// composite (entity_type_code, entity_hash) reference for downstream
+    /// recompose / lookup, rather than scanning substrate.entity for a
+    /// "most recent" surrogate id (which doesn't exist in the new schema).
+    /// </summary>
+    public EntityHandle? LastDocumentHandle { get; private set; }
+
     public TextDecomposer(
         DecomposerConfig config,
         ILogger<TextDecomposer> logger,
@@ -71,6 +81,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
         IIngestionBatch batch = pipeline.CreateBatch();
         TextIngestionResult result = IngestUtf8DocumentIntoBatch(
             batch, utf8Bytes, _codepointProperties, SessionTrustMu, Logger, ct);
+        LastDocumentHandle = result.DocumentHandle;
 
         if (batch.EntityCount > 0 || batch.EdgeCount > 0)
         {

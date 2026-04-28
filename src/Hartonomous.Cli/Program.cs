@@ -61,7 +61,84 @@ internal static class Program
         Command compareModel = BuildCompareModelCommand();
         root.AddCommand(compareModel);
 
+        Command health = BuildHealthCommand();
+        root.AddCommand(health);
+
         return await root.InvokeAsync(args);
+    }
+
+    private static Command BuildHealthCommand()
+    {
+        Option<string> connOpt = new(
+            aliases: ConnAliases,
+            getDefaultValue: DefaultConnectionString,
+            description: "Npgsql connection string.");
+
+        Command health = new("health",
+            "One-call substrate state probe via substrate.health_summary(). " +
+            "Counts every entity / edge / physicality / significance row by " +
+            "type code, mean μ per arena, and database storage size. " +
+            "Hash-as-PK aware — works against the post-0015 schema.");
+        health.AddOption(connOpt);
+        health.SetHandler(async (string conn) =>
+        {
+            await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
+            await using Npgsql.NpgsqlConnection c = await ds.OpenConnectionAsync(CancellationToken.None);
+            await using Npgsql.NpgsqlCommand cmd = new("SELECT substrate.health_summary()", c);
+            object? result = await cmd.ExecuteScalarAsync(CancellationToken.None);
+            if (result is null or DBNull)
+            {
+                Console.Error.WriteLine("substrate.health_summary() returned NULL.");
+                return;
+            }
+
+            string json = result.ToString() ?? "{}";
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json);
+            System.Text.Json.JsonElement root = doc.RootElement;
+
+            Console.WriteLine("=== Substrate Health ===");
+            Console.WriteLine($"  Total entities:      {root.GetProperty("totalEntities").GetInt64():N0}");
+            Console.WriteLine($"  Total edges:         {root.GetProperty("totalEdges").GetInt64():N0}");
+            Console.WriteLine($"  Total edge members:  {root.GetProperty("totalEdgeMembers").GetInt64():N0}");
+            Console.WriteLine($"  Total physicalities: {root.GetProperty("totalPhysicalities").GetInt64():N0}");
+            Console.WriteLine($"  Entity significance: {root.GetProperty("totalEntitySig").GetInt64():N0}");
+            Console.WriteLine($"  Edge significance:   {root.GetProperty("totalEdgeSig").GetInt64():N0}");
+            Console.WriteLine($"  Storage:             {root.GetProperty("storageSizeBytes").GetInt64():N0} bytes");
+
+            PrintObject(root, "entitiesByType", "Entities by type");
+            PrintObject(root, "edgesByType", "Edges by type");
+            PrintObject(root, "entityMeanMuByArena", "Entity mean μ by arena");
+            PrintObject(root, "edgeMeanMuByArena", "Edge mean μ by arena");
+        }, connOpt);
+
+        return health;
+    }
+
+    private static void PrintObject(System.Text.Json.JsonElement root, string property, string title)
+    {
+        if (!root.TryGetProperty(property, out System.Text.Json.JsonElement obj))
+        {
+            return;
+        }
+        if (obj.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return;
+        }
+        Console.WriteLine();
+        Console.WriteLine($"=== {title} ===");
+        bool any = false;
+        foreach (System.Text.Json.JsonProperty p in obj.EnumerateObject())
+        {
+            string val = p.Value.ValueKind == System.Text.Json.JsonValueKind.Number
+                ? p.Value.ToString()
+                : p.Value.ToString();
+            Console.WriteLine($"  {p.Name,-30} {val}");
+            any = true;
+        }
+        if (!any)
+        {
+            Console.WriteLine("  (none)");
+        }
     }
 
     private static Command BuildCompareModelCommand()

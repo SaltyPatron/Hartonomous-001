@@ -53,3 +53,5 @@
 -- @include schema/functions/recompose_text.sql
 -- @include schema/functions/prime_edge_significance.sql
 -- @include schema/functions/entity_neighbors.sql
+-- @include schema/functions/entity_centroid_4d.sql
+-- @include schema/functions/populate_edge_trajectories_v2.sql
