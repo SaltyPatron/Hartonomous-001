@@ -1,8 +1,13 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using Hartonomous.Core.Analysis;
 using Hartonomous.Core.Data;
+using Hartonomous.Core.Engine;
+using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Recomposition;
 
 namespace Hartonomous.Recomposers;
@@ -12,24 +17,16 @@ namespace Hartonomous.Recomposers;
 /// tokenizer_config.json, special_tokens_map.json, merges.txt,
 /// chat_template.jinja, generation_config.json, README.md) from the substrate.
 ///
-/// Walks the typed structural edges emitted by <c>ModelTextArtifactsPass</c>
-/// during safetensors ingestion (migration 0041:
-/// <c>has_config_artifact</c>, <c>has_tokenizer_artifact</c>, etc.) from a
-/// model_architecture entity to its linked text_composition documents, then
-/// uses the substrate's <c>recompose_text</c> path (or the C# tree walker)
-/// to reconstitute exact original UTF-8 bytes.
+/// Walks the typed structural edges emitted by ModelTextArtifactsPass during
+/// safetensors ingestion (has_config_artifact, has_tokenizer_artifact, etc.)
+/// from a model_architecture entity to its linked text_composition documents,
+/// then uses the substrate's recompose_text path (or the C# tree walker) to
+/// reconstitute exact original UTF-8 bytes.
 ///
-/// The output serializes to a JSON object whose keys are the original artifact
-/// filenames; <see cref="RecomposeToStreamAsync"/> writes that JSON. The
-/// in-memory <see cref="ModelArtifactsPackage"/> is also surfaced via
-/// <see cref="RecomposeAsync"/> for callers (e.g. a SafetensorsRecomposer)
-/// that want each artifact addressable by name.
+/// Hash-as-PK throughout — addresses every entity by composite handle.
 /// </summary>
 public sealed class ModelArtifactsRecomposer : BaseRecomposer<ModelArtifactsPackage>
 {
-    // Edge code → property selector. Order matches the ingestion pass for
-    // determinism (Law #6: same substrate state + same recomposer version
-    // → same output bytes).
     private static readonly (string EdgeCode, string FileName)[] Artifacts =
     [
         ("has_config_artifact",             "config.json"),
@@ -49,15 +46,14 @@ public sealed class ModelArtifactsRecomposer : BaseRecomposer<ModelArtifactsPack
     public override Modality OutputModality => Modality.Text;
 
     public override async Task<ModelArtifactsPackage> RecomposeAsync(
-        long entityId, RecompositionOptions options, CancellationToken ct)
+        EntityHandle entity, RecompositionOptions options, CancellationToken ct)
     {
-        Dictionary<string, string?> byEdgeCode = new(Artifacts.Length, StringComparer.Ordinal);
+        Dictionary<string, string?> byEdgeCode = new(Artifacts.Length, System.StringComparer.Ordinal);
 
         foreach ((string edgeCode, string _) in Artifacts)
         {
             ct.ThrowIfCancellationRequested();
-            string? text = await RecomposeFirstArtifactAsync(
-                entityId, edgeCode, options, ct);
+            string? text = await RecomposeFirstArtifactAsync(entity, edgeCode, options, ct);
             byEdgeCode[edgeCode] = text;
         }
 
@@ -73,13 +69,10 @@ public sealed class ModelArtifactsRecomposer : BaseRecomposer<ModelArtifactsPack
     }
 
     public override async Task RecomposeToStreamAsync(
-        long entityId, RecompositionOptions options, Stream output, CancellationToken ct)
+        EntityHandle entity, RecompositionOptions options, Stream output, CancellationToken ct)
     {
-        ModelArtifactsPackage pkg = await RecomposeAsync(entityId, options, ct);
+        ModelArtifactsPackage pkg = await RecomposeAsync(entity, options, ct);
 
-        // Emit a stable JSON map: filename → recomposed text. Null artifacts
-        // are omitted so consumers can distinguish "shipped but empty" from
-        // "never shipped". UTF-8, no BOM, indented for readability.
         JsonWriterOptions writerOptions = new() { Indented = true, SkipValidation = false };
         await using Utf8JsonWriter writer = new(output, writerOptions);
         writer.WriteStartObject();
@@ -96,72 +89,62 @@ public sealed class ModelArtifactsRecomposer : BaseRecomposer<ModelArtifactsPack
     }
 
     private async Task<string?> RecomposeFirstArtifactAsync(
-        long modelEntityId, string edgeCode, RecompositionOptions options, CancellationToken ct)
+        EntityHandle modelEntity, string edgeCode, RecompositionOptions options, CancellationToken ct)
     {
-        IReadOnlyList<long> targets = await EntityReader.GetOutboundEdgeTargetsAsync(
-            modelEntityId, edgeCode, ct);
+        IReadOnlyList<EntityHandle> targets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            modelEntity, edgeCode, ct);
         if (targets.Count == 0)
         {
             return null;
         }
 
-        // The substrate enforces (hash, edge_type_id) uniqueness on edges, so
-        // multiple has_X_artifact edges from one model entity to one document
-        // entity collapse to one row. Multiple targets only happen if the model
-        // somehow shipped two distinct artifacts with the same edge type — take
-        // the first by edge id (stable order from the SQL).
-        long documentEntityId = targets[0];
+        EntityHandle documentEntity = targets[0];
 
         if (EntityReader is ITextRecompositionReader fastReader)
         {
             string? fastText = await fastReader.RecomposeTextAsync(
-                documentEntityId, options.MaxDepth, ct);
+                documentEntity, options.MaxDepth, ct);
             if (fastText is not null)
             {
                 return fastText;
             }
         }
 
-        // Fallback: walk the sequence DAG via the BaseRecomposer helpers.
-        // (TextRecomposer's logic, inlined here so this recomposer is
-        // self-contained and doesn't reach into the text-modality recomposer.)
         StringBuilder sb = new();
-        await WalkDepthFirstAsync(documentEntityId, options.MaxDepth, 0, sb, ct);
+        await WalkDepthFirstAsync(documentEntity, options.MaxDepth, 0, sb, ct);
         return sb.ToString();
     }
 
     private async Task WalkDepthFirstAsync(
-        long entityId, int maxDepth, int currentDepth, StringBuilder sb, CancellationToken ct)
+        EntityHandle entity, int maxDepth, int currentDepth, StringBuilder sb, CancellationToken ct)
     {
         if (currentDepth > maxDepth)
         {
             return;
         }
 
-        IReadOnlyDictionary<long, Hartonomous.Core.Engine.EntityInfo> info =
-            await GetEntityInfoAsync([entityId], ct);
-        if (!info.TryGetValue(entityId, out Hartonomous.Core.Engine.EntityInfo? entity))
+        IReadOnlyDictionary<EntityHandle, EntityInfo> info =
+            await GetEntityInfoAsync([entity], ct);
+        if (!info.TryGetValue(entity, out EntityInfo? entityInfo))
         {
             return;
         }
 
-        if (entity.ContentLabel is not null)
+        if (entityInfo.ContentLabel is not null)
         {
-            sb.Append(entity.ContentLabel);
+            sb.Append(entityInfo.ContentLabel);
             return;
         }
 
-        IReadOnlyList<(long ChildEntityId, int Position)> children =
-            await GetChildrenAsync(entityId, ct);
+        IReadOnlyList<(EntityHandle Child, int Position)> children = await GetChildrenAsync(entity, ct);
         if (children.Count == 0)
         {
             return;
         }
 
-        for (int i = 0; i < children.Count; i++)
+        foreach ((EntityHandle child, int _) in children)
         {
-            await WalkDepthFirstAsync(
-                children[i].ChildEntityId, maxDepth, currentDepth + 1, sb, ct);
+            await WalkDepthFirstAsync(child, maxDepth, currentDepth + 1, sb, ct);
         }
     }
 

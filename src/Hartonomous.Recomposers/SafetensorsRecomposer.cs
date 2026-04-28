@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Analysis;
 using Hartonomous.Core.Data;
+using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Query;
 using Hartonomous.Core.Recomposition;
 
@@ -12,30 +13,12 @@ namespace Hartonomous.Recomposers;
 
 /// <summary>
 /// Serializes substrate state into the safetensors wire format. NOT an AI
-/// operation — AI lives in substrate traversal (inference, generation,
-/// transformation via traverse_astar). This recomposer is a data export
-/// pipe: query the substrate, assemble per-tensor (dtype, shape, bytes),
-/// pack into the standard safetensors container via
-/// <see cref="SafetensorsWriter"/>.
+/// operation — AI lives in substrate traversal. This recomposer is a data
+/// export pipe: query the substrate, assemble per-tensor (dtype, shape, bytes),
+/// pack into the standard safetensors container via SafetensorsWriter.
 ///
-/// Per docs/specs/csharp/recomposers.md § "SafetensorsRecomposer" and
-/// docs/specs/decomposers/safetensors.md § "Distillation (Recomposer)":
-///   1. Walk <c>has_tensor</c> edges from the model_architecture entity
-///      to its tensor entities.
-///   2. Per tensor: read metadata edges (<c>has_tensor_name</c> for name,
-///      <c>has_dtype</c>, <c>has_shape</c>) — each targets a text_composition
-///      entity recomposed via the existing <see cref="ITextRecompositionReader"/>.
-///   3. Per tensor: assemble byte payload. Where the substrate has per-tensor
-///      content (bytes, edges, significance) the assembly fills in; where it
-///      has nothing the bytes stay zero (the spec's "below-threshold weights
-///      are zeros" sparsity outcome — Substrate Law #11).
-///   4. Pack into <see cref="SafetensorsFile"/>; <see cref="SafetensorsWriter"/>
-///      writes the binary container.
-///
-/// Output is structurally valid (correct dtype, shape, byte count, valid
-/// safetensors header) regardless of substrate density. As more substrate
-/// content accumulates (per-row / per-rank / per-head entities populated
-/// by Track-2 passes), the assembly fills more of each tensor.
+/// Hash-as-PK throughout: addresses every entity by composite EntityHandle.
+/// Per docs/specs/csharp/recomposers.md.
 /// </summary>
 public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
 {
@@ -56,91 +39,78 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
     }
 
     /// <summary>
-    /// Distilled export: pulls only the tensors matching <paramref name="filter"/>
-    /// (e.g. ModelSourceIds = Qwen-Coder model sources, MinSignificanceMu = 1500).
-    /// Same recompose pipeline as <see cref="RecomposeAsync(long, RecompositionOptions, CancellationToken)"/>;
-    /// only the tensor selection differs. Per architecture.md "Distillation = WHERE clause" —
-    /// distillation and export are the same operation parameterized by the query.
+    /// Distilled export: pulls only tensors matching <paramref name="filter"/>.
+    /// Per architecture.md "Distillation = WHERE clause".
     /// </summary>
     public async Task<SafetensorsFile> RecomposeFilteredAsync(
-        long modelArchitectureEntityId,
+        EntityHandle modelArchitecture,
         SubstrateQueryFilter filter,
         RecompositionOptions options,
         CancellationToken ct)
     {
-        IReadOnlyList<long> tensorEntityIds = _query is not null
-            ? await _query.QueryTensorsForArchitectureAsync(modelArchitectureEntityId, filter, ct)
-            : await EntityReader.GetOutboundEdgeTargetsAsync(modelArchitectureEntityId, "has_tensor", ct);
+        IReadOnlyList<EntityHandle> tensorHandles = _query is not null
+            ? await _query.QueryTensorsForArchitectureAsync(modelArchitecture, filter, ct)
+            : await EntityReader.GetOutboundEdgeTargetsAsync(modelArchitecture, "has_tensor", ct);
 
-        Dictionary<string, TensorData> tensors = new(tensorEntityIds.Count, StringComparer.Ordinal);
-        foreach (long tensorId in tensorEntityIds)
+        Dictionary<string, TensorData> tensors = new(tensorHandles.Count, StringComparer.Ordinal);
+        foreach (EntityHandle tensor in tensorHandles)
         {
             ct.ThrowIfCancellationRequested();
-            (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensorId, options, ct);
-            byte[] bytes = await AssembleTensorBytesAsync(tensorId, dtype, shape, ct);
+            (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensor, options, ct);
+            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, ct);
             tensors[name] = new TensorData(dtype, shape, bytes);
         }
 
-        string modelName = await ResolveModelNameAsync(modelArchitectureEntityId, options, ct);
+        string modelName = await ResolveModelNameAsync(modelArchitecture, options, ct);
         return new SafetensorsFile(tensors, modelName);
     }
 
     public override Modality OutputModality => Modality.ModelWeights;
 
     public override async Task<SafetensorsFile> RecomposeAsync(
-        long entityId,
+        EntityHandle entity,
         RecompositionOptions options,
         CancellationToken ct)
     {
-        // Walk has_tensor edges from the architecture to every tensor entity.
-        IReadOnlyList<long> tensorEntityIds = await EntityReader.GetOutboundEdgeTargetsAsync(
-            entityId, "has_tensor", ct);
+        IReadOnlyList<EntityHandle> tensorHandles = await EntityReader.GetOutboundEdgeTargetsAsync(
+            entity, "has_tensor", ct);
 
-        // Per-tensor: read metadata + assemble byte payload.
-        Dictionary<string, TensorData> tensors = new(tensorEntityIds.Count, StringComparer.Ordinal);
-        foreach (long tensorId in tensorEntityIds)
+        Dictionary<string, TensorData> tensors = new(tensorHandles.Count, StringComparer.Ordinal);
+        foreach (EntityHandle tensor in tensorHandles)
         {
             ct.ThrowIfCancellationRequested();
-            (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensorId, options, ct);
-            byte[] bytes = await AssembleTensorBytesAsync(tensorId, dtype, shape, ct);
+            (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensor, options, ct);
+            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, ct);
             tensors[name] = new TensorData(dtype, shape, bytes);
         }
 
-        string modelName = await ResolveModelNameAsync(entityId, options, ct);
+        string modelName = await ResolveModelNameAsync(entity, options, ct);
         return new SafetensorsFile(tensors, modelName);
     }
 
     public override async Task RecomposeToStreamAsync(
-        long entityId,
+        EntityHandle entity,
         RecompositionOptions options,
         Stream output,
         CancellationToken ct)
     {
-        SafetensorsFile file = await RecomposeAsync(entityId, options, ct);
+        SafetensorsFile file = await RecomposeAsync(entity, options, ct);
         await SafetensorsWriter.WriteAsync(file, output, ct);
     }
 
-    /// <summary>
-    /// Reads the three metadata edges (has_tensor_name, has_dtype, has_shape)
-    /// from a tensor entity and recomposes each target text document into
-    /// its string value via <see cref="ITextRecompositionReader"/>.
-    /// Falls back to deterministic placeholders when an edge or its target
-    /// text is absent — keeps the package structurally valid for sparse
-    /// substrate states.
-    /// </summary>
     private async Task<(string Name, string Dtype, int[] Shape)> ReadTensorMetadataAsync(
-        long tensorEntityId, RecompositionOptions options, CancellationToken ct)
+        EntityHandle tensor, RecompositionOptions options, CancellationToken ct)
     {
-        string name = $"tensor_{tensorEntityId}";
+        string name = $"tensor_{Convert.ToHexString(tensor.Hash)[..8].ToLowerInvariant()}";
         string dtype = "F32";
         int[] shape = [];
 
-        IReadOnlyList<long> nameTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
-            tensorEntityId, "has_tensor_name", ct);
-        IReadOnlyList<long> dtypeTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
-            tensorEntityId, "has_dtype", ct);
-        IReadOnlyList<long> shapeTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
-            tensorEntityId, "has_shape", ct);
+        IReadOnlyList<EntityHandle> nameTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            tensor, "has_tensor_name", ct);
+        IReadOnlyList<EntityHandle> dtypeTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            tensor, "has_dtype", ct);
+        IReadOnlyList<EntityHandle> shapeTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            tensor, "has_shape", ct);
 
         if (_textReader is not null)
         {
@@ -166,25 +136,11 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
 
     /// <summary>
     /// Assembles the tensor's byte payload from substrate state. Default
-    /// outcome for a substrate with no per-position content is a zero-filled
-    /// buffer of the correct size — Law #11 sparsity. The assembly precedence:
-    ///   1. 1-D tensors: tensor-attached contour (OneDTensorPass) →
-    ///      has_layer_norm_scale → has_rope_freqs (unit-attached contour).
-    ///   2. ≥2-D tensors: per-role unit scatter via substrate.sequence
-    ///      children — each row-positioned per-role entity (ffn_neuron,
-    ///      attention_component, embedding_position, logit_projection,
-    ///      moe_*, object_query_slot, class_projection, bbox_projection,
-    ///      vision_feature_direction, modality_basis_vector, lora_component,
-    ///      conv_filter, diffusion_component, conformer_component,
-    ///      audio_codec_filter) carries its row content as a contour physicality,
-    ///      scattered into the buffer at row=ordinal_position. The per-role
-    ///      path is lossless on the rows the substrate actually has.
-    ///   3. Fallback: walk has_rank_component edges and reconstruct via
-    ///      Σ σ·uvᵀ. Lossy by rank truncation; used only when no per-role
-    ///      units have been emitted for this tensor.
+    /// outcome with no per-position content is a zero-filled buffer of the
+    /// correct size — Law #11 sparsity.
     /// </summary>
     private async Task<byte[]> AssembleTensorBytesAsync(
-        long tensorEntityId, string dtype, int[] shape, CancellationToken ct)
+        EntityHandle tensor, string dtype, int[] shape, CancellationToken ct)
     {
         long elementCount = 1;
         for (int i = 0; i < shape.Length; i++)
@@ -196,12 +152,12 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         if (totalBytes < 0)
         {
             throw new InvalidOperationException(
-                $"Negative byte count for tensor {tensorEntityId} ({dtype} {string.Join('x', shape)}).");
+                $"Negative byte count for tensor {tensor} ({dtype} {string.Join('x', shape)}).");
         }
         if (totalBytes > int.MaxValue)
         {
             throw new NotSupportedException(
-                $"Tensor {tensorEntityId} ({dtype} {string.Join('x', shape)}) exceeds int.MaxValue bytes; sharded output not yet implemented.");
+                $"Tensor {tensor} ({dtype} {string.Join('x', shape)}) exceeds int.MaxValue bytes; sharded output not yet implemented.");
         }
 
         byte[] buffer = new byte[totalBytes];
@@ -211,18 +167,16 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             return buffer;
         }
 
-        // 1-D path: tensor-attached contour (OneDTensorPass) first, then
-        // walk to a per-role unit (LayerNormPass / RopeFreqPass) via
-        // has_layer_norm_scale or has_rope_freqs and read its contour.
+        // 1-D: tensor-attached contour first, then walk to per-role unit.
         if (shape.Length == 1 && shape[0] > 0)
         {
             int length = shape[0];
             double[]? values = await _physicalityReader.GetLineString4dAsync(
-                tensorEntityId, "contour", ct);
+                tensor, "contour", ct);
             if (values is null || values.Length < length)
             {
-                values = await TryReadUnitContourAsync(tensorEntityId, "has_layer_norm_scale", length, ct)
-                       ?? await TryReadUnitContourAsync(tensorEntityId, "has_rope_freqs", length, ct);
+                values = await TryReadUnitContourAsync(tensor, "has_layer_norm_scale", length, ct)
+                       ?? await TryReadUnitContourAsync(tensor, "has_rope_freqs", length, ct);
             }
             if (values is null || values.Length < length)
             {
@@ -234,10 +188,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             return buffer;
         }
 
-        // ≥2-D: per-role unit scatter via sequence children. cols = product
-        // of all dims after the first, so 4-D conv kernels (out, in, kh, kw)
-        // and other rank-N tensors flow through the same scatter path —
-        // outer index = sequence position; trailing dims = packed row content.
+        // ≥2-D: per-role unit scatter via has_constituent children.
         if (shape.Length < 2 || shape[0] <= 0)
         {
             return buffer;
@@ -251,16 +202,18 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         double[] accum = new double[(long)rows * cols];
         bool anyScattered = false;
 
-        IReadOnlyList<(long ChildEntityId, int Position)> children =
-            await EntityReader.GetSequenceChildrenAsync(tensorEntityId, ct);
+        IReadOnlyList<(EntityHandle Child, int Position)> children =
+            await EntityReader.GetCompositionChildrenAsync(tensor, ct);
         if (children.Count > 0)
         {
-            foreach ((long childId, int pos) in children)
+            foreach ((EntityHandle childHandle, int rawPos) in children)
             {
                 ct.ThrowIfCancellationRequested();
+                // Position from get_composition_children is 1-based; tensor row index is 0-based.
+                int pos = rawPos - 1;
                 if (pos < 0 || pos >= rows) { continue; }
                 double[]? coords = await _physicalityReader.GetLineString4dAsync(
-                    childId, "contour", ct);
+                    childHandle, "contour", ct);
                 if (coords is null) { continue; }
                 int take = Math.Min(cols, coords.Length);
                 long rowBase = (long)pos * cols;
@@ -285,17 +238,17 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         }
         int m = rows;
         int n = cols;
-        IReadOnlyList<long> rankComponentIds = await EntityReader.GetOutboundEdgeTargetsAsync(
-            tensorEntityId, "has_rank_component", ct);
-        if (rankComponentIds.Count == 0)
+        IReadOnlyList<EntityHandle> rankComponents = await EntityReader.GetOutboundEdgeTargetsAsync(
+            tensor, "has_rank_component", ct);
+        if (rankComponents.Count == 0)
         {
             return buffer;
         }
-        for (int rank = 0; rank < rankComponentIds.Count; rank++)
+        for (int rank = 0; rank < rankComponents.Count; rank++)
         {
             ct.ThrowIfCancellationRequested();
             double[]? coords = await _physicalityReader.GetLineString4dAsync(
-                rankComponentIds[rank], "contour", ct);
+                rankComponents[rank], "contour", ct);
             if (coords is null || coords.Length < 1 + m + n) { continue; }
 
             double sigma = coords[0];
@@ -315,24 +268,16 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         return buffer;
     }
 
-    /// <summary>
-    /// Walks <paramref name="edgeTypeCode"/> from a tensor entity to its
-    /// per-role unit, then reads the unit's contour physicality. Returns
-    /// null if the edge or the unit's contour is absent (or shorter than
-    /// the requested element count). Used for 1-D tensor reconstruction
-    /// when the tensor itself carries no contour but a unit does (the
-    /// LayerNormPass / RopeFreqPass cases).
-    /// </summary>
     private async Task<double[]?> TryReadUnitContourAsync(
-        long tensorEntityId, string edgeTypeCode, int minLength, CancellationToken ct)
+        EntityHandle tensor, string edgeTypeCode, int minLength, CancellationToken ct)
     {
         if (_physicalityReader is null) { return null; }
-        IReadOnlyList<long> targets = await EntityReader.GetOutboundEdgeTargetsAsync(
-            tensorEntityId, edgeTypeCode, ct);
-        foreach (long unitId in targets)
+        IReadOnlyList<EntityHandle> targets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            tensor, edgeTypeCode, ct);
+        foreach (EntityHandle unit in targets)
         {
             double[]? contour = await _physicalityReader.GetLineString4dAsync(
-                unitId, "contour", ct);
+                unit, "contour", ct);
             if (contour is not null && contour.Length >= minLength)
             {
                 return contour;
@@ -341,11 +286,6 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         return null;
     }
 
-    /// <summary>
-    /// Packs an f64 accumulator into the wire bytes for the requested dtype.
-    /// Mirrors the decode path in SafetensorsReader.DecodeChunk so a tensor
-    /// emitted here parses back to the same logical values.
-    /// </summary>
     private static void PackToWire(double[] accum, string dtype, byte[] buffer)
     {
         switch (dtype)
@@ -380,9 +320,6 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                         buffer.AsSpan(i * 2, 2), bf);
                 }
                 break;
-            // Integer dtypes: round-to-nearest within the dtype's representable
-            // range. The substrate's per-rank f64 reconstruction may exceed
-            // the int range (e.g., for I8); clamp.
             case "I8":
                 for (int i = 0; i < accum.Length; i++)
                 {
@@ -433,26 +370,16 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                     buffer[i] = accum[i] != 0 ? (byte)1 : (byte)0;
                 }
                 break;
-            // FP8 variants and unsigned-int wider dtypes: leave zero (no
-            // ingestion-side support yet for the inverse encoding path).
             default:
-                // Zero-fill stays — the buffer is already new byte[] (zeros).
                 break;
         }
     }
 
-    /// <summary>
-    /// Resolves the model_architecture entity's display name via the
-    /// has_architecture_name edge emitted by ModelPassOrchestrator.BootstrapAsync
-    /// (migration 0044). The target is a substrate document carrying the
-    /// architecture class string ("BertModel", "Qwen2ForCausalLM", etc.).
-    /// Falls back to the entity id when the edge or its target is absent.
-    /// </summary>
     private async Task<string> ResolveModelNameAsync(
-        long modelArchitectureEntityId, RecompositionOptions options, CancellationToken ct)
+        EntityHandle modelArchitecture, RecompositionOptions options, CancellationToken ct)
     {
-        IReadOnlyList<long> nameTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
-            modelArchitectureEntityId, "has_architecture_name", ct);
+        IReadOnlyList<EntityHandle> nameTargets = await EntityReader.GetOutboundEdgeTargetsAsync(
+            modelArchitecture, "has_architecture_name", ct);
         if (nameTargets.Count > 0 && _textReader is not null)
         {
             string? name = await _textReader.RecomposeTextAsync(nameTargets[0], options.MaxDepth, ct);
@@ -461,10 +388,9 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                 return name;
             }
         }
-        return $"model_{modelArchitectureEntityId}";
+        return $"model_{Convert.ToHexString(modelArchitecture.Hash)[..8].ToLowerInvariant()}";
     }
 
-    /// <summary>Parse a shape literal like "[2048, 2048]" or "2048x2048" into an int[].</summary>
     private static int[] ParseShape(string text)
     {
         string trimmed = text.Trim().Trim('[', ']');
@@ -483,7 +409,6 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         return dims;
     }
 
-    /// <summary>Bytes per element for the dtypes safetensors carries.</summary>
     private static int BytesPerElement(string dtype) => dtype switch
     {
         "F64" => 8,

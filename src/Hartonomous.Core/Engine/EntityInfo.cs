@@ -1,24 +1,28 @@
+using Hartonomous.Core.Ingestion;
+
 namespace Hartonomous.Core.Engine;
 
 /// <summary>
-/// Metadata about an entity in a traversal path. Carries the type code and
-/// content representation needed for recomposition and explanation traces.
+/// Metadata about an entity in a traversal path. Carries the composite
+/// handle (type code + hash) and an optional human-readable content label.
+///
+/// Hash-as-PK: <see cref="Handle"/> is the composite primary key; there is
+/// no surrogate id field.
 /// </summary>
 public sealed record EntityInfo
 {
-    /// <summary>
-    /// Entity type code (e.g., "lemma", "synset", "codepoint", "word_form").
-    /// </summary>
-    public required string EntityTypeCode { get; init; }
-
-    /// <summary>
-    /// BLAKE3 content hash of the entity.
-    /// </summary>
-    public required byte[] Hash { get; init; }
+    /// <summary>Composite identity: entity type code + BLAKE3 content hash.</summary>
+    public required EntityHandle Handle { get; init; }
 
     /// <summary>
     /// Human-readable content label when available (e.g., the word form text,
     /// synset gloss summary). Null for binary-only entities.
     /// </summary>
     public string? ContentLabel { get; init; }
+
+    /// <summary>Convenience accessor for the entity type code.</summary>
+    public string EntityTypeCode => Handle.EntityTypeCode;
+
+    /// <summary>Convenience accessor for the BLAKE3 content hash.</summary>
+    public byte[] Hash => Handle.Hash;
 }

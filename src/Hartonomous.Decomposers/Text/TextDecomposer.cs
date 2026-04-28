@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -180,9 +181,10 @@ public sealed partial class TextDecomposer : BaseDecomposer
                 {
                     gcEntity = batch.AddEntity(gcHash, "grapheme_cluster");
                     batch.AddSignificance(gcEntity, "source_authority", trustMu);
-                    for (int i = 0; i < cpSequence.Length; i++)
-                    {
-                    }
+                    // has_constituent: grapheme_cluster → ordered codepoints.
+                    // The substrate.recompose_text walk bottoms out at codepoint
+                    // leaves through this edge family.
+                    BaseDecomposer.EmitHasConstituentEdge(batch, gcEntity, cpSequence.AsSpan());
 
                     // Recursive child-centroid trajectory for grapheme_cluster
                     // is now emitted inside EmitWordFormMerkle (which TextDecomposer
@@ -243,9 +245,9 @@ public sealed partial class TextDecomposer : BaseDecomposer
             {
                 wordEntity = batch.AddEntity(wordHash, "word_form");
                 batch.AddSignificance(wordEntity, "source_authority", trustMu);
-                for (int i = 0; i < childHandles.Count; i++)
-                {
-                }
+                // has_constituent: word_form → ordered grapheme_clusters.
+                BaseDecomposer.EmitHasConstituentEdge(
+                    batch, wordEntity, CollectionsMarshal.AsSpan(childHandles));
 
                 wordHandlesByHash[wordHash] = wordEntity;
                 entityCount++;
@@ -333,9 +335,9 @@ public sealed partial class TextDecomposer : BaseDecomposer
             {
                 sentEntity = batch.AddEntity(sentHash, "text_composition");
                 batch.AddSignificance(sentEntity, "source_authority", trustMu);
-                for (int i = 0; i < sentChildHandles.Count; i++)
-                {
-                }
+                // has_constituent: text_composition → ordered word_forms / raw spans.
+                BaseDecomposer.EmitHasConstituentEdge(
+                    batch, sentEntity, CollectionsMarshal.AsSpan(sentChildHandles));
 
                 sentenceHandlesByHash[sentHash] = sentEntity;
                 entityCount++;
@@ -399,9 +401,9 @@ public sealed partial class TextDecomposer : BaseDecomposer
         batch.AddSignificance(docEntity, "source_authority", trustMu);
         entityCount++;
 
-        for (int i = 0; i < documentChildHandles.Count; i++)
-        {
-        }
+        // has_constituent: document → ordered text_compositions.
+        BaseDecomposer.EmitHasConstituentEdge(
+            batch, docEntity, CollectionsMarshal.AsSpan(documentChildHandles));
 
         return new TextIngestionResult(docEntity, docHash, entityCount);
     }

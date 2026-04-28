@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using Hartonomous.Core.Ingestion;
+
 namespace Hartonomous.Core.Engine;
 
 /// <summary>
@@ -9,6 +12,8 @@ namespace Hartonomous.Core.Engine;
 /// threshold, edge-type filter, or result cap. Those are conventional-IR
 /// shortcuts; the substrate's own significance state and termination
 /// criteria drive the traversal.
+///
+/// Hash-as-PK: pre-resolved seeds (when supplied) are composite handles.
 /// </summary>
 public sealed record InferenceQuery
 {
@@ -16,9 +21,9 @@ public sealed record InferenceQuery
     public string? Text { get; init; }
 
     /// <summary>
-    /// Pre-resolved seed entity IDs. Only for callers that already have
-    /// substrate entity ids and want to skip prompt decomposition (e.g.,
+    /// Pre-resolved composite-handle seeds. Only for callers that already
+    /// have substrate handles and want to skip prompt decomposition (e.g.,
     /// recursive engine self-calls, integration tests).
     /// </summary>
-    public IReadOnlyList<long>? SeedEntityIds { get; init; }
+    public IReadOnlyList<EntityHandle>? Seeds { get; init; }
 }

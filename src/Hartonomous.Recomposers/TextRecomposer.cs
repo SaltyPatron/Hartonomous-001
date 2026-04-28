@@ -6,19 +6,21 @@ using System.Threading.Tasks;
 using Hartonomous.Core.Analysis;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
+using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Recomposition;
 
 namespace Hartonomous.Recomposers;
 
 /// <summary>
 /// Recomposes text from the substrate without inventing separators.
-/// Exact reconstruction requires the sequence graph itself to carry every byte span
-/// in order, including whitespace and punctuation-only gaps.
+/// Hash-as-PK throughout: addresses entities by composite handle.
+/// Exact reconstruction requires the constituent graph itself to carry every
+/// byte span in order, including whitespace and punctuation-only gaps.
 /// </summary>
 public sealed class TextRecomposer : BaseRecomposer<string>
 {
     /// <summary>Entity type codes that are text atoms (leaf nodes).</summary>
-    private static readonly HashSet<string> AtomTypes = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> AtomTypes = new(System.StringComparer.Ordinal)
     {
         "codepoint", "grapheme_cluster", "word_form", "lemma", "morpheme",
         "bpe_token", "ud_token",
@@ -31,11 +33,11 @@ public sealed class TextRecomposer : BaseRecomposer<string>
     public override Modality OutputModality => Modality.Text;
 
     public override async Task<string> RecomposeAsync(
-        long entityId, RecompositionOptions options, CancellationToken ct)
+        EntityHandle entity, RecompositionOptions options, CancellationToken ct)
     {
         if (EntityReader is ITextRecompositionReader fastReader)
         {
-            string? fastText = await fastReader.RecomposeTextAsync(entityId, options.MaxDepth, ct);
+            string? fastText = await fastReader.RecomposeTextAsync(entity, options.MaxDepth, ct);
             if (fastText is not null)
             {
                 return fastText;
@@ -43,67 +45,58 @@ public sealed class TextRecomposer : BaseRecomposer<string>
         }
 
         StringBuilder sb = new();
-        await WalkDepthFirstAsync(entityId, options.MaxDepth, 0, sb, ct);
+        await WalkDepthFirstAsync(entity, options.MaxDepth, 0, sb, ct);
         return sb.ToString();
     }
 
     public override async Task RecomposeToStreamAsync(
-        long entityId, RecompositionOptions options, Stream output, CancellationToken ct)
+        EntityHandle entity, RecompositionOptions options, Stream output, CancellationToken ct)
     {
-        string text = await RecomposeAsync(entityId, options, ct);
+        string text = await RecomposeAsync(entity, options, ct);
         byte[] bytes = Encoding.UTF8.GetBytes(text);
         await output.WriteAsync(bytes, ct);
     }
 
     /// <summary>
-    /// Depth-first walk of the sequence table. If the entity is an atom,
-    /// append its content label. If it's a composition, recurse into children.
+    /// Depth-first walk of has_constituent edges. If the entity has a
+    /// content label, append it; otherwise recurse into its children.
     /// </summary>
     private async Task WalkDepthFirstAsync(
-        long entityId, int maxDepth, int currentDepth, StringBuilder sb, CancellationToken ct)
+        EntityHandle entity, int maxDepth, int currentDepth, StringBuilder sb, CancellationToken ct)
     {
         if (currentDepth > maxDepth)
         {
             return;
         }
 
-        // Get entity info for this node.
-        IReadOnlyDictionary<long, EntityInfo> info =
-            await GetEntityInfoAsync([entityId], ct);
+        IReadOnlyDictionary<EntityHandle, EntityInfo> info =
+            await GetEntityInfoAsync([entity], ct);
 
-        if (!info.TryGetValue(entityId, out EntityInfo? entity))
+        if (!info.TryGetValue(entity, out EntityInfo? entityInfo))
         {
             return;
         }
 
-        // If the database can label this entity directly, that label is already
-        // the exact textual value of the subtree rooted here.
-        if (entity.ContentLabel is not null)
+        if (entityInfo.ContentLabel is not null)
         {
-            sb.Append(entity.ContentLabel);
+            sb.Append(entityInfo.ContentLabel);
             return;
         }
 
-        // If atom type has no label, we can't render it.
-        if (AtomTypes.Contains(entity.EntityTypeCode))
+        if (AtomTypes.Contains(entityInfo.EntityTypeCode))
         {
             return;
         }
 
-        // Composition: get children in sequence order and recurse.
-        IReadOnlyList<(long ChildEntityId, int Position)> children =
-            await GetChildrenAsync(entityId, ct);
-
+        IReadOnlyList<(EntityHandle Child, int Position)> children = await GetChildrenAsync(entity, ct);
         if (children.Count == 0)
         {
             return;
         }
 
-        for (int i = 0; i < children.Count; i++)
+        foreach ((EntityHandle child, int _) in children)
         {
-            await WalkDepthFirstAsync(
-                children[i].ChildEntityId, maxDepth, currentDepth + 1, sb, ct);
+            await WalkDepthFirstAsync(child, maxDepth, currentDepth + 1, sb, ct);
         }
     }
-
 }

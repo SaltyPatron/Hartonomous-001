@@ -33,13 +33,14 @@ builder.Services.AddSingleton<IJunctionWriter>(sp => new NpgsqlJunctionWriter(sp
 builder.Services.AddSingleton<ISessionStore>(sp => new NpgsqlSessionStore(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<IHealthCheck>(sp => new SqlHealthCheck(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ITraversal>(sp => new NpgsqlTraversal(
-    sp.GetRequiredService<NpgsqlDataSource>(),
-    sp.GetRequiredService<IReferenceDataReader>()));
+    sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ISignificanceUpdater>(sp => new GlickoSignificanceUpdater(
     sp.GetRequiredService<NpgsqlDataSource>(),
     sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GlickoSignificanceUpdater>>()));
-builder.Services.AddSingleton<IEntityReader>(sp => new NpgsqlEntityReader(
+builder.Services.AddSingleton<NpgsqlEntityReader>(sp => new NpgsqlEntityReader(
     sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton<IEntityReader>(sp => sp.GetRequiredService<NpgsqlEntityReader>());
+builder.Services.AddSingleton<ITextRecompositionReader>(sp => sp.GetRequiredService<NpgsqlEntityReader>());
 builder.Services.AddSingleton<IInferenceEngine>(sp => new SubstrateInferenceEngine(
     sp.GetRequiredService<ITraversal>(),
     sp.GetRequiredService<IEntityReader>(),

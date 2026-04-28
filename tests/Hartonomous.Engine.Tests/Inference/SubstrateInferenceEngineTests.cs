@@ -1,5 +1,8 @@
+using System;
+using System.Collections.Generic;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
+using Hartonomous.Core.Ingestion;
 using Hartonomous.Engine.Inference;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -7,6 +10,14 @@ namespace Hartonomous.Engine.Tests.Inference;
 
 public sealed class SubstrateInferenceEngineTests
 {
+    /// <summary>Test helper: long → EntityHandle so tests stay readable.</summary>
+    private static EntityHandle H(long id, string typeCode = "test")
+    {
+        byte[] hash = new byte[32];
+        BitConverter.GetBytes(id).CopyTo(hash, 0);
+        return new EntityHandle(hash, typeCode);
+    }
+
     private static SubstrateInferenceEngine CreateEngine(
         FakeTraversal? traversal = null,
         FakeEntityReader? entityReader = null,
@@ -22,7 +33,7 @@ public sealed class SubstrateInferenceEngineTests
     }
 
     [Fact]
-    public async Task InferAsync_WithSeedIds_SkipsTextDecomposition()
+    public async Task InferAsync_WithSeeds_SkipsTextDecomposition()
     {
         FakeTraversal traversal = new();
         FakeEntityReader reader = new();
@@ -30,12 +41,14 @@ public sealed class SubstrateInferenceEngineTests
 
         InferenceQuery query = new()
         {
-            SeedEntityIds = [100L, 200L],
+            Seeds = [H(100L), H(200L)],
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
-        Assert.Equal([100L, 200L], result.SeedEntityIds);
+        Assert.Equal(2, result.Seeds.Count);
+        Assert.Contains(H(100L), result.Seeds);
+        Assert.Contains(H(200L), result.Seeds);
         Assert.False(reader.FindEntitiesByContentCalled);
         Assert.True(traversal.TraverseCalled);
     }
@@ -44,8 +57,8 @@ public sealed class SubstrateInferenceEngineTests
     public async Task InferAsync_WithText_ResolvesSeeds()
     {
         FakeEntityReader reader = new();
-        reader.ContentMatches["hello"] = [(1L, "lemma")];
-        reader.ContentMatches["world"] = [(2L, "word_form")];
+        reader.AddContentMatch("hello", H(1L, "lemma"));
+        reader.AddContentMatch("world", H(2L, "word_form"));
 
         FakeTraversal traversal = new();
         SubstrateInferenceEngine engine = CreateEngine(traversal, reader);
@@ -58,8 +71,8 @@ public sealed class SubstrateInferenceEngineTests
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
         Assert.True(reader.FindEntitiesByContentCalled);
-        Assert.Contains(1L, result.SeedEntityIds);
-        Assert.Contains(2L, result.SeedEntityIds);
+        Assert.Contains(H(1L, "lemma"), result.Seeds);
+        Assert.Contains(H(2L, "word_form"), result.Seeds);
     }
 
     [Fact]
@@ -76,7 +89,7 @@ public sealed class SubstrateInferenceEngineTests
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
         Assert.Empty(result.Paths);
-        Assert.Empty(result.SeedEntityIds);
+        Assert.Empty(result.Seeds);
         Assert.Equal(0, result.NodesVisited);
     }
 
@@ -88,7 +101,7 @@ public sealed class SubstrateInferenceEngineTests
         {
             traversal.Result.Paths.Add(new TraversalPath
             {
-                Steps = [new TraversalStep { EntityId = i + 1 }],
+                Steps = [new TraversalStep { Entity = H(i + 1) }],
                 PathSignificance = i * 10.0,
             });
         }
@@ -97,13 +110,12 @@ public sealed class SubstrateInferenceEngineTests
 
         InferenceQuery query = new()
         {
-            SeedEntityIds = [1L],
+            Seeds = [H(1L)],
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
-        // Per the substrate-as-AI invention the engine returns ALL distinct
-        // paths, ordered descending by composite significance — no caller cap.
+        // Engine returns ALL distinct paths, ordered descending by significance.
         Assert.Equal(20, result.Paths.Count);
         for (int i = 1; i < result.Paths.Count; i++)
         {
@@ -119,45 +131,37 @@ public sealed class SubstrateInferenceEngineTests
         {
             Steps =
             [
-                new TraversalStep { EntityId = 10 },
-                new TraversalStep { EntityId = 20 },
+                new TraversalStep { Entity = H(10, "lemma") },
+                new TraversalStep { Entity = H(20, "synset") },
             ],
             PathSignificance = 100.0,
         });
 
         FakeEntityReader reader = new();
-        reader.EntityInfoMap[10] = new EntityInfo
-        {
-            EntityTypeCode = "lemma",
-            Hash = [1, 2, 3],
-        };
-        reader.EntityInfoMap[20] = new EntityInfo
-        {
-            EntityTypeCode = "synset",
-            Hash = [4, 5, 6],
-        };
+        reader.SetEntityInfo(H(10, "lemma"));
+        reader.SetEntityInfo(H(20, "synset"));
 
         SubstrateInferenceEngine engine = CreateEngine(traversal, reader);
 
         InferenceQuery query = new()
         {
-            SeedEntityIds = [10L],
+            Seeds = [H(10, "lemma")],
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
         Assert.Equal(2, result.Entities.Count);
-        Assert.Equal("lemma", result.Entities[10].EntityTypeCode);
-        Assert.Equal("synset", result.Entities[20].EntityTypeCode);
+        Assert.Equal("lemma", result.Entities[H(10, "lemma")].EntityTypeCode);
+        Assert.Equal("synset", result.Entities[H(20, "synset")].EntityTypeCode);
     }
 
     [Fact]
     public async Task InferAsync_TextTokenization_SplitsPunctuation()
     {
         FakeEntityReader reader = new();
-        reader.ContentMatches["don"] = [(10L, "lemma")];
-        reader.ContentMatches["t"] = [(11L, "lemma")];
-        reader.ContentMatches["stop"] = [(12L, "lemma")];
+        reader.AddContentMatch("don", H(10, "lemma"));
+        reader.AddContentMatch("t", H(11, "lemma"));
+        reader.AddContentMatch("stop", H(12, "lemma"));
 
         SubstrateInferenceEngine engine = CreateEngine(entityReader: reader);
 
@@ -168,15 +172,15 @@ public sealed class SubstrateInferenceEngineTests
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
-        Assert.Contains(10L, result.SeedEntityIds);
-        Assert.Contains(12L, result.SeedEntityIds);
+        Assert.Contains(H(10, "lemma"), result.Seeds);
+        Assert.Contains(H(12, "lemma"), result.Seeds);
     }
 
     [Fact]
     public async Task InferAsync_DuplicateTokens_DeduplicatedInResolution()
     {
         FakeEntityReader reader = new();
-        reader.ContentMatches["the"] = [(1L, "lemma")];
+        reader.AddContentMatch("the", H(1L, "lemma"));
 
         SubstrateInferenceEngine engine = CreateEngine(entityReader: reader);
 
@@ -187,11 +191,7 @@ public sealed class SubstrateInferenceEngineTests
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
 
-        Assert.Contains(1L, result.SeedEntityIds);
-        // The engine emits both the original surface form and its lower-case
-        // variant per token (case-preserving entities and case-folded entities
-        // are both valid substrate matches), then deduplicates the union. For
-        // "The the THE" the set is {"The", "the", "THE"} — 3 distinct lookups.
+        Assert.Contains(H(1L, "lemma"), result.Seeds);
         Assert.True(reader.FindCallCount <= 3,
             "Duplicate surface tokens should collapse before resolution.");
     }
@@ -209,7 +209,7 @@ public sealed class SubstrateInferenceEngineTests
 
         InferenceQuery query = new()
         {
-            SeedEntityIds = [42L],
+            Seeds = [H(42L)],
         };
 
         await engine.InferAsync(query, CancellationToken.None);
@@ -227,7 +227,7 @@ public sealed class SubstrateInferenceEngineTests
 
         InferenceQuery query = new()
         {
-            SeedEntityIds = [1L],
+            Seeds = [H(1L)],
         };
 
         InferenceResult result = await engine.InferAsync(query, CancellationToken.None);
@@ -252,7 +252,7 @@ public sealed class SubstrateInferenceEngineTests
             {
                 AllArenas.Add(query.ArenaCode);
             }
-            return Task.FromResult<TraversalResult>(new TraversalResult
+            return Task.FromResult(new TraversalResult
             {
                 Paths = Result.Paths,
                 NodesVisited = Result.Paths.Sum(p => p.Steps.Count),
@@ -278,6 +278,7 @@ public sealed class SubstrateInferenceEngineTests
             ["lemma"] = 1,
             ["word_form"] = 2,
             ["synset"] = 3,
+            ["test"] = 4,
         };
 
         public Task<Dictionary<string, int>> LoadCodeMapAsync(
@@ -315,77 +316,83 @@ public sealed class SubstrateInferenceEngineTests
 
     internal sealed class FakeTextRecompositionReader : ITextRecompositionReader
     {
-        public Dictionary<long, string> Texts { get; } = [];
+        public Dictionary<EntityHandle, string> Texts { get; } = [];
 
-        public Task<string?> RecomposeTextAsync(long entityId, int maxDepth, CancellationToken ct)
+        public Task<string?> RecomposeTextAsync(EntityHandle root, int maxDepth, CancellationToken ct)
         {
-            Texts.TryGetValue(entityId, out string? text);
+            Texts.TryGetValue(root, out string? text);
             return Task.FromResult<string?>(text);
         }
     }
 
     internal sealed class FakeEntityReader : IEntityReader
     {
-        public Dictionary<string, List<(long EntityId, string EntityTypeCode)>> ContentMatches { get; } = new(StringComparer.OrdinalIgnoreCase);
-        public Dictionary<long, EntityInfo> EntityInfoMap { get; } = [];
-        public Dictionary<long, List<(long ChildEntityId, int Position)>> SequenceChildren { get; } = [];
+        private readonly Dictionary<string, List<EntityHandle>> _contentMatches =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<EntityHandle, EntityInfo> _entityInfo = [];
+
         public bool FindEntitiesByContentCalled { get; private set; }
         public int FindCallCount { get; private set; }
 
-        public Task<IReadOnlyDictionary<byte[], long>> ResolveEntityIdsAsync(
-            IReadOnlyList<byte[]> hashes, CancellationToken ct)
+        public void AddContentMatch(string content, EntityHandle handle)
         {
-            IReadOnlyDictionary<byte[], long> empty = new Dictionary<byte[], long>();
-            return Task.FromResult(empty);
+            if (!_contentMatches.TryGetValue(content, out List<EntityHandle>? list))
+            {
+                list = [];
+                _contentMatches[content] = list;
+            }
+            list.Add(handle);
         }
 
-        public Task<IReadOnlyDictionary<long, EntityInfo>> GetEntityInfoAsync(
-            IReadOnlyList<long> entityIds, CancellationToken ct)
+        public void SetEntityInfo(EntityHandle handle)
+            => _entityInfo[handle] = new EntityInfo { Handle = handle };
+
+        public Task<IReadOnlyList<EntityHandle>> ResolveEntityHandlesAsync(
+            IReadOnlyList<byte[]> hashes, IReadOnlyList<string> entityTypeCodes, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<EntityHandle>>([]);
+
+        public Task<IReadOnlyDictionary<EntityHandle, EntityInfo>> GetEntityInfoAsync(
+            IReadOnlyList<EntityHandle> entityHandles, CancellationToken ct)
         {
-            Dictionary<long, EntityInfo> result = [];
-            foreach (long id in entityIds)
+            Dictionary<EntityHandle, EntityInfo> result = [];
+            foreach (EntityHandle h in entityHandles)
             {
-                if (EntityInfoMap.TryGetValue(id, out EntityInfo? info))
+                if (_entityInfo.TryGetValue(h, out EntityInfo? info))
                 {
-                    result[id] = info;
+                    result[h] = info;
+                }
+                else
+                {
+                    // Synthesize a minimal EntityInfo so callers always see a value.
+                    result[h] = new EntityInfo { Handle = h };
                 }
             }
-            return Task.FromResult<IReadOnlyDictionary<long, EntityInfo>>(result);
+            return Task.FromResult<IReadOnlyDictionary<EntityHandle, EntityInfo>>(result);
         }
 
-        public Task<IReadOnlyList<(long ChildEntityId, int Position)>> GetSequenceChildrenAsync(
-            long parentEntityId, CancellationToken ct)
-        {
-            if (SequenceChildren.TryGetValue(parentEntityId, out var children))
-            {
-                return Task.FromResult<IReadOnlyList<(long, int)>>(children);
-            }
-            return Task.FromResult<IReadOnlyList<(long, int)>>(Array.Empty<(long, int)>());
-        }
+        public Task<IReadOnlyList<(EntityHandle Child, int Position)>> GetCompositionChildrenAsync(
+            EntityHandle parent, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<(EntityHandle, int)>>([]);
 
-        public Task<IReadOnlyDictionary<long, EdgeInfo>> GetEdgeInfoAsync(
-            IReadOnlyList<long> edgeIds, CancellationToken ct)
-        {
-            IReadOnlyDictionary<long, EdgeInfo> empty = new Dictionary<long, EdgeInfo>();
-            return Task.FromResult(empty);
-        }
+        public Task<IReadOnlyDictionary<EdgeHandle, EdgeInfo>> GetEdgeInfoAsync(
+            IReadOnlyList<EdgeHandle> edgeHandles, CancellationToken ct)
+            => Task.FromResult<IReadOnlyDictionary<EdgeHandle, EdgeInfo>>(
+                new Dictionary<EdgeHandle, EdgeInfo>());
 
-        public Task<IReadOnlyList<(long EntityId, string EntityTypeCode)>> FindEntitiesByContentAsync(
+        public Task<IReadOnlyList<EntityHandle>> FindEntitiesByContentAsync(
             string content, IReadOnlyList<string> entityTypeCodes, CancellationToken ct)
         {
             FindEntitiesByContentCalled = true;
             FindCallCount++;
-            if (ContentMatches.TryGetValue(content, out var matches))
+            if (_contentMatches.TryGetValue(content, out List<EntityHandle>? matches))
             {
-                return Task.FromResult<IReadOnlyList<(long, string)>>(matches);
+                return Task.FromResult<IReadOnlyList<EntityHandle>>(matches);
             }
-            return Task.FromResult<IReadOnlyList<(long, string)>>(Array.Empty<(long, string)>());
+            return Task.FromResult<IReadOnlyList<EntityHandle>>([]);
         }
 
-        public Task<IReadOnlyList<long>> GetOutboundEdgeTargetsAsync(
-            long sourceEntityId, string edgeTypeCode, CancellationToken ct)
-        {
-            return Task.FromResult<IReadOnlyList<long>>(Array.Empty<long>());
-        }
+        public Task<IReadOnlyList<EntityHandle>> GetOutboundEdgeTargetsAsync(
+            EntityHandle source, string edgeTypeCode, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<EntityHandle>>([]);
     }
 }

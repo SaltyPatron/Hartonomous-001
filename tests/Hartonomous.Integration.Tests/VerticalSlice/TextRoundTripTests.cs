@@ -25,6 +25,20 @@ namespace Hartonomous.Integration.Tests.VerticalSlice;
     Justification = "Disposable fields are released in IAsyncLifetime.DisposeAsync.")]
 public sealed class TextRoundTripTests : IAsyncLifetime
 {
+    /// <summary>
+    /// Compile-shim: builds an EntityHandle from a legacy long id. Used to keep
+    /// the integration tests building while their helper SQL is migrated to the
+    /// composite-key schema (substrate.entity has no .id column anymore; the
+    /// helpers below need rewriting to SELECT entity_type_id, hash and return
+    /// an EntityHandle directly).
+    /// </summary>
+    private static Hartonomous.Core.Ingestion.EntityHandle LegacyHandle(long id, string typeCode)
+    {
+        byte[] h = new byte[32];
+        BitConverter.GetBytes(id).CopyTo(h, 0);
+        return new Hartonomous.Core.Ingestion.EntityHandle(h, typeCode);
+    }
+
     private static string ConnectionString() =>
         Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
         ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
@@ -102,8 +116,13 @@ public sealed class TextRoundTripTests : IAsyncLifetime
 
         // Recompose.
         TextRecomposer recomposer = new(_entityReader);
+        // INTEGRATION-MIGRATION: docId is a legacy long entity_id; the new schema
+        // uses composite (entity_type_id, entity_hash). This test path needs the
+        // helper rewritten to SELECT entity_type_id, hash FROM substrate.entity
+        // WHERE … and produce an EntityHandle. Compile-shimmed for now.
+        Hartonomous.Core.Ingestion.EntityHandle docHandle = LegacyHandle(docId, "document");
         string recomposed = await recomposer.RecomposeAsync(
-            docId,
+            docHandle,
             new RecompositionOptions(),
             CancellationToken.None);
 
@@ -218,8 +237,9 @@ public sealed class TextRoundTripTests : IAsyncLifetime
         Assert.True(docId > 0, "Moby Dick: no document entity emitted.");
 
         TextRecomposer recomposer = new(_entityReader);
+        Hartonomous.Core.Ingestion.EntityHandle docHandle = LegacyHandle(docId, "document");
         string recomposed = await recomposer.RecomposeAsync(
-            docId, new RecompositionOptions(), CancellationToken.None);
+            docHandle, new RecompositionOptions(), CancellationToken.None);
 
         string original = await File.ReadAllTextAsync(Source);
         Assert.Equal(original.Length, recomposed.Length);

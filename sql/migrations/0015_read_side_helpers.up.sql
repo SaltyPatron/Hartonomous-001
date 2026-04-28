@@ -1,0 +1,55 @@
+-- Stage 0015: read-side helpers, written against the hash-as-PK schema.
+--
+-- The ingestion side (migrations 0001..0014) speaks composite (entity_type_id,
+-- hash) and (edge_type_id, hash) keys end-to-end. The read side — engine,
+-- traversal, query, recomposers — was authored against a previous surrogate-
+-- BIGSERIAL-id schema and has not been migrated. The archived functions
+-- (sql/migrations.archive/0028, 0029, 0030, 0031, 0035, 0048, 0052, 0054, 0064)
+-- query columns that no longer exist (e.g. substrate.entity.id, edge.id,
+-- edge_member.entity_id, edge_member.edge_id, substrate.significance).
+--
+-- This migration adds the read-side SQL surface the C# IEntityReader,
+-- ITextRecompositionReader, and inference engine need to operate against
+-- the new schema:
+--
+--   substrate.health_summary()
+--     Single-call JSONB probe of substrate state.
+--
+--   substrate.entity_outbound_edges(p_entity_type_id, p_entity_hash, p_arena)
+--   substrate.entity_inbound_edges(p_entity_type_id, p_entity_hash, p_arena)
+--     One A*-step's worth of forward/backward expansion. Composite-handle
+--     addressing throughout. Edge mu in requested arena via LEFT JOIN to
+--     substrate.edge_significance.
+--
+--   substrate.resolve_entity_handles(p_hashes, p_type_codes)
+--   substrate.get_entity_info_by_handles(p_type_ids, p_hashes)
+--   substrate.get_edge_info_by_handles(p_type_ids, p_hashes)
+--   substrate.get_outbound_edge_targets(p_src_type_id, p_src_hash, p_edge_type_code)
+--     Entity / edge metadata + outbound walks. All composite-key.
+--
+--   substrate.get_composition_children(p_parent_type_id, p_parent_hash)
+--     Walks has_constituent edges to recover ordered children of a
+--     composition. Returns empty when the decomposer has only emitted
+--     LINESTRINGZM physicality (geometry-only ordering).
+--
+--   substrate.recompose_text(p_entity_type_id, p_entity_hash, p_max_depth)
+--     Recursive text recomposition via has_constituent → codepoint walk,
+--     decoding via codepoint_property.codepoint_value.
+--
+-- Plus seeds the has_constituent edge type so the compositional walks have
+-- a substrate-level home. Decomposers can begin emitting has_constituent
+-- edges to populate the children-traversal surface.
+--
+-- All functions are PARALLEL SAFE STABLE — pure reads, no shared mutable state.
+-- @include schema/seed/has_constituent_edge_type.sql
+-- @include schema/functions/health_summary.sql
+-- @include schema/functions/entity_outbound_edges.sql
+-- @include schema/functions/entity_inbound_edges.sql
+-- @include schema/functions/resolve_entity_handles.sql
+-- @include schema/functions/get_entity_info_by_handles.sql
+-- @include schema/functions/get_edge_info_by_handles.sql
+-- @include schema/functions/get_outbound_edge_targets.sql
+-- @include schema/functions/get_composition_children.sql
+-- @include schema/functions/recompose_text.sql
+-- @include schema/functions/prime_edge_significance.sql
+-- @include schema/functions/entity_neighbors.sql

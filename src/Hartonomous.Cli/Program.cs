@@ -173,8 +173,8 @@ internal static class Program
     private static Command BuildExportModelCommand()
     {
         Option<string> connOpt = new(ConnAliases, () => DefaultConnectionString(), "Connection string");
-        Option<long> archIdOpt = new("--arch-id", "model_architecture entity id to export");
-        archIdOpt.IsRequired = true;
+        Option<string> archHashOpt = new("--arch-hash", "model_architecture entity BLAKE3 hash (64 hex chars)");
+        archHashOpt.IsRequired = true;
         Option<string> outputOpt = new("--output", "Output safetensors path");
         outputOpt.IsRequired = true;
         Option<long[]> sourceIdsOpt = new("--source-id",
@@ -192,7 +192,7 @@ internal static class Program
             + "With filter options the export becomes a distillation query (architecture.md "
             + "\"Distillation = WHERE clause\").");
         exportModel.AddOption(connOpt);
-        exportModel.AddOption(archIdOpt);
+        exportModel.AddOption(archHashOpt);
         exportModel.AddOption(outputOpt);
         exportModel.AddOption(sourceIdsOpt);
         exportModel.AddOption(minMuOpt);
@@ -202,7 +202,9 @@ internal static class Program
         exportModel.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
         {
             string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
-            long archId = ctx.ParseResult.GetValueForOption(archIdOpt);
+            string archHashHex = ctx.ParseResult.GetValueForOption(archHashOpt)!;
+            byte[] archHashBytes = Convert.FromHexString(archHashHex);
+            Hartonomous.Core.Ingestion.EntityHandle archHandle = new(archHashBytes, "model_architecture");
             string output = ctx.ParseResult.GetValueForOption(outputOpt)!;
             long[] sourceIds = ctx.ParseResult.GetValueForOption(sourceIdsOpt) ?? [];
             double? minMu = ctx.ParseResult.GetValueForOption(minMuOpt);
@@ -219,7 +221,7 @@ internal static class Program
 
             bool filtered = sourceIds.Length > 0 || minMu.HasValue || !string.IsNullOrEmpty(context) || limit.HasValue;
 
-            Console.WriteLine($"=== {(filtered ? "Distilling" : "Exporting")} model_architecture {archId} → {output} ===");
+            Console.WriteLine($"=== {(filtered ? "Distilling" : "Exporting")} model_architecture {archHandle} → {output} ===");
             if (filtered)
             {
                 if (sourceIds.Length > 0) { Console.WriteLine($"  --source-id={string.Join(',', sourceIds)}"); }
@@ -240,11 +242,11 @@ internal static class Program
                     ContextTypeCode = context,
                     Limit = limit,
                 };
-                file = await recomposer.RecomposeFilteredAsync(archId, filter, opts, CancellationToken.None);
+                file = await recomposer.RecomposeFilteredAsync(archHandle, filter, opts, CancellationToken.None);
             }
             else
             {
-                file = await recomposer.RecomposeAsync(archId, opts, CancellationToken.None);
+                file = await recomposer.RecomposeAsync(archHandle, opts, CancellationToken.None);
             }
 
             await using (FileStream fs = File.Create(output))
@@ -956,12 +958,13 @@ internal static class Program
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
             Hartonomous.Engine.Data.NpgsqlReferenceDataReader refReader = new(ds);
             Hartonomous.Engine.Data.NpgsqlEntityReader entityReader = new(ds);
-            Hartonomous.Engine.Traversal.NpgsqlTraversal traversal = new(ds, refReader);
+            Hartonomous.Engine.Traversal.NpgsqlTraversal traversal = new(ds);
 
             using Microsoft.Extensions.Logging.ILoggerFactory lf =
                 Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Warning));
             Hartonomous.Engine.Inference.SubstrateInferenceEngine engine = new(
-                traversal, entityReader, refReader, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
+                traversal, entityReader, refReader, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>(),
+                entityReader);
 
             Hartonomous.Core.Engine.InferenceQuery q = new() { Text = text };
 
@@ -977,7 +980,7 @@ internal static class Program
             Console.WriteLine($"  answer: {(string.IsNullOrEmpty(result.Answer) ? "(no path — honest abstention)" : result.Answer)}");
             Console.WriteLine();
             Console.WriteLine($"=== Trace ===");
-            Console.WriteLine($"  seeds activated:  {result.SeedEntityIds.Count}");
+            Console.WriteLine($"  seeds activated:  {result.Seeds.Count}");
             Console.WriteLine($"  composite paths:  {result.Paths.Count}");
             Console.WriteLine($"  nodes visited:    {result.NodesVisited}");
             Console.WriteLine($"  elapsed:          {sw.Elapsed.TotalMilliseconds:F1} ms");
@@ -988,12 +991,11 @@ internal static class Program
             }
             Console.WriteLine();
             Console.WriteLine($"=== Top {Math.Min(5, result.Paths.Count)} contributing paths ===");
-            await using Npgsql.NpgsqlConnection rconn = await ds.OpenConnectionAsync(CancellationToken.None);
             for (int i = 0; i < Math.Min(5, result.Paths.Count); i++)
             {
                 Hartonomous.Core.Engine.TraversalPath path = result.Paths[i];
-                long targetId = path.Steps.Count > 0 ? path.Steps[^1].EntityId : 0;
-                string targetText = await TryRecomposeAsync(rconn, targetId);
+                Hartonomous.Core.Ingestion.EntityHandle? terminal = path.Steps.Count > 0 ? path.Steps[^1].Entity : null;
+                string targetText = await TryRecomposeAsync(entityReader, terminal);
                 Console.WriteLine($"  [{i+1}] significance={path.PathSignificance:F4} depth={path.Steps.Count - 1} → {targetText}");
             }
         });
@@ -1001,27 +1003,26 @@ internal static class Program
         return query;
     }
 
-    private static async Task<string> TryRecomposeAsync(Npgsql.NpgsqlConnection conn, long entityId)
+    private static async Task<string> TryRecomposeAsync(
+        Hartonomous.Engine.Data.NpgsqlEntityReader reader,
+        Hartonomous.Core.Ingestion.EntityHandle? entity)
     {
-        if (entityId <= 0)
+        if (entity is null)
         {
             return "<no target>";
         }
-        await using Npgsql.NpgsqlCommand cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT substrate.recompose_text($1)";
-        cmd.Parameters.Add(new Npgsql.NpgsqlParameter { Value = entityId });
         try
         {
-            object? result = await cmd.ExecuteScalarAsync();
-            if (result is string s && !string.IsNullOrEmpty(s))
+            string? s = await reader.RecomposeTextAsync(entity.Value, int.MaxValue, CancellationToken.None);
+            if (!string.IsNullOrEmpty(s))
             {
                 return s.Length > 120 ? s[..117] + "..." : s;
             }
-            return $"<entity {entityId}>";
+            return $"<{entity}>";
         }
         catch (Exception ex) // BOUNDARY: CLI display surface — recomposition errors on a single entity must not abort listing the other paths in the result.
         {
-            return $"<entity {entityId} (recompose error: {ex.Message[..Math.Min(60, ex.Message.Length)]})>";
+            return $"<{entity} (recompose error: {ex.Message[..Math.Min(60, ex.Message.Length)]})>";
         }
     }
 

@@ -1,3 +1,5 @@
+using System;
+using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Recomposition;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -17,28 +19,43 @@ internal static class RecompositionEndpoints
         IRecomposer<string> recomposer,
         CancellationToken ct)
     {
-        if (request.EntityId <= 0)
+        if (string.IsNullOrEmpty(request.EntityTypeCode) || string.IsNullOrEmpty(request.EntityHashHex))
         {
             return Results.Problem(
-                "entityId must be a positive integer",
+                "entityTypeCode and entityHashHex are required",
                 statusCode: 400,
-                type: "invalid-entity-id");
+                type: "invalid-handle");
         }
+
+        byte[] hash;
+        try
+        {
+            hash = Convert.FromHexString(request.EntityHashHex);
+        }
+        catch (FormatException) // BOUNDARY: HTTP request validation surface — invalid hex from the client must surface as 400, not 500.
+        {
+            return Results.Problem(
+                "entityHashHex must be 64 hex chars",
+                statusCode: 400,
+                type: "invalid-hash");
+        }
+
+        EntityHandle handle = new(hash, request.EntityTypeCode);
 
         RecompositionOptions options = new()
         {
             MaxDepth = request.MaxDepth ?? 50,
         };
 
-        string text = await recomposer.RecomposeAsync(request.EntityId, options, ct);
+        string text = await recomposer.RecomposeAsync(handle, options, ct);
 
         return Results.Ok(new
         {
-            entityId = request.EntityId,
+            entity = handle.ToString(),
             text,
             maxDepth = options.MaxDepth,
         });
     }
 
-    internal sealed record RecomposeRequest(long EntityId, int? MaxDepth);
+    internal sealed record RecomposeRequest(string EntityTypeCode, string EntityHashHex, int? MaxDepth);
 }

@@ -7,7 +7,10 @@ public sealed class NpgsqlIngestionPipelineTests
 {
     [Theory]
     [InlineData("entity_pos", "pos_id")]
-    [InlineData("entity_sense", "sense_id")]
+    // entity_sense REMOVED in favour of has_sense edges (lemma → synset) rated
+    // via substrate.edge_significance. entity_lexname ADDED for bounded-vocab
+    // lexname classification.
+    [InlineData("entity_lexname", "lexname_id")]
     [InlineData("entity_language", "language_id")]
     [InlineData("entity_morph_feature", "morph_feature_id")]
     [InlineData("model_architecture_class", "architecture_class_id")]
@@ -157,14 +160,26 @@ public sealed class NpgsqlIngestionPipelineTests
 
     private static byte[] InvokeComputeEdgeHash(int edgeTypeId, long[] memberEntityIds)
     {
+        // Hash-as-PK: edge member identity is a 32-byte BLAKE3, not a surrogate
+        // long id. Lift each test input long into a deterministic 32-byte hash
+        // (long bytes left-padded into the front of the buffer). Keeps the
+        // existing test semantics (same long → same hash) without faking a
+        // surrogate-id schema.
+        byte[][] memberHashes = new byte[memberEntityIds.Length][];
+        for (int i = 0; i < memberEntityIds.Length; i++)
+        {
+            byte[] h = new byte[32];
+            BitConverter.GetBytes(memberEntityIds[i]).CopyTo(h, 0);
+            memberHashes[i] = h;
+        }
         System.Reflection.MethodInfo method = typeof(NpgsqlIngestionPipeline)
             .GetMethod("ComputeEdgeHash",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
         try
         {
-            return (byte[])method.Invoke(null, [edgeTypeId, memberEntityIds])!;
+            return (byte[])method.Invoke(null, [edgeTypeId, memberHashes])!;
         }
-        catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is not null)
+        catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is not null) // BOUNDARY: reflection harness — preserve original stack for xUnit assertions.
         {
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
             throw;

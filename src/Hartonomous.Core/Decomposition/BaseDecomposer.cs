@@ -205,6 +205,15 @@ public abstract partial class BaseDecomposer : IDecomposer
                     gcCentroid = MeanCentroid(verts.AsSpan());
                 }
 
+                // Emit has_constituent edge from grapheme_cluster → codepoints
+                // in left-to-right order. Required for substrate.recompose_text
+                // to walk children. Single-codepoint graphemes have no
+                // distinct constituent to record beyond identity.
+                if (cpCount > 1)
+                {
+                    EmitHasConstituentEdge(batch, gcHandle, cpHandleBuf.AsSpan(0, cpCount));
+                }
+
                 if (gcCount >= gcHashBuf.Length)
                 {
                     GrowPooledArray(ref gcHashBuf, gcCount);
@@ -235,6 +244,17 @@ public abstract partial class BaseDecomposer : IDecomposer
                 wfCentroid = MeanCentroid(verts.AsSpan());
             }
 
+            // Emit has_constituent edge from word_form → grapheme_clusters in
+            // left-to-right order. The substrate.recompose_text recursive walk
+            // bottoms out at codepoint leaves through this edge family; without
+            // it, the new schema's compositional walk has no parent → children
+            // traversal record. Single-grapheme word_forms still get an edge
+            // (one source + one target) so the walk surface is uniform.
+            if (gcCount >= 1)
+            {
+                EmitHasConstituentEdge(batch, wfHandle, gcHandleBuf.AsSpan(0, gcCount));
+            }
+
             return (wfHandle, wfHash, wfCentroid);
         }
         finally
@@ -246,6 +266,34 @@ public abstract partial class BaseDecomposer : IDecomposer
             ArrayPool<EntityHandle>.Shared.Return(cpHandleBuf);
             ArrayPool<(double, double, double, double)>.Shared.Return(cpCentroidBuf);
         }
+    }
+
+    /// <summary>
+    /// Emit a has_constituent edge from <paramref name="parent"/> (source role,
+    /// position 0) to each child in <paramref name="children"/> (target role,
+    /// positions 1..N in supplied order). This is the substrate-side parent →
+    /// children record that <c>substrate.get_composition_children</c> walks
+    /// for recompose / structural traversal. Provenance defaults to the same
+    /// session-scoped trust prior the caller is operating under; callers
+    /// should override if their decomposer has a stronger provenance.
+    /// </summary>
+    public static void EmitHasConstituentEdge(
+        IIngestionBatch batch,
+        EntityHandle parent,
+        ReadOnlySpan<EntityHandle> children,
+        string provenanceCode = "system_computed")
+    {
+        if (children.Length == 0)
+        {
+            return;
+        }
+        EdgeMemberSpec[] members = new EdgeMemberSpec[children.Length + 1];
+        members[0] = new EdgeMemberSpec(parent, "source", 0);
+        for (int i = 0; i < children.Length; i++)
+        {
+            members[i + 1] = new EdgeMemberSpec(children[i], "target", (short)(i + 1));
+        }
+        batch.AddEdge("has_constituent", provenanceCode, members.AsSpan());
     }
 
     /// <summary>

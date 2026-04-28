@@ -298,6 +298,17 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         {
             await flushMembers.ExecuteNonQueryAsync(ct);
         }
+
+        // Prime substrate.edge_significance from the same staging_edge table.
+        // Cross-products against every arena currently in significance_context
+        // (open-vocabulary, AP-1). Without priming, COALESCE(mu, 1500.0) in the
+        // A* traversal degenerates to uniform-cost BFS — A* needs real per-edge
+        // mu in the requested arena to do anything semantically meaningful.
+        await using (NpgsqlCommand primeSig = new(
+            "SELECT substrate.prime_edge_significance_for_staging()", conn))
+        {
+            await primeSig.ExecuteNonQueryAsync(ct);
+        }
     }
 
     // ── PopulateJunctionsAsync ─────────────────────────────────────────────

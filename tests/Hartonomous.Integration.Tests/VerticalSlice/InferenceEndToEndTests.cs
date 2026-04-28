@@ -34,7 +34,7 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
         _dataSource = NpgsqlDataSource.Create(ConnectionString());
         _refReader = new NpgsqlReferenceDataReader(_dataSource);
         _entityReader = new NpgsqlEntityReader(_dataSource);
-        _traversal = new NpgsqlTraversal(_dataSource, _refReader);
+        _traversal = new NpgsqlTraversal(_dataSource);
         _engine = new SubstrateInferenceEngine(
             _traversal,
             _entityReader,
@@ -61,8 +61,8 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
 
         InferenceResult result = await _engine.InferAsync(query, CancellationToken.None);
 
-        Assert.NotEmpty(result.SeedEntityIds);
-        Console.WriteLine($"[InferAsync] query='break' seeds={result.SeedEntityIds.Count} " +
+        Assert.NotEmpty(result.Seeds);
+        Console.WriteLine($"[InferAsync] query='break' seeds={result.Seeds.Count} " +
                           $"paths={result.Paths.Count} nodes_visited={result.NodesVisited} " +
                           $"elapsed={result.Elapsed.TotalMilliseconds:F1}ms");
     }

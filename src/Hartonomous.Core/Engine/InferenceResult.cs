@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using Hartonomous.Core.Ingestion;
+
 namespace Hartonomous.Core.Engine;
 
 /// <summary>
@@ -5,6 +9,8 @@ namespace Hartonomous.Core.Engine;
 /// substrate's traversal produced, plus the diagnostic trace (seed entities,
 /// paths, entities visited) so callers can inspect HOW the substrate
 /// arrived at the answer — the explanation IS the path, per Substrate Law.
+///
+/// Hash-as-PK throughout. No long-id fields.
 /// </summary>
 public sealed record InferenceResult
 {
@@ -17,8 +23,8 @@ public sealed record InferenceResult
     /// </summary>
     public required string Answer { get; init; }
 
-    /// <summary>The seed entity IDs the prompt decomposed to.</summary>
-    public required IReadOnlyList<long> SeedEntityIds { get; init; }
+    /// <summary>The composite-handle seeds the prompt decomposed to.</summary>
+    public required IReadOnlyList<EntityHandle> Seeds { get; init; }
 
     /// <summary>
     /// Every path the traversal returned, ordered by composite path
@@ -28,8 +34,8 @@ public sealed record InferenceResult
     /// </summary>
     public required IReadOnlyList<TraversalPath> Paths { get; init; }
 
-    /// <summary>Entity metadata for every entity referenced in paths.</summary>
-    public required IReadOnlyDictionary<long, EntityInfo> Entities { get; init; }
+    /// <summary>Entity metadata for every entity referenced in paths, keyed by handle.</summary>
+    public required IReadOnlyDictionary<EntityHandle, EntityInfo> Entities { get; init; }
 
     /// <summary>Total substrate nodes visited during traversal across all arenas/targets.</summary>
     public int NodesVisited { get; init; }

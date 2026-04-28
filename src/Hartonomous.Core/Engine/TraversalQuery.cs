@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Core.Engine;
 
@@ -7,10 +8,13 @@ namespace Hartonomous.Core.Engine;
 /// the values here — depth, target types, arenas — based on the substrate's
 /// own state. Callers do NOT specify these knobs through the public
 /// inference API; they are intra-engine implementation details.
+///
+/// Hash-as-PK: seeds are composite <see cref="EntityHandle"/>s.
 /// </summary>
 public sealed record TraversalQuery
 {
-    public required IReadOnlyList<long> SeedEntityIds { get; init; }
+    /// <summary>Composite-handle seeds for A* expansion.</summary>
+    public required IReadOnlyList<EntityHandle> Seeds { get; init; }
 
     /// <summary>Engine-chosen depth bound. Defaults to a deep traversal (30).</summary>
     public int MaxDepth { get; init; } = 30;
