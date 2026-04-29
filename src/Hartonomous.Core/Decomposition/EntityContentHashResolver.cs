@@ -42,17 +42,13 @@ public static class EntityContentHashResolver
             hashes.Add(HashCodepoint(codepoint));
         }
 
-        if (RequiresBpeTokenHash(entityTypeCodes))
-        {
-            hashes.Add(ComputeBpeTokenHash(content));
-        }
     }
 
     private static bool RequiresStructuredTextHash(IReadOnlyList<string> entityTypeCodes)
     {
         for (int i = 0; i < entityTypeCodes.Count; i++)
         {
-            if (entityTypeCodes[i] is "grapheme_cluster" or "word_form" or "lemma" or "text_composition" or "document" or "paragraph" or "inflected_form" or "language_name" or "ud_token" or "tatoeba_sentence")
+            if (entityTypeCodes[i] is "grapheme_cluster" or "word_form" or "lemma" or "text_composition" or "document" or "paragraph" or "language_name")
             {
                 return true;
             }
@@ -74,35 +70,9 @@ public static class EntityContentHashResolver
         return false;
     }
 
-    private static bool RequiresBpeTokenHash(IReadOnlyList<string> entityTypeCodes)
-    {
-        for (int i = 0; i < entityTypeCodes.Count; i++)
-        {
-            if (entityTypeCodes[i] == "bpe_token")
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Mirrors TokenizerMappingPass.ComputeBpeTokenHash exactly: the bpe_token
-    /// signature is BLAKE3(kind="bptk" + WriteBytes(utf8_token_bytes)) where
-    /// WriteBytes prepends an 8-byte little-endian length per
-    /// CanonicalSignatureBuilder. Inlined here so the resolver can match what
-    /// the decomposer wrote without a Hartonomous.Decomposers reference.
-    /// </summary>
-    private static byte[] ComputeBpeTokenHash(string content)
-    {
-        byte[] tokenBytes = Encoding.UTF8.GetBytes(content);
-        byte[] payload = new byte[4 + 8 + tokenBytes.Length];
-        Encoding.ASCII.GetBytes("bptk", payload.AsSpan(0, 4));
-        BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(4, 8), tokenBytes.Length);
-        tokenBytes.CopyTo(payload.AsSpan(12));
-        return Blake3.Hash(payload.AsSpan());
-    }
+    // bpe_token-specific hash routing removed — BPE tokens are now word_form
+    // entities, hashed via the canonical structured-text path along with
+    // every other UTF-8 surface form.
 
     private static bool IsSingleRune(string content, out int codepoint)
     {

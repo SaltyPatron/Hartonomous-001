@@ -21,11 +21,12 @@ services:
     # frame in the C extension code).
     ulimits:
       core: -1
-    # Postgres writes core dumps to its working directory. Tell the kernel
-    # to put cores under /var/lib/postgresql/cores (bind-mounted to host
-    # ./.crash_dumps so gdb can read them outside the container).
-    sysctls:
-      kernel.core_pattern: "/var/lib/postgresql/cores/core.%e.%p.%t"
+    # NOTE: kernel.core_pattern is a global Linux sysctl (not per-container
+    # namespaced) and recent runc versions reject it. To capture cores on the
+    # host bind mount, set core_pattern on the WSL2 VM via /etc/wsl.conf or
+    # `wsl -d docker-desktop -u root -- sh -c 'echo "/var/lib/postgresql/cores/core.%e.%p.%t" > /proc/sys/kernel/core_pattern'`
+    # outside the container. Default core_pattern drops cores into the
+    # process's CWD, which is /var/lib/postgresql/data inside the container.
     # Tuned for: 14900KS (24 logical cores), 48GB DDR5 host, NVMe RAID0 (~14 GB/s).
     # Total Postgres memory budget: ~24GB (12GB shared + 8GB work distributed + 4GB maintenance),
     # leaving ~24GB for the OS, the C# decomposers running in parallel, and page cache.
@@ -51,12 +52,16 @@ services:
         -c effective_io_concurrency=256
         -c maintenance_io_concurrency=256
         -c default_statistics_target=200
-        -c jit=on
-        -c jit_above_cost=100000
+        -c jit=off
         -c log_min_duration_statement=60000
         -c log_checkpoints=on
         -c log_lock_waits=on
         -c log_temp_files=10MB
+        -c log_min_messages=DEBUG1
+        -c log_error_verbosity=verbose
+        -c log_destination=stderr
+        -c logging_collector=off
+        -c shared_preload_libraries=hartonomous
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hartonomous} -d ${POSTGRES_DB:-hartonomous}"]
       interval: 5s

@@ -23,6 +23,7 @@
 -- @include schema/functions/upsert_model_publisher.sql
 -- @include schema/functions/upsert_model_source.sql
 -- @include schema/functions/upsert_model_pass_checkpoint.sql
+-- @include schema/functions/get_completed_model_passes.sql
 -- @include schema/functions/populate_edge_trajectories.sql
 -- @include schema/functions/load_wordnet_offset_synset_map.sql
 -- Per-partition staging-flush functions (AP-2): C# COPYs into temp staging

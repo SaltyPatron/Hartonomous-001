@@ -246,15 +246,15 @@ public sealed partial class UdDecomposer : BaseDecomposer
             (EntityHandle wfHandle, byte[] wfHash, _) = EmitWordFormMerkle(batch, tok.Form);
             entityCount++;
 
-            // ud_token entity: same Merkle hash as word_form, different entity type.
-            // Same content = same hash. ud_token is the syntactic role; word_form
-            // is the morphological form. The word_form physicality row already
-            // carries the trajectory; ud_token reuses it via the shared hash.
-            EntityHandle tokEntity = batch.AddEntity(wfHash, "ud_token");
-            tokenHandles[ti] = tokEntity;
+            // The token IS the word_form. UD's per-token analysis (POS,
+            // morph features, syntactic role via dependency edges, sentence
+            // membership via sequence row) is metadata on edges/junctions/
+            // sequence — never a separate entity type. Content-addressing
+            // means the same surface form across UD/WordNet/Tatoeba/user
+            // prompt collapses to ONE entity.
+            tokenHandles[ti] = wfHandle;
             tokenHashes[ti] = wfHash;
-            batch.AddSignificance(tokEntity, "source_authority", TrustPriorMu);
-            entityCount++;
+            batch.AddSignificance(wfHandle, "source_authority", TrustPriorMu);
 
             // Lemma entity: Merkle hash (codepoints → grapheme clusters → lemma) for convergence
             // with WordNet/Wiktionary. has_lemma edge: word_form → lemma (schema edge type id=3).
@@ -298,9 +298,12 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 ComputeIntDigest(wfHash)));
         }
 
-        // ud_sentence entity: Merkle hash of ordered token hashes (content-addressed).
+        // The sentence IS a text_composition. Merkle hash of ordered token
+        // (word_form) hashes is the same Merkle a text decomposer would
+        // produce for the same sentence — same content collapses to ONE
+        // text_composition regardless of source.
         byte[] sentHash = ComputeMerkleHash(tokenHashes.AsSpan());
-        EntityHandle sentEntity = batch.AddEntity(sentHash, "ud_sentence");
+        EntityHandle sentEntity = batch.AddEntity(sentHash, "text_composition");
         batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
         entityCount++;
 

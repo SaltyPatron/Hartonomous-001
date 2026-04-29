@@ -146,7 +146,7 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
                     .WriteBytes(entry.TokenBytes)
                     .Finalize();
 
-                EntityHandle bpeToken = session.Batch.AddEntity(tokenHash, "bpe_token");
+                EntityHandle bpeToken = session.Batch.AddEntity(tokenHash, "word_form");
 
                 // Attach this model's firefly as a physicality of the shared entity.
                 // Provenance on the entity_model_source link distinguishes which

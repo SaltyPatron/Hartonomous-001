@@ -31,9 +31,20 @@ WORKDIR /src/postgres
 # is reserved for libhartonomous (numerical kernels) downstream — both compilers
 # emit C-ABI compatible code and use the system libstdc++ on Ubuntu 22.04.
 # JIT off for now (LLVM dep is heavy and we don't need it for Block B).
+#
+# Production-mode build: -O2 with debug info preserved (-g) and frame pointers
+# kept so gdb / our extension's signal handler can still walk stacks. The
+# previous diagnostic build (--enable-cassert --enable-debug -O0) enabled PG's
+# memory-poisoning macros (CLOBBER_FREED_MEMORY, RANDOMIZE_ALLOCATED_MEMORY)
+# which surfaced spurious SEGVs in catcache rehash + qsort over poisoned
+# pointers — bugs that don't fire in production builds. Cassert mode is meant
+# for PG-internals development, not for substrate ingestion at scale.
+#
+# Symbols stay (the in-extension crash handler dumps /proc/self/maps + rip;
+# addr2line still resolves source locations from -g symbols at -O2).
 RUN CC=gcc CXX=g++ \
-    CFLAGS="-O2 -fno-omit-frame-pointer" \
-    CXXFLAGS="-O2 -fno-omit-frame-pointer" \
+    CFLAGS="-O2 -g -fno-omit-frame-pointer" \
+    CXXFLAGS="-O2 -g -fno-omit-frame-pointer" \
     ./configure \
         --prefix=/opt/pg18 \
         --with-icu \

@@ -1,8 +1,14 @@
 # Ingestion Pipeline
 
-**Status**: 🚧 Architectural invariant documented; current implementation has pass-2 anti-patterns in seed decomposers (OMW, UCD, WordNet) that must be eliminated. See § *Invariant* and § *Anti-patterns* below.
+**Status**: ✅ Streaming pipeline (record-flow + persistent staging + background drain) operational. The legacy per-batch `NpgsqlIngestionPipeline` is retained as a deprecated shim while decomposer migrations land (tasks E1–E9).
 
-The bridge between every decomposer (modality or seed) and the substrate. One centralized pipeline owns batching, partitioning, parallelization, threading, async, commit boundaries, hash→id resolution, and backpressure. Every decomposer is a pure record producer.
+The bridge between every decomposer (modality or seed) and the substrate. One centralized streaming pipeline owns:
+- per-kind bounded channels for backpressure-controlled flow
+- long-lived `NpgsqlBinaryImporter` COPY streams into persistent staging tables
+- background drain of `substrate.staging_*` → `substrate.*` via `substrate.drain_staging_*_chunk` SQL functions
+- background priming of `substrate.edge_significance` via `substrate.prime_unprimed_edges_chunk`
+
+Every decomposer is a pure record producer. There is no per-batch transaction, no per-batch staging-and-flush dance, no synchronous significance prime call inside the producer path.
 
 ---
 
@@ -10,310 +16,204 @@ The bridge between every decomposer (modality or seed) and the substrate. One ce
 
 **The pipeline is invention-level infrastructure. Decomposers are adapters.**
 
-There is exactly one ingestion pipeline. Every decomposer — text, image, audio, video, telemetry, chess games, DNA, medical data, safetensors models, UCD, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba — produces records for that pipeline and nothing else. No decomposer owns a transaction. No decomposer owns a channel. No decomposer calls `ResolveEntityIdsAsync` to stitch its own cross-batch joins. No decomposer runs a "pass 2" over accumulated hashes.
+There is exactly one ingestion pipeline per phase run. Every decomposer — text, image, audio, video, telemetry, chess games, DNA, medical data, safetensors models, UCD, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba — emits records into that pipeline and nothing else. No decomposer owns a transaction. No decomposer owns a channel. No decomposer calls `ResolveEntityIdsAsync` to stitch its own cross-batch joins. No decomposer runs a "pass 2" over accumulated hashes.
 
 Two classes of decomposer, both producers, no architectural difference:
 1. **Modality (core) decomposers** — ingest native content of a modality. Text, image, audio, video, telemetry, chess PGN, DNA FASTA, medical DICOM, safetensors weights, etc. These OWN the AST decomposition for their modality (e.g., the text decomposer owns codepoint → grapheme_cluster → morpheme → word_form → text_composition → paragraph → document).
-2. **Seed decomposers** — ingest authoritative foundational lexicons so the substrate has structural grammar to reason against. UCD/UCA, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba. The database IS the model; seed decomposers seed its foundational grammar.
+2. **Seed decomposers** — ingest authoritative foundational lexicons so the substrate has structural grammar to reason against. UCD/UCA, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba.
 
 ### Seed decomposers USE core decomposers — they do not bypass them
 
-A Tatoeba sentence is NOT a flat `tatoeba_sentence` atom that carries the raw string. It is a full text AST produced by the TEXT core decomposer: codepoint → grapheme_cluster → morpheme → word_form → text_composition (Merkle) → paragraph → document. Each level is an entity with its own BLAKE3 content hash. The Tatoeba seed decomposer's job is to hand the raw string to the text decomposer, receive back the root text_composition hash, and attach metadata edges/junctions on top (provenance = tatoeba, `entity_language` = eng, `translation_link` to another sentence, `has_contributor`, etc.).
+A Tatoeba sentence is NOT a flat `tatoeba_sentence` atom that carries the raw string. It is a full text AST produced by the TEXT core decomposer: codepoint → grapheme_cluster → morpheme → word_form → text_composition (Merkle) → paragraph → document. Each level is an entity with its own BLAKE3 content hash. The Tatoeba seed decomposer's job is to hand the raw string to the text decomposer, receive back the root text_composition hash, and attach metadata edges/junctions on top.
 
-**Same content = same hash at every level of the AST.** "Hello world" in a Tatoeba row, in a WordNet example gloss, in a Wiktionary citation, in a user prompt, and in a model-generated output all collapse to ONE `text_composition` entity with ONE hash. The per-source provenance/edges/junctions diverge; the content atom never duplicates. This is the invention — content addressing at every tier of the AST, shared across every decomposer that encounters that content.
-
-This principle applies everywhere text lives:
-- **WordNet glosses and examples** — full text AST, not opaque text_composition atoms. "a tool for gathering leaves" decomposes into its word_forms, morphemes, graphemes, codepoints. Every one is shared with any other text containing those substrings.
-- **Wiktionary** definitions, etymologies, pronunciations (IPA is text), hyphenation annotations — text AST.
-- **UD sentences** — text AST via the text decomposer; UD overlays syntactic dependency edges on top of the word_forms the text decomposer already produced.
-- **Safetensors** model config JSON string values, tokenizer vocab entries, architecture metadata — text AST.
-- **Any modality carrying embedded text** — image captions, audio transcripts, video subtitles, chess PGN comments, medical report narrative — text AST.
-
-And symmetrically for other modalities when they appear embedded in text: an image URL in a Wiktionary entry, an audio clip referenced from a Tatoeba row, a tensor referenced from a model card — the seed/metadata decomposer hands the bytes to the core decomposer for that modality and references the resulting content hash.
-
-### Phase ordering consequence
-
-UCD/UCA must run first — it seeds codepoint atoms. Immediately after, the TEXT core decomposer service must be available (via DI) to every subsequent decomposer. WordNet, UD, Wiktionary, Tatoeba, Safetensors, and every modality decomposer route their embedded text through it. No decomposer in the system calls `ComputeHash(string)` directly on a user-visible string and emits it as an atomic entity — that bypasses the AST and breaks same-content-same-hash.
+**Same content = same hash at every level of the AST.** "Hello world" in a Tatoeba row, in a WordNet example gloss, in a Wiktionary citation, in a user prompt, and in a model-generated output all collapse to ONE `text_composition` entity with ONE hash.
 
 ---
 
 ## Architecture
 
 ```
-Decomposer (streaming producer — modality or seed, no distinction)
-  → creates IIngestionBatch
-  → emits records: entity (hash), edge (type + member hashes/handles),
-                   junction, physicality, sequence, significance
-  → calls pipeline.SubmitBatchAsync(batch) when batch thresholds are reached
-  → SINGLE PASS over the source — no pass-2, no cross-batch accumulation
+┌───────────────────────────────────────────────────────────────────┐
+│  Decomposer threads (modality or seed; can run in parallel)       │
+│    parse source → emit records via IRecordSink.EmitAsync          │
+│    no batch boundary in the producer's API                        │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │ EmitAsync (one record at a time)
+                               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│  StreamingIngestionPipeline  (Hartonomous.Engine.Ingestion)       │
+│                                                                    │
+│   8 bounded Channel<TRecord> (capacity 65,536 each, FullMode=Wait)│
+│      Channel<EntityRecord>                                         │
+│      Channel<EdgeRecord>                                           │
+│      Channel<EdgeMemberRecord>                                     │
+│      Channel<JunctionRecord>                                       │
+│      Channel<PhysicalityRecord>                                    │
+│      Channel<SequenceRecord>                                       │
+│      Channel<EntitySignificanceRecord>                             │
+│      Channel<EntityModelSourceRecord>                              │
+│                              │                                     │
+│   8 drain Tasks — one per kind, each holding a long-lived          │
+│   NpgsqlBinaryImporter into the corresponding staging table.       │
+│   Chunks commit at 4096 rows OR 250ms idle, whichever first.       │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │ COPY (binary)
+                               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│  Persistent staging tables (substrate schema, migration 0019)     │
+│    substrate.staging_entity                                        │
+│    substrate.staging_edge                                          │
+│    substrate.staging_edge_member                                   │
+│    substrate.staging_junction (table_name discriminator)           │
+│    substrate.staging_physicality                                   │
+│    substrate.staging_sequence                                      │
+│    substrate.staging_entity_significance                           │
+│    substrate.staging_entity_model_source                           │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │
+                               │ ←  StagingFlushWorker (continuous)
+                               │     calls substrate.drain_staging_*_chunk
+                               │     in 4K-row chunks (65K during catch-up)
+                               │     FOR UPDATE SKIP LOCKED — concurrent-safe
+                               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│  substrate.* (the actual substrate)                               │
+│    substrate.entity, substrate.edge, substrate.edge_member,        │
+│    substrate.physicality, substrate.sequence,                      │
+│    substrate.entity_significance, substrate.edge_significance,     │
+│    substrate.entity_model_source, substrate.entity_pos,            │
+│    substrate.entity_lexname, substrate.entity_language, ...        │
+└───────────────────────────────────────────────────────────────────┘
+                               │
+                               │ ←  BackgroundSignificancePrimer (continuous)
+                               │     calls substrate.prime_unprimed_edges_chunk
+                               │     iterates significance_context, primes
+                               │     missing rows arena-by-arena
+```
 
-Pipeline (NpgsqlIngestionPipeline — owns everything non-record)
-  → batching, flush thresholds, bounded-channel parallelism
-  → per-batch transaction
-  → UpsertEntitiesAsync (hash → id)
-  → resolves cross-batch hashes in edges/junctions via
-    SELECT id FROM substrate.entity WHERE hash = ANY($1)
-  → remaps EntityHandles + resolved hashes to real entity_ids
-  → calls stored procedures in FK order
-  → commits transaction
-  → reports stats + progress
+### Lifecycle
+
+The orchestrator constructs ONE `StreamingIngestionPipeline`, ONE `StagingFlushWorker`, and ONE `BackgroundSignificancePrimer` per phase run (or per process lifetime). All decomposers in the phase share them.
+
+```csharp
+await using StreamingIngestionPipeline pipeline = new(conn, refDataReader, logger);
+await using NpgsqlDataSource flushDs = NpgsqlDataSource.Create(conn);
+await using StagingFlushWorker flushWorker = new(flushDs, flushLogger);
+await flushWorker.StartAsync();
+await using BackgroundSignificancePrimer primer = new(flushDs, primerLogger);
+await primer.StartAsync();
+
+// ... run decomposers, all sharing `pipeline` (cast to IRecordSink or IIngestionPipeline) ...
+
+await pipeline.FlushAsync(ct);  // drain in-flight channels into staging
+await primer.StopAsync();        // catch-up prime to empty
+await flushWorker.StopAsync();   // catch-up drain to empty
 ```
 
 ---
 
-## Batching
+## Producer surfaces
 
-### What Is a Batch
-
-A batch is an `IIngestionBatch` — an in-memory buffer of pending operations assembled by a decomposer during parsing. A batch contains:
-
-- Entities (hash + type code)
-- Edges (type code + provenance + members referencing EntityHandles)
-- Junctions (junction table + entity handle + reference ID + optional mu)
-- Physicalities (entity handle + type code + WKB geometry)
-- Sequences (parent handle + child handle + position + count)
-- Significance initializations (entity handle + context code + initial mu)
-
-### Batch Size
-
-Configurable via `DecomposerConfig.BatchSize`. Default: **10,000 entities** per batch.
-
-Edges, junctions, physicalities, and sequences scale with entity count — a batch of 10,000 entities might contain 50,000 edges, 30,000 junctions, 10,000 physicalities, etc. The entity count is the control knob.
-
-Upper bound: **100,000 entities** per batch. Beyond this, the single-transaction approach risks long lock hold times and large WAL generation.
-
-### Assembly Pattern
+### `IRecordSink` (preferred, post-streaming-redesign)
 
 ```csharp
-// In a decomposer's DecomposeCoreAsync:
-var batch = pipeline.CreateBatch();
-
-foreach (var entry in ParseSourceFile(path))
+public interface IRecordSink
 {
-    var handle = batch.AddEntity(ComputeHash(entry.Content), entry.TypeCode);
-
-    foreach (var edge in entry.Edges)
-        batch.AddEdge(edge.TypeCode, ProvenanceCode, edge.Members);
-
-    foreach (var junction in entry.Junctions)
-        batch.AddJunction(junction.Table, handle, junction.ReferenceId, junction.Mu);
-
-    if (batch.EntityCount >= BatchSize)
-    {
-        await SubmitAndReportAsync(pipeline, reporter, batch, snapshot, ct);
-        batch = pipeline.CreateBatch();
-    }
-}
-
-// Submit the final partial batch
-if (batch.EntityCount > 0)
-    await SubmitAndReportAsync(pipeline, reporter, batch, snapshot, ct);
-```
-
----
-
-## Transaction Boundaries
-
-**One transaction per batch.** The entire batch submits atomically.
-
-```
-BEGIN TRANSACTION
-  → batch_upsert_entities(...) → returns entity_ids
-  → batch_create_edges(...)    → creates edges + edge_members atomically
-  → populate_junction(...)     → per junction table
-  → create_physicality(...)    → per physicality entry
-  → create_sequence(...)       → per sequence entry
-  → initialize_significance(...)
-COMMIT
-```
-
-If any step fails, the entire transaction rolls back. No partial batches in the database. The decomposer receives the exception and propagates it — the phase runner halts.
-
-**No savepoints.** A batch is the atomic unit. If one entity in a 10,000-entity batch has a corrupt hash, the entire batch fails. The operator fixes the source data and re-runs the decomposer. The decomposer is idempotent (entity upsert on hash + ON CONFLICT DO NOTHING) so re-running is safe.
-
----
-
-## Anti-patterns (current code violations — to be eliminated)
-
-1. **Pass-1 (atoms) / Pass-2 (connective tissue) inside a decomposer.** A decomposer that flushes entity batches, then calls `pipeline.ResolveEntityIdsAsync(allHashes)` against the entire phase's hash set, then iterates a second time to emit edges and junctions by integer id, is doing the pipeline's job badly. Symptoms: `List<(byte[] LemmaHash, byte[] SynsetHash, double TrustMu)> alignments = new(3_000_000)` (OMW), two-pass loops over `allCodepoints` (UCD), large `glossEntries`/`exampleEntries` lists held across the phase (WordNet). Memory grows linearly in the phase input, not in the batch. Replace by emitting edges at the point of production via hash-valued `EdgeMemberSpec` that the pipeline resolves at batch-commit time (`SELECT id FROM substrate.entity WHERE hash = ANY($1)` for any hashes not present in the current batch).
-
-2. **Decomposer-owned parallelism.** UD and Wiktionary each implement their own `Channel.CreateBounded` producer/consumer over `Parallel.ForEachAsync`. That logic belongs on the pipeline, applied uniformly across every decomposer. Decomposers should be single-threaded streaming producers; the pipeline distributes work.
-
-3. **Seed decomposers bypassing core decomposers.** Tatoeba emitting `tatoeba_sentence` entities as atoms whose hash comes from the raw string directly. WordNet emitting gloss and example strings as opaque `text_composition` entities without running them through the text decomposer. Wiktionary storing etymology text and IPA pronunciation as flat strings. Every one of these routes its text content around the text-modality AST, producing `text_composition` hashes that will NOT match the same content appearing in a user prompt or another seed source. This defeats the invention.
-
-4. **Decomposer-side `ComputeHash(string)` on user-visible text.** Any time a decomposer takes a multi-character string destined for a `text_composition`-tier entity and hashes it directly, it is bypassing the AST. The only callers that may hash raw strings as atoms are the core decomposers of the matching modality (text decomposer hashes graphemes/codepoints; image decomposer hashes pixel regions; audio decomposer hashes audio chunks), and only at the atom tier.
-
----
-
-## Call Sequence
-
-The order of stored procedure calls within a transaction is FK-constrained:
-
-### Step 1: Entity Upsert
-
-```csharp
-// Resolve which entities already exist
-var existingHashes = new HashSet<byte[]>(ByteArrayComparer.Instance);
-var existing = await ResolveEntityIdsAsync(batch.AllHashes, ct);
-foreach (var kvp in existing)
-    existingHashes.Add(kvp.Key);
-
-// Upsert new entities only
-var newEntities = batch.Entities
-    .Where(e => !existingHashes.Contains(e.Hash))
-    .ToList();
-
-if (newEntities.Any())
-{
-    // CALL substrate.batch_upsert_entities(
-    //   p_hashes := ARRAY[...],
-    //   p_entity_type_codes := ARRAY[...]
-    // )
-    // Uses unnest + LEFT JOIN pattern from stored-procedures.md
-}
-
-// Re-resolve all entity IDs (both existing and newly created)
-var allIds = await ResolveEntityIdsAsync(batch.AllHashes, ct);
-// Remap all EntityHandles → real entity_ids
-batch.RemapHandles(allIds);
-```
-
-### Step 2: Edge Creation
-
-```csharp
-// CALL substrate.batch_create_edges(
-//   p_hashes := ARRAY[...],
-//   p_edge_type_codes := ARRAY[...],
-//   p_provenance_codes := ARRAY[...],
-//   p_member_entity_ids := ARRAY[ARRAY[...]],
-//   p_member_role_codes := ARRAY[ARRAY[...]],
-//   p_member_positions := ARRAY[ARRAY[...]]
-// )
-// Atomically creates edges + edge_members per stored-procedures.md
-```
-
-### Step 3: Junction Population
-
-```csharp
-// Per junction table, one call each:
-// CALL substrate.populate_junction('entity_pos', p_entity_ids, p_reference_ids, p_mus)
-// CALL substrate.populate_junction('entity_sense', p_entity_ids, p_reference_ids, p_mus)
-// etc.
-// Whitelist-validated dynamic SQL per stored-procedures.md
-```
-
-### Step 4: Physicality Creation
-
-```csharp
-// Per physicality entry:
-// CALL substrate.create_physicality(p_entity_id, p_physicality_type_code, p_geom)
-// Geometry passed as WKB (Well-Known Binary) for efficient transfer
-```
-
-### Step 5: Sequence Creation
-
-```csharp
-// Bulk INSERT into substrate.sequence using unnest:
-// INSERT INTO substrate.sequence (parent_id, child_id, position, count)
-// SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::int[], $4::int[])
-```
-
-### Step 6: Significance Initialization
-
-```csharp
-// CALL substrate.initialize_significance(p_entity_id, p_context_type_code, p_initial_mu)
-// Initial mu from provenance trust prior
-```
-
----
-
-## Connection Management
-
-### Npgsql Data Source
-
-```csharp
-public sealed class NpgsqlIngestionPipeline : IIngestionPipeline
-{
-    private readonly NpgsqlDataSource _dataSource;
-
-    public NpgsqlIngestionPipeline(string connectionString)
-    {
-        var builder = new NpgsqlDataSourceBuilder(connectionString);
-        builder.UseNetTopologySuite();  // PostGIS geometry support
-        _dataSource = builder.Build();
-    }
-
-    public async ValueTask DisposeAsync()
-        => await _dataSource.DisposeAsync();
+    ValueTask EmitAsync(IngestionRecord record, CancellationToken ct);
+    ValueTask FlushAsync(CancellationToken ct);
 }
 ```
 
-**Connection pooling**: Npgsql's built-in pool. Default size: 10. One `NpgsqlDataSource` per pipeline instance (one per decomposer run).
+Decomposers receive an `IRecordSink` and emit one `IngestionRecord` at a time. There is no batch boundary. Backpressure is automatic — when a channel fills, `EmitAsync` returns a `ValueTask` that completes when capacity becomes available.
 
-**Connection string**: `Host=localhost;Port=5432;Database=hartonomous;Username=postgres;Password=postgres;Maximum Pool Size=10;Timeout=30`.
+### `IIngestionPipeline` (compatibility shim)
 
-No connection-per-batch. The pool manages connections internally. `SubmitBatchAsync` acquires a connection from the pool, runs the transaction, and releases it.
-
----
-
-## Bulk Mode vs Incremental Mode
-
-### Phase 1 Bulk Mode (Seed Ingestion)
-
-- Deferred indexes are absent (per indexing.md Phase 2).
-- Batch size raised to 50,000-100,000 entities.
-- Stored procedures are called (not COPY). Reason: entity upsert deduplication requires the hash → id lookup pattern, which COPY cannot do.
-- After all decomposers complete, deferred indexes are created with `CREATE INDEX CONCURRENTLY` (Phase 3 of indexing.md).
-- Post-index: `VACUUM ANALYZE` all tables.
-
-### Phase 2+ Incremental Mode (Analysis Passes, User Content)
-
-- All indexes present.
-- Batch size at default 10,000.
-- Same stored procedure call sequence.
-- No special handling — the indexes exist, so insertion auto-maintains them.
-
-The pipeline does not know which mode it is in. The difference is purely whether indexes exist yet. The phase runner controls when indexes are created.
+`StreamingIngestionPipeline` also implements `IIngestionPipeline`. Existing decomposers that build `IngestionBatch` keep working — the shim unfolds each batch into per-record `EmitAsync` calls. This is the migration ramp: every decomposer benefits from streaming immediately; per-decomposer migrations to `IRecordSink` are opt-in optimizations.
 
 ---
 
-## EntityHandle Remapping
+## Record types
 
-`EntityHandle` is a batch-local reference. During batch assembly, the decomposer doesn't know real entity IDs — entities haven't been inserted yet. After Step 1 (entity upsert + resolve), the pipeline remaps all handles:
+Eight discriminated-union subtypes of `IngestionRecord` (`Hartonomous.Core.Ingestion.*`):
 
-```csharp
-internal void RemapHandles(IReadOnlyDictionary<byte[], long> hashToId)
-{
-    // For each EntityHandle in edges, junctions, physicalities, sequences:
-    // look up the hash from the entity at that batch index,
-    // resolve to real entity_id from hashToId dictionary
-}
+| Record type                  | Maps to                          |
+|------------------------------|----------------------------------|
+| `EntityRecord`               | `substrate.entity`               |
+| `EdgeRecord`                 | `substrate.edge`                 |
+| `EdgeMemberRecord`           | `substrate.edge_member`          |
+| `JunctionRecord`             | `substrate.entity_pos` / `substrate.entity_lexname` / `substrate.entity_language` / `substrate.entity_morph_feature` / `substrate.model_architecture_class` / `substrate.tensor_tensor_role` / `substrate.pattern_deprel` (routed by `JunctionTable` discriminator) |
+| `PhysicalityRecord`          | `substrate.physicality`          |
+| `SequenceRecord`             | `substrate.sequence`             |
+| `EntitySignificanceRecord`   | `substrate.entity_significance`  |
+| `EntityModelSourceRecord`    | `substrate.entity_model_source`  |
+
+`BaseDecomposer` exposes static helpers for emitting each kind: `EmitEntityAsync`, `EmitEdgeAsync` (computes `edge_hash` from role-ordered participant hashes), `EmitJunctionAsync`, `EmitPhysicalityAsync` (computes content hash from WKB), `EmitSequenceAsync`, `EmitEntitySignificanceAsync`, `EmitEntityModelSourceAsync`.
+
+---
+
+## Staging + drain
+
+Migration `0019_persistent_staging` creates 8 staging tables in `substrate.*`. Each is a queue: producers COPY in, drainer drains in chunks. ctid-based draining (`SELECT ctid LIMIT N FOR UPDATE SKIP LOCKED → INSERT ... ON CONFLICT DO NOTHING → DELETE WHERE ctid IN (...)`) gives concurrent-flusher safety; multiple workers can run if needed.
+
+`substrate.drain_staging_*_chunk(p_chunk_size INT)` returns the count of rows drained. Background worker loops calling each in turn, sleeps when all return 0.
+
+Staging tables are NOT partitioned — they're queues. The drain functions do partition routing on the way to substrate. Per-partition `INSERT ... ON CONFLICT DO NOTHING` is the substrate-side operation; bulk-INSERT pressure stays bounded because chunks are small (4K rows, 64K during shutdown catch-up).
+
+---
+
+## Significance priming
+
+`substrate.prime_unprimed_edges_chunk(p_arena_id INT, p_chunk_size INT)` finds N edges with no `substrate.edge_significance` row in a given arena, primes them with the compound-formula μ:
+
+```
+μ₀ = COALESCE(
+       provenance_edge_authority.initial_mu,
+       provenance.initial_mu × edge_type.semantic_weight × provenance.derivation_decay
+     )
 ```
 
-This is why edges, junctions, physicalities, and sequences reference `EntityHandle` during assembly but use real `long` entity IDs during submission.
+`BackgroundSignificancePrimer` iterates arenas read from `substrate.significance_context` (open-vocabulary — new arenas auto-pick-up via 30-second arena-list refresh), primes each in turn, sleeps on idle.
+
+Critically: this is **NOT** inside any producer transaction. The synchronous `prime_edge_significance_for_staging` call inside the old per-batch path (which crashed PG with stack canary failures in `ExecInterpExpr` under bulk-INSERT pressure) is gone.
 
 ---
 
-## Pipeline Stats
+## Performance baselines
 
-```csharp
-public sealed class PipelineStats
-{
-    public long EntitiesUpserted { get; internal set; }
-    public long EntitiesSkippedDuplicate { get; internal set; }
-    public long EdgesCreated { get; internal set; }
-    public long JunctionsPopulated { get; internal set; }
-    public long PhysicalitiesCreated { get; internal set; }
-    public long SequencesCreated { get; internal set; }
-    public long SignificanceInitialized { get; internal set; }
-    public long BatchesSubmitted { get; internal set; }
-    public TimeSpan TotalSubmitTime { get; internal set; }
+| Phase           | Old per-batch wall | Streaming wall | Speedup |
+|-----------------|--------------------|----------------|---------|
+| UCD/UCA         | 50.7s              | 20.7s          | 2.4x    |
+| ISO 639         | 3.3s               | 2.1s           | 1.6x    |
+| WordNet + OMW   | 414.8s             | 176.4s         | 2.4x    |
+| Universal Deps  | crashed (SIGSEGV)  | (proof point — see UD task)  |  —      |
 
-    public double EntitiesPerSecond =>
-        TotalSubmitTime.TotalSeconds > 0
-            ? EntitiesUpserted / TotalSubmitTime.TotalSeconds
-            : 0;
-}
-```
+Baselines on a 14900KS / 48GB DDR5 / NVMe RAID0 host running PG18 + PostGIS 3.6 + hartonomous extension (icx-built libhartonomous, MKL-linked, AVX2 paths active).
 
-Updated by `SubmitBatchAsync` after each successful batch. Read by progress reporters and the phase runner for monitoring.
+The streaming pipeline's COPY commits amortize I/O cost: 11,026 commits for the WordNet+OMW run vs ~525 batches × 7 substrate tables = 3,675 transactions for the same data on the old pipeline (each old transaction was much heavier — staging table CREATE/DROP × 7 + flush function calls × 7 + prime call inside the batch).
+
+---
+
+## Banned patterns (post-streaming-redesign)
+
+- **Per-batch transactions in the producer path.** The old `NpgsqlIngestionPipeline.SubmitBatchAsync` opened a transaction, did all 7 sub-phases of CREATE TEMP / COPY / flush, and committed. The streaming pipeline has zero per-batch transactions. COPY commits run on chunk-size or idle threshold inside the long-lived drain task.
+- **Synchronous `SELECT substrate.prime_edge_significance_for_staging()` inside a producer transaction.** This was the crash site. Significance priming is now a separate background task on its own connection.
+- **TEMP staging tables created and dropped per batch.** Staging is persistent (`substrate.staging_*`) and shared across all producers.
+- **Decomposer-owned `Channel.CreateBounded` / `Parallel.ForEachAsync`.** The pipeline owns channels. Decomposers can use `Parallel.ForEachAsync` for *source-parsing parallelism* (e.g., UD's 270+ treebanks parsed in parallel), but they all push into the same shared `IRecordSink`.
+- **`ComputeHash(string)` on user-visible text inside a seed decomposer.** Routes through the text core decomposer which produces the canonical text AST.
+- **Cherry-picking a subset of `significance_context` arenas.** The primer iterates whatever arenas exist at refresh time. Code that hardcodes the 10 starter arena codes is wrong.
+- **Pass-2 walks over accumulated hashes.** The streaming model produces records once, in source order; cross-batch identity is handled by content hashes, not by a second pass.
+
+---
+
+## Cross-references
+
+- `src/Hartonomous.Core/Ingestion/IRecordSink.cs` — the producer surface
+- `src/Hartonomous.Core/Ingestion/IngestionRecord.cs` (+ 8 subtype files) — record kinds
+- `src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs` — the core pipeline
+- `src/Hartonomous.Engine/Ingestion/StagingFlushWorker.cs` — background drain
+- `src/Hartonomous.Engine/Ingestion/BackgroundSignificancePrimer.cs` — background priming
+- `sql/migrations/0019_persistent_staging.up.sql` — staging tables + drain functions
+- `sql/schema/functions/drain_staging_chunk.sql` — drain function definitions
+- `sql/schema/functions/prime_unprimed_edges_chunk.sql` — significance primer
+- `.claude/rules/00-hartonomous-core.md` § "Ingestion pipeline is centralized; decomposers are pure producers"
+- `.claude/rules/45-anti-patterns.md` AP-2 (inline SQL in C#), AP-1 (arena cherry-picking)

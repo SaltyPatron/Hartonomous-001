@@ -139,7 +139,7 @@ internal sealed partial class VocabCoveragePass : IModelAnalysisPass
             byte[] tokenHash = ComputeBpeTokenHash(context, entry.TokenBytes);
             byte[] lemmaHash = BaseDecomposer.ComputeWordFormHash(text);
 
-            EntityHandle bpeTokenEntity = session.Batch.AddEntity(tokenHash, "bpe_token");
+            EntityHandle bpeTokenEntity = session.Batch.AddEntity(tokenHash, "word_form");
             EntityHandle lemmaEntity = session.Batch.AddEntity(lemmaHash, "lemma");
 
             session.Batch.AddEdge("covers_lemma", context.ProvenanceCode,

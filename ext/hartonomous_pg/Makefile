@@ -28,8 +28,23 @@ PG_CPPFLAGS  = -I$(srcdir)/../libhartonomous/include
 # pg_traverse_astar nested-SPI control flow. -fno-lto on both compile and link
 # overrides the inherited PG flags. The extension is small (3 .c files) so
 # losing LTO costs nothing measurable.
-PG_CFLAGS   += -fno-lto
-SHLIB_LINK   = -L/usr/local/lib -lhartonomous -fno-lto
+#
+# Diagnostic flags (debug-mode build):
+#   -g3                          — full DWARF debug info: locals, file:line,
+#                                   macro definitions. -g alone strips macros.
+#   -O0                          — no optimization. Without it, gcc folds locals
+#                                   ("optimized out" in gdb) and inlines functions
+#                                   so backtrace() loses frames. For diagnostic
+#                                   builds. Production-mode rebuild can use -O2 -g.
+#   -fno-inline                  — every function gets its own frame, even tiny
+#                                   helpers — backtrace + gdb walk reliably.
+#   -fno-omit-frame-pointer      — backtrace() needs frame pointers to walk the
+#                                   stack reliably across signal-handler boundaries.
+#   -rdynamic                    — export ALL symbols (not just PG_FUNCTION_INFO_V1
+#                                   entry points) so backtrace_symbols can resolve
+#                                   internal helper names instead of "??".
+PG_CFLAGS   += -fno-lto -g3 -O0 -fno-inline -fno-omit-frame-pointer
+SHLIB_LINK   = -L/usr/local/lib -lhartonomous -fno-lto -Wl,--export-dynamic
 
 REGRESS      = hartonomous_test
 REGRESS_OPTS = --inputdir=test

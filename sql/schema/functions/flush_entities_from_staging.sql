@@ -12,6 +12,9 @@
 CREATE OR REPLACE FUNCTION substrate.flush_entities_from_staging()
 RETURNS VOID
 LANGUAGE plpgsql
+SET jit = off
+SET max_parallel_workers_per_gather = 0
+SET max_parallel_maintenance_workers = 0
 AS $$
 DECLARE
     t INT;

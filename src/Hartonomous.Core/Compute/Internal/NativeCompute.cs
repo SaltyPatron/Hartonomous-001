@@ -43,6 +43,23 @@ internal static partial class NativeCompute
     [LibraryImport(Library, EntryPoint = "hartonomous_blake3_finalize")]
     internal static unsafe partial void Blake3Finalize(byte* state, byte* outHash);
 
+    /// <summary>
+    /// Batched BLAKE3 hash for N inputs in one FFI call.
+    /// inputs: array of N pointers to byte buffers.
+    /// inputLens: array of N lengths.
+    /// n: number of inputs.
+    /// output: caller-allocated buffer of n * 32 bytes.
+    /// Returns 0 on success.
+    /// Eliminates per-record P/Invoke trampoline cost — streaming sink calls
+    /// this once per chunk of ~4K records.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_blake3_many")]
+    internal static unsafe partial int Blake3Many(
+        byte** inputs,
+        nuint* inputLens,
+        long n,
+        byte* output);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_s3_distance")]
     internal static partial double S3Distance(
         ReadOnlySpan<double> p1, ReadOnlySpan<double> p2);
@@ -55,11 +72,32 @@ internal static partial class NativeCompute
     internal static partial int Centroid4d(
         ReadOnlySpan<double> points, nuint pointCount, Span<double> result);
 
+    /// <summary>
+    /// Grouped 4D centroid: for N points labelled with group_ids in [0, K),
+    /// compute K per-group arithmetic means in one FFI call. Streaming sink
+    /// uses this to emit per-composition LINESTRINGZM centroids in bulk
+    /// instead of one centroid call per composition.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_centroid_4d_grouped")]
+    internal static partial int Centroid4dGrouped(
+        ReadOnlySpan<double> points,
+        ReadOnlySpan<long> groupIds,
+        long n,
+        long groupCount,
+        Span<double> centroids);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_karcher_mean_s3")]
     internal static partial int KarcherMeanS3(
         ReadOnlySpan<double> points, nuint pointCount,
         int maxIter, double tol,
         Span<double> result);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_super_fibonacci_many")]
+    internal static partial int SuperFibonacciMany(
+        ReadOnlySpan<double> indices,
+        long n,
+        double total,
+        Span<double> output);
 
     [LibraryImport(Library, EntryPoint = "hartonomous_super_fibonacci")]
     internal static partial int SuperFibonacci(

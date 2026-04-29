@@ -16,12 +16,25 @@ internal sealed class MigrationRunner
         _migrationsDir = migrationsDir;
     }
 
-    public async Task<int> UpAsync(CancellationToken ct)
+    public async Task<int> UpAsync(CancellationToken ct, bool allowDrift = false)
     {
         IReadOnlyList<Migration> migrations = Migration.Discover(_migrationsDir);
 
         IReadOnlyDictionary<int, AppliedMigrationRecord> applied = await _store.GetAppliedMigrationsAsync(ct);
-        AssertNoDriftOrGap(migrations, applied);
+        if (allowDrift)
+        {
+            // Caller has explicitly accepted that some applied-migration source
+            // files have changed since they were applied. Print drift to stderr
+            // so it's still visible (not silent), then continue with new
+            // migrations. The DB-side function definitions remain whatever the
+            // last CREATE OR REPLACE made them — typically still correct because
+            // function bodies are CREATE OR REPLACE'd, not destructively altered.
+            ReportDriftWithoutFailing(migrations, applied);
+        }
+        else
+        {
+            AssertNoDriftOrGap(migrations, applied);
+        }
 
         int appliedCount = 0;
         foreach (Migration m in migrations)
@@ -42,6 +55,35 @@ internal sealed class MigrationRunner
             Console.WriteLine("Database is up to date.");
         }
         return appliedCount;
+    }
+
+    private static void ReportDriftWithoutFailing(IReadOnlyList<Migration> migrations, IReadOnlyDictionary<int, AppliedMigrationRecord> applied)
+    {
+        Dictionary<int, Migration> byVersion = new();
+        foreach (Migration m in migrations)
+        {
+            byVersion[m.Version] = m;
+        }
+        bool anyDrift = false;
+        foreach (AppliedMigrationRecord a in applied.Values)
+        {
+            if (!byVersion.TryGetValue(a.Version, out Migration? m))
+            {
+                Console.Error.WriteLine($"  WARN: applied migration {a.Version:D4} '{a.Name}' has no matching file on disk (--allow-drift).");
+                anyDrift = true;
+                continue;
+            }
+            string currentChecksum = m.UpChecksum();
+            if (currentChecksum != a.Checksum)
+            {
+                Console.Error.WriteLine($"  WARN: checksum drift on {a.Version:D4} '{a.Name}': stored={a.Checksum[..16]}…, current={currentChecksum[..16]}… (--allow-drift).");
+                anyDrift = true;
+            }
+        }
+        if (anyDrift)
+        {
+            Console.Error.WriteLine("  WARN: --allow-drift in effect: proceeding past drifted migrations. DB-side function/table state is whatever last applied; verify substrate.health_summary() before treating as correct.");
+        }
     }
 
     public async Task DownAsync(int steps, CancellationToken ct)

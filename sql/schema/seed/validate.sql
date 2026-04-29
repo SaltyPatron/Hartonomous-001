@@ -4,7 +4,7 @@ DECLARE
     cnt INT;
 BEGIN
     SELECT COUNT(*) INTO cnt FROM substrate.entity_type;
-    IF cnt <> 25 THEN RAISE EXCEPTION 'entity_type count=% (expected 25)', cnt; END IF;
+    IF cnt <> 42 THEN RAISE EXCEPTION 'entity_type count=% (expected 42)', cnt; END IF;
 
     SELECT COUNT(*) INTO cnt FROM substrate.physicality_type;
     IF cnt <> 13 THEN RAISE EXCEPTION 'physicality_type count=% (expected 13)', cnt; END IF;
@@ -25,5 +25,5 @@ BEGIN
     IF cnt <> 17 THEN RAISE EXCEPTION 'pos count=% (expected 17)', cnt; END IF;
 
     SELECT COUNT(*) INTO cnt FROM substrate.edge_type;
-    IF cnt <> 79 THEN RAISE EXCEPTION 'edge_type count=% (expected 79)', cnt; END IF;
+    IF cnt <> 98 THEN RAISE EXCEPTION 'edge_type count=% (expected 98)', cnt; END IF;
 END$$;

@@ -1,0 +1,14 @@
+-- Stage 0018: per-arena loop rewrite of prime_edge_significance_for_staging.
+--
+-- Why: the migration-0017 form CROSS JOINed staging_edge × significance_context
+-- and produced a single INSERT with arena-count × staging-rows tuples routed
+-- across all 10 partitions. UD-scale batches (25K edges → 250K target rows
+-- against an existing 1.4M-row partitioned target) tipped a Postgres backend
+-- into stack-smashing during partition routing — backend was killed by SIGABRT,
+-- whole cluster restarted into automatic recovery.
+--
+-- The rewrite loops one arena at a time: each INSERT touches exactly one
+-- partition with bounded tuple count. Same compound formula, same idempotence,
+-- same open-vocabulary behavior.
+
+-- @include schema/functions/prime_edge_significance_per_arena.sql

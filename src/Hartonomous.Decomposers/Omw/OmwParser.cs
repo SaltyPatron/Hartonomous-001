@@ -27,6 +27,17 @@ internal static class OmwParser
             string langRelation = parts[1];
             string word = parts[2];
 
+            // Skip rows where the word column is empty or whitespace-only.
+            // Real OMW data has these (e.g. wn-wikt-eng.tab has 56 rows where
+            // the Wiktionary extraction couldn't pull a lemma — synset code
+            // and "eng:lemma" present, word empty). They're not valid lemma
+            // entries; downstream substrate emission would be a no-op at
+            // best, a degenerate-physicality crash at worst.
+            if (string.IsNullOrWhiteSpace(word))
+            {
+                continue;
+            }
+
             int colonIdx = langRelation.IndexOf(':');
             if (colonIdx < 0)
             {

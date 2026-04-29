@@ -53,7 +53,6 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     // so corroboration arrives as separate hash collisions on the same identity.
     private const double TrustPriorMu = 50000.0;
 
-    private const string EdgeHasText = "has_text";
     private const string EdgeTranslationLink = "translation_link";
     private const string EdgeRecordingOf = "recording_of";
     private const string EdgeHasContributor = "has_contributor";
@@ -253,27 +252,22 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         EntityHandle sentEntity;
         if (!string.IsNullOrEmpty(row.Text))
         {
+            // Tatoeba sentence IS a text_composition. The text decomposer
+            // produces the canonical Merkle hash (codepoints → graphemes →
+            // word_forms → text_composition); same content from Tatoeba +
+            // WordNet examples + Wiktionary citations + user prompts all
+            // collapse to ONE text_composition entity.
             (EntityHandle textEntity, byte[] textHash) =
                 TextSegmentationEmitter.EmitTextComposition(
                     batch, row.Text, codepointProperties, "text_composition", TrustPriorMu);
             sentHash = textHash;
+            sentEntity = textEntity;
             entityCount++;
-
-            sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
-            batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
-            entityCount++;
-
-            batch.AddEdge(EdgeHasText, "tatoeba",
-            [
-                new EdgeMemberSpec(sentEntity, "source", 0),
-                new EdgeMemberSpec(textEntity, "target", 1),
-            ]);
-            edgeCount++;
         }
         else
         {
             sentHash = ComputeHash($"tatoeba_empty:{row.SentenceId}");
-            sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
+            sentEntity = batch.AddEntity(sentHash, "text_composition");
             batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
             entityCount++;
         }
@@ -300,8 +294,8 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             return; // Source or target sentence not seen in pass 1.
         }
 
-        EntityHandle src = batch.AddEntity(srcHash, "tatoeba_sentence");
-        EntityHandle tgt = batch.AddEntity(tgtHash, "tatoeba_sentence");
+        EntityHandle src = batch.AddEntity(srcHash, "text_composition");
+        EntityHandle tgt = batch.AddEntity(tgtHash, "text_composition");
 
         batch.AddEdge(EdgeTranslationLink, "tatoeba",
         [
@@ -328,7 +322,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         {
             return; // Sentence not seen in pass 1.
         }
-        EntityHandle sentEntity = batch.AddEntity(sentHash, "tatoeba_sentence");
+        EntityHandle sentEntity = batch.AddEntity(sentHash, "text_composition");
 
         batch.AddEdge(EdgeRecordingOf, "tatoeba",
         [

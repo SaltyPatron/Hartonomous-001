@@ -173,7 +173,10 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                     batch.AddJunction("entity_language", lemmaHandle, langId);
                 }
 
-                // ── Forms (lemma → inflected_form, plus inflection_of back-edge). ──
+                // ── Forms (lemma → word_form, plus inflection_of back-edge). ──
+                // Inflected forms ARE word_forms — content-addressed by their
+                // UTF-8 bytes. The inflection relationship lives on the
+                // inflection_of edge, not on a separate entity type.
                 foreach (WiktForm form in entry.Forms)
                 {
                     if (string.IsNullOrEmpty(form.Form) || form.Form == entry.Word)
@@ -181,7 +184,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                         continue;
                     }
                     (EntityHandle infHandle, _, _) =
-                        EmitWordFormMerkle(batch, form.Form, "inflected_form");
+                        EmitWordFormMerkle(batch, form.Form, "word_form");
                     batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
                     entityCount++;
 
@@ -363,22 +366,17 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                         continue;
                     }
 
-                    byte[] senseHash = ComputeHash(joinedGloss);
-                    EntityHandle senseHandle = batch.AddEntity(senseHash, "wikt_sense");
-                    batch.AddSignificance(senseHandle, "source_authority", TrustPriorMu);
-                    entityCount++;
-
-                    batch.AddEdge("has_sense", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(lemmaHandle, "source", 0),
-                        new EdgeMemberSpec(senseHandle, "target", 1),
-                    ]);
-                    BumpEdge("has_sense");
-
+                    // wikt_sense entity removed — sense is the lemma's
+                    // gloss/example/wikidata metadata, attached directly to
+                    // the lemma. Multi-sense lemmas get N has_gloss edges
+                    // (one per Wiktionary sense), each pointing to a different
+                    // text_composition. Provenance=wiktextract on every edge
+                    // distinguishes Wiktionary's sense data from any other
+                    // dictionary's.
                     EntityHandle glossDoc = IngestText(batch, joinedGloss);
                     batch.AddEdge("has_gloss", ProvenanceCode,
                     [
-                        new EdgeMemberSpec(senseHandle, "source", 0),
+                        new EdgeMemberSpec(lemmaHandle, "source", 0),
                         new EdgeMemberSpec(glossDoc,    "target", 1),
                     ]);
                     BumpEdge("has_gloss");
@@ -392,13 +390,12 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                         EntityHandle exDoc = IngestText(batch, ex.Text);
                         batch.AddEdge("has_example", ProvenanceCode,
                         [
-                            new EdgeMemberSpec(senseHandle, "source", 0),
+                            new EdgeMemberSpec(lemmaHandle, "source", 0),
                             new EdgeMemberSpec(exDoc,       "target", 1),
                         ]);
                         BumpEdge("has_example");
                     }
 
-                    // Wikidata refs per sense.
                     foreach (string wd in sense.Wikidata)
                     {
                         if (string.IsNullOrEmpty(wd))
@@ -408,7 +405,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                         EntityHandle wdDoc = IngestText(batch, wd);
                         batch.AddEdge("has_wikidata", ProvenanceCode,
                         [
-                            new EdgeMemberSpec(senseHandle, "source", 0),
+                            new EdgeMemberSpec(lemmaHandle, "source", 0),
                             new EdgeMemberSpec(wdDoc,       "target", 1),
                         ]);
                         BumpEdge("has_wikidata");

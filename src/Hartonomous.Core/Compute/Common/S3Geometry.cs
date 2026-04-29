@@ -61,4 +61,40 @@ public static class S3Geometry
             NativeCompute.Centroid4d(points, (nuint)pointCount, result4),
             "centroid_4d");
     }
+
+    /// <summary>
+    /// Grouped 4D mean: for N points labelled with group_ids in [0, K),
+    /// produce K per-group centroids in one FFI call. Used by the streaming
+    /// sink to compute composition centroids in bulk — every paragraph,
+    /// document, sentence in a chunk gets its centroid emitted in a single
+    /// native call instead of one-call-per-composition.
+    ///
+    /// points     : packed n × 4 doubles
+    /// groupIds   : length-n; each entry in [0, groupCount)
+    /// centroids  : caller-allocated, groupCount × 4 doubles. Empty groups
+    ///              (no points pointing at them) produce zero rows.
+    /// </summary>
+    public static void Mean4dGrouped(
+        ReadOnlySpan<double> points,
+        ReadOnlySpan<long> groupIds,
+        long groupCount,
+        Span<double> centroids)
+    {
+        if (groupCount <= 0)
+        {
+            throw new ComputeArgumentException("S3Geometry.Mean4dGrouped requires groupCount > 0");
+        }
+        if (centroids.Length < groupCount * 4)
+        {
+            throw new ComputeArgumentException("S3Geometry.Mean4dGrouped centroids buffer must be groupCount*4");
+        }
+        long n = groupIds.Length;
+        if (points.Length < n * 4)
+        {
+            throw new ComputeArgumentException("S3Geometry.Mean4dGrouped points buffer must be n*4 (n=groupIds.Length)");
+        }
+        NativeError.ThrowIfError(
+            NativeCompute.Centroid4dGrouped(points, groupIds, n, groupCount, centroids),
+            "centroid_4d_grouped");
+    }
 }

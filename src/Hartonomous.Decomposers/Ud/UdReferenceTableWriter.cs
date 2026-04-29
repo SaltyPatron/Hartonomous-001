@@ -28,5 +28,5 @@ internal sealed class UdReferenceTableWriter : BaseReferenceTableWriter
     public Task UpsertDeprelEdgeTypesAsync(
         IReadOnlyCollection<string> deprels,
         CancellationToken ct) =>
-        UpsertHomogeneousEdgeTypesAsync(deprels, "structural", "ud_token", ct);
+        UpsertHomogeneousEdgeTypesAsync(deprels, "structural", "word_form", ct);
 }

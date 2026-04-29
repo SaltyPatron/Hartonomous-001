@@ -76,6 +76,13 @@ RUN source ${ONEAPI_ROOT}/setvars.sh --force && \
 FROM ${IMG_NS}/postgis:${POSTGIS_VERSION} AS runtime
 USER root
 
+# gdb + binutils-debuginfod let us pull a backtrace from a core file when one
+# lands. addr2line resolves symbol+offset (from the in-extension signal handler)
+# back to file:line for the dev backtrace path that doesn't have core access.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gdb binutils \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /usr/local/lib/libhartonomous.so /usr/local/lib/libhartonomous.so
 COPY --from=builder /opt/pg18/lib/postgresql/hartonomous.so /opt/pg18/lib/postgresql/hartonomous.so
 COPY --from=builder /opt/pg18/share/postgresql/extension/hartonomous.control /opt/pg18/share/postgresql/extension/hartonomous.control

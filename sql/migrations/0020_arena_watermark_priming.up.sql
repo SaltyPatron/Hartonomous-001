@@ -1,0 +1,19 @@
+-- Stage 0020: arena watermark priming.
+--
+-- Replaces the LEFT JOIN/IS NULL anti-join shape in
+-- substrate.prime_unprimed_edges_chunk that triggered the PG18 batched-
+-- HashJoin slot mismatch crash class (nodeHashjoin.c:1099-1115 vs
+-- ExecJustOuterVarVirt). Per-arena progress tracked in a watermark table;
+-- function does a forward range scan over the (edge_type_id, hash) PK.
+--
+-- AP-1 cross-product happens via the async primer running on its own
+-- connection — never in the producer drain transaction. drain_staging_edge_chunk
+-- stays at COPY-rate, edge_significance accumulates async.
+--
+-- This migration is a pure @include manifest. All DDL lives in source-tree
+-- files (sql/schema/...). The @included source files are the canonical
+-- definitions; this migration just stamps the version they apply at.
+
+-- @include schema/tables/meta/arena_priming_state.sql
+-- @include schema/functions/prime_unprimed_edges_chunk.sql
+-- @include schema/functions/drain_staging_chunk.sql

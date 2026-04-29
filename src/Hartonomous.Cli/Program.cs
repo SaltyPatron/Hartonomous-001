@@ -400,12 +400,17 @@ internal static class Program
         migrate.AddGlobalOption(dirOpt);
 
         Command up = new("up", "Apply all unapplied migrations.");
-        up.SetHandler(async (string conn, string dir) =>
+        Option<bool> allowDriftOpt = new(
+            "--allow-drift",
+            getDefaultValue: () => false,
+            description: "Proceed past checksum drift on previously-applied migrations. Drift is logged loudly but not fatal. Use when SOURCE files were modified after apply but DB-side function/table definitions remain correct (e.g. CREATE OR REPLACE'd in-flight). Verify substrate.health_summary() afterwards.");
+        up.AddOption(allowDriftOpt);
+        up.SetHandler(async (string conn, string dir, bool allowDrift) =>
         {
             await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
             MigrationRunner runner = new(new NpgsqlMigrationStore(ds), dir);
-            await runner.UpAsync(CancellationToken.None);
-        }, connOpt, dirOpt);
+            await runner.UpAsync(CancellationToken.None, allowDrift);
+        }, connOpt, dirOpt, allowDriftOpt);
 
         Command down = new("down", "Roll back the most recently applied migrations.");
         Argument<int> stepsArg = new("steps", getDefaultValue: () => 1, description: "Number of migrations to roll back.");
@@ -517,10 +522,26 @@ internal static class Program
 
     private static async Task RunPhasesAsync(string? phaseStr, string conn, string sourceRoot, bool skipDeps, bool force, CancellationToken ct)
     {
+        // Log level resolves from HARTONOMOUS_LOG_LEVEL env var (Trace, Debug,
+        // Information, Warning, Error). Defaults to Information for normal
+        // runs; set to Trace to see the per-batch sub-step lines from
+        // NpgsqlIngestionPipeline (which step preceded any PG crash).
+        LogLevel logLevel = LogLevel.Information;
+        string? envLevel = Environment.GetEnvironmentVariable("HARTONOMOUS_LOG_LEVEL");
+        if (!string.IsNullOrWhiteSpace(envLevel) && Enum.TryParse(envLevel, true, out LogLevel parsed))
+        {
+            logLevel = parsed;
+        }
+
         using ILoggerFactory logFactory = LoggerFactory.Create(builder =>
         {
-            builder.AddConsole();
-            builder.SetMinimumLevel(LogLevel.Information);
+            builder.AddSimpleConsole(o =>
+            {
+                o.IncludeScopes = true;
+                o.SingleLine = true;
+                o.TimestampFormat = "HH:mm:ss.fff ";
+            });
+            builder.SetMinimumLevel(logLevel);
         });
 
         // Load enterprise-grade per-decomposer configuration. The CLI's
@@ -673,7 +694,26 @@ internal static class Program
                     logFactory.CreateLogger<Hartonomous.Engine.Significance.SignificanceFieldRunner>()),
             ],
         };
-        await using NpgsqlIngestionPipeline pipeline = new(conn, refDataReader, logFactory.CreateLogger<NpgsqlIngestionPipeline>());
+        // Streaming pipeline: continuous record flow into substrate.staging_*
+        // tables, drained by background flush worker. Replaces the per-batch
+        // staging/flush dance that crashed PG with stack canary failures.
+        // Implements IIngestionPipeline as a compatibility shim, so existing
+        // decomposers that build IngestionBatch keep working — the shim
+        // unfolds each batch into per-record emits across the channels.
+        await using StreamingIngestionPipeline pipeline = new(conn, refDataReader, logFactory.CreateLogger<StreamingIngestionPipeline>());
+
+        // Background flush worker: drains substrate.staging_* → substrate.*
+        // continuously on its own connection. Decoupled from producer
+        // transactions; never inside a per-batch transaction.
+        await using NpgsqlDataSource flushDs = NpgsqlDataSource.Create(conn);
+        await using StagingFlushWorker flushWorker = new(flushDs, logFactory.CreateLogger<StagingFlushWorker>());
+        await flushWorker.StartAsync();
+
+        // Background significance primer: drains substrate.edge → substrate.edge_significance
+        // per arena. The synchronous prime call inside producer batches that
+        // crashed PG is GONE — priming is now a separate background loop.
+        await using BackgroundSignificancePrimer primer = new(flushDs, logFactory.CreateLogger<BackgroundSignificancePrimer>());
+        await primer.StartAsync();
         ConsoleProgressReporter reporter = new();
         NpgsqlSessionStore sessionStore = new(phaseDs);
         SequentialPhaseRunner runner = new(
@@ -764,7 +804,21 @@ internal static class Program
             }
         }
 
-        Console.WriteLine($"\nPipeline stats: {pipeline.Stats.EntitiesSubmitted:N0} entities, {pipeline.Stats.EdgesSubmitted:N0} edges, {pipeline.Stats.BatchesCommitted:N0} batches committed");
+        // Flush all in-flight channel contents to staging before we tear down.
+        // Background drain worker continues after that until staging is empty.
+        await pipeline.FlushAsync(ct);
+
+        // Stop background workers so the final drain pass lands in substrate
+        // and the primer catches up before the process exits.
+        await primer.StopAsync();
+        await flushWorker.StopAsync();
+
+        StreamingPipelineStats sStats = pipeline.Stats;
+        StagingFlushStats fStats = flushWorker.Stats;
+        SignificancePrimerStats pStats = primer.Stats;
+        Console.WriteLine($"\nStreaming pipeline emitted: {sStats.EntitiesEmitted:N0} entities, {sStats.EdgesEmitted:N0} edges, {sStats.EdgeMembersEmitted:N0} edge_members, {sStats.JunctionsEmitted:N0} junctions, {sStats.PhysicalitiesEmitted:N0} physicalities, {sStats.SequencesEmitted:N0} sequences ({sStats.CopyCommits:N0} COPY commits, {sStats.CopyErrors:N0} errors)");
+        Console.WriteLine($"Background flush drained:    {fStats.EntityRowsDrained:N0} entities, {fStats.EdgeRowsDrained:N0} edges, {fStats.EdgeMemberRowsDrained:N0} edge_members, {fStats.JunctionRowsDrained:N0} junctions, {fStats.PhysicalityRowsDrained:N0} physicalities, {fStats.SequenceRowsDrained:N0} sequences ({fStats.IdleCycles:N0} idle cycles)");
+        Console.WriteLine($"Significance primer:         {pStats.EdgesPrimed:N0} edges primed across {pStats.ArenaCount} arenas ({pStats.IdleCycles:N0} idle cycles)");
     }
 
     private static async Task<HashSet<int>> CollectDistinctCodepointsAsync(

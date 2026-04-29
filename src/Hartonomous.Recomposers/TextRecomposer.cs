@@ -23,7 +23,6 @@ public sealed class TextRecomposer : BaseRecomposer<string>
     private static readonly HashSet<string> AtomTypes = new(System.StringComparer.Ordinal)
     {
         "codepoint", "grapheme_cluster", "word_form", "lemma", "morpheme",
-        "bpe_token", "ud_token",
     };
 
     public TextRecomposer(IEntityReader entityReader) : base(entityReader)

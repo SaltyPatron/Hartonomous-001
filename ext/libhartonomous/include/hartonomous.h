@@ -105,6 +105,32 @@ HARTONOMOUS_API void hartonomous_blake3_finalize(
     uint8_t out[HARTONOMOUS_HASH_LEN]
 );
 
+/*
+ * BLAKE3 batched one-shot hash. Computes N independent BLAKE3 digests in a
+ * single FFI call. Each input is hashed by the AVX-512 single-shot path;
+ * the iteration over inputs is OpenMP-parallel so a 14900KS hashes ~10K
+ * 1KB records in ~1ms wall time vs ~10ms for the serial per-record FFI.
+ *
+ * Eliminates per-record P/Invoke trampoline cost — the streaming sink
+ * batches 4096 records per chunk and calls this once per chunk.
+ *
+ * Inputs:
+ *   inputs       — array of N pointers to raw byte buffers.
+ *   input_lens   — array of N lengths matching `inputs`.
+ *   n            — number of inputs (>= 0).
+ * Output:
+ *   output       — caller-allocated, n * HARTONOMOUS_HASH_LEN contiguous
+ *                  bytes; row i is the hash of inputs[i].
+ *
+ * Returns 0 on success, -1 on null arg, -2 on n < 0.
+ */
+HARTONOMOUS_API int hartonomous_blake3_many(
+    const uint8_t* const* inputs,
+    const size_t* input_lens,
+    int64_t n,
+    uint8_t* output
+);
+
 /* ── S3 Geometry ─────────────────────────────────────────── */
 
 /*
@@ -186,6 +212,17 @@ HARTONOMOUS_API int hartonomous_super_fibonacci(
     const double* params,
     size_t ndims,
     double out[4]
+);
+
+/* Batched Super-Fibonacci: project N indices in [0, total) to N S³ points
+ * in a single FFI call. OpenMP-parallel; SVML-vectorizable trig pair.
+ * UCD codepoint projection's primary caller (1.1M codepoints in 1 call).
+ * Returns 0 success, -1 null, -2 bad shape, -3 index OOB. */
+HARTONOMOUS_API int hartonomous_super_fibonacci_many(
+    const double* indices,
+    int64_t n,
+    double total,
+    double* out
 );
 
 /* ── Hilbert Curve (4D) ──────────────────────────────────── */
@@ -521,6 +558,29 @@ HARTONOMOUS_API double hartonomous_distance_4d(
     const double a[4], const double b[4]
 );
 
+/* Batched Euclidean 4D distance for N pairs. AVX2 inner kernel,
+ * OpenMP-parallel across pairs. Caller-allocated `out` of length n.
+ * Returns 0 success, -1 null, -2 n < 0. */
+HARTONOMOUS_API int hartonomous_distance_4d_pairs(
+    const double* a,
+    const double* b,
+    int64_t n,
+    double* out
+);
+
+/* Batched 4D discrete Fréchet distance for N polyline pairs.
+ * Each pair gets a thread-local DP-table allocation of size na[i]*nb[i].
+ * NaN where either polyline is empty.
+ * Returns 0 success, -1 null, -2 n < 0, -9 alloc failure for any pair. */
+HARTONOMOUS_API int hartonomous_frechet_4d_pairs(
+    const double* const* a_polylines,
+    const size_t* na,
+    const double* const* b_polylines,
+    const size_t* nb,
+    int64_t n,
+    double* out_distances
+);
+
 /* 4D inner product. */
 HARTONOMOUS_API double hartonomous_dot_4d(
     const double a[4], const double b[4]
@@ -552,6 +612,19 @@ HARTONOMOUS_API int hartonomous_antipode(
  * Returns 0 on success; -1 on null/zero-count. */
 HARTONOMOUS_API int hartonomous_centroid_4d(
     const double* points, size_t point_count, double out[4]
+);
+
+/* Grouped centroid: for N points with group_ids in [0, group_count), compute
+ * the per-group arithmetic mean. Streaming-sink pattern for emitting
+ * composition centroids in one FFI call instead of one-call-per-composition.
+ * Empty groups are zero-filled. Deterministic per Law #6.
+ * Returns 0 success, -1 null, -2 bad shape/alloc, -3 group_id OOB. */
+HARTONOMOUS_API int hartonomous_centroid_4d_grouped(
+    const double* points,
+    const int64_t* group_ids,
+    int64_t n,
+    int64_t group_count,
+    double* centroids
 );
 
 /* ── box4d: axis-aligned bounding box ─────────────────────────

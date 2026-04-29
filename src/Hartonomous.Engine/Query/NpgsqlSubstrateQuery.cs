@@ -189,7 +189,7 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
               JOIN substrate.significance_context sc ON sc.id = s.context_type_id
              WHERE et.code = 'has_embedding_position'
                AND tgt_et.code = 'embedding_firefly'
-               AND src_et.code = 'bpe_token'
+               AND src_et.code = 'word_form'
                AND em_s.entity_hash = ANY($1)
                AND s.mu >= $2
                AND sc.code = $3

@@ -1,13 +1,12 @@
--- Stage 0007: substrate.entity (parent) and its 16 partitions.
+-- Stage 0006: substrate.entity (parent) and its 13 partitions.
+-- Dataset-named partitions (entity_ud_sentence, entity_ud_token, entity_tatoeba)
+-- removed alongside the dataset-named entity types they hosted.
 -- @include schema/tables/core/entity.sql
 -- @include schema/tables/core/entity_codepoint.sql
 -- @include schema/tables/core/entity_grapheme.sql
 -- @include schema/tables/core/entity_word.sql
 -- @include schema/tables/core/entity_morpheme.sql
 -- @include schema/tables/core/entity_lemma.sql
--- @include schema/tables/core/entity_ud_sentence.sql
--- @include schema/tables/core/entity_ud_token.sql
--- @include schema/tables/core/entity_tatoeba.sql
 -- @include schema/tables/core/entity_text.sql
 -- @include schema/tables/core/entity_semantic.sql
 -- @include schema/tables/core/entity_unicode.sql

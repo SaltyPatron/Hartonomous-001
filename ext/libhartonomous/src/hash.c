@@ -1,5 +1,7 @@
 #include <string.h>
 
+#include <omp.h>
+
 #include "hartonomous.h"
 #include "blake3.h"
 
@@ -32,4 +34,27 @@ void hartonomous_blake3_finalize(
     uint8_t out[HARTONOMOUS_HASH_LEN]
 ) {
     blake3_hasher_finalize((const blake3_hasher*)state->_opaque, out, HARTONOMOUS_HASH_LEN);
+}
+
+int hartonomous_blake3_many(
+    const uint8_t* const* inputs,
+    const size_t* input_lens,
+    int64_t n,
+    uint8_t* output
+) {
+    if (inputs == NULL || input_lens == NULL || output == NULL) return -1;
+    if (n < 0) return -2;
+    if (n == 0) return 0;
+
+    int64_t i;
+    #pragma omp parallel for schedule(static) private(i)
+    for (i = 0; i < n; ++i) {
+        blake3_hasher h;
+        blake3_hasher_init(&h);
+        if (input_lens[i] > 0 && inputs[i] != NULL) {
+            blake3_hasher_update(&h, inputs[i], input_lens[i]);
+        }
+        blake3_hasher_finalize(&h, output + (size_t)i * HARTONOMOUS_HASH_LEN, HARTONOMOUS_HASH_LEN);
+    }
+    return 0;
 }

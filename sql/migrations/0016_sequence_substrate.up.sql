@@ -32,9 +32,6 @@ DELETE FROM substrate.edge_type WHERE code = 'has_constituent';
 -- @include schema/tables/core/sequence_word.sql
 -- @include schema/tables/core/sequence_morpheme.sql
 -- @include schema/tables/core/sequence_lemma.sql
--- @include schema/tables/core/sequence_ud_sentence.sql
--- @include schema/tables/core/sequence_ud_token.sql
--- @include schema/tables/core/sequence_tatoeba.sql
 -- @include schema/tables/core/sequence_text.sql
 -- @include schema/tables/core/sequence_semantic.sql
 -- @include schema/tables/core/sequence_unicode.sql

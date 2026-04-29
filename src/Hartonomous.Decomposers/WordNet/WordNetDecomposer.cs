@@ -388,14 +388,17 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             await FlushBatchAsync();
             Log.Pass2Done(Logger, pointerCount, frameEdgeCount);
 
-            // ── Pass 3: morph exceptions → inflected_form + inflection_of. ──
+            // ── Pass 3: morph exceptions → word_form + inflection_of. ──
+            // Inflected forms ARE word_forms — content-addressed by their
+            // UTF-8 bytes. The "is inflected" relationship lives on the
+            // inflection_of edge (back to the lemma), not on a separate type.
             int morphEntityCount = 0;
             foreach (MorphException mex in morphExceptions)
             {
                 ct.ThrowIfCancellationRequested();
 
                 (EntityHandle inflectedHandle, _, _) =
-                    EmitWordFormMerkle(batch, mex.InflectedForm, "inflected_form");
+                    EmitWordFormMerkle(batch, mex.InflectedForm, "word_form");
                 batch.AddSignificance(inflectedHandle, "source_authority", TrustPriorMu);
                 morphEntityCount++;
                 entityCount++;

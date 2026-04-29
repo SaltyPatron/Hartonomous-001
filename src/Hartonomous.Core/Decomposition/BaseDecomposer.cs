@@ -94,6 +94,157 @@ public abstract partial class BaseDecomposer : IDecomposer
         await reporter.ReportAsync(snapshot, ct);
     }
 
+    // ── Streaming sink helpers (Phase D) ─────────────────────────────────
+    // Decomposers in the streaming-pipeline migration use these to emit
+    // records one-at-a-time to an IRecordSink. No batch accumulation in
+    // the decomposer; backpressure is the sink's bounded channel filling.
+    //
+    // These helpers are additive — the old IIngestionBatch path remains
+    // until every decomposer is migrated (task F1). During the transition,
+    // a decomposer may use either path; the orchestrator picks based on
+    // which DecomposeCoreAsync overload it overrides.
+
+    /// <summary>
+    /// Emit one entity into the streaming sink. Returns the EntityHandle so
+    /// downstream emissions (edges that reference this entity, junctions on
+    /// it, physicality, sequences) can carry the (type, hash) FK around
+    /// without recomputing.
+    /// </summary>
+    protected static async ValueTask<EntityHandle> EmitEntityAsync(
+        IRecordSink sink,
+        byte[] hash,
+        string entityTypeCode,
+        CancellationToken ct)
+    {
+        await sink.EmitAsync(new EntityRecord(entityTypeCode, hash), ct);
+        return new EntityHandle(hash, entityTypeCode);
+    }
+
+    /// <summary>
+    /// Emit one edge plus its members. Computes EdgeHash from the role-ordered
+    /// participant hashes (matching the on-disk substrate.edge identity
+    /// computation). Members are emitted as separate EdgeMemberRecords; the
+    /// sink routes them to a different staging table than the EdgeRecord, so
+    /// the order of emission within this method preserves "edge first, then
+    /// members" — the background drain worker drains substrate.staging_edge
+    /// before substrate.staging_edge_member to keep the composite-FK
+    /// reachable when the member rows land.
+    /// </summary>
+    protected static async ValueTask EmitEdgeAsync(
+        IRecordSink sink,
+        string edgeTypeCode,
+        string provenanceCode,
+        int edgeTypeId,
+        IReadOnlyList<EdgeMemberSpec> members,
+        CancellationToken ct)
+    {
+        // Sort by Position so EdgeHash is deterministic regardless of caller
+        // emission order (matches the AddEdge path's behavior in
+        // IngestionBatch).
+        EdgeMemberSpec[] sorted = new EdgeMemberSpec[members.Count];
+        for (int i = 0; i < members.Count; i++)
+        {
+            sorted[i] = members[i];
+        }
+        System.Array.Sort(sorted, (a, b) => a.Position.CompareTo(b.Position));
+
+        byte[][] orderedHashes = new byte[sorted.Length][];
+        for (int j = 0; j < sorted.Length; j++)
+        {
+            orderedHashes[j] = sorted[j].Entity.Hash;
+        }
+        byte[] edgeHash = ComputeEdgeHash(edgeTypeId, orderedHashes);
+
+        await sink.EmitAsync(new EdgeRecord(edgeTypeCode, edgeHash, provenanceCode), ct);
+        for (int j = 0; j < sorted.Length; j++)
+        {
+            await sink.EmitAsync(new EdgeMemberRecord(
+                edgeTypeCode,
+                edgeHash,
+                sorted[j].Entity.EntityTypeCode,
+                sorted[j].Entity.Hash,
+                sorted[j].RoleCode), ct);
+        }
+    }
+
+    /// <summary>
+    /// Emit one junction row into the streaming sink. Mu is non-null only
+    /// for Glicko-bearing junctions (entity_pos, entity_sense, pattern_deprel).
+    /// </summary>
+    protected static ValueTask EmitJunctionAsync(
+        IRecordSink sink,
+        string junctionTable,
+        EntityHandle entity,
+        int referenceId,
+        double? mu,
+        CancellationToken ct)
+        => sink.EmitAsync(new JunctionRecord(
+            junctionTable, entity.EntityTypeCode, entity.Hash, referenceId, mu), ct);
+
+    /// <summary>
+    /// Emit one physicality row. The Wkb bytes are the binary WKB encoding
+    /// of the geometry (POINTZM, LINESTRINGZM, MULTILINESTRINGZM, etc.) —
+    /// see PostGisWkbBuilder. ContentHash is BLAKE3 of the WKB so identical
+    /// geometries deduplicate at the substrate level.
+    /// </summary>
+    protected static ValueTask EmitPhysicalityAsync(
+        IRecordSink sink,
+        string physicalityTypeCode,
+        EntityHandle entity,
+        byte[] wkb,
+        CancellationToken ct)
+    {
+        byte[] contentHash = Blake3.Hash(wkb.AsSpan());
+        return sink.EmitAsync(new PhysicalityRecord(
+            physicalityTypeCode,
+            entity.EntityTypeCode,
+            entity.Hash,
+            contentHash,
+            wkb), ct);
+    }
+
+    /// <summary>
+    /// Emit one sequence row. Composition ordering — parent contains child at
+    /// ordinal position N for RleCount consecutive positions (RLE preserves
+    /// refrains: "the the the" stores once with rle_count=3, not 3 rows).
+    /// </summary>
+    protected static ValueTask EmitSequenceAsync(
+        IRecordSink sink,
+        EntityHandle parent,
+        int ordinal,
+        EntityHandle child,
+        int rleCount,
+        CancellationToken ct)
+        => sink.EmitAsync(new SequenceRecord(
+            parent.EntityTypeCode, parent.Hash,
+            ordinal,
+            child.EntityTypeCode, child.Hash,
+            rleCount), ct);
+
+    /// <summary>
+    /// Emit one entity_significance row with an initial Mu. Sigma, volatility,
+    /// games default at the substrate side.
+    /// </summary>
+    protected static ValueTask EmitEntitySignificanceAsync(
+        IRecordSink sink,
+        EntityHandle entity,
+        string contextTypeCode,
+        double initialMu,
+        CancellationToken ct)
+        => sink.EmitAsync(new EntitySignificanceRecord(
+            contextTypeCode, entity.EntityTypeCode, entity.Hash, initialMu), ct);
+
+    /// <summary>
+    /// Emit one entity_model_source lineage row.
+    /// </summary>
+    protected static ValueTask EmitEntityModelSourceAsync(
+        IRecordSink sink,
+        EntityHandle entity,
+        long modelSourceId,
+        CancellationToken ct)
+        => sink.EmitAsync(new EntityModelSourceRecord(
+            entity.EntityTypeCode, entity.Hash, modelSourceId), ct);
+
     /// <summary>
     /// Submit <paramref name="batch"/> and report a <see cref="ProgressSnapshot"/> built from the
     /// decomposer's own <see cref="ProvenanceCode"/>. This is the single authoritative progress-reporting
@@ -145,6 +296,13 @@ public abstract partial class BaseDecomposer : IDecomposer
             string form,
             string entityType = "word_form")
     {
+        // Empty form is invalid input — there's nothing to decompose. Caller
+        // must filter empty/whitespace-only strings at the source-parser
+        // layer (e.g. OmwParser skips word="" rows). Throwing here surfaces
+        // any upstream bug loud instead of silently producing degenerate
+        // substrate state (zero-vertex LINESTRINGZM, etc.).
+        ArgumentException.ThrowIfNullOrEmpty(form);
+
         const int InitialCapacity = 64;
 
         byte[][] gcHashBuf = ArrayPool<byte[]>.Shared.Rent(InitialCapacity);

@@ -1,0 +1,2 @@
+-- Restore the migration-0017 single-INSERT CROSS JOIN form.
+-- @include schema/functions/prime_edge_significance_v2.sql

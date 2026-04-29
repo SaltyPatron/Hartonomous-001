@@ -123,7 +123,11 @@ internal sealed partial class TokenizerMappingPass : IModelAnalysisPass
             ct.ThrowIfCancellationRequested();
 
             byte[] tokenHash = ComputeBpeTokenHash(context, entry.TokenBytes);
-            EntityHandle tokenEntity = session.Batch.AddEntity(tokenHash, "bpe_token");
+            // BPE token IS a word_form. Its content (the UTF-8 bytes) is the
+            // identity; tokenizer-specific associations (token_id, model
+            // membership) are edges, not a separate entity type per
+            // tokenizer.
+            EntityHandle tokenEntity = session.Batch.AddEntity(tokenHash, "word_form");
             session.Batch.AddEntityModelSource(tokenEntity, context.Source.ModelSourceId);
             session.Batch.AddSignificance(tokenEntity, "model_trust", ModelDerivedTrustMu);
 
