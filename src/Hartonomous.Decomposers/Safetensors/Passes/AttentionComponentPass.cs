@@ -50,7 +50,7 @@ internal sealed partial class AttentionComponentPass : IModelAnalysisPass
             (long emitted, long skipped) = await PerRowContentPass.RunPerRowAsync(
                 context, session, t,
                 canonicalKindTag4: "atnc",
-                entityTypeCode: "attention_component",
+                entityTypeCode: "attention_pattern",
                 edgeTypeCode: "has_attention_component",
                 sparsityThreshold: PerRowContentPass.DefaultSparsityThreshold,
                 flushThreshold: PerRowContentPass.DefaultFlushThreshold,

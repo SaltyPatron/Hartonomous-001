@@ -52,6 +52,10 @@ try {
     $commonArgs = @('-SourceRoot', $SourceRoot)
     if ($NoBuild) { $commonArgs += '-NoBuild' }
 
+    # Lexical floor first: codepoints + collation, languages, lemmas/senses,
+    # syntactic structure, lexicon depth, attested sentences. AI models in
+    # ModelDecomp ingest LAST because their typed-edge extractions reference
+    # the lemmas/word_forms/synsets the lexical floor produced.
     Invoke-HartStep -Name 'seed.Ucd'           -Action { Invoke-Sub 'Ucd.ps1'           $commonArgs }
     Invoke-HartStep -Name 'seed.Iso639'        -Action { Invoke-Sub 'Iso639.ps1'        $commonArgs }
     Invoke-HartStep -Name 'seed.WordNetOmw'    -Action { Invoke-Sub 'WordNetOmw.ps1'    $commonArgs }
@@ -60,14 +64,18 @@ try {
     Invoke-HartStep -Name 'seed.Tatoeba'       -Action { Invoke-Sub 'Tatoeba.ps1'       $commonArgs }
 
     if ($WithModel) {
+        # ModelDecomp runs after the lexical floor — model edges reference
+        # lemmas/word_forms/synsets that must already exist.
         Invoke-HartStep -Name 'seed.Safetensors' -Action { Invoke-Sub 'Safetensors.ps1' $commonArgs }
     }
 
-    # Master plan #61 — prime edge-level significance from provenance trust
-    # priors. Without this, every edge in every arena sits at the Glicko-2
-    # default of 1500 and inference can't rank paths. Must run after all
-    # phases that emit edges.
-    Invoke-HartStep -Name 'seed.SignificanceField' -Action { Invoke-Sub 'SignificanceField.ps1' $commonArgs }
+    # Edge significance is primed CONTINUOUSLY by Hartonomous.Engine.Ingestion.
+    # BackgroundSignificancePrimer (running in every seed phase) — the per-arena
+    # watermark scan keeps substrate.edge_significance current as edges land.
+    # No separate "SignificanceField phase" is needed; running it as a final
+    # batch over millions of edges is redundant scaffolding from before the
+    # streaming primer existed. Glicko-2 ratings update at inference time via
+    # substrate.record_comparison / record_corroboration on real outcomes.
 
     Invoke-HartStep -Name 'Validate' -Action {
         Invoke-Sub 'Validate.ps1' @()

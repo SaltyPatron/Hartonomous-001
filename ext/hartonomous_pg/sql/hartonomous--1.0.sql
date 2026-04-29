@@ -366,34 +366,61 @@ CREATE FUNCTION blake3_hash_text(text) RETURNS bytea
     AS 'MODULE_PATHNAME', 'pg_blake3_hash_text'
     LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
 
+-- Hash-as-PK composite-key result types. The substrate dropped surrogate
+-- BIGSERIAL ids in 0006/0007: every entity is keyed (entity_type_id, hash)
+-- and every edge is keyed (edge_type_id, hash). Neighbors and traversal_path
+-- must therefore carry composite handles end-to-end.
 CREATE TYPE neighbors_result AS (
-    entity_id       bigint,
-    edge_id         bigint,
-    edge_type_id    int,
-    depth           int,
-    path            bigint[]
+    target_entity_type_id   int,
+    target_entity_hash      bytea,
+    edge_type_id            int,
+    edge_hash               bytea,
+    depth                   int,
+    path_etids              int[],
+    path_ehashes            bytea[]
 );
 
 CREATE TYPE traversal_path AS (
-    target_entity_id    bigint,
-    cost                double precision,
-    path                bigint[],
-    edge_path           bigint[]
+    target_entity_type_id   int,
+    target_entity_hash      bytea,
+    depth                   int,
+    total_mu                double precision,
+    path_etids              int[],
+    path_ehashes            bytea[]
 );
 
-CREATE FUNCTION neighbors(bigint, int DEFAULT NULL, int DEFAULT 1)
+-- BFS expansion. Required: seed_entity_type_id, seed_entity_hash. Optional:
+-- edge_type_filter (NULL = any edge type), max_hops (default 1).
+CREATE FUNCTION neighbors(
+    seed_entity_type_id int,
+    seed_entity_hash    bytea,
+    edge_type_filter    int DEFAULT NULL,
+    max_hops            int DEFAULT 1
+)
     RETURNS SETOF neighbors_result
     AS 'MODULE_PATHNAME', 'pg_neighbors'
     LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
 
+-- Glicko-2-rated A* over typed edges. Replaces transformer matmul as the
+-- substrate's inference mechanism. Edge cost = 1 / edge_mu where edge_mu is
+-- read via the COALESCE prior formula
+--   mu = COALESCE(
+--          edge_significance.mu,
+--          provenance_edge_authority.initial_mu,
+--          provenance.initial_mu * edge_type.semantic_weight * provenance.derivation_decay
+--        )
+-- so traversal is meaningful before any Glicko comparison events fire.
+--
+-- total_mu in the result is 1/sum(1/mu_i), the path's aggregate trust score
+-- in the requested arena. Higher = stronger composite path.
 CREATE FUNCTION traverse_astar(
-    seed_id            bigint,
-    target_type_id     int,
-    arena_id           int,
-    max_depth          int              DEFAULT 5,
-    max_results        int              DEFAULT 100,
-    edge_type_filter   int              DEFAULT NULL,
-    p_min_mu           double precision DEFAULT NULL
+    seed_entity_type_id int,
+    seed_entity_hash    bytea,
+    edge_type_filter    int,
+    arena_id            int,
+    max_depth           int              DEFAULT 5,
+    max_results         int              DEFAULT 100,
+    p_min_mu            double precision DEFAULT NULL
 )
     RETURNS SETOF traversal_path
     AS 'MODULE_PATHNAME', 'pg_traverse_astar'

@@ -65,24 +65,61 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
         await using NpgsqlConnection conn = new(_connectionString);
         await conn.OpenAsync(ct);
 
-        // Idempotent: only insert rows that don't already exist.
-        // CAST(NULL AS BIGINT) on entity_id — same bug shape as migration
-        // 0064. Cross-product against EVERY arena currently in
-        // significance_context (no IN-list cherry-pick) per rule 45 AP-1
-        // (arenas are open-vocabulary; new arenas added later must
-        // backfill onto existing edges automatically).
-        const string PrimeSql = @"
-            INSERT INTO substrate.significance (entity_id, edge_id, context_type_id, mu, sigma, volatility, games)
-            SELECT CAST(NULL AS BIGINT), e.id, sc.id, p.initial_mu, 350.0, 0.06, 0
-            FROM substrate.edge e
-            JOIN substrate.provenance p ON p.id = e.provenance_id
-            CROSS JOIN substrate.significance_context sc
-            ON CONFLICT DO NOTHING
-        ";
+        // Drive the watermark primer (substrate.prime_unprimed_edges_chunk)
+        // per arena until each returns 0. This:
+        //   - Targets the actual schema: substrate.edge_significance
+        //     (composite key: context_type_id, edge_type_id, edge_hash) NOT
+        //     the obsolete substrate.significance table that was split into
+        //     entity_significance + edge_significance per migration 0009.
+        //   - Uses the compound trust-prior formula via the function:
+        //       μ₀ = COALESCE(pea.initial_mu,
+        //                     p.initial_mu × et.semantic_weight × p.derivation_decay)
+        //       σ₀ = COALESCE(pea.initial_sigma, p.initial_sigma)
+        //   - Cross-products against EVERY arena currently in
+        //     significance_context (open-vocabulary, AP-1).
+        //   - Reuses the watermark forward-scan shape (no anti-join, no merge
+        //     join, no spill — the buggy LEFT JOIN/IS NULL/LIMIT plan that
+        //     hit the PG18 batched-HashJoin path is gone).
+        long rowsInserted = 0;
+        const int ChunkSize = 4096;
 
-        await using NpgsqlCommand cmd = new(PrimeSql, conn);
-        cmd.CommandTimeout = 600; // bulk operation across all edges
-        int rowsInserted = await cmd.ExecuteNonQueryAsync(ct);
+        // Snapshot arena list once (open-vocabulary at start of run).
+        List<int> arenas = [];
+        await using (NpgsqlCommand arenaCmd = new(
+                         "SELECT id FROM substrate.significance_context ORDER BY id", conn))
+        await using (NpgsqlDataReader reader = await arenaCmd.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                arenas.Add(reader.GetInt32(0));
+            }
+        }
+
+        foreach (int arenaId in arenas)
+        {
+            ct.ThrowIfCancellationRequested();
+            while (true)
+            {
+                await using NpgsqlCommand primeCmd = new(
+                    "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+                primeCmd.Parameters.Add(new NpgsqlParameter { Value = arenaId });
+                primeCmd.Parameters.Add(new NpgsqlParameter { Value = ChunkSize });
+                primeCmd.CommandTimeout = 600;
+
+                object? raw = await primeCmd.ExecuteScalarAsync(ct);
+                long primed = raw switch
+                {
+                    long l => l,
+                    int i => i,
+                    _ => 0L,
+                };
+                rowsInserted += primed;
+                if (primed == 0)
+                {
+                    break;
+                }
+            }
+        }
 
         sw.Stop();
         Log.Primed(_logger, rowsInserted, sw.Elapsed);
@@ -96,7 +133,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
                 EntitiesCreated = 0,
                 EdgesCreated = 0,
                 CurrentFile = $"primed_edge_significance",
-                CurrentBatch = rowsInserted,
+                CurrentBatch = (int) Math.Min(rowsInserted, int.MaxValue),
             },
             ct);
     }
@@ -110,6 +147,6 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
     private static partial class Log
     {
         [LoggerMessage(Level = LogLevel.Information, Message = "SignificanceField primed {RowCount:N0} edge-significance rows in {Elapsed}")]
-        public static partial void Primed(ILogger logger, int rowCount, TimeSpan elapsed);
+        public static partial void Primed(ILogger logger, long rowCount, TimeSpan elapsed);
     }
 }
