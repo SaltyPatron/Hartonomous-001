@@ -25,6 +25,7 @@ using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Orchestration;
 using Hartonomous.Engine.Text;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -522,68 +523,85 @@ internal static class Program
             builder.SetMinimumLevel(LogLevel.Information);
         });
 
+        // Load enterprise-grade per-decomposer configuration. The CLI's
+        // legacy `--source` argument now overrides DataRoot at runtime if
+        // provided; per-decomposer paths come from appsettings.json so each
+        // decomposer reads from its actual data location, not a hardcoded
+        // subdirectory pattern combined with one shared --source root.
+        Microsoft.Extensions.Configuration.IConfigurationRoot cfgRoot =
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+                .AddEnvironmentVariables(prefix: "HARTONOMOUS__")
+                .Build();
+        Hartonomous.Cli.Configuration.HartonomousOptions opts =
+            cfgRoot.GetSection("Hartonomous").Get<Hartonomous.Cli.Configuration.HartonomousOptions>()
+            ?? new Hartonomous.Cli.Configuration.HartonomousOptions();
+
+        // CLI `--source` (when supplied non-empty) overrides DataRoot.
+        // Connection string passed in already wins over config.
+        if (!string.IsNullOrWhiteSpace(sourceRoot))
+        {
+            opts.DataRoot = sourceRoot;
+        }
+        string dataRoot = opts.DataRoot;
+
+        // Local helper: absolute path = used as-is; relative = resolved
+        // against DataRoot. Keeps the config flexible (devs can pin one
+        // decomposer to /opt/special_data without affecting siblings).
+        string Resolve(string p) =>
+            string.IsNullOrEmpty(p) ? dataRoot
+            : Path.IsPathRooted(p) ? p
+            : Path.Combine(dataRoot, p);
+
         DecomposerConfig ucdConfig = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "UCD", "Public", "UCD", "latest"),
+            SourceDirectory = Resolve(opts.Decomposers.Ucd.SourcePath),
             ConnectionString = conn,
         };
-
         DecomposerConfig iso639Config = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "ISO639"),
+            SourceDirectory = Resolve(opts.Decomposers.Iso639.SourcePath),
             ConnectionString = conn,
         };
-
         DecomposerConfig wordnetConfig = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "princeton-wordnet", "WordNet-3.0", "dict"),
+            SourceDirectory = Resolve(opts.Decomposers.WordNet.SourcePath),
             ConnectionString = conn,
         };
-
         DecomposerConfig omwConfig = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "omw"),
+            SourceDirectory = Resolve(opts.Decomposers.Omw.SourcePath),
             ConnectionString = conn,
-            // T0: English alignments only.
-            LanguageFilter = new[] { "en", "eng" },
+            LanguageFilter = opts.Decomposers.Omw.LanguageFilter,
         };
-
         DecomposerConfig udConfig = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "ud-treebanks", "ud-treebanks-v2.17"),
+            SourceDirectory = Resolve(opts.Decomposers.Ud.SourcePath),
             ConnectionString = conn,
-            // T0 plan: ingest English treebanks first; expand language coverage in later
-            // tiers once the seed chain is verified end-to-end. UD uses ISO 639-1 (2-letter)
-            // prefixes on .conllu filenames ("en_ewt-ud-train.conllu"); the language
-            // reference table uses ISO 639-3 (3-letter) codes. Include both forms so
-            // the filter matches regardless of which code surface the decomposer compares.
-            LanguageFilter = new[] { "en", "eng" },
+            LanguageFilter = opts.Decomposers.Ud.LanguageFilter,
         };
-
         DecomposerConfig modelConfig = new()
         {
-            SourceDirectory = ResolveModelSource(sourceRoot),
+            SourceDirectory = Resolve(opts.Decomposers.Safetensors.HubPath),
             ConnectionString = conn,
+            ModelFilter = opts.Decomposers.Safetensors.ModelFilter is { Length: > 0 }
+                ? opts.Decomposers.Safetensors.ModelFilter
+                : null,
         };
-
         DecomposerConfig wiktionaryConfig = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "wiktionary", "raw-wiktextract-data.jsonl"),
+            SourceDirectory = Resolve(opts.Decomposers.Wiktionary.SourcePath),
             ConnectionString = conn,
-            // T0: English entries only.
-            LanguageFilter = new[] { "en", "eng" },
+            LanguageFilter = opts.Decomposers.Wiktionary.LanguageFilter,
         };
-
         DecomposerConfig tatoebaConfig = new()
         {
-            SourceDirectory = Path.Combine(sourceRoot, "tatoeba"),
+            SourceDirectory = Resolve(opts.Decomposers.Tatoeba.SourcePath),
             ConnectionString = conn,
-            // T0: English sentences only.
-            LanguageFilter = new[] { "en", "eng" },
+            LanguageFilter = opts.Decomposers.Tatoeba.LanguageFilter,
         };
-
-        // TextDecomp: point at the test_data/text directory. Each .txt file is a document.
-        string textSourceDir = Path.Combine(sourceRoot, "test_data", "text");
+        string textSourceDir = Resolve(opts.Decomposers.Text.SourcePath);
 
         await using NpgsqlDataSource phaseDs = NpgsqlDataSource.Create(conn);
         NpgsqlReferenceDataReader refDataReader = new(phaseDs);

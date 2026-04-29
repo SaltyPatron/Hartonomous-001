@@ -31,6 +31,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private const string HuggingFaceRegistryDisplay = "Hugging Face Hub";
 
     private readonly string _hubRoot;
+    private readonly IReadOnlyCollection<string>? _modelFilter;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IModelPassCheckpointStore? _checkpointStore;
     private readonly IReferenceDataReader? _referenceDataReader;
@@ -52,6 +53,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;
+        _modelFilter = config.ModelFilter;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _checkpointStore = checkpointStore;
         _referenceDataReader = referenceDataReader;
@@ -69,6 +71,20 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         CancellationToken ct)
     {
         List<DiscoveredModel> models = DiscoverModels(_hubRoot);
+
+        // Apply ModelFilter: when set, only process models whose ModelId
+        // ("publisher/name") is in the allowlist. Lets the dependency chain
+        // run on the full data root while ModelDecomp targets a specific
+        // subset (e.g., MiniLM only, without paying the cost of decomposing
+        // every 33B-parameter model in the hub).
+        if (_modelFilter is { Count: > 0 })
+        {
+            HashSet<string> allowed = new(_modelFilter, StringComparer.OrdinalIgnoreCase);
+            int beforeCount = models.Count;
+            models = models.Where(m => allowed.Contains(m.ModelId)).ToList();
+            Log.ModelsFiltered(Logger, beforeCount, models.Count, allowed.Count);
+        }
+
         Log.ModelsDiscovered(Logger, models.Count, _hubRoot);
         if (models.Count == 0)
         {
@@ -373,6 +389,9 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     {
         [LoggerMessage(Level = LogLevel.Information, Message = "Discovered {Count} models under {Root}")]
         public static partial void ModelsDiscovered(ILogger logger, int count, string root);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "ModelFilter applied: {Before} discovered → {After} match the {AllowedCount}-entry allowlist")]
+        public static partial void ModelsFiltered(ILogger logger, int before, int after, int allowedCount);
 
         [LoggerMessage(Level = LogLevel.Error, Message = "Model FAILED {ModelId} ({Idx}/{Total}) — isolated, continuing with remaining models")]
         public static partial void ModelFailed(ILogger logger, Exception ex, string modelId, int idx, int total);

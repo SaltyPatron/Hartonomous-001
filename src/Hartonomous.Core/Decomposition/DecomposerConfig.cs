@@ -18,4 +18,16 @@ public sealed class DecomposerConfig
     /// explicitly with the right code variant.
     /// </summary>
     public IReadOnlyCollection<string>? LanguageFilter { get; init; }
+
+    /// <summary>
+    /// Model identifiers the SafetensorsDecomposer should ingest, in
+    /// "publisher_slug/model_slug" form (e.g. "sentence-transformers/all-MiniLM-L6-v2").
+    /// <c>null</c> = no filter (process every model discovered under SourceDirectory's
+    /// hub root). When non-null, only models whose ModelId is in the set are
+    /// processed by ModelDecomp — letting the dependency chain run on the full
+    /// data root while ModelDecomp targets a specific subset (e.g., a small
+    /// model for smoke-testing without paying the cost of decomposing every
+    /// 33B-parameter model in the hub).
+    /// </summary>
+    public IReadOnlyCollection<string>? ModelFilter { get; init; }
 }
