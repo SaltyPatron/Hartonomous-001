@@ -24,7 +24,7 @@ public sealed class IngestionBatchTests
     [Fact]
     public void AddEntity_ReturnsHandleCarryingHashAndType()
     {
-        IngestionBatch batch = new();
+        IngestionBatch batch = new("test");
         byte[] hash = Hash(0xAB);
         EntityHandle h = batch.AddEntity(hash, "lemma");
 
@@ -34,9 +34,44 @@ public sealed class IngestionBatchTests
     }
 
     [Fact]
+    public void Constructor_carries_provenance_for_the_batch()
+    {
+        // Per-batch provenance is the contract: every classification +
+        // edge in this batch attributes to this provenance, no batch-level
+        // fallback to "system_computed". Regression for the bug where
+        // SubmitBatchAsync derived provenance from edges (and fell back to
+        // system_computed for edge-less batches), masking which decomposer
+        // asserted what.
+        IngestionBatch tatoeba = new("tatoeba");
+        IngestionBatch wordnet = new("princeton_wordnet");
+
+        Assert.Equal("tatoeba", tatoeba.ProvenanceCode);
+        Assert.Equal("princeton_wordnet", wordnet.ProvenanceCode);
+
+        // Provenance is set at construction and stable for the batch's
+        // lifetime — never fallbacks, never derived.
+        tatoeba.AddEntity(Hash(0x01), "tatoeba_sentence");
+        Assert.Equal("tatoeba", tatoeba.ProvenanceCode);
+    }
+
+    [Fact]
+    public void Different_batches_carry_independent_provenance()
+    {
+        // Two batches running in parallel must not cross-contaminate.
+        IngestionBatch a = new("decomposer_a");
+        IngestionBatch b = new("decomposer_b");
+
+        a.AddEntity(Hash(0x01), "lemma");
+        b.AddEntity(Hash(0x02), "synset");
+
+        Assert.Equal("decomposer_a", a.ProvenanceCode);
+        Assert.Equal("decomposer_b", b.ProvenanceCode);
+    }
+
+    [Fact]
     public void AddEdge_AcceptsHashCompositeMembersInRoleOrder()
     {
-        IngestionBatch batch = new();
+        IngestionBatch batch = new("test");
         EntityHandle source = batch.AddEntity(Hash(0x01), "lemma");
         EntityHandle target = batch.AddEntity(Hash(0x02), "synset");
 

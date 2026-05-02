@@ -1,0 +1,14 @@
+-- Stage 0026: collapse the hardcoded drain-function list and the hardcoded
+-- residue-probe SQL into substrate-side auto-discovery. Adding a new staging
+-- table requires only the new substrate.staging_X table and its
+-- substrate.drain_staging_X_chunk function; substrate.drain_all_staging and
+-- substrate.staging_residue pick them up automatically via pg_proc /
+-- pg_class introspection.
+--
+-- Replaces the silent-data-loss bug class where the C#-side list of drain
+-- calls in StagingFlushWorker had to be manually kept in sync with the
+-- SQL-side set of drain functions. When entity_classification staging
+-- was added, the producer wrote to it but no consumer ever drained it,
+-- and the residue probe didn't notice because it also had a separate
+-- hardcoded list. Both lists are now eliminated.
+-- @include schema/functions/drain_all_staging.sql

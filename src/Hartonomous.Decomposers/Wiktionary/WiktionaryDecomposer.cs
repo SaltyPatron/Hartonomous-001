@@ -48,13 +48,14 @@ namespace Hartonomous.Decomposers.Wiktionary;
 /// lemmas pointed-at by translations carry their own entity_language junction
 /// tagging the target language code.)
 /// </summary>
-public sealed partial class WiktionaryDecomposer : BaseDecomposer
+public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 {
     public override string ProvenanceCode => "wiktextract";
     public override string DisplayName => "Wiktionary (wiktextract JSONL)";
     public override IReadOnlyList<Phase> Phases => [Phase.Wiktionary];
 
-    private const double TrustPriorMu = 68000.0;
+    protected override double TrustPriorMu => 68000.0;
+    protected override ICodepointProperties CodepointProperties => _codepointProperties;
 
     private readonly string _jsonlPath;
     private readonly ICodepointProperties _codepointProperties;
@@ -86,6 +87,15 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
         {
             return configured;
         }
+        // Prefer the kaikki.org English-only extract when it's been dropped alongside
+        // the raw multilingual master dump. The kaikki extract is ~3–5 GB vs the
+        // master's ~21 GB and contains only English entries, so the language filter
+        // becomes a no-op and the parser does no wasted work.
+        string kaikkiPath = Path.Combine(configured, "kaikki.org-dictionary-English.jsonl");
+        if (File.Exists(kaikkiPath))
+        {
+            return kaikkiPath;
+        }
         return Path.Combine(configured, "raw-wiktextract-data.jsonl");
     }
 
@@ -112,7 +122,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
             int batchNum = 0;
             Dictionary<string, long> edgeCountByType = new(StringComparer.Ordinal);
 
-            IIngestionBatch batch = pipeline.CreateBatch();
+            IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
             async Task FlushBatchAsync()
             {
@@ -123,7 +133,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                 batchNum++;
                 await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
                     batchNum, "wiktionary", ct);
-                batch = pipeline.CreateBatch();
+                batch = pipeline.CreateBatch(ProvenanceCode);
             }
 
             void BumpEdge(string code)
@@ -144,7 +154,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                 return langIdMap.TryGetValue(langCode, out int id) ? id : (int?)null;
             }
 
-            foreach (WiktEntry entry in WiktionaryJsonlParser.Parse(_jsonlPath))
+            foreach (WiktEntry entry in WiktionaryJsonlParser.Parse(_jsonlPath, LanguageFilter))
             {
                 ct.ThrowIfCancellationRequested();
                 entryCount++;
@@ -159,7 +169,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                 }
 
                 (EntityHandle lemmaHandle, _, _) =
-                    EmitLemmaMaybeCompound(batch, entry.Word, ProvenanceCode);
+                    EmitText(batch, entry.Word, _codepointProperties, "lemma", TrustPriorMu);
                 batch.AddSignificance(lemmaHandle, "source_authority", TrustPriorMu);
                 entityCount++;
 
@@ -184,7 +194,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                         continue;
                     }
                     (EntityHandle infHandle, _, _) =
-                        EmitWordFormMerkle(batch, form.Form, "word_form");
+                        EmitText(batch, form.Form, _codepointProperties, "word_form", TrustPriorMu);
                     batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
                     entityCount++;
 
@@ -297,7 +307,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                     }
 
                     (EntityHandle srcLemma, _, _) =
-                        EmitLemmaMaybeCompound(batch, srcWord, ProvenanceCode);
+                        EmitText(batch, srcWord, _codepointProperties, "lemma", TrustPriorMu);
                     batch.AddSignificance(srcLemma, "source_authority", TrustPriorMu);
                     entityCount++;
                     int? srcLangId = ResolveLangId(srcLang);
@@ -322,7 +332,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                         continue;
                     }
                     (EntityHandle foreignLemma, _, _) =
-                        EmitLemmaMaybeCompound(batch, tr.Word, ProvenanceCode);
+                        EmitText(batch, tr.Word, _codepointProperties, "lemma", TrustPriorMu);
                     batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
                     entityCount++;
                     int? trLangId = ResolveLangId(tr.LangCode);
@@ -430,6 +440,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                 Log.EdgesByType(Logger, kv.Key, kv.Value);
             }
             Log.DecompositionComplete(Logger, entryCount, entityCount, edgeCount);
+            LogTextCacheStats();
         }
         finally
         {
@@ -453,7 +464,7 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
                 continue;
             }
             (EntityHandle target, _, _) =
-                EmitLemmaMaybeCompound(batch, rel.Word, ProvenanceCode);
+                EmitText(batch, rel.Word, _codepointProperties, "lemma", TrustPriorMu);
             batch.AddSignificance(target, "source_authority", TrustPriorMu);
             entityCount++;
 
@@ -515,14 +526,6 @@ public sealed partial class WiktionaryDecomposer : BaseDecomposer
             return string.Empty;
         }
         return string.Join('·', hyph.Parts);
-    }
-
-    private EntityHandle IngestText(IIngestionBatch batch, string text)
-    {
-        byte[] utf8 = Encoding.UTF8.GetBytes(text);
-        TextDecomposer.TextIngestionResult r = TextDecomposer.IngestUtf8DocumentIntoBatch(
-            batch, utf8, _codepointProperties, TrustPriorMu, Logger, CancellationToken.None);
-        return r.DocumentHandle;
     }
 
     private static partial class Log

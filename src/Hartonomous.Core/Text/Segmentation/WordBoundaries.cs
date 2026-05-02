@@ -40,7 +40,12 @@ public static class WordBoundaries
             long byteStart = tokens[segStart].ByteOffset;
             long byteEnd = (i < n) ? tokens[i].ByteOffset : utf8.Length;
             int byteLen = (int)(byteEnd - byteStart);
-            if (kind != WordKind.Other)
+            // Include WordKind.Other (whitespace/punct) ranges. The canonical
+            // text decomposer emits these as raw_span text_compositions so
+            // recompose_text reconstructs the surface text byte-for-byte.
+            // Skipping Other here was the cause of recompose dropping all
+            // inter-word spaces — sequence walks reached only word_forms.
+            if (byteLen > 0)
             {
                 words.Add(new WordRange(byteStart, byteLen, kind));
             }

@@ -1,8 +1,10 @@
--- 79 edge types in canonical order.
+-- 92 edge types in canonical order.
 -- IDs 1..39 land in named partitions (tables/core/edge_structural.sql, edge_cross_lingual.sql,
 -- edge_cross_modal.sql, edge_unicode.sql, edge_model.sql) per partition value lists.
--- IDs 40..79 land in edge_default (PARTITION OF DEFAULT). Once these stabilize,
--- a follow-up migration can move them into named partitions for index locality.
+-- IDs 40..92 land in edge_default (PARTITION OF DEFAULT). The 79..92 range covers the
+-- per-role-unit binding edges (has_attention_component, has_codec_filter, has_conv_filter,
+-- has_moe_neuron, has_route_direction, etc.) emitted by the analysis-pass DAG. Once these
+-- stabilize, a follow-up migration can move them into named partitions for index locality.
 --
 -- The 41 added types cover semantic content that the substrate cannot infer without:
 --   WordNet pointer relations (40..63):  hypernym/hyponym/instance variants/holonyms/
@@ -325,7 +327,51 @@ INSERT INTO substrate.edge_type (code, category, source_type_id, target_type_id)
         (SELECT id FROM substrate.entity_type WHERE code = 'lemma')),
     ('has_vocab_coverage',       'model_derived',
         (SELECT id FROM substrate.entity_type WHERE code = 'tokenizer_model'),
-        (SELECT id FROM substrate.entity_type WHERE code = 'vocab_coverage_profile'));
+        (SELECT id FROM substrate.entity_type WHERE code = 'vocab_coverage_profile')),
+    -- Per-role-unit binding edges. Source is always tensor (the weight matrix
+    -- the row was extracted from); target is the per-row entity for that
+    -- analysis pass. PerRowContentPass emits one (tensor, row_entity)
+    -- has_<role>_<unit> edge per non-sparse row of the source tensor so the
+    -- recomposer can reassemble target matrices for distillation.
+    ('has_attention_component',  'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'attention_pattern')),
+    ('has_codec_filter',         'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'audio_codec_filter')),
+    ('has_bbox_projection',      'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'bbox_projection')),
+    ('has_class_projection',     'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'class_projection')),
+    ('has_conformer_component',  'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'conformer_component')),
+    ('has_conv_filter',          'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'conv_filter')),
+    ('has_diffusion_component',  'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'diffusion_component')),
+    ('has_lora_component',       'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'lora_component')),
+    ('has_modality_basis',       'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'modality_basis_vector')),
+    ('has_moe_neuron',           'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'moe_expert_neuron')),
+    ('has_route_direction',      'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'moe_route_direction')),
+    ('has_object_query',         'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'object_query_slot')),
+    ('has_vision_feature',       'model_derived',
+        (SELECT id FROM substrate.entity_type WHERE code = 'tensor'),
+        (SELECT id FROM substrate.entity_type WHERE code = 'vision_feature_direction'));
 
 -- ── semantic_weight tier ladder ───────────────────────────────────────
 -- Default 1.0 (column default) covers tier-1 codes: structural and antonymy.

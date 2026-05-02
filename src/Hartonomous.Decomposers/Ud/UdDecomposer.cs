@@ -11,6 +11,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text.Segmentation;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Ud;
@@ -24,6 +25,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
     private const double TrustPriorMu = 92000.0;
 
     private readonly string _rootDir;
+    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -31,12 +33,14 @@ public sealed partial class UdDecomposer : BaseDecomposer
     public UdDecomposer(
         DecomposerConfig config,
         ILogger<UdDecomposer> logger,
+        ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _rootDir = config.SourceDirectory;
+        _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -168,7 +172,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         long totalMorphWritten = 0;
         long totalLangWritten = 0;
 
-        IIngestionBatch batch = pipeline.CreateBatch();
+        IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
         string lastBank = string.Empty;
 
         foreach ((UdTreebankInfo bank, string file) in allFiles)
@@ -190,7 +194,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 {
                     batchNum++;
                     await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, lastBank, ct);
-                    batch = pipeline.CreateBatch();
+                    batch = pipeline.CreateBatch(ProvenanceCode);
                 }
 
                 (int posWritten, int morphWritten, int langWritten) = EmitSentenceInline(
@@ -213,7 +217,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         Log.JunctionsWritten(Logger, (int)totalPosWritten, (int)totalMorphWritten, (int)totalLangWritten);
     }
 
-    private static (int Pos, int Morph, int Lang) EmitSentenceInline(
+    private (int Pos, int Morph, int Lang) EmitSentenceInline(
         IIngestionBatch batch,
         UdTreebankInfo bank,
         string fileKey,
@@ -243,7 +247,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
             // EmitWordFormMerkle emits the recursive child-centroid trajectory at
             // every tier (codepoint POINTZM, grapheme_cluster LINESTRINGZM through
             // codepoint centroids, word_form LINESTRINGZM through grapheme centroids).
-            (EntityHandle wfHandle, byte[] wfHash, _) = EmitWordFormMerkle(batch, tok.Form);
+            (EntityHandle wfHandle, byte[] wfHash, _) = EmitText(batch, tok.Form, _codepointProperties, "word_form", TrustPriorMu);
             entityCount++;
 
             // The token IS the word_form. UD's per-token analysis (POS,
@@ -261,7 +265,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
             if (tok.Lemma is not null && tok.Lemma.Length > 0)
             {
                 string lemmaForm = tok.Lemma;
-                (EntityHandle lemmaEntity, byte[] _, _) = EmitWordFormMerkle(batch, lemmaForm, "lemma");
+                (EntityHandle lemmaEntity, byte[] _, _) = EmitText(batch, lemmaForm, _codepointProperties, "lemma", TrustPriorMu);
                 entityCount++;
 
                 batch.AddEdge("has_lemma", subProvenance,

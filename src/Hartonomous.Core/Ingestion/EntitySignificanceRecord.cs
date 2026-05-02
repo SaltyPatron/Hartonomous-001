@@ -8,6 +8,5 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record EntitySignificanceRecord(
     string ContextTypeCode,
-    string EntityTypeCode,
     byte[] EntityHash,
     double InitialMu) : IngestionRecord;

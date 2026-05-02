@@ -21,6 +21,13 @@ internal sealed class IngestionBatch : IIngestionBatch
     private readonly List<SignificanceEntry> _significances = [];
     private readonly List<EntityModelSourceEntry> _entityModelSources = [];
 
+    public IngestionBatch(string provenanceCode)
+    {
+        ProvenanceCode = provenanceCode;
+    }
+
+    public string ProvenanceCode { get; }
+
     public int EntityCount => _entities.Count;
     public int EdgeCount => _edges.Count;
 

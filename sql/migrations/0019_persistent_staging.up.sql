@@ -20,12 +20,25 @@
 -- into substrate, DELETE WHERE ctid IN (...). One transaction per chunk.
 
 -- ── Entity staging ────────────────────────────────────────────────
+-- Hash-only (Phase C unification): substrate.entity has hash-only PK,
+-- so staging mirrors that. Classification metadata goes through
+-- staging_entity_classification.
 CREATE TABLE IF NOT EXISTS substrate.staging_entity (
-    entity_type_id INT  NOT NULL,
-    hash           BYTEA NOT NULL
+    hash BYTEA NOT NULL
+);
+
+-- ── Entity classification staging ────────────────────────────────
+-- Per-classification staging. Decomposers emit (hash, type_code,
+-- provenance_code) which the drain resolves to (hash, type_id, provenance_id)
+-- and routes to substrate.entity_classification.
+CREATE TABLE IF NOT EXISTS substrate.staging_entity_classification (
+    entity_hash    BYTEA NOT NULL,
+    entity_type_id INT   NOT NULL,
+    provenance_id  INT   NOT NULL
 );
 
 -- ── Edge staging ──────────────────────────────────────────────────
+-- Edge identity stays composite (edge type IS structural).
 CREATE TABLE IF NOT EXISTS substrate.staging_edge (
     edge_type_id  INT   NOT NULL,
     hash          BYTEA NOT NULL,
@@ -33,18 +46,18 @@ CREATE TABLE IF NOT EXISTS substrate.staging_edge (
 );
 
 -- ── Edge member staging ───────────────────────────────────────────
+-- Hash-only entity reference.
 CREATE TABLE IF NOT EXISTS substrate.staging_edge_member (
-    edge_type_id   INT   NOT NULL,
-    edge_hash      BYTEA NOT NULL,
-    entity_type_id INT   NOT NULL,
-    entity_hash    BYTEA NOT NULL,
-    edge_role_id   INT   NOT NULL
+    edge_type_id  INT   NOT NULL,
+    edge_hash     BYTEA NOT NULL,
+    entity_hash   BYTEA NOT NULL,
+    edge_role_id  INT   NOT NULL,
+    role_position INT   NOT NULL DEFAULT 0
 );
 
 -- ── Physicality staging ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS substrate.staging_physicality (
     physicality_type_id INT   NOT NULL,
-    entity_type_id      INT   NOT NULL,
     entity_hash         BYTEA NOT NULL,
     content_hash        BYTEA NOT NULL,
     wkb                 BYTEA NOT NULL
@@ -52,25 +65,21 @@ CREATE TABLE IF NOT EXISTS substrate.staging_physicality (
 
 -- ── Sequence staging ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS substrate.staging_sequence (
-    parent_entity_type_id INT   NOT NULL,
-    parent_entity_hash    BYTEA NOT NULL,
-    ordinal               INT   NOT NULL,
-    child_entity_type_id  INT   NOT NULL,
-    child_entity_hash     BYTEA NOT NULL,
-    rle_count             INT   NOT NULL DEFAULT 1
+    parent_hash BYTEA NOT NULL,
+    ordinal     INT   NOT NULL,
+    child_hash  BYTEA NOT NULL,
+    rle_count   INT   NOT NULL DEFAULT 1
 );
 
 -- ── Entity significance staging ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS substrate.staging_entity_significance (
     context_type_id INT   NOT NULL,
-    entity_type_id  INT   NOT NULL,
     entity_hash     BYTEA NOT NULL,
     mu              FLOAT8 NOT NULL
 );
 
 -- ── Entity model source staging ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS substrate.staging_entity_model_source (
-    entity_type_id  INT   NOT NULL,
     entity_hash     BYTEA NOT NULL,
     model_source_id INT   NOT NULL
 );
@@ -79,12 +88,12 @@ CREATE TABLE IF NOT EXISTS substrate.staging_entity_model_source (
 -- One table for all junctions. The 'table_name' discriminator routes
 -- the drainer to the right substrate junction table. table_name is
 -- validated against substrate's junction allowlist by the drainer.
+-- Hash-only entity reference.
 CREATE TABLE IF NOT EXISTS substrate.staging_junction (
-    table_name     TEXT  NOT NULL,
-    entity_type_id INT   NOT NULL,
-    entity_hash    BYTEA NOT NULL,
-    ref_id         INT   NOT NULL,
-    mu             FLOAT8         -- nullable; non-Glicko junctions ignore
+    table_name  TEXT  NOT NULL,
+    entity_hash BYTEA NOT NULL,
+    ref_id      INT   NOT NULL,
+    mu          FLOAT8         -- nullable; non-Glicko junctions ignore
 );
 
 -- Indexes: btree on a "drain hint" column would let the flusher pull

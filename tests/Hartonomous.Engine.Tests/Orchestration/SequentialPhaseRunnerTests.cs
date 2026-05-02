@@ -265,6 +265,7 @@ public sealed class SequentialPhaseRunnerTests
     {
         public PipelineStats Stats => new();
         public IIngestionBatch CreateBatch() => new FakeBatch();
+        public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -272,6 +273,7 @@ public sealed class SequentialPhaseRunnerTests
 
     private sealed class FakeBatch : IIngestionBatch
     {
+        public string ProvenanceCode => "test";
         public int EntityCount => 0;
         public int EdgeCount => 0;
         public EntityHandle AddEntity(byte[] hash, string entityTypeCode) => new(hash, entityTypeCode);

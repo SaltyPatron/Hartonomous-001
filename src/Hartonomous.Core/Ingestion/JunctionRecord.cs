@@ -14,7 +14,6 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record JunctionRecord(
     string JunctionTable,
-    string EntityTypeCode,
     byte[] EntityHash,
     int ReferenceId,
     double? Mu = null) : IngestionRecord;

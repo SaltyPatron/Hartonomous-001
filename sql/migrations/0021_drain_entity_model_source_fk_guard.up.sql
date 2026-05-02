@@ -1,0 +1,31 @@
+-- Stage 0021: gate drain_staging_entity_model_source_chunk on parent
+-- existence in substrate.entity.
+--
+-- Background: substrate.entity_model_source is the only dependent
+-- substrate table that still carries a real declared composite FK to
+-- substrate.entity (every partitioned dependent — edge_member,
+-- physicality, sequence, entity_significance, all junctions — omits
+-- the FK to dodge the PG18.3 partitionwise-FK SEGV under bulk INSERT
+-- and instead relies on application-layer batch ordering).
+--
+-- The streaming pipeline emits entity rows and entity_model_source
+-- rows into independent staging channels via separate
+-- NpgsqlBinaryImporter streams. The drain worker pulls 4096 ctid-
+-- ordered rows from each staging table per pass, in fixed order:
+-- staging_entity → … → staging_entity_model_source → staging_junction.
+-- When the producer outruns the entity drain, an entity_model_source
+-- chunk can claim rows whose parent entity is still queued in
+-- staging_entity. The INSERT then trips the real composite FK and the
+-- whole drain transaction rolls back. Observed in production logs as
+-- a tight loop of "StagingFlushWorker drain pass failed" 23503 errors
+-- on entity_model_source_entity_type_id_entity_hash_fkey, which also
+-- starves the junction drain in the same pass.
+--
+-- Fix: add an EXISTS guard against substrate.entity to the WITH-CTE
+-- claim. Rows whose parent has not yet drained sit in staging until
+-- a later pass picks them up. The FOR UPDATE SKIP LOCKED still
+-- applies only to substrate.staging_entity_model_source — the EXISTS
+-- lookup is a non-locking single index probe against the partitioned
+-- substrate.entity PK (entity_type_id, hash).
+--
+-- @include schema/functions/drain_staging_chunk.sql

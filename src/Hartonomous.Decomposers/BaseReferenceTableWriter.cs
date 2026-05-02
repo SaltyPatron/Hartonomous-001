@@ -70,36 +70,36 @@ internal abstract class BaseReferenceTableWriter
 
     protected Task WriteGlickoJunctionAsync(
         string tableName, string refColumn,
-        IReadOnlyList<(int EntityTypeId, byte[] EntityHash, int RefId)> entries,
+        IReadOnlyList<(byte[] EntityHash, int RefId)> entries,
         double mu, double sigma, CancellationToken ct) =>
         _junctionWriter.WriteGlickoJunctionAsync(tableName, refColumn, entries, mu, sigma, ct);
 
     protected Task WriteGlickoJunctionAsync(
         string tableName, string refColumn,
-        IReadOnlyList<(int EntityTypeId, byte[] EntityHash, int RefId, double Mu)> entries,
+        IReadOnlyList<(byte[] EntityHash, int RefId, double Mu)> entries,
         CancellationToken ct) =>
         _junctionWriter.WriteGlickoJunctionAsync(tableName, refColumn, entries, ct);
 
     protected Task WritePlainJunctionAsync(
         string tableName, string refColumn,
-        IReadOnlyList<(int EntityTypeId, byte[] EntityHash, int RefId)> entries,
+        IReadOnlyList<(byte[] EntityHash, int RefId)> entries,
         CancellationToken ct) =>
         _junctionWriter.WritePlainJunctionAsync(tableName, refColumn, entries, ct);
 
     // ── Named public junction writers ────────────────────────────────────────
 
     public Task WriteEntityLanguageJunctionsAsync(
-        IReadOnlyList<(int EntityTypeId, byte[] EntityHash, int LangId)> entries, CancellationToken ct) =>
+        IReadOnlyList<(byte[] EntityHash, int LangId)> entries, CancellationToken ct) =>
         // entity_language is not Glicko-tracked: pure (entity, language) link.
         WritePlainJunctionAsync("substrate.entity_language", "language_id", entries, ct);
 
     public Task WriteEntityPosJunctionsAsync(
-        IReadOnlyList<(int EntityTypeId, byte[] EntityHash, int PosId)> entries, CancellationToken ct) =>
+        IReadOnlyList<(byte[] EntityHash, int PosId)> entries, CancellationToken ct) =>
         WriteGlickoJunctionAsync("substrate.entity_pos", "pos_id",
             entries, AuthoritativeMu, AuthoritativeSigma, ct);
 
     public Task WriteEntityMorphFeatureJunctionsAsync(
-        IReadOnlyList<(int EntityTypeId, byte[] EntityHash, int MorphFeatureId)> entries, CancellationToken ct) =>
+        IReadOnlyList<(byte[] EntityHash, int MorphFeatureId)> entries, CancellationToken ct) =>
         WritePlainJunctionAsync("substrate.entity_morph_feature", "morph_feature_id",
             entries, ct);
 
@@ -194,7 +194,6 @@ internal abstract class BaseReferenceTableWriter
 
     protected Task WriteCodepointPropertiesCoreAsync(
         IReadOnlyList<(
-            int EntityTypeId,
             byte[] EntityHash,
             int CodepointValue,
             int GeneralCategoryId,

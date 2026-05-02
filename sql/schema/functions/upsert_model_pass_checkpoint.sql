@@ -1,7 +1,7 @@
 CREATE OR REPLACE FUNCTION substrate.upsert_model_pass_checkpoint(
     p_model_source_id INT,
     p_pass_name       TEXT,
-    p_status          TEXT,        -- "started" | "completed" | "failed"
+    p_status          TEXT,        -- "in_flight" | "completed" | "failed"
     p_rows_emitted    BIGINT,
     p_error_message   TEXT,
     p_extra           JSONB DEFAULT NULL
@@ -12,12 +12,18 @@ DECLARE v_id INT;
 BEGIN
     -- p_extra reserved for future per-pass payload; current schema doesn't use it.
     PERFORM p_extra;
+    -- INSERT branch only fires when there is no existing row for this
+    -- (model_source_id, pass_name) — i.e., the pass is being observed for
+    -- the first time. By definition that IS the start, so started_at is
+    -- always NOW(). The previous CASE-on-status form gated started_at on
+    -- a 'started' status the producer (NpgsqlCheckpointStore) never sends,
+    -- which violated the NOT NULL constraint on first-batch upserts.
     INSERT INTO substrate.model_pass_checkpoint
         (model_source_id, pass_name, started_at, completed_at, rows_emitted, error_message)
     VALUES (
         p_model_source_id,
         p_pass_name,
-        CASE WHEN p_status = 'started'   THEN NOW() ELSE NULL END,
+        NOW(),
         CASE WHEN p_status = 'completed' THEN NOW() ELSE NULL END,
         COALESCE(p_rows_emitted, 0),
         p_error_message

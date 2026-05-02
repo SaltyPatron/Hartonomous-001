@@ -49,8 +49,8 @@
 -- @include schema/functions/get_entity_info_by_handles.sql
 -- @include schema/functions/get_edge_info_by_handles.sql
 -- @include schema/functions/get_outbound_edge_targets.sql
--- @include schema/functions/get_composition_children.sql
--- @include schema/functions/recompose_text.sql
+-- get_composition_children, composition_*, recompose_text moved to 0016
+-- (they query substrate.sequence which doesn't exist until 0016 creates it).
 -- @include schema/functions/prime_edge_significance.sql
 -- @include schema/functions/entity_neighbors.sql
 -- @include schema/functions/entity_centroid_4d.sql

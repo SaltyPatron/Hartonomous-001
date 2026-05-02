@@ -74,7 +74,6 @@ internal sealed class UcdReferenceTableWriter : BaseReferenceTableWriter
         }
 
         List<(
-            int EntityTypeId,
             byte[] EntityHash,
             int CodepointValue,
             int GeneralCategoryId,
@@ -93,7 +92,6 @@ internal sealed class UcdReferenceTableWriter : BaseReferenceTableWriter
         foreach (CodepointPropertyRow row in rows)
         {
             copyRows.Add((
-                row.EntityTypeId,
                 row.EntityHash,
                 row.CodepointValue,
                 row.GeneralCategoryId,

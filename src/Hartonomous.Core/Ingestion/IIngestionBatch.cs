@@ -11,6 +11,16 @@ namespace Hartonomous.Core.Ingestion;
 public interface IIngestionBatch
 {
     /// <summary>
+    /// Each batch carries a single provenance — the decomposer asserting
+    /// these facts. Entity classifications and edges all attribute to this
+    /// provenance unless overridden per-emission. Pipeline reads this when
+    /// flushing entity_classification and edge rows. Decomposers set this
+    /// once at batch creation; the pipeline derives provenance from it
+    /// rather than fishing through edges.
+    /// </summary>
+    string ProvenanceCode { get; }
+
+    /// <summary>
     /// Append an entity. Returns a handle that carries the hash + type code;
     /// downstream Add* calls reference this handle to express FKs. Same
     /// (hash, type_code) added twice is idempotent at flush via

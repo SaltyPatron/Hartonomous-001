@@ -1,17 +1,6 @@
--- Stage 0006: substrate.entity (parent) and its 13 partitions.
--- Dataset-named partitions (entity_ud_sentence, entity_ud_token, entity_tatoeba)
--- removed alongside the dataset-named entity types they hosted.
+-- Stage 0006: substrate.entity — single content-addressed table.
+-- Per the unification refactor (docs/specs/text-decomposer-unification.md
+-- Phase C), substrate.entity has a hash-only primary key. No LIST partition
+-- by entity_type_id (classifications live on substrate.entity_classification
+-- per migration 0025, not on the entity row).
 -- @include schema/tables/core/entity.sql
--- @include schema/tables/core/entity_codepoint.sql
--- @include schema/tables/core/entity_grapheme.sql
--- @include schema/tables/core/entity_word.sql
--- @include schema/tables/core/entity_morpheme.sql
--- @include schema/tables/core/entity_lemma.sql
--- @include schema/tables/core/entity_text.sql
--- @include schema/tables/core/entity_semantic.sql
--- @include schema/tables/core/entity_unicode.sql
--- @include schema/tables/core/entity_image.sql
--- @include schema/tables/core/entity_audio.sql
--- @include schema/tables/core/entity_video.sql
--- @include schema/tables/core/entity_model.sql
--- @include schema/tables/core/entity_default.sql

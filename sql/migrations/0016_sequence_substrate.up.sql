@@ -25,22 +25,8 @@ DROP FUNCTION IF EXISTS substrate.recompose_text(INT, BYTEA, INT);
 DROP FUNCTION IF EXISTS substrate.get_composition_children(INT, BYTEA);
 DELETE FROM substrate.edge_type WHERE code = 'has_constituent';
 
--- ── substrate.sequence + partitions + indexes ──────────────────────
+-- ── substrate.sequence — single hash-keyed table (post-Phase-C) ────
 -- @include schema/tables/core/sequence.sql
--- @include schema/tables/core/sequence_codepoint.sql
--- @include schema/tables/core/sequence_grapheme.sql
--- @include schema/tables/core/sequence_word.sql
--- @include schema/tables/core/sequence_morpheme.sql
--- @include schema/tables/core/sequence_lemma.sql
--- @include schema/tables/core/sequence_text.sql
--- @include schema/tables/core/sequence_semantic.sql
--- @include schema/tables/core/sequence_unicode.sql
--- @include schema/tables/core/sequence_image.sql
--- @include schema/tables/core/sequence_audio.sql
--- @include schema/tables/core/sequence_video.sql
--- @include schema/tables/core/sequence_model.sql
--- @include schema/tables/core/sequence_default.sql
--- @include schema/tables/core/sequence_indexes.sql
 
 -- ── Query surface ───────────────────────────────────────────────────
 -- @include schema/functions/composition_at.sql
@@ -49,6 +35,7 @@ DELETE FROM substrate.edge_type WHERE code = 'has_constituent';
 -- @include schema/functions/composition_range.sql
 -- @include schema/functions/composition_subtrajectory.sql
 -- @include schema/functions/composition_parents.sql
+-- @include schema/functions/get_composition_children.sql
 
 -- ── Recompose via sequence walk (replaces 0015's has_constituent walk) ──
 -- @include schema/functions/recompose_text_v2.sql

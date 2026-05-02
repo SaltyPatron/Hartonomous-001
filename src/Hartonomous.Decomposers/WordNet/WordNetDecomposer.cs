@@ -46,13 +46,14 @@ namespace Hartonomous.Decomposers.WordNet;
 /// antonym/etc.) become substrate.edge rows synset → synset, all of which
 /// use the offset → synset_hash map built in pass 1.
 /// </summary>
-public sealed partial class WordNetDecomposer : BaseDecomposer
+public sealed partial class WordNetDecomposer : TextIngestingDecomposer
 {
     public override string ProvenanceCode => "princeton_wordnet";
     public override string DisplayName => "WordNet 3.0 (Princeton)";
     public override IReadOnlyList<Phase> Phases => [Phase.WordNetOmw];
 
-    private const double TrustPriorMu = 95000.0;
+    protected override double TrustPriorMu => 95000.0;
+    protected override ICodepointProperties CodepointProperties => _codepointProperties;
 
     private readonly string _dictDir;
     private readonly ICodepointProperties _codepointProperties;
@@ -123,7 +124,24 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             verbSentenceIndex = WordNetParser.ParseSentenceIndex(sentidxPath);
         }
 
-        Log.Parsed(Logger, synsets.Count, 0, morphExceptions.Count);
+        // index.sense — canonical (sense_key, synset_offset, sense_number, tag_count)
+        // table. We use it here to (a) report an honest count in the parse summary,
+        // and (b) validate the synthetic sense_keys we construct for verb-frame
+        // matching below. Tag_count and sense_number are read but not yet primed
+        // into substrate.edge_significance — that requires a producer-surface
+        // primitive for per-edge mu priming, which doesn't exist on IIngestionBatch
+        // (edge significance is currently primed in bulk uniformly from
+        // provenance.initial_mu). Wiring tag_count into the lexical_disambiguation
+        // arena is its own architectural call.
+        List<SenseIndexEntry> senseIndex = WordNetParser.ParseSenseIndex(
+            Path.Combine(_dictDir, "index.sense"));
+        HashSet<string> knownSenseKeys = new(senseIndex.Count, StringComparer.Ordinal);
+        foreach (SenseIndexEntry sie in senseIndex)
+        {
+            knownSenseKeys.Add(sie.SenseKey);
+        }
+
+        Log.Parsed(Logger, synsets.Count, senseIndex.Count, morphExceptions.Count);
 
         WordNetReferenceTableWriter refWriter =
             new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
@@ -156,7 +174,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             Dictionary<string, byte[]> offsetToSynsetHash =
                 new(synsets.Count, StringComparer.Ordinal);
 
-            IIngestionBatch batch = pipeline.CreateBatch();
+            IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
             async Task FlushBatchAsync()
             {
@@ -167,7 +185,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 batchNum++;
                 await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
                     batchNum, "wordnet", ct);
-                batch = pipeline.CreateBatch();
+                batch = pipeline.CreateBatch(ProvenanceCode);
             }
 
             void Bump(string code)
@@ -190,7 +208,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 foreach (SynsetWord sw in syn.Words)
                 {
                     (EntityHandle h, byte[] lemmaHash, _) =
-                        EmitLemmaMaybeCompound(batch, sw.Word, ProvenanceCode);
+                        EmitText(batch, sw.Word, _codepointProperties, "lemma", TrustPriorMu);
                     batch.AddSignificance(h, "source_authority", TrustPriorMu);
                     memberHandles.Add(h);
                     memberHashes.Add(lemmaHash);
@@ -305,6 +323,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             // ── Pass 2: pointer relations (synset → synset) using the offset map. ──
             int pointerCount = 0;
             int frameEdgeCount = 0;
+            int verbSenseKeyMismatches = 0;
             foreach (SynsetRecord syn in synsets)
             {
                 ct.ThrowIfCancellationRequested();
@@ -353,13 +372,21 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                         // For verbs ss_type=2; head_word/head_id are empty.
                         string senseKey =
                             $"{sw.Word}%2:{syn.LexFileNum:D2}:{sw.LexId:D2}::";
+                        if (!knownSenseKeys.Contains(senseKey))
+                        {
+                            // Synthetic key disagrees with index.sense — count it.
+                            // (Frame match below will also miss; we want to know
+                            // whether the miss is "no frames assigned" vs "bug in
+                            // our synthetic-key construction".)
+                            verbSenseKeyMismatches++;
+                        }
                         if (!frameIdsBySenseKey.TryGetValue(senseKey, out IReadOnlyList<int>? fids))
                         {
                             continue;
                         }
 
                         (EntityHandle lemmaHandle, _, _) =
-                            EmitLemmaMaybeCompound(batch, sw.Word, ProvenanceCode);
+                            EmitText(batch, sw.Word, _codepointProperties, "lemma", TrustPriorMu);
 
                         foreach (int fid in fids)
                         {
@@ -387,6 +414,10 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
             }
             await FlushBatchAsync();
             Log.Pass2Done(Logger, pointerCount, frameEdgeCount);
+            if (verbSenseKeyMismatches > 0)
+            {
+                Log.VerbSenseKeyMismatches(Logger, verbSenseKeyMismatches);
+            }
 
             // ── Pass 3: morph exceptions → word_form + inflection_of. ──
             // Inflected forms ARE word_forms — content-addressed by their
@@ -398,7 +429,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 ct.ThrowIfCancellationRequested();
 
                 (EntityHandle inflectedHandle, _, _) =
-                    EmitWordFormMerkle(batch, mex.InflectedForm, "word_form");
+                    EmitText(batch, mex.InflectedForm, _codepointProperties, "word_form", TrustPriorMu);
                 batch.AddSignificance(inflectedHandle, "source_authority", TrustPriorMu);
                 morphEntityCount++;
                 entityCount++;
@@ -412,7 +443,7 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 foreach (string baseForm in mex.BaseForms)
                 {
                     (EntityHandle baseHandle, _, _) =
-                        EmitLemmaMaybeCompound(batch, baseForm, ProvenanceCode);
+                        EmitText(batch, baseForm, _codepointProperties, "lemma", TrustPriorMu);
 
                     batch.AddEdge("inflection_of", ProvenanceCode,
                     [
@@ -434,19 +465,12 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
                 Log.EdgesByType(Logger, kv.Key, kv.Value);
             }
             Log.DecompositionComplete(Logger, entityCount, edgeCount, synsetsProcessed);
+            LogTextCacheStats();
         }
         finally
         {
             await refWriter.DisposeAsync();
         }
-    }
-
-    private EntityHandle IngestText(IIngestionBatch batch, string text)
-    {
-        byte[] utf8 = Encoding.UTF8.GetBytes(text);
-        TextDecomposer.TextIngestionResult r = TextDecomposer.IngestUtf8DocumentIntoBatch(
-            batch, utf8, _codepointProperties, TrustPriorMu, Logger, CancellationToken.None);
-        return r.DocumentHandle;
     }
 
     /// <summary>
@@ -505,6 +529,9 @@ public sealed partial class WordNetDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Pass 2 complete: {Pointers} pointer edges, {Frames} has_frame edges")]
         public static partial void Pass2Done(ILogger logger, int pointers, int frames);
+
+        [LoggerMessage(Level = LogLevel.Warning, Message = "Verb sense_key mismatches vs index.sense: {Count} (synthetic key construction may be wrong for these — frames will be silently dropped)")]
+        public static partial void VerbSenseKeyMismatches(ILogger logger, int count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Morph exceptions: {Count} inflected_form entities + inflection_of edges")]
         public static partial void MorphDone(ILogger logger, int count);

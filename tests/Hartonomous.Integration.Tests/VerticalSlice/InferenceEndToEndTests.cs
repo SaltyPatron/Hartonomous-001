@@ -1,6 +1,11 @@
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
+using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Engine.Data;
+using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Inference;
+using Hartonomous.Engine.Text;
 using Hartonomous.Engine.Traversal;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -27,24 +32,35 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
     private NpgsqlReferenceDataReader _refReader = null!;
     private NpgsqlEntityReader _entityReader = null!;
     private NpgsqlTraversal _traversal = null!;
+    private NpgsqlCodepointPropertiesCache _codepointProperties = null!;
+    private StreamingIngestionPipeline _pipeline = null!;
     private SubstrateInferenceEngine _engine = null!;
 
-    public Task InitializeAsync()
+    public async Task InitializeAsync()
     {
         _dataSource = NpgsqlDataSource.Create(ConnectionString());
         _refReader = new NpgsqlReferenceDataReader(_dataSource);
         _entityReader = new NpgsqlEntityReader(_dataSource);
         _traversal = new NpgsqlTraversal(_dataSource);
+        _codepointProperties = await NpgsqlCodepointPropertiesCache.LoadAsync(
+            ConnectionString(),
+            NullLogger<NpgsqlCodepointPropertiesCache>.Instance,
+            CancellationToken.None);
+        _pipeline = new StreamingIngestionPipeline(
+            ConnectionString(),
+            _refReader,
+            NullLogger<StreamingIngestionPipeline>.Instance);
         _engine = new SubstrateInferenceEngine(
-            _traversal,
-            _entityReader,
+            _dataSource,
+            _pipeline,
+            _codepointProperties,
             _refReader,
             NullLogger<SubstrateInferenceEngine>.Instance);
-        return Task.CompletedTask;
     }
 
     public async Task DisposeAsync()
     {
+        await _pipeline.DisposeAsync();
         await _dataSource.DisposeAsync();
     }
 

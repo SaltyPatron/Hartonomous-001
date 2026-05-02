@@ -11,6 +11,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Decomposers.Iso639;
 using Microsoft.Extensions.Logging;
 
@@ -27,6 +28,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
     private const double WiktTrustMu = 50000.0;
 
     private readonly string _sourceDir;
+    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
@@ -34,12 +36,14 @@ public sealed partial class OmwDecomposer : BaseDecomposer
     public OmwDecomposer(
         DecomposerConfig config,
         ILogger<OmwDecomposer> logger,
+        ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
         : base(config, logger)
     {
         _sourceDir = config.SourceDirectory;
+        _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
@@ -89,7 +93,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
             // Synset IDs for the batch are resolved at flush via the pipeline's
             // batch-scoped resolver — NOT a phase-wide hash list. Rules:
             // .claude/rules/00-hartonomous-core.md § "Banned patterns".
-            IIngestionBatch batch = pipeline.CreateBatch();
+            IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
             Dictionary<string, EntityHandle> batchLemmaHandles = new(StringComparer.Ordinal);
             HashSet<byte[]> batchSynsetHashes = new(ByteArrayEqualityComparer.Instance);
             List<(EntityHandle LemmaHandle, byte[] SynsetHash, double TrustMu)> batchAlignments = new();
@@ -124,7 +128,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                 batchNum++;
                 await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount, batchNum, "omw", ct);
 
-                batch = pipeline.CreateBatch();
+                batch = pipeline.CreateBatch(ProvenanceCode);
                 batchLemmaHandles.Clear();
                 batchSynsetHashes.Clear();
                 batchAlignments.Clear();
@@ -179,7 +183,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                     else
                     {
                         (EntityHandle h, byte[] _, _) =
-                            EmitLemmaMaybeCompound(batch, lemmaWord, ProvenanceCode);
+                            EmitText(batch, lemmaWord, _codepointProperties, "lemma", trustMu);
                         lemmaHandle = h;
                         batch.AddSignificance(lemmaHandle, "source_authority", trustMu);
                         batchLemmaHandles[lemmaKey] = lemmaHandle;

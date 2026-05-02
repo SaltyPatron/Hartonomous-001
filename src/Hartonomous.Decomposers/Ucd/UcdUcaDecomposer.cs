@@ -107,7 +107,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             long edgeCount = 0;
             int batchNum = 0;
 
-            IIngestionBatch batch = pipeline.CreateBatch();
+            IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
             HashSet<ulong> ceHashesEmittedPhysicality = [];
 
             foreach (CodepointRecord cp in allCodepoints)
@@ -179,7 +179,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
                     batchNum++;
                     await ReportProgressAsync(pipeline, reporter, batch,
                         entityCount, edgeCount, batchNum, "ucd.all.grouped.xml", ct, "entities");
-                    batch = pipeline.CreateBatch();
+                    batch = pipeline.CreateBatch(ProvenanceCode);
                 }
             }
 

@@ -8,6 +8,7 @@ namespace Hartonomous.Engine.Ingestion;
 public sealed record StreamingPipelineStats
 {
     public long EntitiesEmitted { get; init; }
+    public long EntityClassificationsEmitted { get; init; }
     public long EdgesEmitted { get; init; }
     public long EdgeMembersEmitted { get; init; }
     public long JunctionsEmitted { get; init; }

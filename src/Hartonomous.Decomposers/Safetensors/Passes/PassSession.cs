@@ -40,7 +40,7 @@ internal sealed partial class PassSession : IPassSession
         _context = context;
         _logger = logger;
         _passId = passId;
-        _batch = pipeline.CreateBatch();
+        _batch = pipeline.CreateBatch(_context.ProvenanceCode);
         _modelEntity = ReseedModelEntity(_batch);
     }
 
@@ -85,7 +85,7 @@ internal sealed partial class PassSession : IPassSession
             CurrentBatch = _batchNum,
         }, ct);
 
-        _batch = _pipeline.CreateBatch();
+        _batch = _pipeline.CreateBatch(_context.ProvenanceCode);
         _modelEntity = ReseedModelEntity(_batch);
     }
 

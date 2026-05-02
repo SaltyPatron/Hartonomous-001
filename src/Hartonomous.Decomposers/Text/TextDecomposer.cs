@@ -78,527 +78,29 @@ public sealed partial class TextDecomposer : BaseDecomposer
         byte[] utf8Bytes = await File.ReadAllBytesAsync(_sourcePath, ct);
         Log.FileRead(Logger, _sourcePath, utf8Bytes.Length);
 
-        IIngestionBatch batch = pipeline.CreateBatch();
-        TextIngestionResult result = IngestUtf8DocumentIntoBatch(
-            batch, utf8Bytes, _codepointProperties, SessionTrustMu, Logger, ct);
-        LastDocumentHandle = result.DocumentHandle;
+        IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
+        Hartonomous.Core.Text.TextDecomposeResult canonical =
+            Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                batch, utf8Bytes, _codepointProperties,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: ProvenanceCode,
+                    TopEntityType: "text_composition",
+                    TrustMu: SessionTrustMu));
+        LastDocumentHandle = canonical.RootHandle;
 
         if (batch.EntityCount > 0 || batch.EdgeCount > 0)
         {
             await ReportProgressAsync(pipeline, reporter, batch,
-                result.EntitiesEmitted, 0, batchNum: 1, _sourcePath, ct, "document");
+                canonical.EntitiesEmitted, 0, batchNum: 1, _sourcePath, ct, "document");
         }
 
-        Log.DecompositionComplete(Logger, result.EntitiesEmitted, 0, 1);
+        Log.DecompositionComplete(Logger, canonical.EntitiesEmitted, 0, 1);
     }
 
-    /// <summary>
-    /// Result of decomposing a single UTF-8 document into the substrate.
-    /// </summary>
-    public readonly record struct TextIngestionResult(
-        EntityHandle DocumentHandle,
-        byte[] DocumentHash,
-        long EntitiesEmitted);
+    // IngestUtf8DocumentIntoBatch and its helpers removed - replaced by
+    // Hartonomous.Core.Text.CanonicalTextDecomposer.Emit. See
+    // docs/specs/text-decomposer-unification.md.
 
-    /// <summary>
-    /// Segments a UTF-8 byte buffer into the substrate's text DAG (codepoint →
-    /// grapheme cluster → word_form → text_composition sentence → document)
-    /// and emits all entities, sequence rows, contour physicalities, and
-    /// significance rows directly into the provided <paramref name="batch"/>.
-    /// Caller owns batch creation, submission, and progress reporting.
-    ///
-    /// Used by the Text decomposer (file-driven) AND by passes inside other
-    /// decomposers that need to ingest model-package text artifacts
-    /// (config.json, tokenizer.json, merges.txt, special_tokens_map.json,
-    /// chat_template.jinja, generation_config.json, README.md) as full text
-    /// DAGs that dedup against the rest of the substrate by content.
-    ///
-    /// Pure: no I/O, no async, no batch submission. Returns the document
-    /// entity handle + hash + entities-emitted count.
-    /// </summary>
-    public static TextIngestionResult IngestUtf8DocumentIntoBatch(
-        IIngestionBatch batch,
-        byte[] utf8Bytes,
-        ICodepointProperties codepointProperties,
-        double trustMu,
-        ILogger logger,
-        CancellationToken ct)
-    {
-        SegmentationResult seg = Segment(utf8Bytes, codepointProperties);
-        Log.CodepointsParsed(logger, seg.Codepoints.Count);
-        Log.GraphemeClustersSegmented(logger, seg.GraphemeClusters.Count);
-        Log.WordsSegmented(logger, seg.Words.Count);
-        Log.SentencesSegmented(logger, seg.Sentences.Count);
-
-        long entityCount = 0;
-
-        // One document is emitted as one closed composition graph in one batch.
-        // The document-local dictionaries below deduplicate repeated content so
-        // a long text like Moby Dick does not create a fresh entity per occurrence.
-        Dictionary<int, EntityHandle> cpHandles = new(seg.Codepoints.Count);
-        Dictionary<long, EntityHandle> cpHandleByOffset = new(seg.Codepoints.Count);
-        Dictionary<long, byte[]> cpHashByOffset = new(seg.Codepoints.Count);
-        Dictionary<long, int> codepointIndexByOffset = new(seg.Codepoints.Count);
-        Dictionary<long, EntityHandle> gcHandleByOffset = new(seg.GraphemeClusters.Count);
-        Dictionary<long, byte[]> gcHashByOffset = new(seg.GraphemeClusters.Count);
-        Dictionary<byte[], EntityHandle> gcHandlesByHash = new(ByteArrayEqualityComparer.Instance);
-        Dictionary<byte[], EntityHandle> wordHandlesByHash = new(ByteArrayEqualityComparer.Instance);
-        Dictionary<long, EntityHandle> wordHandleByOffset = new(seg.Words.Count);
-        Dictionary<long, byte[]> wordHashByOffset = new(seg.Words.Count);
-        Dictionary<byte[], EntityHandle> sentenceHandlesByHash = new(ByteArrayEqualityComparer.Instance);
-        Dictionary<long, EntityHandle> sentenceHandleByOffset = new(seg.Sentences.Count);
-        Dictionary<long, byte[]> sentenceHashByOffset = new(seg.Sentences.Count);
-        Dictionary<byte[], EntityHandle> rawSpanHandlesByHash = new(ByteArrayEqualityComparer.Instance);
-
-        // --- Codepoint entities (dedup with UCD) ---
-        for (int codepointIndex = 0; codepointIndex < seg.Codepoints.Count; codepointIndex++)
-        {
-            (int cp, int byteOffset, _) = seg.Codepoints[codepointIndex];
-            codepointIndexByOffset[byteOffset] = codepointIndex;
-
-            byte[] hash = HashCodepoint(cp);
-            if (cpHandles.TryGetValue(cp, out EntityHandle existingHandle))
-            {
-                cpHandleByOffset[byteOffset] = existingHandle;
-                cpHashByOffset[byteOffset] = hash;
-                continue;
-            }
-
-            EntityHandle handle = batch.AddEntity(hash, "codepoint");
-            cpHandles[cp] = handle;
-            cpHandleByOffset[byteOffset] = handle;
-            cpHashByOffset[byteOffset] = hash;
-            entityCount++;
-        }
-
-        // --- Grapheme cluster entities ---
-        foreach (GraphemeRange gc in seg.GraphemeClusters)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            if (gc.CodepointLength == 1)
-            {
-                int cp = DecodeSingleCodepoint(utf8Bytes, (int)gc.ByteOffset, gc.ByteLength);
-                EntityHandle cpHandle = cpHandles.TryGetValue(cp, out EntityHandle existing)
-                    ? existing
-                    : batch.AddEntity(HashCodepoint(cp), "codepoint");
-                gcHandleByOffset[gc.ByteOffset] = cpHandle;
-                gcHashByOffset[gc.ByteOffset] = HashCodepoint(cp);
-            }
-            else
-            {
-                byte[] gcHash = ComputeGraphemeClusterHash(utf8Bytes, gc, cpHandles, out EntityHandle[] cpSequence);
-                if (!gcHandlesByHash.TryGetValue(gcHash, out EntityHandle gcEntity))
-                {
-                    gcEntity = batch.AddEntity(gcHash, "grapheme_cluster");
-                    batch.AddSignificance(gcEntity, "source_authority", trustMu);
-                    // has_constituent: grapheme_cluster → ordered codepoints.
-                    // The substrate.recompose_text walk bottoms out at codepoint
-                    // leaves through this edge family.
-                    BaseDecomposer.EmitSequence(batch, gcEntity, cpSequence.AsSpan());
-
-                    // Recursive child-centroid trajectory for grapheme_cluster
-                    // is now emitted inside EmitWordFormMerkle (which TextDecomposer
-                    // does not call — TextDecomposer builds its own DAG). Physicality
-                    // for text_composition / document tiers is part of task #61's
-                    // remaining work; codepoint POINTZM is cached via the segmentation
-                    // pass below.
-                    gcHandlesByHash[gcHash] = gcEntity;
-                    entityCount++;
-                }
-
-                gcHandleByOffset[gc.ByteOffset] = gcEntity;
-                gcHashByOffset[gc.ByteOffset] = gcHash;
-            }
-        }
-
-        // --- Word entities ---
-        int graphemeIndex = 0;
-        foreach (WordRange word in seg.Words)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            string wordText = Encoding.UTF8.GetString(utf8Bytes, (int)word.ByteOffset, word.ByteLength);
-            List<EntityHandle> childHandles = [];
-            List<byte[]> childHashes = [];
-
-            while (graphemeIndex < seg.GraphemeClusters.Count)
-            {
-                GraphemeRange gc = seg.GraphemeClusters[graphemeIndex];
-                if (gc.ByteOffset + gc.ByteLength <= word.ByteOffset)
-                {
-                    graphemeIndex++;
-                    continue;
-                }
-
-                if (gc.ByteOffset >= word.ByteOffset + word.ByteLength)
-                {
-                    break;
-                }
-
-                if (gcHandleByOffset.TryGetValue(gc.ByteOffset, out EntityHandle gcHandle) &&
-                    gcHashByOffset.TryGetValue(gc.ByteOffset, out byte[]? gcHash))
-                {
-                    childHandles.Add(gcHandle);
-                    childHashes.Add(gcHash);
-                }
-
-                graphemeIndex++;
-            }
-
-            if (childHashes.Count == 0)
-            {
-                continue;
-            }
-
-            byte[] wordHash = ComputeMerkleHash(childHashes.ToArray().AsSpan());
-            if (!wordHandlesByHash.TryGetValue(wordHash, out EntityHandle wordEntity))
-            {
-                wordEntity = batch.AddEntity(wordHash, "word_form");
-                batch.AddSignificance(wordEntity, "source_authority", trustMu);
-                // has_constituent: word_form → ordered grapheme_clusters.
-                BaseDecomposer.EmitSequence(
-                    batch, wordEntity, CollectionsMarshal.AsSpan(childHandles));
-
-                wordHandlesByHash[wordHash] = wordEntity;
-                entityCount++;
-            }
-
-            wordHandleByOffset[word.ByteOffset] = wordEntity;
-            wordHashByOffset[word.ByteOffset] = wordHash;
-        }
-
-        Log.WordEntitiesEmitted(logger, wordHandlesByHash.Count);
-
-        // --- Sentence entities ---
-        int wordIndex = 0;
-        foreach (SentenceRange sent in seg.Sentences)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            List<EntityHandle> sentChildHandles = [];
-            List<byte[]> sentChildHashes = [];
-            long cursor = sent.ByteOffset;
-            long sentenceEnd = sent.ByteOffset + sent.ByteLength;
-
-            while (wordIndex < seg.Words.Count)
-            {
-                WordRange word = seg.Words[wordIndex];
-                if (word.ByteOffset + word.ByteLength <= sent.ByteOffset)
-                {
-                    wordIndex++;
-                    continue;
-                }
-
-                if (word.ByteOffset >= sent.ByteOffset + sent.ByteLength)
-                {
-                    break;
-                }
-
-                AppendRawSpanIfAny(
-                    batch,
-                    utf8Bytes,
-                    cursor,
-                    word.ByteOffset,
-                    seg.Codepoints,
-                    codepointIndexByOffset,
-                    cpHandleByOffset,
-                    cpHashByOffset,
-                    rawSpanHandlesByHash,
-                    ref entityCount,
-                    sentChildHandles,
-                    sentChildHashes,
-                    trustMu);
-
-                if (wordHandleByOffset.TryGetValue(word.ByteOffset, out EntityHandle wordHandle) &&
-                    wordHashByOffset.TryGetValue(word.ByteOffset, out byte[]? wordHash))
-                {
-                    sentChildHandles.Add(wordHandle);
-                    sentChildHashes.Add(wordHash);
-                }
-
-                cursor = word.ByteOffset + word.ByteLength;
-                wordIndex++;
-            }
-
-            AppendRawSpanIfAny(
-                batch,
-                utf8Bytes,
-                cursor,
-                sentenceEnd,
-                seg.Codepoints,
-                codepointIndexByOffset,
-                cpHandleByOffset,
-                cpHashByOffset,
-                rawSpanHandlesByHash,
-                ref entityCount,
-                sentChildHandles,
-                sentChildHashes,
-                trustMu);
-
-            if (sentChildHashes.Count == 0)
-            {
-                continue;
-            }
-
-            byte[] sentHash = ComputeMerkleHash(sentChildHashes.ToArray().AsSpan());
-            if (!sentenceHandlesByHash.TryGetValue(sentHash, out EntityHandle sentEntity))
-            {
-                sentEntity = batch.AddEntity(sentHash, "text_composition");
-                batch.AddSignificance(sentEntity, "source_authority", trustMu);
-                // has_constituent: text_composition → ordered word_forms / raw spans.
-                BaseDecomposer.EmitSequence(
-                    batch, sentEntity, CollectionsMarshal.AsSpan(sentChildHandles));
-
-                sentenceHandlesByHash[sentHash] = sentEntity;
-                entityCount++;
-            }
-
-            sentenceHandleByOffset[sent.ByteOffset] = sentEntity;
-            sentenceHashByOffset[sent.ByteOffset] = sentHash;
-        }
-
-        Log.SentenceEntitiesEmitted(logger, sentenceHandlesByHash.Count);
-
-        // --- Document entity ---
-        List<EntityHandle> documentChildHandles = [];
-        List<byte[]> documentChildHashes = [];
-        long documentCursor = 0;
-
-        foreach (SentenceRange sent in seg.Sentences)
-        {
-            AppendRawSpanIfAny(
-                batch,
-                utf8Bytes,
-                documentCursor,
-                sent.ByteOffset,
-                seg.Codepoints,
-                codepointIndexByOffset,
-                cpHandleByOffset,
-                cpHashByOffset,
-                rawSpanHandlesByHash,
-                ref entityCount,
-                documentChildHandles,
-                documentChildHashes,
-                trustMu);
-
-            if (sentenceHandleByOffset.TryGetValue(sent.ByteOffset, out EntityHandle sentHandle) &&
-                sentenceHashByOffset.TryGetValue(sent.ByteOffset, out byte[]? sentHash))
-            {
-                documentChildHandles.Add(sentHandle);
-                documentChildHashes.Add(sentHash);
-            }
-
-            documentCursor = sent.ByteOffset + sent.ByteLength;
-        }
-
-        AppendRawSpanIfAny(
-            batch,
-            utf8Bytes,
-            documentCursor,
-            utf8Bytes.Length,
-            seg.Codepoints,
-            codepointIndexByOffset,
-            cpHandleByOffset,
-            cpHashByOffset,
-            rawSpanHandlesByHash,
-            ref entityCount,
-            documentChildHandles,
-            documentChildHashes,
-            trustMu);
-
-        byte[] docHash = ComputeMerkleHash(documentChildHashes.ToArray().AsSpan());
-        EntityHandle docEntity = batch.AddEntity(docHash, "document");
-        batch.AddSignificance(docEntity, "source_authority", trustMu);
-        entityCount++;
-
-        // has_constituent: document → ordered text_compositions.
-        BaseDecomposer.EmitSequence(
-            batch, docEntity, CollectionsMarshal.AsSpan(documentChildHandles));
-
-        return new TextIngestionResult(docEntity, docHash, entityCount);
-    }
-
-    private static void AppendRawSpanIfAny(
-        IIngestionBatch batch,
-        byte[] utf8Bytes,
-        long startOffset,
-        long endOffset,
-        IReadOnlyList<(int Codepoint, int ByteOffset, int ByteLength)> codepoints,
-        IReadOnlyDictionary<long, int> codepointIndexByOffset,
-        IReadOnlyDictionary<long, EntityHandle> cpHandleByOffset,
-        IReadOnlyDictionary<long, byte[]> cpHashByOffset,
-        Dictionary<byte[], EntityHandle> rawSpanHandlesByHash,
-        ref long entityCount,
-        List<EntityHandle> targetHandles,
-        List<byte[]> targetHashes,
-        double trustMu)
-    {
-        if (endOffset <= startOffset)
-        {
-            return;
-        }
-
-        (EntityHandle handle, byte[] hash) = GetRawSpanHandle(
-            batch,
-            utf8Bytes,
-            startOffset,
-            checked((int)(endOffset - startOffset)),
-            codepoints,
-            codepointIndexByOffset,
-            cpHandleByOffset,
-            cpHashByOffset,
-            rawSpanHandlesByHash,
-            ref entityCount,
-            trustMu);
-
-        targetHandles.Add(handle);
-        targetHashes.Add(hash);
-    }
-
-    private static (EntityHandle Handle, byte[] Hash) GetRawSpanHandle(
-        IIngestionBatch batch,
-        byte[] utf8Bytes,
-        long byteOffset,
-        int byteLength,
-        IReadOnlyList<(int Codepoint, int ByteOffset, int ByteLength)> codepoints,
-        IReadOnlyDictionary<long, int> codepointIndexByOffset,
-        IReadOnlyDictionary<long, EntityHandle> cpHandleByOffset,
-        IReadOnlyDictionary<long, byte[]> cpHashByOffset,
-        Dictionary<byte[], EntityHandle> rawSpanHandlesByHash,
-        ref long entityCount,
-        double trustMu)
-    {
-        if (!codepointIndexByOffset.TryGetValue(byteOffset, out int codepointIndex))
-        {
-            throw new InvalidOperationException($"Raw span start offset {byteOffset} is not aligned to a codepoint boundary.");
-        }
-
-        long endOffset = byteOffset + byteLength;
-        List<EntityHandle> childHandles = [];
-        List<byte[]> childHashes = [];
-
-        while (codepointIndex < codepoints.Count)
-        {
-            (int _, int cpOffset, int cpByteLength) = codepoints[codepointIndex];
-            if (cpOffset >= endOffset)
-            {
-                break;
-            }
-
-            if (cpOffset + cpByteLength > endOffset)
-            {
-                throw new InvalidOperationException(
-                    $"Raw span [{byteOffset}, {endOffset}) splits a codepoint at offset {cpOffset}.");
-            }
-
-            childHandles.Add(cpHandleByOffset[cpOffset]);
-            childHashes.Add(cpHashByOffset[cpOffset]);
-            codepointIndex++;
-        }
-
-        if (childHashes.Count == 0)
-        {
-            throw new InvalidOperationException($"Raw span [{byteOffset}, {endOffset}) resolved to no codepoints.");
-        }
-
-        if (childHashes.Count == 1)
-        {
-            return (childHandles[0], childHashes[0]);
-        }
-
-        byte[] spanHash = ComputeMerkleHash(childHashes.ToArray().AsSpan());
-        if (!rawSpanHandlesByHash.TryGetValue(spanHash, out EntityHandle spanEntity))
-        {
-            spanEntity = batch.AddEntity(spanHash, "text_composition");
-            batch.AddSignificance(spanEntity, "source_authority", trustMu);
-            for (int i = 0; i < childHandles.Count; i++)
-            {
-            }
-
-            rawSpanHandlesByHash[spanHash] = spanEntity;
-            entityCount++;
-        }
-
-        return (spanEntity, spanHash);
-    }
-
-    // ── Synchronous helpers (span-safe, no async) ──
-
-    private sealed record SegmentationResult(
-        List<(int Codepoint, int ByteOffset, int ByteLength)> Codepoints,
-        List<GraphemeRange> GraphemeClusters,
-        List<WordRange> Words,
-        List<SentenceRange> Sentences);
-
-    private static SegmentationResult Segment(byte[] utf8Bytes, ICodepointProperties props)
-    {
-        ReadOnlySpan<byte> utf8 = utf8Bytes.AsSpan();
-        // Graphemes via .NET StringInfo (97.8% UCD-conformant); the hand-rolled
-        // GraphemeClusters.Enumerate is currently 44.5% conformant and unsafe
-        // for non-ASCII content. Words and sentences use the hand-rolled lib
-        // (99.7% / 87.1% conformant) until a vetted replacement lands.
-        return new SegmentationResult(
-            DecodeCodepoints(utf8),
-            GraphemeClusters.EnumerateUsingNet(utf8),
-            WordBoundaries.EnumerateWords(utf8, props),
-            SentenceBoundaries.Enumerate(utf8, props));
-    }
-
-    private static List<(int Codepoint, int ByteOffset, int ByteLength)> DecodeCodepoints(ReadOnlySpan<byte> utf8)
-    {
-        List<(int, int, int)> result = new(utf8.Length);
-        int idx = 0;
-        while (idx < utf8.Length)
-        {
-            (int cp, int consumed) = Utf8.DecodeOne(utf8[idx..]);
-            if (consumed == 0)
-            {
-                break;
-            }
-            result.Add((cp, idx, consumed));
-            idx += consumed;
-        }
-        return result;
-    }
-
-    private static int DecodeSingleCodepoint(byte[] utf8Bytes, int offset, int length)
-    {
-        ReadOnlySpan<byte> span = utf8Bytes.AsSpan(offset, length);
-        (int cp, _) = Utf8.DecodeOne(span);
-        return cp;
-    }
-
-    private static byte[] ComputeGraphemeClusterHash(
-        byte[] utf8Bytes,
-        GraphemeRange gc,
-        Dictionary<int, EntityHandle> cpHandles,
-        out EntityHandle[] cpSequence)
-    {
-        List<byte[]> cpHashes = [];
-        List<EntityHandle> handles = [];
-        int idx = (int)gc.ByteOffset;
-        int end = idx + gc.ByteLength;
-        while (idx < end)
-        {
-            (int cp, int consumed) = Utf8.DecodeOne(utf8Bytes.AsSpan(idx));
-            if (consumed == 0)
-            {
-                break;
-            }
-
-            byte[] cpHash = HashCodepoint(cp);
-            cpHashes.Add(cpHash);
-            EntityHandle cpHandle = cpHandles.TryGetValue(cp, out EntityHandle existing)
-                ? existing
-                : throw new InvalidOperationException($"Codepoint {cp} missing from document-local cache.");
-            handles.Add(cpHandle);
-            idx += consumed;
-        }
-
-        cpSequence = handles.ToArray();
-        return ComputeMerkleHash(cpHashes.ToArray().AsSpan());
-    }
 
     private static partial class Log
     {
@@ -606,27 +108,35 @@ public sealed partial class TextDecomposer : BaseDecomposer
             Message = "Text: read {Path} ({Bytes} bytes)")]
         public static partial void FileRead(ILogger logger, string path, int bytes);
 
-        [LoggerMessage(Level = LogLevel.Information,
+        // Per-fragment counters: Trace because IngestUtf8DocumentIntoBatch
+        // is the seed-uses-core entrypoint every text-bearing fragment routes
+        // through (every Wiktionary gloss / WordNet definition / Tatoeba
+        // sentence / safetensors config string), so each one fires per call.
+        // CLAUDE.md logging rules — Trace per-entity, Debug per-batch,
+        // Information per-phase — were inverted here. At Information level
+        // a single seed phase would emit millions of log lines and balloon
+        // SeedWiktionary.log past 1 GB.
+        [LoggerMessage(Level = LogLevel.Trace,
             Message = "Text: {Count} codepoints decoded")]
         public static partial void CodepointsParsed(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information,
+        [LoggerMessage(Level = LogLevel.Trace,
             Message = "Text: {Count} grapheme clusters (UAX #29)")]
         public static partial void GraphemeClustersSegmented(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information,
+        [LoggerMessage(Level = LogLevel.Trace,
             Message = "Text: {Count} words (UAX #29)")]
         public static partial void WordsSegmented(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information,
+        [LoggerMessage(Level = LogLevel.Trace,
             Message = "Text: {Count} sentences (UAX #29)")]
         public static partial void SentencesSegmented(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information,
+        [LoggerMessage(Level = LogLevel.Trace,
             Message = "Text: {Count} word entities emitted")]
         public static partial void WordEntitiesEmitted(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information,
+        [LoggerMessage(Level = LogLevel.Trace,
             Message = "Text: {Count} sentence entities emitted")]
         public static partial void SentenceEntitiesEmitted(ILogger logger, int count);
 

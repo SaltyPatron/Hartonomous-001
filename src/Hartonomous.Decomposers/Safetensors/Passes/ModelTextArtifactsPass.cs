@@ -93,18 +93,20 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
 
             Log.ArtifactStart(_logger, context.Source.ModelId, fileName, utf8Bytes.Length);
 
-            TextDecomposer.TextIngestionResult result = TextDecomposer.IngestUtf8DocumentIntoBatch(
-                session.Batch,
-                utf8Bytes,
-                _codepointProperties,
-                ModelDerivedTrustMu,
-                _logger,
-                ct);
+            Hartonomous.Core.Text.TextDecomposeResult result =
+                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                    session.Batch,
+                    utf8Bytes,
+                    _codepointProperties,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: context.ProvenanceCode,
+                        TopEntityType: "text_composition",
+                        TrustMu: ModelDerivedTrustMu));
 
             session.Batch.AddEdge(edgeCode, context.ProvenanceCode,
             [
                 new EdgeMemberSpec(session.ModelEntity, "source", 0),
-                new EdgeMemberSpec(result.DocumentHandle, "target", 1),
+                new EdgeMemberSpec(result.RootHandle, "target", 1),
             ]);
 
             artifactsIngested++;

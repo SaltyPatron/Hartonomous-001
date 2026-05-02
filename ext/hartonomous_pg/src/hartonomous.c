@@ -23,6 +23,7 @@ PG_MODULE_MAGIC;
 
 int hartonomous_max_traversal_results = 10000;
 bool hartonomous_strict_determinism = true;
+bool hartonomous_traversal_trace = false;
 static int hartonomous_resolved_cbwr_branch = -1;
 
 void _PG_init(void);
@@ -92,13 +93,96 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
     }
 
     /*
-     * Dump /proc/self/maps so we can identify which library/segment contains
-     * the faulting rip. Without this, a rip in a runtime-allocated executable
-     * region (LLVM JIT, mmap'd JIT cache, dynamically-loaded .so) is
-     * unattributable. open/read/write are async-signal-safe.
+     * Stack frame walk via RBP chain. Each saved RBP slot contains the
+     * caller's frame pointer; [RBP+8] is the caller's return address (which
+     * IS an instruction address inside the caller's code segment). We can
+     * therefore recover the call stack by chasing RBP. Stops on:
+     *   - NULL frame pointer
+     *   - frame pointer not within stack region (defensive against junk)
+     *   - frame pointer not strictly increasing (loop detection)
+     *   - max depth (20)
+     *
+     * Async-signal-safe: only register reads, snprintf into a stack buffer,
+     * and write() — no malloc, no locks.
+     *
+     * The caller's return address is the FIRST address that's actually in
+     * a mapped code segment. RIP itself was the indirect-call target which
+     * was junk (0x7d…01); the saved return address is what we need to
+     * identify the C function that issued the bad call.
      */
     {
-        const char *maps_header = "=== /proc/self/maps (look for the segment containing rip) ===\n";
+        char        sbuf[2048];
+        int         slen;
+        const char *fhdr = "=== hartonomous: frame chain (rbp walk; addresses are caller return PCs) ===\n";
+        ssize_t w = write(STDERR_FILENO, fhdr, strlen(fhdr));
+        (void) w;
+
+        slen = snprintf(sbuf, sizeof(sbuf), "===   frame[0] rip=%p\n", rip);
+        if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+
+        if (rsp != NULL)
+        {
+            /*
+             * Top of stack: 64 bytes around rsp. Useful when rip is in junk
+             * memory because the saved-return-address slot of the failed
+             * indirect call is at [rsp] (the CALL instruction pushed it).
+             */
+            slen = snprintf(sbuf, sizeof(sbuf), "===   stack at rsp:");
+            if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+            for (int k = 0; k < 8; k++)
+            {
+                uintptr_t  *slot = (uintptr_t *) ((char *) rsp + k * 8);
+                slen = snprintf(sbuf, sizeof(sbuf), " %p", (void *) *slot);
+                if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+            }
+            (void) write(STDERR_FILENO, "\n", 1);
+
+            /* The CALL pushed the return PC at [rsp]. That's frame[0]'s caller. */
+            uintptr_t saved_ret_at_rsp = *((uintptr_t *) rsp);
+            slen = snprintf(sbuf, sizeof(sbuf),
+                            "===   *(rsp) = caller return PC = %p\n",
+                            (void *) saved_ret_at_rsp);
+            if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+        }
+
+        if (rbp != NULL)
+        {
+            uintptr_t *frame = (uintptr_t *) rbp;
+            uintptr_t prev = 0;
+            for (int depth = 1; depth < 20; depth++)
+            {
+                /* Frame layout (System V x86-64): [frame+0]=parent rbp; [frame+8]=caller rip. */
+                if ((uintptr_t) frame < (uintptr_t) rsp ||
+                    (uintptr_t) frame > (uintptr_t) rsp + (1U << 24)) /* 16MB sanity cap */
+                {
+                    break;
+                }
+                if ((uintptr_t) frame <= prev) /* not strictly increasing */
+                {
+                    break;
+                }
+                uintptr_t parent_rbp  = frame[0];
+                uintptr_t caller_rip  = frame[1];
+                slen = snprintf(sbuf, sizeof(sbuf),
+                                "===   frame[%d] caller_rip=%p (rbp=%p)\n",
+                                depth, (void *) caller_rip, (void *) frame);
+                if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+                if (parent_rbp == 0)
+                {
+                    break;
+                }
+                prev = (uintptr_t) frame;
+                frame = (uintptr_t *) parent_rbp;
+            }
+        }
+    }
+
+    /*
+     * Dump /proc/self/maps so the caller_rip values from the frame chain
+     * can be resolved to library + offset by hand or via addr2line.
+     */
+    {
+        const char *maps_header = "=== /proc/self/maps (resolve frame caller_rip to library:offset) ===\n";
         ssize_t w = write(STDERR_FILENO, maps_header, strlen(maps_header));
         int fd = open("/proc/self/maps", O_RDONLY);
         if (fd >= 0)
@@ -212,6 +296,22 @@ _PG_init(void)
         10000,
         1,
         1000000,
+        PGC_USERSET,
+        0,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    DefineCustomBoolVariable(
+        "hartonomous.traversal_trace",
+        "Emit a NOTICE at every entry/exit of pg_traverse_astar and pg_neighbors.",
+        "Diagnostic-only. When true, traversal functions log seed hash, arena, "
+        "step counts, and exit reason. Use with SET LOCAL hartonomous.traversal_trace = on; "
+        "before running a query to debug crashes — the last NOTICE before the SEGV "
+        "tells you which step died.",
+        &hartonomous_traversal_trace,
+        false,
         PGC_USERSET,
         0,
         NULL,

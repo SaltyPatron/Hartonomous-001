@@ -1,20 +1,6 @@
--- substrate.populate_edge_trajectories(p_limit INT) — real implementation
---
--- CREATE OR REPLACE replaces the stub from migration 0013. Walks edges with
--- NULL geom up to p_limit at a time and populates each edge's geom column
--- with a LINESTRINGZM through its participants' 4D centroids in role order
--- (source first by edge_role_id ascending, then within a role by
--- entity_hash ascending — the substrate's stable n-ary participant order
--- in the absence of an explicit position column).
---
--- Each member's centroid is resolved via substrate.entity_centroid_4d.
--- Edges whose participants don't all have a centroid yet (e.g. compositions
--- whose physicality phase hasn't run) skip in this pass and are picked up
--- on the next call once centroids are available — the function is safe to
--- call repeatedly until no NULL-geom edges remain.
---
--- This unblocks Fréchet/Hausdorff/frayed-edge/analogy queries that consume
--- substrate.edge.geom.
+-- substrate.populate_edge_trajectories(p_limit INT) — hash-only.
+-- Walks edges with NULL geom and populates each edge's geom column with a
+-- LINESTRINGZM through its participants' 4D centroids in role order.
 CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT)
 RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
@@ -35,7 +21,7 @@ BEGIN
           FROM (
               SELECT em.edge_role_id AS role_id,
                      em.entity_hash,
-                     substrate.entity_centroid_4d(em.entity_type_id, em.entity_hash) AS cgeom
+                     substrate.entity_centroid_4d(em.entity_hash) AS cgeom
                 FROM substrate.edge_member em
                WHERE em.edge_type_id = rec.edge_type_id
                  AND em.edge_hash    = rec.hash
@@ -43,8 +29,7 @@ BEGIN
          WHERE c.cgeom IS NOT NULL;
 
         IF v_geom IS NULL OR ST_NumPoints(v_geom) < 2 THEN
-            -- Single-member fallback: write a POINTZM if exactly one centroid exists.
-            SELECT substrate.entity_centroid_4d(em.entity_type_id, em.entity_hash)
+            SELECT substrate.entity_centroid_4d(em.entity_hash)
               INTO v_geom
               FROM substrate.edge_member em
              WHERE em.edge_type_id = rec.edge_type_id
@@ -66,6 +51,3 @@ BEGIN
 
     RETURN v_updated;
 END $$;
-
-COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Backfill edge.geom from participants 4D centroids in role order. Idempotent: edges already populated are skipped via the WHERE clause; partial population is safe to retry. Replaces the prior STUB with a real implementation in migration 0015.';

@@ -56,6 +56,12 @@ internal static class Program
         Command query = BuildQueryCommand();
         root.AddCommand(query);
 
+        Command godel = BuildGodelCommand();
+        root.AddCommand(godel);
+
+        Command recall = BuildRecallCommand();
+        root.AddCommand(recall);
+
         Command exportModel = BuildExportModelCommand();
         root.AddCommand(exportModel);
 
@@ -664,15 +670,15 @@ internal static class Program
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
             [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>(), refDataReader, junctionWriter, refDataWriter)],
-            [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), refDataReader, junctionWriter, refDataWriter)],
+            [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [
                 new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
-                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.UniversalDeps] =
             [
-                new UdDecomposer(udConfig, logFactory.CreateLogger<UdDecomposer>(), refDataReader, junctionWriter, refDataWriter),
+                new UdDecomposer(udConfig, logFactory.CreateLogger<UdDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.ModelDecomp] =
             [
@@ -708,6 +714,15 @@ internal static class Program
         await using NpgsqlDataSource flushDs = NpgsqlDataSource.Create(conn);
         await using StagingFlushWorker flushWorker = new(flushDs, logFactory.CreateLogger<StagingFlushWorker>());
         await flushWorker.StartAsync();
+
+        // Hard barrier: drain any pre-existing staging residue (from a prior
+        // CLI run that died before its catch-up drain completed) BEFORE
+        // producers are allowed to emit new content. Throws on unrecoverable
+        // PG failure — proceeding under that condition would compound the
+        // loss. Staging is persistent across CLI restarts (migration 0019),
+        // so this is the recovery path for any prior shutdown drain that
+        // didn't finish cleanly.
+        await flushWorker.DrainPreExistingResidueAsync(ct);
 
         // Background significance primer: drains substrate.edge → substrate.edge_significance
         // per arena. The synchronous prime call inside producer batches that
@@ -817,8 +832,27 @@ internal static class Program
         StagingFlushStats fStats = flushWorker.Stats;
         SignificancePrimerStats pStats = primer.Stats;
         Console.WriteLine($"\nStreaming pipeline emitted: {sStats.EntitiesEmitted:N0} entities, {sStats.EdgesEmitted:N0} edges, {sStats.EdgeMembersEmitted:N0} edge_members, {sStats.JunctionsEmitted:N0} junctions, {sStats.PhysicalitiesEmitted:N0} physicalities, {sStats.SequencesEmitted:N0} sequences ({sStats.CopyCommits:N0} COPY commits, {sStats.CopyErrors:N0} errors)");
-        Console.WriteLine($"Background flush drained:    {fStats.EntityRowsDrained:N0} entities, {fStats.EdgeRowsDrained:N0} edges, {fStats.EdgeMemberRowsDrained:N0} edge_members, {fStats.JunctionRowsDrained:N0} junctions, {fStats.PhysicalityRowsDrained:N0} physicalities, {fStats.SequenceRowsDrained:N0} sequences ({fStats.IdleCycles:N0} idle cycles)");
+        string fStatsBreakdown = string.Join(", ",
+            fStats.RowsDrainedByFunction.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value:N0}"));
+        Console.WriteLine($"Background flush drained:    {fStats.TotalRowsDrained:N0} total rows ({fStats.IdleCycles:N0} idle cycles) — {fStatsBreakdown}");
         Console.WriteLine($"Significance primer:         {pStats.EdgesPrimed:N0} edges primed across {pStats.ArenaCount} arenas ({pStats.IdleCycles:N0} idle cycles)");
+
+        // If shutdown drain left rows in substrate.staging_*, the substrate is
+        // incomplete relative to what producers emitted. monitor.phase_status
+        // may report phases as "completed" but downstream consumers will see
+        // missing entities / sequences. Surface this as a non-zero exit code
+        // so orchestration scripts halt instead of trusting the run. The next
+        // CLI invocation will eagerly drain the residue (DrainPreExistingResidueAsync)
+        // before producing new content — staging is persistent across runs
+        // (migration 0019).
+        if (!flushWorker.LastShutdownDrainCompleted)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("ERROR: shutdown drain did not empty substrate.staging_*.");
+            Console.Error.WriteLine("       Substrate is incomplete relative to producer emissions.");
+            Console.Error.WriteLine("       Re-run the CLI: startup will drain the residue before any new phase work.");
+            Environment.ExitCode = 1;
+        }
     }
 
     private static async Task<HashSet<int>> CollectDistinctCodepointsAsync(
@@ -1106,14 +1140,41 @@ internal static class Program
 
             await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
             Hartonomous.Engine.Data.NpgsqlReferenceDataReader refReader = new(ds);
-            Hartonomous.Engine.Data.NpgsqlEntityReader entityReader = new(ds);
-            Hartonomous.Engine.Traversal.NpgsqlTraversal traversal = new(ds);
 
             using Microsoft.Extensions.Logging.ILoggerFactory lf =
-                Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Warning));
+                Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information));
+
+            // Codepoint property cache — subset to only what the prompt
+            // actually contains (per AP-7: don't full-load 303k codepoints
+            // for an inference path that needs ~50).
+            HashSet<int> promptCodepoints = new();
+            foreach (System.Text.Rune rune in text.EnumerateRunes())
+            {
+                promptCodepoints.Add(rune.Value);
+            }
+            Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache codepointCache =
+                await Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
+                    conn, promptCodepoints, lf.CreateLogger<Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache>(),
+                    CancellationToken.None);
+
+            // Same pipeline machinery the seed phases use. Prompts go through
+            // the SAME path: producer batch → channels → staging → substrate.
+            // Pipeline handles arbitrary size (one word, Moby Dick, multi-MB).
+            await using Hartonomous.Engine.Ingestion.StreamingIngestionPipeline pipeline = new(
+                conn,
+                refReader,
+                lf.CreateLogger<Hartonomous.Engine.Ingestion.StreamingIngestionPipeline>());
+            await using Npgsql.NpgsqlDataSource flushDs = Npgsql.NpgsqlDataSource.Create(conn);
+            await using Hartonomous.Engine.Ingestion.StagingFlushWorker flushWorker =
+                new(flushDs, lf.CreateLogger<Hartonomous.Engine.Ingestion.StagingFlushWorker>());
+            await flushWorker.StartAsync();
+            // Drain any pre-existing residue before we emit the prompt — same
+            // hard barrier the seed phases use.
+            await flushWorker.DrainPreExistingResidueAsync(CancellationToken.None);
+
             Hartonomous.Engine.Inference.SubstrateInferenceEngine engine = new(
-                traversal, entityReader, refReader, lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>(),
-                entityReader);
+                ds, pipeline, codepointCache, refReader,
+                lf.CreateLogger<Hartonomous.Engine.Inference.SubstrateInferenceEngine>());
 
             Hartonomous.Core.Engine.InferenceQuery q = new() { Text = text };
 
@@ -1129,27 +1190,267 @@ internal static class Program
             Console.WriteLine($"  answer: {(string.IsNullOrEmpty(result.Answer) ? "(no path — honest abstention)" : result.Answer)}");
             Console.WriteLine();
             Console.WriteLine($"=== Trace ===");
-            Console.WriteLine($"  seeds activated:  {result.Seeds.Count}");
-            Console.WriteLine($"  composite paths:  {result.Paths.Count}");
-            Console.WriteLine($"  nodes visited:    {result.NodesVisited}");
+            Console.WriteLine($"  prompt seeds:     {result.Seeds.Count} (text_composition root, A* expands word_form children)");
+            Console.WriteLine($"  distinct targets: {result.NodesVisited}");
             Console.WriteLine($"  elapsed:          {sw.Elapsed.TotalMilliseconds:F1} ms");
 
-            if (result.Paths.Count == 0)
-            {
-                return;
-            }
-            Console.WriteLine();
-            Console.WriteLine($"=== Top {Math.Min(5, result.Paths.Count)} contributing paths ===");
-            for (int i = 0; i < Math.Min(5, result.Paths.Count); i++)
-            {
-                Hartonomous.Core.Engine.TraversalPath path = result.Paths[i];
-                Hartonomous.Core.Ingestion.EntityHandle? terminal = path.Steps.Count > 0 ? path.Steps[^1].Entity : null;
-                string targetText = await TryRecomposeAsync(entityReader, terminal);
-                Console.WriteLine($"  [{i+1}] significance={path.PathSignificance:F4} depth={path.Steps.Count - 1} → {targetText}");
-            }
+            // Stop the flush worker cleanly so any remaining staging drains.
+            await flushWorker.StopAsync();
         });
 
         return query;
+    }
+
+    private static Command BuildRecallCommand()
+    {
+        Option<string> connOpt = new("--connection", description: "Postgres connection string. Falls back to HARTONOMOUS_DB.")
+        {
+            IsRequired = false,
+        };
+        connOpt.SetDefaultValueFactory(() => DefaultConnectionString());
+
+        Argument<string[]> textArg = new("text",
+            "Prompt for direct recall. The brain's primary operation: substrate decomposition → seed activation → cross-arena A* → recompose best target. No goal decomposition, no Reflexion retry, no synthesis. Most prompts resolve here.");
+        textArg.Arity = ArgumentArity.OneOrMore;
+
+        Command recall = new("recall",
+            "Direct substrate recall: prompt → best substrate-grounded answer in one shot. The brain's most common access pattern. Use 'godel' instead for compound prompts that need goal decomposition.");
+        recall.AddOption(connOpt);
+        recall.AddArgument(textArg);
+
+        recall.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
+            string[] textParts = ctx.ParseResult.GetValueForArgument(textArg);
+            string text = string.Join(' ', textParts);
+
+            await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
+            Hartonomous.Engine.Data.NpgsqlReferenceDataReader refReader = new(ds);
+            using Microsoft.Extensions.Logging.ILoggerFactory lf =
+                Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information));
+
+            // Subset codepoint cache to prompt — per AP-7.
+            HashSet<int> promptCodepoints = new();
+            foreach (System.Text.Rune rune in text.EnumerateRunes())
+            {
+                promptCodepoints.Add(rune.Value);
+            }
+            Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache codepointCache =
+                await Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
+                    conn, promptCodepoints, lf.CreateLogger<Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache>(),
+                    CancellationToken.None);
+
+            await using Hartonomous.Engine.Ingestion.StreamingIngestionPipeline pipeline = new(
+                conn, refReader,
+                lf.CreateLogger<Hartonomous.Engine.Ingestion.StreamingIngestionPipeline>());
+            await using Npgsql.NpgsqlDataSource flushDs = Npgsql.NpgsqlDataSource.Create(conn);
+            await using Hartonomous.Engine.Ingestion.StagingFlushWorker flushWorker =
+                new(flushDs, lf.CreateLogger<Hartonomous.Engine.Ingestion.StagingFlushWorker>());
+            await flushWorker.StartAsync();
+            await flushWorker.DrainPreExistingResidueAsync(CancellationToken.None);
+
+            // Step 0: ingest prompt as substrate content.
+            Hartonomous.Core.Ingestion.IIngestionBatch batch = pipeline.CreateBatch();
+            byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(text);
+            Hartonomous.Core.Text.TextDecomposeResult ingest =
+                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                    batch, utf8, codepointCache,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: "user_session",
+                        TopEntityType: "text_composition",
+                        TrustMu: 1000.0));
+            await pipeline.SubmitBatchAsync(batch, CancellationToken.None);
+
+            // Step 0b: drain barrier.
+            System.Diagnostics.Stopwatch barrierSw = System.Diagnostics.Stopwatch.StartNew();
+            byte[] promptHash = ingest.RootHash;
+            const int MaxAttempts = 6000;
+            bool drained = false;
+            for (int i = 0; i < MaxAttempts; i++)
+            {
+                await using Npgsql.NpgsqlConnection conn0 = await ds.OpenConnectionAsync(CancellationToken.None);
+                await using Npgsql.NpgsqlCommand cmd0 = new(
+                    @"WITH e AS (SELECT 1 FROM substrate.entity WHERE hash = $1 LIMIT 1),
+                           s AS (SELECT 1 FROM substrate.sequence WHERE parent_hash = $1 LIMIT 1)
+                      SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM s)", conn0);
+                cmd0.Parameters.AddWithValue(promptHash);
+                await using Npgsql.NpgsqlDataReader r0 = await cmd0.ExecuteReaderAsync(CancellationToken.None);
+                if (await r0.ReadAsync(CancellationToken.None) && r0.GetInt64(0) > 0 && r0.GetInt64(1) > 0)
+                {
+                    drained = true;
+                    break;
+                }
+                await Task.Delay(50, CancellationToken.None);
+            }
+            barrierSw.Stop();
+
+            Console.WriteLine("=== substrate.recall ===");
+            Console.WriteLine($"  prompt: {text}");
+            Console.WriteLine($"  hash:   {Convert.ToHexString(promptHash)[..16]}…");
+            Console.WriteLine($"  drain:  {(drained ? $"{barrierSw.ElapsedMilliseconds} ms" : "TIMEOUT")}");
+            Console.WriteLine();
+
+            if (!drained)
+            {
+                Console.Error.WriteLine("ERROR: prompt did not drain to substrate. StagingFlushWorker may be unhealthy.");
+                await flushWorker.StopAsync();
+                return;
+            }
+
+            // Step 1-4: hub-intersection recall via substrate.recall.
+            await using (Npgsql.NpgsqlConnection conn1 = await ds.OpenConnectionAsync(CancellationToken.None))
+            await using (Npgsql.NpgsqlCommand cmd1 = new(
+                "SELECT answer, target_hash, confidence, seed_count, target_count, elapsed_ms " +
+                "FROM substrate.recall($1, $2, $3, $4)", conn1))
+            {
+                cmd1.Parameters.AddWithValue(promptHash);
+                cmd1.Parameters.AddWithValue(3);
+                cmd1.Parameters.AddWithValue(25);
+                cmd1.Parameters.AddWithValue(0.25);
+                cmd1.CommandTimeout = 300;
+                await using Npgsql.NpgsqlDataReader r1 = await cmd1.ExecuteReaderAsync(CancellationToken.None);
+                if (await r1.ReadAsync(CancellationToken.None))
+                {
+                    string? answer = r1.IsDBNull(0) ? null : r1.GetString(0);
+                    byte[]? targetHash = r1.IsDBNull(1) ? null : (byte[])r1.GetValue(1);
+                    double confidence = r1.IsDBNull(2) ? 0.0 : r1.GetDouble(2);
+                    int seedCount = r1.IsDBNull(3) ? 0 : r1.GetInt32(3);
+                    long targetCount = r1.IsDBNull(4) ? 0 : r1.GetInt64(4);
+                    int elapsedMs = r1.IsDBNull(5) ? 0 : r1.GetInt32(5);
+
+                    Console.WriteLine("=== Answer ===");
+                    Console.WriteLine(string.IsNullOrEmpty(answer) ? "(honest abstention — no substrate path)" : answer);
+                    Console.WriteLine();
+                    Console.WriteLine($"=== Trace ===");
+                    Console.WriteLine($"  seeds activated:  {seedCount}");
+                    Console.WriteLine($"  targets reached:  {targetCount}");
+                    Console.WriteLine($"  best target:      {(targetHash is null ? "(none)" : Convert.ToHexString(targetHash)[..16] + "…")}");
+                    Console.WriteLine($"  confidence (mu):  {confidence:F1}");
+                    Console.WriteLine($"  forward-pass:     {elapsedMs} ms");
+                }
+            }
+
+            await flushWorker.StopAsync();
+        });
+
+        return recall;
+    }
+
+    private static Command BuildGodelCommand()
+    {
+        Option<string> connOpt = new("--connection", description: "Postgres connection string. Falls back to HARTONOMOUS_DB.")
+        {
+            IsRequired = false,
+        };
+        connOpt.SetDefaultValueFactory(() => DefaultConnectionString());
+
+        Argument<string[]> textArg = new("text", "Prompt. Decomposed into sub-questions, each is its own forward pass; the engine synthesizes a final answer with confidence and a reasoning trace.");
+        textArg.Arity = ArgumentArity.OneOrMore;
+
+        Option<string?> outcomeOpt = new("--outcome",
+            description: "Optional: 'accept' or 'reject' the primary answer once produced. Triggers Glicko-2 comparison events on the substrate edges that supported each candidate (Step 6 of inference.md).");
+        outcomeOpt.SetDefaultValue(null);
+
+        Command godel = new("godel",
+            "Run a Gödel Engine inference. Three-phase OODA over the substrate: " +
+            "Observe (sub-question decomposition + intent classification), " +
+            "Orient (arena weighting), " +
+            "Decide+Act (cross-arena top-K traversal + Reflexion retry on low confidence + Self-Consistency voting + multi-clause synthesis).");
+        godel.AddOption(connOpt);
+        godel.AddOption(outcomeOpt);
+        godel.AddArgument(textArg);
+
+        godel.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
+            string[] textParts = ctx.ParseResult.GetValueForArgument(textArg);
+            string text = string.Join(' ', textParts);
+            string? outcome = ctx.ParseResult.GetValueForOption(outcomeOpt);
+
+            await using Npgsql.NpgsqlDataSource ds = Npgsql.NpgsqlDataSource.Create(conn);
+            Hartonomous.Engine.Data.NpgsqlReferenceDataReader refReader = new(ds);
+            using Microsoft.Extensions.Logging.ILoggerFactory lf =
+                Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information));
+
+            // Subset codepoint cache to prompt — per AP-7, never full-load.
+            HashSet<int> promptCodepoints = new();
+            foreach (System.Text.Rune rune in text.EnumerateRunes())
+            {
+                promptCodepoints.Add(rune.Value);
+            }
+            Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache codepointCache =
+                await Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
+                    conn, promptCodepoints, lf.CreateLogger<Hartonomous.Engine.Text.NpgsqlCodepointPropertiesCache>(),
+                    CancellationToken.None);
+
+            await using Hartonomous.Engine.Ingestion.StreamingIngestionPipeline pipeline = new(
+                conn, refReader,
+                lf.CreateLogger<Hartonomous.Engine.Ingestion.StreamingIngestionPipeline>());
+            await using Npgsql.NpgsqlDataSource flushDs = Npgsql.NpgsqlDataSource.Create(conn);
+            await using Hartonomous.Engine.Ingestion.StagingFlushWorker flushWorker =
+                new(flushDs, lf.CreateLogger<Hartonomous.Engine.Ingestion.StagingFlushWorker>());
+            await flushWorker.StartAsync();
+            await flushWorker.DrainPreExistingResidueAsync(CancellationToken.None);
+
+            Hartonomous.Engine.Godel.GodelEngine engine = new(
+                ds, pipeline, codepointCache,
+                lf.CreateLogger<Hartonomous.Engine.Godel.GodelEngine>());
+
+            Console.WriteLine("=== Gödel Engine ===");
+            Console.WriteLine($"  prompt: {text}");
+            Console.WriteLine();
+
+            Hartonomous.Engine.Godel.GodelResponse response =
+                await engine.RunAsync(text, CancellationToken.None);
+
+            Console.WriteLine("=== Answer ===");
+            Console.WriteLine(string.IsNullOrWhiteSpace(response.PrimaryAnswer)
+                ? (response.Abstained ? "(honest abstention — no candidate cleared the confidence floor)" : "(empty)")
+                : response.PrimaryAnswer);
+            Console.WriteLine();
+
+            Console.WriteLine("=== Reasoning trace ===");
+            Console.WriteLine(response.ReasoningTrace);
+            Console.WriteLine();
+
+            Console.WriteLine("=== Sub-question candidates ===");
+            for (int i = 0; i < response.SubQuestionResults.Count; i++)
+            {
+                Hartonomous.Engine.Godel.SubQuestionResult sq = response.SubQuestionResults[i];
+                Console.WriteLine($"  [{i}] '{sq.SubQuestion.Text}' intent={sq.Intent} seeds={sq.SeedCount} targets={sq.DistinctTargets} retries={sq.RetryCount} confidence={sq.Confidence:F1} ({sq.ElapsedMs} ms)");
+                for (int k = 0; k < sq.Candidates.Count; k++)
+                {
+                    Hartonomous.Engine.Godel.GodelCandidate c = sq.Candidates[k];
+                    string preview = c.RecomposedText.Length <= 200
+                        ? c.RecomposedText
+                        : c.RecomposedText[..200] + "…";
+                    Console.WriteLine($"      rank {c.Rank}: mu={c.TotalMu:F1} paths={c.PathCount} → {preview}");
+                }
+            }
+            Console.WriteLine();
+            Console.WriteLine($"=== Total elapsed: {response.TotalElapsed.TotalMilliseconds:F1} ms ===");
+
+            // Optional outcome feedback (Step 6 of inference.md).
+            if (outcome is "accept" or "reject")
+            {
+                Hartonomous.Engine.Godel.OutcomeRecorder recorder = new(
+                    ds, lf.CreateLogger<Hartonomous.Engine.Godel.OutcomeRecorder>());
+                if (outcome == "accept")
+                {
+                    await recorder.RecordAcceptAsync(response, CancellationToken.None);
+                    Console.WriteLine("Outcome accepted — Glicko-2 updates emitted.");
+                }
+                else
+                {
+                    await recorder.RecordRejectAsync(response, CancellationToken.None);
+                    Console.WriteLine("Outcome rejected — Glicko-2 updates emitted (inverted).");
+                }
+            }
+
+            await flushWorker.StopAsync();
+        });
+
+        return godel;
     }
 
     private static async Task<string> TryRecomposeAsync(

@@ -58,20 +58,44 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
     /// </summary>
     private static readonly TimeSpan IdleBackoff = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// Number of consecutive failures the catch-up shutdown drain tolerates
+    /// before giving up. Each retry opens a fresh connection so transient
+    /// PG drops (SEGV recovery, container restart, idle_in_transaction
+    /// timeout) don't strand staging rows on shutdown. Five * 2s backoff
+    /// covers ~10s of PG unavailability.
+    /// </summary>
+    private const int MaxFinalDrainRetries = 5;
+
+    /// <summary>
+    /// Startup-residue drain attempts. Higher than shutdown's MaxFinalDrainRetries
+    /// because failing here is a hard stop (no producer can run); we'd rather
+    /// block boot for several minutes waiting for PG than declare unrecoverable
+    /// loss. Combined with exponential backoff this caps at ~5 minutes.
+    /// </summary>
+    private const int MaxStartupDrainAttempts = 12;
+
+    private static readonly TimeSpan FinalDrainRetryBackoff = TimeSpan.FromSeconds(2);
+
     private readonly NpgsqlDataSource _dataSource;
     private readonly ILogger<StagingFlushWorker> _logger;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _loop;
 
-    private long _entityRowsDrained;
-    private long _edgeRowsDrained;
-    private long _edgeMemberRowsDrained;
-    private long _physicalityRowsDrained;
-    private long _sequenceRowsDrained;
-    private long _entitySignificanceRowsDrained;
-    private long _entityModelSourceRowsDrained;
-    private long _junctionRowsDrained;
+    private long _totalRowsDrained;
     private long _idleCycles;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _rowsDrainedByFunction = new();
+
+    /// <summary>
+    /// Whether the most recent <see cref="StopAsync"/> drained staging to
+    /// empty AND the residue probe confirmed it. False until StopAsync runs;
+    /// false if the catch-up loop exhausted retries with rows still in
+    /// staging. The CLI uses this to set a non-zero exit code so
+    /// orchestration scripts notice that the substrate is incomplete and
+    /// the next CLI invocation must run before any downstream consumer
+    /// trusts the substrate.
+    /// </summary>
+    public bool LastShutdownDrainCompleted { get; private set; }
 
     public StagingFlushWorker(NpgsqlDataSource dataSource, ILogger<StagingFlushWorker> logger)
     {
@@ -81,15 +105,9 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
 
     public StagingFlushStats Stats => new()
     {
-        EntityRowsDrained               = _entityRowsDrained,
-        EdgeRowsDrained                 = _edgeRowsDrained,
-        EdgeMemberRowsDrained           = _edgeMemberRowsDrained,
-        PhysicalityRowsDrained          = _physicalityRowsDrained,
-        SequenceRowsDrained             = _sequenceRowsDrained,
-        EntitySignificanceRowsDrained   = _entitySignificanceRowsDrained,
-        EntityModelSourceRowsDrained    = _entityModelSourceRowsDrained,
-        JunctionRowsDrained             = _junctionRowsDrained,
-        IdleCycles                      = _idleCycles,
+        TotalRowsDrained     = _totalRowsDrained,
+        RowsDrainedByFunction = new System.Collections.Generic.Dictionary<string, long>(_rowsDrainedByFunction),
+        IdleCycles           = _idleCycles,
     };
 
     public Task StartAsync()
@@ -101,6 +119,102 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
         _loop = Task.Run(() => RunAsync(_shutdown.Token));
         Log.WorkerStarted(_logger);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Synchronous barrier: drain any residue left in substrate.staging_* by
+    /// a prior CLI invocation that exited before its catch-up drain finished.
+    /// Must be called BEFORE producers emit new content. Without this barrier,
+    /// the previous run's stranded rows interleave with the new run's emits;
+    /// monitor.phase_status records phases as completed while the substrate
+    /// is missing rows from the last run, and the user has no way to detect
+    /// the drift short of comparing emission vs drain counters across runs.
+    ///
+    /// Staging is persistent (migration 0019: substrate.staging_* survives
+    /// pipeline restart and PG restart), so this method is the recovery path
+    /// for any failure mode that left rows behind — including SEGV-induced
+    /// connection drops the CLI saw "Attempted to read past the end of the
+    /// stream" on the previous shutdown.
+    ///
+    /// Drains the same way StopAsync's catch-up does, but keeps retrying with
+    /// exponential backoff (up to MaxStartupDrainAttempts) before throwing.
+    /// Throwing here is correct: if startup-residue drain cannot succeed,
+    /// proceeding to producer emit would compound the loss. Surface the
+    /// underlying issue (typically PG instability) to the operator.
+    /// </summary>
+    public async Task DrainPreExistingResidueAsync(CancellationToken ct)
+    {
+        long initialResidue;
+        try
+        {
+            initialResidue = await ProbeStagingResidueAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // If we can't even probe, propagate — the alternative is
+            // unknowingly racing the producer against unknown residue.
+            throw new InvalidOperationException(
+                "Failed to probe substrate.staging_* on startup; cannot guarantee substrate coherence.",
+                ex);
+        }
+
+        if (initialResidue == 0)
+        {
+            return;
+        }
+
+        Log.StartupResidueDetected(_logger, initialResidue);
+
+        long drained = 0;
+        int consecutiveFailures = 0;
+        TimeSpan backoff = FinalDrainRetryBackoff;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            long pass;
+            try
+            {
+                pass = await DrainPassAsync(useCatchUpChunkSize: true, ct).ConfigureAwait(false);
+                consecutiveFailures = 0;
+                backoff = FinalDrainRetryBackoff;
+            }
+            catch (Exception ex) // BOUNDARY: startup-residue drain — retry transient PG drops
+            {
+                consecutiveFailures++;
+                Log.StartupDrainPassFailed(_logger, ex, consecutiveFailures, MaxStartupDrainAttempts);
+                if (consecutiveFailures >= MaxStartupDrainAttempts)
+                {
+                    throw new InvalidOperationException(
+                        $"Could not drain pre-existing staging residue after {MaxStartupDrainAttempts} attempts. " +
+                        "Substrate is incomplete from a prior run; producer emission would compound the loss. " +
+                        "Investigate the underlying database failure (PG SEGV, container exit, network) and retry.",
+                        ex);
+                }
+                await Task.Delay(backoff, ct).ConfigureAwait(false);
+                // Exponential backoff capped at 30s, total max wait
+                // ~5 min across MaxStartupDrainAttempts attempts.
+                backoff = TimeSpan.FromMilliseconds(Math.Min(backoff.TotalMilliseconds * 2, 30_000));
+                continue;
+            }
+
+            if (pass == 0)
+            {
+                break;
+            }
+            drained += pass;
+        }
+
+        long finalResidue = await ProbeStagingResidueAsync(ct).ConfigureAwait(false);
+        if (finalResidue > 0)
+        {
+            // The drain loop exited claiming "0 rows in pass" but the probe
+            // sees rows — should not happen; defensively flag.
+            throw new InvalidOperationException(
+                $"Startup-residue drain claimed completion but {finalResidue} rows remain in staging. " +
+                "Refusing to start producer.");
+        }
+        Log.StartupResidueDrained(_logger, initialResidue, drained);
     }
 
     public async Task StopAsync()
@@ -119,35 +233,130 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
         _loop = null;
 
         // Drain-until-empty: keep draining until a full pass returns 0 rows.
-        // Catch-up uses larger chunks (CatchUpChunkRows) since the producer
-        // is gone and round-trips are pure overhead.
+        // Each pass opens a fresh connection (DrainPassAsync line 214), so a
+        // transient PG drop kills only one pass — we retry up to
+        // MaxFinalDrainRetries times before declaring the staging stuck.
+        // Without retry, the previous body bailed on the FIRST connection
+        // hiccup and silently abandoned millions of staged rows; the
+        // post-shutdown residue probe at the end of this method now reports
+        // the actual remaining row counts so the lie ("drained until empty"
+        // when the loop had thrown) cannot recur.
         long catchUpTotal = 0;
-        try
+        bool catchUpClean = false;
+        Exception? lastError = null;
+        int consecutiveFailures = 0;
+        while (true)
         {
-            while (true)
+            long pass;
+            try
             {
-                long pass = await DrainPassAsync(useCatchUpChunkSize: true, default).ConfigureAwait(false);
-                if (pass == 0)
+                pass = await DrainPassAsync(useCatchUpChunkSize: true, default).ConfigureAwait(false);
+                consecutiveFailures = 0;
+                lastError = null;
+            }
+            catch (Exception ex) // BOUNDARY: catch-up shutdown drain — retry transient PG drops
+            {
+                consecutiveFailures++;
+                lastError = ex;
+                Log.FinalDrainPassFailed(_logger, ex, consecutiveFailures, MaxFinalDrainRetries);
+                if (consecutiveFailures >= MaxFinalDrainRetries)
+                {
+                    Log.FinalDrainFailed(_logger, ex);
+                    break;
+                }
+                try
+                {
+                    await Task.Delay(FinalDrainRetryBackoff).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) // BOUNDARY: cancellation during retry backoff
                 {
                     break;
                 }
-                catchUpTotal += pass;
+                continue;
             }
-        }
-        catch (Exception ex)
-        {
-            Log.FinalDrainFailed(_logger, ex);
-        }
-        if (catchUpTotal > 0)
-        {
-            Log.CatchUpDrained(_logger, catchUpTotal);
+            if (pass == 0)
+            {
+                catchUpClean = true;
+                break;
+            }
+            catchUpTotal += pass;
         }
 
-        Log.WorkerStopped(_logger,
-            _entityRowsDrained, _edgeRowsDrained, _edgeMemberRowsDrained,
-            _physicalityRowsDrained, _sequenceRowsDrained,
-            _entitySignificanceRowsDrained, _entityModelSourceRowsDrained,
-            _junctionRowsDrained, _idleCycles);
+        // Probe each staging table to report actual residue. The previous
+        // "drained until empty" message fired even when the loop exited
+        // via exception, hiding silent data loss. Now we tell the truth:
+        // either staging is empty, or here's exactly how many rows of which
+        // kind are stranded.
+        long stagingResidue = 0;
+        try
+        {
+            stagingResidue = await ProbeStagingResidueAsync(default).ConfigureAwait(false);
+        }
+        catch (Exception ex) // BOUNDARY: residue probe is diagnostic; failure must not mask drain status
+        {
+            Log.ResidueProbeFailed(_logger, ex);
+        }
+
+        LastShutdownDrainCompleted = catchUpClean && stagingResidue == 0;
+
+        if (catchUpTotal > 0)
+        {
+            if (LastShutdownDrainCompleted)
+            {
+                Log.CatchUpDrainedClean(_logger, catchUpTotal);
+            }
+            else
+            {
+                Log.CatchUpDrainedDirty(_logger, catchUpTotal, stagingResidue);
+            }
+        }
+        else if (stagingResidue > 0)
+        {
+            // Producer never observed any catch-up work but staging still has
+            // rows — must have been left over from before this worker started,
+            // or the very first drain attempt failed.
+            Log.CatchUpDrainedDirty(_logger, 0, stagingResidue);
+        }
+        else
+        {
+            // No catch-up needed and no residue — the typical clean path.
+            LastShutdownDrainCompleted = true;
+        }
+
+        string breakdown = string.Join(' ',
+            _rowsDrainedByFunction.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}"));
+        Log.WorkerStopped(_logger, _totalRowsDrained, breakdown, _idleCycles);
+    }
+
+    /// <summary>
+    /// Sum row counts across all eight staging tables. Cheap (each is a
+    /// single COUNT against an unindexed table that's expected to be small
+    /// or empty after a successful drain). Diagnostic only — failure of
+    /// this probe is logged but does not change the drain outcome.
+    /// </summary>
+    private async Task<long> ProbeStagingResidueAsync(CancellationToken ct)
+    {
+        // substrate.staging_residue() auto-discovers every staging_* table.
+        // Adding a staging table doesn't require a code change here.
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(
+            "SELECT table_name, rows FROM substrate.staging_residue() WHERE rows > 0", conn);
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        long total = 0;
+        var nonEmpty = new System.Collections.Generic.List<(string Name, long Rows)>(16);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string name = r.GetString(0);
+            long rows = r.GetInt64(1);
+            total += rows;
+            nonEmpty.Add((name, rows));
+        }
+        if (total > 0)
+        {
+            string detail = string.Join(' ', nonEmpty.Select(t => $"{t.Name}={t.Rows}"));
+            Log.StagingResidue(_logger, detail, total);
+        }
+        return total;
     }
 
     public async ValueTask DisposeAsync()
@@ -203,61 +412,35 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
     }
 
     /// <summary>
-    /// One full pass: drain all 8 staging tables. Returns total rows drained
-    /// across all kinds. Each drain runs in its own statement (its own implicit
-    /// transaction) so a stuck table doesn't block the others.
+    /// One full pass over EVERY staging table. substrate.drain_all_staging
+    /// auto-discovers drain functions via pg_proc — adding a staging table
+    /// does not require touching this method. Returns total rows drained
+    /// across all kinds.
     /// </summary>
     private async Task<long> DrainPassAsync(bool useCatchUpChunkSize, CancellationToken ct)
     {
         int chunk = useCatchUpChunkSize ? CatchUpChunkRows : DrainChunkRows;
+        Stopwatch sw = Stopwatch.StartNew();
         long total = 0;
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-
-        total += await DrainOneAsync(conn, "substrate.drain_staging_entity_chunk", chunk,
-            n => Interlocked.Add(ref _entityRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_edge_chunk", chunk,
-            n => Interlocked.Add(ref _edgeRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_edge_member_chunk", chunk,
-            n => Interlocked.Add(ref _edgeMemberRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_physicality_chunk", chunk,
-            n => Interlocked.Add(ref _physicalityRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_sequence_chunk", chunk,
-            n => Interlocked.Add(ref _sequenceRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_entity_significance_chunk", chunk,
-            n => Interlocked.Add(ref _entitySignificanceRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_entity_model_source_chunk", chunk,
-            n => Interlocked.Add(ref _entityModelSourceRowsDrained, n), ct).ConfigureAwait(false);
-        total += await DrainOneAsync(conn, "substrate.drain_staging_junction_chunk", chunk,
-            n => Interlocked.Add(ref _junctionRowsDrained, n), ct).ConfigureAwait(false);
-
-        return total;
-    }
-
-    private async Task<long> DrainOneAsync(
-        NpgsqlConnection conn,
-        string functionName,
-        int chunkRows,
-        Action<long> updateCounter,
-        CancellationToken ct)
-    {
-        Stopwatch sw = Stopwatch.StartNew();
-        await using NpgsqlCommand cmd = new($"SELECT {functionName}($1)", conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = chunkRows });
-        cmd.CommandTimeout = 1800; // 30 min — should never approach this for ChunkRows=4096
-
-        object? raw = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        long drained = raw switch
+        await using NpgsqlCommand cmd = new(
+            "SELECT function_name, rows_drained FROM substrate.drain_all_staging($1)", conn);
+        cmd.Parameters.AddWithValue(chunk);
+        cmd.CommandTimeout = 1800;
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
-            long l => l,
-            int i => i,
-            _ => 0L,
-        };
-        if (drained > 0)
-        {
-            updateCounter(drained);
-            Log.ChunkDrained(_logger, functionName, drained, sw.Elapsed);
+            string fn = r.GetString(0);
+            long drained = r.GetInt64(1);
+            if (drained > 0)
+            {
+                total += drained;
+                _rowsDrainedByFunction.AddOrUpdate(fn, drained, (_, prev) => prev + drained);
+                Log.ChunkDrained(_logger, fn, drained, sw.Elapsed);
+            }
         }
-        return drained;
+        Interlocked.Add(ref _totalRowsDrained, total);
+        return total;
     }
 
     private static partial class Log
@@ -266,10 +449,8 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
         public static partial void WorkerStarted(ILogger logger);
 
         [LoggerMessage(Level = LogLevel.Information,
-            Message = "StagingFlushWorker stopped: entity={Entity} edge={Edge} edge_member={EdgeMember} physicality={Physicality} sequence={Sequence} entity_significance={EntitySig} entity_model_source={ModelSource} junction={Junction} idle_cycles={Idle}")]
-        public static partial void WorkerStopped(ILogger logger,
-            long entity, long edge, long edgeMember, long physicality, long sequence,
-            long entitySig, long modelSource, long junction, long idle);
+            Message = "StagingFlushWorker stopped: total={Total} idle_cycles={Idle} breakdown={Breakdown}")]
+        public static partial void WorkerStopped(ILogger logger, long total, string breakdown, long idle);
 
         [LoggerMessage(Level = LogLevel.Critical, Message = "StagingFlushWorker CRASHED")]
         public static partial void WorkerCrashed(ILogger logger, Exception ex);
@@ -283,7 +464,34 @@ public sealed partial class StagingFlushWorker : IAsyncDisposable
         [LoggerMessage(Level = LogLevel.Debug, Message = "Drained {Rows} rows via {Function} in {Elapsed}")]
         public static partial void ChunkDrained(ILogger logger, string function, long rows, TimeSpan elapsed);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Catch-up drain on shutdown: {Rows} rows drained until empty")]
-        public static partial void CatchUpDrained(ILogger logger, long rows);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Catch-up drain on shutdown: {Rows} rows drained, staging tables verified empty")]
+        public static partial void CatchUpDrainedClean(ILogger logger, long rows);
+
+        [LoggerMessage(Level = LogLevel.Error,
+            Message = "Catch-up drain on shutdown: {Rows} rows drained but {Residue} rows REMAIN in staging — drain did not complete")]
+        public static partial void CatchUpDrainedDirty(ILogger logger, long rows, long residue);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Final drain pass failed (attempt {Attempt}/{MaxAttempts}); will retry after backoff")]
+        public static partial void FinalDrainPassFailed(ILogger logger, Exception ex, int attempt, int maxAttempts);
+
+        [LoggerMessage(Level = LogLevel.Warning, Message = "Staging residue probe failed; final drain status may be inaccurate")]
+        public static partial void ResidueProbeFailed(ILogger logger, Exception ex);
+
+        [LoggerMessage(Level = LogLevel.Error,
+            Message = "Staging residue: total={Total} detail={Detail}")]
+        public static partial void StagingResidue(ILogger logger, string detail, long total);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Startup: detected {Rows} pre-existing rows in substrate.staging_* (left from a prior run). Draining to empty before producer emit.")]
+        public static partial void StartupResidueDetected(ILogger logger, long rows);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Startup: {InitialRows} pre-existing residue rows drained ({DrainedRows} rows pulled). Substrate now coherent; producer may emit.")]
+        public static partial void StartupResidueDrained(ILogger logger, long initialRows, long drainedRows);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Startup-residue drain pass failed (attempt {Attempt}/{MaxAttempts}); will retry with backoff")]
+        public static partial void StartupDrainPassFailed(ILogger logger, Exception ex, int attempt, int maxAttempts);
     }
 }

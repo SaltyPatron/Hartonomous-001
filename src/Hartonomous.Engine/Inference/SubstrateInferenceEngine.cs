@@ -1,13 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Text.Segmentation;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace Hartonomous.Engine.Inference;
 
@@ -16,216 +17,189 @@ namespace Hartonomous.Engine.Inference;
 ///
 /// Per the substrate-as-AI invention, the prompt IS substrate content (not a
 /// query against a model), and the forward pass IS A* traversal over
-/// significance-weighted typed edges (not a matmul). The public API takes
-/// the prompt text only — no caller-specified arena, depth, cost budget,
-/// edge filter, or result cap. Hash-as-PK throughout: every entity reference
-/// is a composite (type_code, hash) handle.
+/// significance-weighted typed edges (not a matmul). Steps 0-4 of
+/// docs/specs/engine/inference.md:
 ///
-/// Steps:
-///   0. Decompose the prompt into substrate entities (codepoint → grapheme →
-///      word_form → text_composition) and resolve seed entity handles.
-///   1. Fan out across every significance arena currently in the substrate
-///      (open-vocabulary; no cherry-picking) and traverse via A*.
-///   2. Compose: each path's significance is its 1/cost score from the
-///      originating arena; arenas with stronger edges for this path produce
-///      higher significance, and the best per-path significance across arenas
-///      is what we keep (max-pooling — pick the arena that most strongly
-///      supports each path).
-///   3. Recompose: walk the highest-composite-significance path's terminal
-///      entity and recompose its content via substrate.recompose_text.
+///   0. Decompose the prompt via the standard <see cref="TextDecomposer"/>.
+///      Codepoint / grapheme_cluster / word_form / text_composition entities
+///      land in substrate with provenance='user_session' (lowest trust prior,
+///      1000 μ). The prompt's word_forms ARE the seed entities — there is
+///      no separate query construction.
+///   1-3. Cross-arena A* fan-out, max-pool, recompose. All inside the
+///      <c>substrate.infer</c> SQL function (single round trip, no C#
+///      orchestration, no Task.WhenAll, no in-memory Dictionary max-pool).
 ///
-/// The substrate produces NOTHING when no path was found — honest abstention
-/// per docs/specs/engine/inference.md.
+/// The C# layer here owns: prompt UTF-8 decode, TextDecomposer invocation,
+/// pipeline submission, drain barrier (wait for prompt to land in
+/// <c>substrate.entity</c>), and one Npgsql call to <c>substrate.infer</c>.
+/// Everything else is substrate-side.
 /// </summary>
 public sealed partial class SubstrateInferenceEngine : IInferenceEngine
 {
-    private readonly ITraversal _traversal;
-    private readonly IEntityReader _entityReader;
+    private const double UserSessionTrustMu = 1000.0;
+
+    private readonly NpgsqlDataSource _dataSource;
+    private readonly IIngestionPipeline _pipeline;
+    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader _referenceData;
-    private readonly ITextRecompositionReader? _textReader;
     private readonly ILogger<SubstrateInferenceEngine> _logger;
 
     public SubstrateInferenceEngine(
-        ITraversal traversal,
-        IEntityReader entityReader,
+        NpgsqlDataSource dataSource,
+        IIngestionPipeline pipeline,
+        ICodepointProperties codepointProperties,
         IReferenceDataReader referenceData,
-        ILogger<SubstrateInferenceEngine> logger,
-        ITextRecompositionReader? textReader = null)
+        ILogger<SubstrateInferenceEngine> logger)
     {
-        _traversal = traversal;
-        _entityReader = entityReader;
+        _dataSource = dataSource;
+        _pipeline = pipeline;
+        _codepointProperties = codepointProperties;
         _referenceData = referenceData;
-        _textReader = textReader;
         _logger = logger;
     }
 
     public async Task<InferenceResult> InferAsync(InferenceQuery query, CancellationToken ct)
     {
         Stopwatch sw = Stopwatch.StartNew();
-
-        // 0. Resolve seeds.
-        IReadOnlyList<EntityHandle> seeds = query.Seeds
-            ?? (query.Text is not null
-                ? await ResolveSeedsFromTextAsync(query.Text, ct)
-                : []);
-
-        if (seeds.Count == 0)
+        if (query.Text is null || query.Text.Length == 0)
         {
-            LogNoSeedsResolved(_logger);
-            return EmptyResult(seeds, sw);
-        }
-        LogSeedActivation(_logger, seeds.Count);
-
-        // 1. Cross-arena fan-out.
-        IReadOnlyList<string> arenaCodes = await LoadAllArenaCodesAsync(ct);
-
-        Task<TraversalResult>[] tasks = new Task<TraversalResult>[arenaCodes.Count];
-        for (int i = 0; i < arenaCodes.Count; i++)
-        {
-            string arena = arenaCodes[i];
-            tasks[i] = _traversal.TraverseAsync(new TraversalQuery
-            {
-                Seeds = seeds,
-                ArenaCode = arena,
-            }, ct);
-        }
-        TraversalResult[] arenaResults = await Task.WhenAll(tasks);
-
-        // Compose: collect every path. Key by entity handle sequence; max-pool
-        // significance across arenas.
-        Dictionary<string, TraversalPath> bestPathByKey = new(StringComparer.Ordinal);
-        int totalNodes = 0;
-        foreach (TraversalResult r in arenaResults)
-        {
-            totalNodes += r.NodesVisited;
-            foreach (TraversalPath p in r.Paths)
-            {
-                string key = string.Join(
-                    ",",
-                    p.Steps.Select(s => $"{s.Entity.EntityTypeCode}:{Convert.ToHexString(s.Entity.Hash)}"));
-                if (!bestPathByKey.TryGetValue(key, out TraversalPath? existing)
-                    || p.PathSignificance > existing.PathSignificance)
-                {
-                    bestPathByKey[key] = p;
-                }
-            }
+            return EmptyResult(sw);
         }
 
-        List<TraversalPath> allPaths = [.. bestPathByKey.Values];
-        allPaths.Sort((a, b) => b.PathSignificance.CompareTo(a.PathSignificance));
+        // Step 0: prompt → substrate content. Same Core text segmenter
+        // Tatoeba uses; prompts are content (provenance='user_session',
+        // lowest trust prior). Pipeline handles arbitrary size — a word,
+        // a sentence, or a Moby Dick (1.2 MB) all flow through the same
+        // channels → staging → substrate machinery. Deduplication is
+        // automatic: a prompt's "the" word_form collapses to the same
+        // BLAKE3-keyed entity as the WordNet seed's "the".
+        IIngestionBatch batch = _pipeline.CreateBatch();
+        // Canonical text decomposer — same path WordNet / Wiktionary / Tatoeba
+        // use. Cross-decomposer dedup is automatic: the prompt's "dog" IS the
+        // WordNet "dog" IS the Wiktionary "dog" by hash equality on content.
+        byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(query.Text);
+        Hartonomous.Core.Text.TextDecomposeResult ingest =
+            Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                batch, utf8, _codepointProperties,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: "user_session",
+                    TopEntityType: "text_composition",
+                    TrustMu: UserSessionTrustMu));
+        EntityHandle docHandle = ingest.RootHandle;
+        byte[] docHash = ingest.RootHash;
+        int promptEntityCount = batch.EntityCount;
+        LogPromptIngested(_logger, query.Text.Length, promptEntityCount);
 
-        LogTraversalComplete(_logger, allPaths.Count, totalNodes, sw.Elapsed.TotalMilliseconds);
+        await _pipeline.SubmitBatchAsync(batch, ct).ConfigureAwait(false);
+        // No pipeline-level Flush call — IIngestionPipeline doesn't expose
+        // one and we don't need it. SubmitBatchAsync writes the records into
+        // the producer channels; the drain task pulls them into staging
+        // continuously; the StagingFlushWorker pulls staging into substrate
+        // continuously. The poll below waits for the prompt to land. For
+        // any prompt size (a word, Moby Dick) this works the same way.
 
-        // 2. Recompose the highest-significance path's terminal entity.
-        string answer = string.Empty;
-        if (allPaths.Count > 0)
+        // Step 0b: drain barrier. The StagingFlushWorker drains continuously;
+        // poll substrate.entity for the prompt's text_composition until it
+        // lands. For tiny prompts this is sub-second; for Moby Dick it can
+        // take seconds — proportional to drain throughput, not prompt size
+        // in any pathological way.
+        bool drained = await WaitForDocumentAsync(docHash, ct).ConfigureAwait(false);
+        if (!drained)
         {
-            EntityHandle terminal = allPaths[0].Steps[^1].Entity;
-            answer = await RecomposeTextAsync(terminal, ct) ?? $"<entity {terminal}>";
+            throw new TimeoutException(
+                "Prompt did not drain to substrate within 5 minutes. Check StagingFlushWorker health.");
         }
 
-        // 3. Gather entity metadata for the trace.
-        IReadOnlyDictionary<EntityHandle, EntityInfo> entities =
-            await GatherEntityMetadataAsync(allPaths, ct);
+        // Steps 1-4: substrate-side forward pass. One round trip.
+        SubstrateInferOutput inferOut = await CallSubstrateInferAsync(docHash, ct).ConfigureAwait(false);
 
         sw.Stop();
 
         return new InferenceResult
         {
-            Answer = answer,
-            Seeds = seeds,
-            Paths = allPaths,
-            Entities = entities,
-            NodesVisited = totalNodes,
+            Answer = inferOut.AnswerText ?? string.Empty,
+            Seeds = [docHandle],
+            Paths = [],
+            Entities = new Dictionary<EntityHandle, EntityInfo>(),
+            NodesVisited = (int)Math.Min(int.MaxValue, inferOut.DistinctTargets),
             Elapsed = sw.Elapsed,
         };
     }
 
     /// <summary>
-    /// Decompose the prompt into substrate seed entity handles. Splits on
-    /// punctuation/whitespace and looks up matching entities of every type
-    /// the substrate stores — the substrate decides what matches.
+    /// Poll until the prompt's text_composition AND its child sequence rows
+    /// have drained from staging into substrate. Waiting only for the entity
+    /// is insufficient — substrate.entity and substrate.sequence drain on
+    /// independent staging tables, so the document can land in entity
+    /// before its sequence rows land. Inference's seed activation walks
+    /// substrate.sequence, so we must wait for that too.
+    ///
+    /// The drain runs on the StagingFlushWorker on its own connection; this
+    /// poll does not stall it.
     /// </summary>
-    private async Task<IReadOnlyList<EntityHandle>> ResolveSeedsFromTextAsync(
-        string text, CancellationToken ct)
+    private async Task<bool> WaitForDocumentAsync(byte[] hash, CancellationToken ct)
     {
-        HashSet<string> tokens = new(StringComparer.Ordinal);
-        foreach (string raw in text.Split(
-            [' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\''],
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        const int MaxAttempts = 6000; // 5 min @ 50ms
+        for (int i = 0; i < MaxAttempts; i++)
         {
-            if (raw.Length > 0)
+            ct.ThrowIfCancellationRequested();
+            await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+            await using NpgsqlCommand cmd = new(
+                @"WITH e AS (SELECT 1 FROM substrate.entity WHERE hash = $1 LIMIT 1),
+                       s AS (SELECT 1 FROM substrate.sequence WHERE parent_hash = $1 LIMIT 1)
+                  SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM s)", conn);
+            cmd.Parameters.AddWithValue(hash);
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (await r.ReadAsync(ct).ConfigureAwait(false))
             {
-                tokens.Add(raw);
-                tokens.Add(raw.ToLowerInvariant());
+                long entityCount = r.GetInt64(0);
+                long sequenceCount = r.GetInt64(1);
+                if (entityCount > 0 && sequenceCount > 0)
+                {
+                    if (i > 0) { LogDrainBarrier(_logger, i * 50); }
+                    return true;
+                }
             }
+            await Task.Delay(50, ct).ConfigureAwait(false);
         }
-
-        HashSet<EntityHandle> seeds = [];
-        IReadOnlyList<string> allEntityTypes = await LoadAllEntityTypeCodesAsync(ct);
-
-        foreach (string token in tokens)
-        {
-            IReadOnlyList<EntityHandle> matches =
-                await _entityReader.FindEntitiesByContentAsync(token, allEntityTypes, ct);
-            foreach (EntityHandle h in matches)
-            {
-                seeds.Add(h);
-                LogTokenResolved(_logger, token, h.EntityTypeCode);
-            }
-        }
-
-        return [.. seeds];
+        return false;
     }
 
-    private async Task<IReadOnlyList<string>> LoadAllArenaCodesAsync(CancellationToken ct)
+    private async Task<SubstrateInferOutput> CallSubstrateInferAsync(
+        byte[] docHash, CancellationToken ct)
     {
-        Dictionary<string, int> map = await _referenceData.LoadCodeMapAsync(
-            "significance_context", initialCapacity: 16, ct);
-        return [.. map.OrderBy(kv => kv.Value).Select(kv => kv.Key)];
-    }
-
-    private async Task<IReadOnlyList<string>> LoadAllEntityTypeCodesAsync(CancellationToken ct)
-    {
-        Dictionary<string, int> map = await _referenceData.LoadCodeMapAsync(
-            "entity_type", initialCapacity: 32, ct);
-        return [.. map.OrderBy(kv => kv.Value).Select(kv => kv.Key)];
-    }
-
-    private async Task<string?> RecomposeTextAsync(EntityHandle root, CancellationToken ct)
-    {
-        if (_textReader is null)
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        // p_max_depth=3, p_max_results=25 — tighter than substrate.infer's
+        // defaults (5/50). Cross-arena A* expansion is heavy; this keeps
+        // a small prompt under a few seconds.
+        await using NpgsqlCommand cmd = new(
+            "SELECT answer_text, seed_count, distinct_targets, " +
+            "       best_target_hash, best_total_mu, elapsed_ms " +
+            "FROM substrate.infer($1, 3, 25)", conn);
+        cmd.Parameters.AddWithValue(docHash);
+        cmd.CommandTimeout = 300;
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await r.ReadAsync(ct).ConfigureAwait(false))
         {
-            return null;
+            return new SubstrateInferOutput(null, 0, 0, null, 0.0, 0);
         }
-        return await _textReader.RecomposeTextAsync(root, maxDepth: int.MaxValue, ct);
+        string? answer = r.IsDBNull(0) ? null : r.GetString(0);
+        int seeds   = r.IsDBNull(1) ? 0    : r.GetInt32(1);
+        long tgts   = r.IsDBNull(2) ? 0    : r.GetInt64(2);
+        byte[]? bH  = r.IsDBNull(3) ? null : (byte[])r.GetValue(3);
+        double bMu  = r.IsDBNull(4) ? 0    : r.GetDouble(4);
+        int elapsed = r.IsDBNull(5) ? 0    : r.GetInt32(5);
+        LogSubstrateInfer(_logger, seeds, tgts, bH is null ? "(none)" : Convert.ToHexString(bH).Substring(0, 16), bMu, elapsed);
+        return new SubstrateInferOutput(answer, seeds, tgts, bH, bMu, elapsed);
     }
 
-    private async Task<IReadOnlyDictionary<EntityHandle, EntityInfo>> GatherEntityMetadataAsync(
-        IReadOnlyList<TraversalPath> paths, CancellationToken ct)
-    {
-        HashSet<EntityHandle> handles = [];
-        foreach (TraversalPath path in paths)
-        {
-            foreach (TraversalStep step in path.Steps)
-            {
-                handles.Add(step.Entity);
-            }
-        }
-        if (handles.Count == 0)
-        {
-            return new Dictionary<EntityHandle, EntityInfo>();
-        }
-        return await _entityReader.GetEntityInfoAsync([.. handles], ct);
-    }
-
-    private static InferenceResult EmptyResult(IReadOnlyList<EntityHandle> seeds, Stopwatch sw)
+    private static InferenceResult EmptyResult(Stopwatch sw)
     {
         sw.Stop();
         return new InferenceResult
         {
             Answer = string.Empty,
-            Seeds = seeds,
+            Seeds = [],
             Paths = [],
             Entities = new Dictionary<EntityHandle, EntityInfo>(),
             NodesVisited = 0,
@@ -233,15 +207,23 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         };
     }
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "No seed entities resolved for query")]
-    private static partial void LogNoSeedsResolved(ILogger logger);
+    [LoggerMessage(Level = LogLevel.Information,
+        Message = "Prompt ingested: {Chars} chars → {Entities} entities emitted to substrate")]
+    private static partial void LogPromptIngested(ILogger logger, int chars, long entities);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Activated {SeedCount} seed entities")]
-    private static partial void LogSeedActivation(ILogger logger, int seedCount);
+    [LoggerMessage(Level = LogLevel.Information,
+        Message = "Drain barrier crossed in {ElapsedMs}ms (prompt landed in substrate.entity)")]
+    private static partial void LogDrainBarrier(ILogger logger, int elapsedMs);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Cross-arena traversal returned {PathCount} composite paths visiting {NodeCount} nodes in {ElapsedMs}ms")]
-    private static partial void LogTraversalComplete(ILogger logger, int pathCount, int nodeCount, double elapsedMs);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Resolved token '{Token}' → entity (type={TypeCode})")]
-    private static partial void LogTokenResolved(ILogger logger, string token, string typeCode);
+    [LoggerMessage(Level = LogLevel.Information,
+        Message = "substrate.infer: {Seeds} seeds, {Targets} distinct targets, best={BestCode} mu={BestMu:F1} sql_elapsed={ElapsedMs}ms")]
+    private static partial void LogSubstrateInfer(ILogger logger, int seeds, long targets, string bestCode, double bestMu, int elapsedMs);
 }
+
+internal sealed record SubstrateInferOutput(
+    string? AnswerText,
+    int SeedCount,
+    long DistinctTargets,
+    byte[]? BestTargetHash,
+    double BestTotalMu,
+    int ElapsedMs);

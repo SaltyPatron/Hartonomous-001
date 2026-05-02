@@ -1,0 +1,6 @@
+-- Stage 0028: substrate.record_outcome — Step 6 of inference.md.
+-- Glicko-2 comparison events on (winner_target, loser_target) pairs from
+-- a Gödel Engine inference outcome. Closes the inference learning loop:
+-- each accepted answer raises mu on the substrate edges that led to it,
+-- each rejected alternative lowers mu on its edges, no gradient descent.
+-- @include schema/functions/record_outcome.sql

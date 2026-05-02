@@ -7,13 +7,11 @@ namespace Hartonomous.Core.Ingestion;
 /// rebuild the geometry on the substrate side.
 ///
 /// Content hash is BLAKE3 of the WKB bytes; uniqueness inside
-/// substrate.physicality is (physicality_type_id, entity_type_id,
-/// entity_hash, content_hash) so the same geometry contributed by multiple
-/// passes deduplicates rather than duplicating rows.
+/// substrate.physicality is (physicality_type_id, entity_hash, content_hash)
+/// so the same geometry contributed by multiple passes deduplicates.
 /// </summary>
 public sealed record PhysicalityRecord(
     string PhysicalityTypeCode,
-    string EntityTypeCode,
     byte[] EntityHash,
     byte[] ContentHash,
     byte[] Wkb) : IngestionRecord;

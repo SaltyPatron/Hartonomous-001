@@ -1,0 +1,973 @@
+# Substrate seed dataset catalog.
+#
+# One entry per dataset. The download_seeds.py driver iterates this list
+# and dispatches per `source` type. Each dataset has a target subdirectory
+# under DATA_ROOT (default D:\Models). Manifest of completed downloads is
+# tracked in DATA_ROOT/seed_manifest.json.
+#
+# Each entry's `grammar` field names the tree-sitter grammar (existing or
+# to-author) that the substrate's decomposer will use to parse this dataset.
+# See docs/20-technical/16-tree-sitter-grammar-strategy.md.
+#
+# Sources:
+#   http_archive    Single archive URL (zip / tar.gz / tar.bz2 / .gz). Auto-extracted.
+#   http_files      Multiple file URLs to drop into target/.
+#   http_file       Single non-archive file URL.
+#   git             Shallow git clone (depth=1) of a repo.
+#   hf_dataset      Hugging Face dataset (snapshot_download via huggingface_hub).
+#   hf_repo         Hugging Face model/space repo.
+#   manual          Print instructions; do NOT auto-download (registration etc.).
+#
+# license_flags:
+#   non_commercial  CC BY-NC*-style; substrate must filter from commercial output.
+#   research_only   Free for research only; verify per use case.
+#   share_alike     CC*-SA*; downstream redistribution must preserve license.
+#   permissive      MIT/Apache/BSD/CC0/CC-BY; commercial-friendly.
+
+datasets:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TIER 0 — already on disk (referenced for manifest completeness; download
+  # script will detect these are present and skip)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: ucd-uca-full-mirror
+    description: "Full Unicode FTP mirror; ucd/ ucdxml/ uca/ emoji/ idna/ security/ charts/"
+    tier: 0
+    source: manual
+    target: UCD
+    license: Unicode-License
+    license_flags: [permissive]
+    size_mb: 500
+    grammar: tree-sitter-ucd-properties (TO AUTHOR; small custom over UCD .txt format)
+    notes: "Already on disk. To re-fetch: rsync -av --delete ftp://ftp.unicode.org/Public/UCD/latest/ D:/Models/UCD/Public/UCD/latest/"
+
+  - name: iso639-3
+    description: "ISO 639-3 language code registry — 4 .tab files"
+    tier: 0
+    source: manual
+    target: ISO639
+    license: SIL-Free
+    license_flags: [permissive]
+    size_mb: 5
+    grammar: tree-sitter-iso639-tab (TO AUTHOR; ~30 lines)
+    notes: "Already on disk."
+
+  - name: princeton-wordnet-3.0
+    description: "WordNet 3.0 dict files (data.{noun,verb,adj,adv}, index.*, lexnames)"
+    tier: 0
+    source: manual
+    target: princeton-wordnet
+    license: WordNet-License
+    license_flags: [permissive]
+    size_mb: 100
+    grammar: tree-sitter-wordnet-dict (TO AUTHOR; ~150 lines)
+    notes: "Already on disk."
+
+  - name: omw
+    description: "Open Multilingual WordNet — 33+ language wordnet alignments"
+    tier: 0
+    source: manual
+    target: omw
+    license: Various-Per-Language
+    license_flags: [share_alike]
+    size_mb: 200
+    grammar: tree-sitter-omw-tab (TO AUTHOR; ~50 lines)
+    notes: "Already on disk."
+
+  - name: ud-treebanks-2.17
+    description: "Universal Dependencies v2.17 — 339 treebank directories, .conllu format"
+    tier: 0
+    source: manual
+    target: ud-treebanks
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 5000
+    grammar: tree-sitter-conllu (TO AUTHOR; ~200 lines)
+    notes: "Already on disk."
+
+  - name: wiktionary-kaikki
+    description: "kaikki.org wiktextract dumps — full multilingual + English-only"
+    tier: 0
+    source: manual
+    target: wiktionary
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 25000
+    grammar: tree-sitter-kaikki-jsonl (TO AUTHOR; ~150 lines on tree-sitter-json)
+    notes: "Already on disk: raw-wiktextract-data.jsonl (~22GB) + kaikki.org-dictionary-English.jsonl (~2.9GB)."
+
+  - name: tatoeba
+    description: "Tatoeba sentence pairs + audio (sentences.csv, links.csv, audio/eng/)"
+    tier: 0
+    source: manual
+    target: tatoeba
+    license: CC-BY-2.0
+    license_flags: [permissive]
+    size_mb: 2000
+    grammar: tree-sitter-tatoeba-csv (TO AUTHOR; ~40 lines)
+    notes: "Already on disk."
+
+  - name: atomic-2020
+    description: "ATOMIC 2020 — 1.07M commonsense tuples in TSV (head, relation, tail)"
+    tier: 0
+    source: manual
+    target: atomic2020_data-feb2021
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 250
+    grammar: tree-sitter-atomic-tsv (TO AUTHOR; ~30 lines)
+    notes: "Already on disk."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TIER 1 — foundational additions (all <1GB-ish, all high-value)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: conceptnet-5.7
+    description: "ConceptNet 5.7 assertions — 34M edges across 83 languages"
+    tier: 1
+    source: http_file
+    url: https://s3.amazonaws.com/conceptnet/downloads/2019/edges/conceptnet-assertions-5.7.0.csv.gz
+    target: conceptnet-5.7
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 500
+    grammar: tree-sitter-conceptnet-csv (TO AUTHOR; ~60 lines)
+    decompress: gz
+    notes: "Decompresses to ~3GB CSV with shape (assertion uri, relation, source, target, weight, dataset, license, surfaceText)."
+
+  - name: goemotions
+    description: "GoEmotions — 58k Reddit comments, 27 emotion categories"
+    tier: 1
+    source: http_files
+    urls:
+      - https://github.com/google-research/google-research/raw/master/goemotions/data/train.tsv
+      - https://github.com/google-research/google-research/raw/master/goemotions/data/dev.tsv
+      - https://github.com/google-research/google-research/raw/master/goemotions/data/test.tsv
+      - https://github.com/google-research/google-research/raw/master/goemotions/data/emotions.txt
+    target: goemotions
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 25
+    grammar: tree-sitter-goemotions-tsv (TO AUTHOR; ~30 lines)
+
+  - name: social-chemistry-101
+    description: "292k rules of thumb with 4.5M annotations across 12 dimensions"
+    tier: 1
+    source: git
+    url: https://github.com/mbforbes/social-chemistry-101.git
+    target: social-chemistry-101
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 100
+    grammar: tree-sitter-social-chemistry (TO AUTHOR; ~80 lines)
+    notes: "After clone, dataset is in data/social-chem-101.zip — extract."
+
+  - name: verbnet-3.4
+    description: "VerbNet 3.4 — 270+ verb classes with syntactic frames + semantic predicates"
+    tier: 1
+    source: http_archive
+    url: https://uvi.colorado.edu/uvi_download/verbnet-3.4.zip
+    target: verbnet-3.4
+    license: Unicode-License
+    license_flags: [permissive]
+    size_mb: 30
+    grammar: tree-sitter-verbnet (TO AUTHOR; ~1 week, XML)
+    notes: "URL may need adjustment if upstream moves; alternate: https://verbs.colorado.edu/verbnet_downloads/"
+
+  - name: cmu-pronouncing-dict
+    description: "CMU Pronouncing Dictionary — 134k English pronunciations"
+    tier: 1
+    source: http_file
+    url: https://raw.githubusercontent.com/cmusphinx/cmudict/master/cmudict.dict
+    target: cmu-pronouncing-dict
+    license: BSD-2-Clause
+    license_flags: [permissive]
+    size_mb: 5
+    grammar: tree-sitter-cmudict (TO AUTHOR; ~30 lines)
+
+  - name: wikipron
+    description: "WikiPron — pronunciation data for 250+ languages"
+    tier: 1
+    source: git
+    url: https://github.com/CUNY-CL/wikipron.git
+    target: wikipron
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 300
+    grammar: tree-sitter-wikipron-tsv (TO AUTHOR; ~30 lines)
+    notes: "TSV files in data/scrape/tsv/. Substrate ingests these per-language."
+
+  - name: phoible
+    description: "PHOIBLE 2.0 — 2,186 inventories, ~105k phonemes across 2,099 languages"
+    tier: 1
+    source: git
+    url: https://github.com/phoible/dev.git
+    target: phoible
+    license: CC-BY-SA-3.0
+    license_flags: [share_alike]
+    size_mb: 80
+    grammar: tree-sitter-phoible-csv (TO AUTHOR; ~80 lines)
+    notes: "Main data file: data/phoible.csv. Plus supplementary CLDF metadata."
+
+  - name: wals
+    description: "World Atlas of Language Structures — 200+ features × 2700+ languages"
+    tier: 1
+    source: git
+    url: https://github.com/cldf-datasets/wals.git
+    target: wals
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 100
+    grammar: tree-sitter-wals-csv (TO AUTHOR; ~80 lines, CLDF format)
+
+  - name: glottolog
+    description: "Glottolog 5.x — ~25k language varieties with genealogy + bibliography"
+    tier: 1
+    source: git
+    url: https://github.com/glottolog/glottolog-cldf.git
+    target: glottolog
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 250
+    grammar: tree-sitter-glottolog-csv (TO AUTHOR; ~80 lines, CLDF format)
+
+  - name: gum-corpus
+    description: "Georgetown University Multilayer corpus — RST + coref + UD + NER, 14 genres"
+    tier: 1
+    source: git
+    url: https://github.com/amir-zeldes/gum.git
+    target: gum-corpus
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 80
+    grammar: tree-sitter-conllu (REUSE; GUM is CoNLL with extra annotation columns)
+    notes: "Multilayer: simultaneously populates substrate's discourse, coref, NER, and UD edges."
+
+  - name: sentiwordnet-3.0
+    description: "Sentiment polarity for every WordNet synset — pos/neg/obj scores"
+    tier: 1
+    source: git
+    url: https://github.com/aesuli/SentiWordNet.git
+    target: sentiwordnet-3.0
+    license: CC-BY-SA-3.0
+    license_flags: [share_alike]
+    size_mb: 10
+    grammar: tree-sitter-sentiwordnet-tsv (TO AUTHOR; ~40 lines)
+    notes: "Single TSV file SentiWordNet_3.0.0.txt"
+
+  - name: wordnet-domains
+    description: "Topic domain labels per WordNet synset (~270 hierarchical domains)"
+    tier: 1
+    source: manual
+    target: wordnet-domains
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 10
+    grammar: tree-sitter-wordnet-domains (TO AUTHOR; ~40 lines)
+    notes: "Download from https://wndomains.fbk.eu/ — registration required."
+
+  - name: nrc-emolex
+    description: "NRC Word-Emotion Association Lexicon — 14k words × 8 emotions"
+    tier: 1
+    source: manual
+    target: nrc-emolex
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 5
+    grammar: tree-sitter-nrc-lexicon (TO AUTHOR; ~40 lines)
+    notes: "Download from https://saifmohammad.com/WebPages/NRC-Emotion-Lexicon.htm — email registration required."
+
+  - name: nrc-vad
+    description: "NRC VAD Lexicon — 20k words with valence/arousal/dominance scores"
+    tier: 1
+    source: manual
+    target: nrc-vad
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 5
+    grammar: tree-sitter-nrc-lexicon (REUSE)
+    notes: "Download from https://saifmohammad.com/WebPages/nrc-vad.html — email registration required."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TIER 2 — moderate effort (excludes Wikidata/DBpedia/YAGO per user direction)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: hatexplain
+    description: "HateXplain — 20k posts with rationales + targets"
+    tier: 2
+    source: git
+    url: https://github.com/hate-alert/HateXplain.git
+    target: hatexplain
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-hatexplain-json (TO AUTHOR; ~40 lines)
+
+  - name: hatecheck
+    description: "HateCheck — 3,901 functional test cases for hate speech detection"
+    tier: 2
+    source: git
+    url: https://github.com/paul-rottger/hatecheck-data.git
+    target: hatecheck
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 5
+    grammar: tree-sitter-hatecheck-csv (TO AUTHOR; ~40 lines)
+
+  - name: multilingual-hatecheck
+    description: "Multilingual HateCheck — 10 languages"
+    tier: 2
+    source: git
+    url: https://github.com/rewire-online/multilingual-hatecheck.git
+    target: multilingual-hatecheck
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-hatecheck-csv (REUSE)
+
+  - name: hurtlex
+    description: "Hate lexicon — ~1k lemmas × 50+ languages"
+    tier: 2
+    source: git
+    url: https://github.com/valeriobasile/hurtlex.git
+    target: hurtlex
+    license: CC-BY-NC-SA-4.0
+    license_flags: [non_commercial, share_alike]
+    size_mb: 10
+    grammar: tree-sitter-hurtlex-tsv (TO AUTHOR; ~40 lines)
+    notes: "NON-COMMERCIAL license. Substrate must tag and filter from commercial outputs."
+
+  - name: social-bias-frames
+    description: "Implicit social bias annotations"
+    tier: 2
+    source: http_archive
+    url: https://maartensap.com/social-bias-frames/SBIC.v2.tgz
+    target: social-bias-frames
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 30
+    grammar: tree-sitter-sbic-csv (TO AUTHOR; ~50 lines)
+
+  - name: stereoset
+    description: "Stereotype evaluation across gender / race / religion / profession"
+    tier: 2
+    source: git
+    url: https://github.com/moinnadeem/StereoSet.git
+    target: stereoset
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 10
+    grammar: tree-sitter-stereoset-json (TO AUTHOR; ~40 lines)
+
+  - name: multiwoz
+    description: "MultiWOZ 2.2 — 10k task-oriented dialogues"
+    tier: 2
+    source: git
+    url: https://github.com/budzianowski/multiwoz.git
+    target: multiwoz
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 100
+    grammar: tree-sitter-multiwoz-json (TO AUTHOR; ~60 lines)
+
+  - name: dialogbank
+    description: "DialogBank — multi-corpus collection annotated with ISO 24617-2 (DiAML)"
+    tier: 2
+    source: manual
+    target: dialogbank
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 80
+    grammar: tree-sitter-diaml (TO AUTHOR; ~1.5 weeks, XML)
+    notes: "Download from https://dialogbank.uvt.nl/ — per-corpus links. Free for research."
+
+  - name: ami-meeting-corpus-text
+    description: "AMI Meeting Corpus — transcripts + dialogue acts (NO audio)"
+    tier: 2
+    source: manual
+    target: ami-meeting-corpus
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 300
+    grammar: tree-sitter-ami-multixml (TO AUTHOR; ~2 weeks, XML)
+    notes: "Download from https://groups.inf.ed.ac.uk/ami/download/ — select Transcripts + Dialog Acts; SKIP the 25GB audio archives."
+
+  - name: parseme-1.3
+    description: "Multiword expression annotations across 26 languages, CUPT format"
+    tier: 2
+    source: http_archive
+    url: https://gitlab.com/parseme/parseme_corpus_all/-/archive/master/parseme_corpus_all-master.zip
+    target: parseme-1.3
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 1000
+    grammar: tree-sitter-conllu-cupt (TO AUTHOR; ~100 lines on top of conllu)
+    notes: "1GB but insane value — only multilingual MWE corpus."
+
+  - name: vua-metaphor
+    description: "VUA Metaphor Corpus — 190k lexical units annotated for metaphor"
+    tier: 2
+    source: manual
+    target: vua-metaphor
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 100
+    grammar: tree-sitter-vua-metaphor (TO AUTHOR; ~1 week, XML)
+    notes: "Download from http://www.vismet.org/metcor/ — registration may be required."
+
+  - name: magpie-idioms
+    description: "MAGPIE — 56k idiom usages with idiomatic/literal labels"
+    tier: 2
+    source: git
+    url: https://github.com/hslh/magpie-corpus.git
+    target: magpie-idioms
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-magpie-csv (TO AUTHOR; ~40 lines)
+
+  - name: moh-x-metaphor
+    description: "MOH-X — adjective-noun metaphor pairs"
+    tier: 2
+    source: git
+    url: https://github.com/UKPLab/EMNLP2017-MetaphorIdentification.git
+    target: moh-x-metaphor
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 10
+    grammar: tree-sitter-moh-x-tsv (TO AUTHOR; ~30 lines)
+
+  - name: trofi-verb-metaphor
+    description: "TroFi — verb metaphor (literal vs figurative)"
+    tier: 2
+    source: http_files
+    urls:
+      - https://natlang.cs.sfu.ca/software/trofi/TroFi-X.txt
+    target: trofi-verb-metaphor
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 5
+    grammar: tree-sitter-trofi (TO AUTHOR; ~30 lines)
+    notes: "Verify URL upstream; may have moved."
+
+  - name: tempeval-3
+    description: "TempEval-3 — TimeML-annotated multilingual"
+    tier: 2
+    source: manual
+    target: tempeval-3
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 30
+    grammar: tree-sitter-timeml (TO AUTHOR; ~2 weeks, XML)
+    notes: "Download from https://www.cs.york.ac.uk/semeval-2013/task1/index.php?id=data"
+
+  - name: meantime
+    description: "MEANTIME corpus — 480 docs, 4 languages, news with TimeML"
+    tier: 2
+    source: manual
+    target: meantime
+    license: CC-BY-NC-4.0
+    license_flags: [non_commercial]
+    size_mb: 50
+    grammar: tree-sitter-timeml (REUSE)
+    notes: "Download from http://www.newsreader-project.eu/results/data/wikinews/ — non-commercial."
+
+  - name: causal-timebank
+    description: "Causal-TimeBank — extension of TimeBank with causal links"
+    tier: 2
+    source: git
+    url: https://github.com/paramitamirza/Causal-TimeBank.git
+    target: causal-timebank
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 10
+    grammar: tree-sitter-timeml (REUSE; with causal-link extension)
+
+  - name: because-2.0
+    description: "BECauSE 2.0 — causal language corpus"
+    tier: 2
+    source: git
+    url: https://github.com/duncanka/BECAUSE.git
+    target: because-2.0
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 10
+    grammar: tree-sitter-because (TO AUTHOR; ~40 lines)
+
+  - name: spaceeval-2015
+    description: "SpaceEval 2015 (SemEval Task 8) — ISO 24617-6 spatial annotation"
+    tier: 2
+    source: manual
+    target: spaceeval-2015
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 80
+    grammar: tree-sitter-iso-space (TO AUTHOR; ~1.5 weeks, XML)
+    notes: "Download from https://alt.qcri.org/semeval2015/task8/"
+
+  - name: emobank
+    description: "EmoBank — 10k sentences with VAD ratings"
+    tier: 2
+    source: git
+    url: https://github.com/JULIELab/EmoBank.git
+    target: emobank
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 10
+    grammar: tree-sitter-emobank-csv (TO AUTHOR; ~30 lines)
+
+  - name: isear
+    description: "ISEAR — 7,666 emotion-eliciting situations across 7 emotions"
+    tier: 2
+    source: manual
+    target: isear
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 5
+    grammar: tree-sitter-isear-csv (TO AUTHOR; ~30 lines)
+    notes: "Download from https://www.unige.ch/cisa/research/materials-and-online-research/research-material/"
+
+  - name: wikiner-multilingual
+    description: "Multilingual NER from Wikipedia — 9 languages"
+    tier: 2
+    source: http_file
+    url: https://figshare.com/ndownloader/files/15290949
+    target: wikiner-multilingual
+    license: CC-BY-SA-3.0
+    license_flags: [share_alike]
+    size_mb: 2000
+    grammar: tree-sitter-conll-2003 (REUSE)
+    notes: "URL might be a Figshare archive landing — verify download link before bulk run."
+
+  - name: conll-2003
+    description: "CoNLL-2003 English/German NER benchmark"
+    tier: 2
+    source: manual
+    target: conll-2003
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 50
+    grammar: tree-sitter-conll-2003 (TO AUTHOR; ~50 lines)
+    notes: "Download from https://www.clips.uantwerpen.be/conll2003/ner/ — registration required."
+
+  - name: few-nerd
+    description: "Few-NERD — hierarchical NER with 66 fine-grained types, 188K sentences"
+    tier: 2
+    source: git
+    url: https://github.com/thunlp/Few-NERD.git
+    target: few-nerd
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 500
+    grammar: tree-sitter-fewnerd-json (TO AUTHOR; ~60 lines)
+
+  - name: preco-coreference
+    description: "PreCo — 38k multi-document coreference dataset"
+    tier: 2
+    source: manual
+    target: preco-coreference
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 150
+    grammar: tree-sitter-conllu (REUSE; with coref column extension)
+    notes: "Download from https://preschool-lab.github.io/PreCo/ — research-distribution form."
+
+  - name: winobias
+    description: "WinoBias — coreference benchmark with bias dimension"
+    tier: 2
+    source: git
+    url: https://github.com/uclanlp/corefBias.git
+    target: winobias
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 5
+    grammar: tree-sitter-winogrande (TO AUTHOR; ~30 lines, shared with Winogrande)
+
+  - name: winogrande
+    description: "Winogrande — large-scale Winograd schema challenge variant"
+    tier: 2
+    source: http_archive
+    url: https://storage.googleapis.com/ai2-mosaic/public/winogrande/winogrande_1.1.zip
+    target: winogrande
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-winogrande (REUSE)
+
+  - name: visual-genome-annotations
+    description: "Visual Genome — JSON annotations (objects, attributes, relationships, region descriptions)"
+    tier: 2
+    source: http_files
+    urls:
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/objects.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/relationships.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/attributes.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/region_descriptions.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/region_graphs.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/scene_graphs.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/image_data.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/synsets.json.zip
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/object_aliases.txt
+      - https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/relationship_aliases.txt
+    target: visual-genome
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 3000
+    grammar: tree-sitter-visualgenome-json (TO AUTHOR; ~100 lines)
+    notes: "Annotations only; images are separate (see visual-genome-images entry)."
+
+  - name: visual-genome-images
+    description: "Visual Genome — images (108k images split across two archives)"
+    tier: 2
+    source: http_files
+    urls:
+      - https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip
+      - https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip
+    target: visual-genome/images
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 15500
+    grammar: image-decomposer (Pattern E; not tree-sitter — uses image-format readers)
+    notes: "User explicitly approved this size."
+
+  - name: cldr
+    description: "Unicode CLDR — locale-specific data: dates, numbers, names, plurals, ~700 locales"
+    tier: 2
+    source: http_archive
+    url: https://github.com/unicode-org/cldr/archive/refs/tags/release-46.zip
+    target: cldr
+    license: Unicode-License
+    license_flags: [permissive]
+    size_mb: 250
+    grammar: tree-sitter-cldr-xml (TO AUTHOR; ~2 weeks, XML)
+    notes: "Update tag to current release-NN if 46 is stale."
+
+  - name: commitpackft
+    description: "CommitPackFT — 2GB permissively-licensed code commits with NL messages"
+    tier: 2
+    source: hf_dataset
+    repo: bigcode/commitpackft
+    target: commitpackft
+    license: Various-Per-File
+    license_flags: [permissive]
+    size_mb: 2000
+    grammar: tree-sitter-{python,javascript,...} per file (existing) + tree-sitter-commitpackft-json (TO AUTHOR; ~50 lines wrapper)
+    notes: "Insane value for refactor patterns. Per-file license preserved."
+
+  - name: proiel-treebank
+    description: "PROIEL — Latin, Ancient Greek, Old Slavic, Old English, Gothic, Armenian"
+    tier: 2
+    source: git
+    url: https://github.com/proiel/proiel-treebank.git
+    target: proiel-treebank
+    license: CC-BY-NC-SA
+    license_flags: [non_commercial, share_alike]
+    size_mb: 50
+    grammar: tree-sitter-conllu (REUSE)
+
+  - name: vedic-sanskrit-treebank
+    description: "Vedic Sanskrit Treebank in UD format"
+    tier: 2
+    source: git
+    url: https://github.com/OliverHellwig/sanskrit.git
+    target: vedic-sanskrit
+    license: CC-BY-SA
+    license_flags: [share_alike]
+    size_mb: 50
+    grammar: tree-sitter-conllu (REUSE)
+
+  - name: perseus-greek
+    description: "Perseus Digital Library — canonical classical Greek texts in TEI XML"
+    tier: 2
+    source: git
+    url: https://github.com/PerseusDL/canonical-greekLit.git
+    target: perseus-greek
+    license: CC-BY-SA-3.0
+    license_flags: [share_alike]
+    size_mb: 2500
+    grammar: tree-sitter-tei-perseus (TO AUTHOR; ~2 weeks, TEI XML)
+
+  - name: perseus-latin
+    description: "Perseus Digital Library — canonical classical Latin texts in TEI XML"
+    tier: 2
+    source: git
+    url: https://github.com/PerseusDL/canonical-latinLit.git
+    target: perseus-latin
+    license: CC-BY-SA-3.0
+    license_flags: [share_alike]
+    size_mb: 2500
+    grammar: tree-sitter-tei-perseus (REUSE)
+
+  - name: asl-lex
+    description: "ASL-LEX 2.0 — psycholinguistic features for 2,723 ASL signs"
+    tier: 2
+    source: manual
+    target: asl-lex
+    license: CC-BY-NC-4.0
+    license_flags: [non_commercial]
+    size_mb: 10
+    grammar: tree-sitter-asl-lex-csv (TO AUTHOR; ~40 lines)
+    notes: "Download from https://asl-lex.org/download.html — non-commercial."
+
+  - name: glucose-explanations
+    description: "GLUCOSE — 670k explanations of everyday events"
+    tier: 2
+    source: manual
+    target: glucose
+    license: CC-BY-NC-4.0
+    license_flags: [non_commercial]
+    size_mb: 200
+    grammar: tree-sitter-glucose-json (TO AUTHOR; ~50 lines)
+    notes: "Download from https://tinyurl.com/glucose-data — non-commercial."
+
+  - name: ethics-hendrycks
+    description: "ETHICS — 130k ethical scenario judgments across 5 sub-tasks"
+    tier: 2
+    source: git
+    url: https://github.com/hendrycks/ethics.git
+    target: ethics
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-ethics-csv (TO AUTHOR; ~50 lines)
+
+  - name: moral-stories
+    description: "Moral Stories — 12k narratives with norm/situation/intention/action"
+    tier: 2
+    source: git
+    url: https://github.com/demelin/moral_stories.git
+    target: moral-stories
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 30
+    grammar: tree-sitter-moral-stories-jsonl (TO AUTHOR; ~50 lines)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # TIER 3 — small lexical extras + formal reasoning + small audio metadata
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: semcor
+    description: "SemCor — Brown corpus tagged with WordNet senses"
+    tier: 3
+    source: http_archive
+    url: https://web.eecs.umich.edu/~mihalcea/downloads/semcor/semcor3.0.tar.gz
+    target: semcor
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 50
+    grammar: tree-sitter-semcor-xml (TO AUTHOR; ~80 lines, XML)
+    decompress: tar.gz
+
+  - name: verbatlas
+    description: "VerbAtlas — frame inventory linked to WordNet"
+    tier: 3
+    source: manual
+    target: verbatlas
+    license: CC-BY-NC-SA-4.0
+    license_flags: [non_commercial, share_alike]
+    size_mb: 50
+    grammar: tree-sitter-verbatlas (TO AUTHOR; ~80 lines)
+    notes: "Download from https://verbatlas.org/download — non-commercial."
+
+  - name: propbank-frames
+    description: "PropBank frame files — semantic role frames for English verbs"
+    tier: 3
+    source: git
+    url: https://github.com/propbank/propbank-frames.git
+    target: propbank-frames
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 30
+    grammar: tree-sitter-propbank-frame (TO AUTHOR; ~1 week, XML)
+
+  - name: universal-propbank
+    description: "Universal PropBank — multilingual PropBank-style frames"
+    tier: 3
+    source: git
+    url: https://github.com/UniversalPropositions/UP_English-EWT.git
+    target: universal-propbank
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 100
+    grammar: tree-sitter-propbank-frame (REUSE)
+    notes: "Multiple repos under https://github.com/UniversalPropositions — pick per-language as needed."
+
+  - name: wordsim-353
+    description: "WordSim-353 — word similarity benchmark"
+    tier: 3
+    source: http_file
+    url: http://alfonseca.org/eng/research/wordsim353/wordsim353.zip
+    target: wordsim-353
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 1
+    grammar: tree-sitter-wordsim-csv (TO AUTHOR; ~30 lines, shared with simlex/men)
+
+  - name: simlex-999
+    description: "SimLex-999 — semantic similarity benchmark"
+    tier: 3
+    source: http_archive
+    url: https://fh295.github.io/SimLex-999.zip
+    target: simlex-999
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 1
+    grammar: tree-sitter-wordsim-csv (REUSE)
+
+  - name: men-similarity
+    description: "MEN Test Collection — word similarity"
+    tier: 3
+    source: http_archive
+    url: https://staff.fnwi.uva.nl/e.bruni/resources/MEN.tar.gz
+    target: men-similarity
+    license: Free-Research
+    license_flags: [research_only]
+    size_mb: 1
+    grammar: tree-sitter-wordsim-csv (REUSE)
+    decompress: tar.gz
+
+  - name: squad-1.1
+    description: "SQuAD 1.1 — Q&A pairs (Wikipedia answer extraction)"
+    tier: 3
+    source: http_files
+    urls:
+      - https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v1.1.json
+      - https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json
+    target: squad-1.1
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 50
+    grammar: tree-sitter-squad-json (TO AUTHOR; ~40 lines)
+
+  - name: squad-2.0
+    description: "SQuAD 2.0 — extends 1.1 with unanswerable questions"
+    tier: 3
+    source: http_files
+    urls:
+      - https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v2.0.json
+      - https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json
+    target: squad-2.0
+    license: CC-BY-SA-4.0
+    license_flags: [share_alike]
+    size_mb: 50
+    grammar: tree-sitter-squad-json (REUSE)
+
+  - name: audioset-metadata
+    description: "AudioSet metadata only (CSV mappings; YouTube videos NOT redistributed)"
+    tier: 3
+    source: http_files
+    urls:
+      - http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/balanced_train_segments.csv
+      - http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/eval_segments.csv
+      - http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/unbalanced_train_segments.csv
+      - http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv
+    target: audioset-metadata
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 200
+    grammar: tree-sitter-audioset-csv (TO AUTHOR; ~30 lines)
+
+  - name: esc-50
+    description: "ESC-50 — 2k clips, 50 environmental sound classes"
+    tier: 3
+    source: git
+    url: https://github.com/karoldvl/ESC-50.git
+    target: esc-50
+    license: CC-BY-NC-3.0
+    license_flags: [non_commercial]
+    size_mb: 600
+    grammar: tree-sitter-esc50-csv (metadata) + audio-decomposer (audio files; Pattern E)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # FORMAL MATH (per user's "exception")
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: mathlib4-source
+    description: "Lean 4 mathlib4 source — ~1.5M theorems formalized"
+    tier: 3
+    source: git
+    url: https://github.com/leanprover-community/mathlib4.git
+    target: mathlib4
+    license: Apache-2.0
+    license_flags: [permissive]
+    size_mb: 500
+    grammar: tree-sitter-lean4 (TO AUTHOR or fork; community work-in-progress exists)
+    notes: "Source only via shallow clone (~500MB). Do NOT build .olean (that's 5+GB and not useful to substrate)."
+
+  - name: leandojo-benchmark-4
+    description: "LeanDojo Benchmark 4 — pre-extracted Mathlib theorems/tactics/premises in JSON"
+    tier: 3
+    source: manual
+    target: leandojo-benchmark-4
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 1500
+    grammar: tree-sitter-leandojo-json (TO AUTHOR; ~100 lines on tree-sitter-json)
+    notes: "Download from Zenodo: https://zenodo.org/records/12740403 — substrate-friendly form of mathlib4."
+
+  - name: metamath-set-mm
+    description: "MetaMath set.mm — formal proofs in classical logic"
+    tier: 3
+    source: git
+    url: https://github.com/metamath/set.mm.git
+    target: metamath-set-mm
+    license: CC0-1.0
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-metamath (TO AUTHOR; ~150 lines)
+
+  - name: minif2f
+    description: "MiniF2F — formal mathematics benchmark across Lean/Coq/Isabelle/HOL Light"
+    tier: 3
+    source: git
+    url: https://github.com/openai/miniF2F.git
+    target: minif2f
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 5
+    grammar: per-language (tree-sitter-lean4, tree-sitter-coq, etc.)
+
+  - name: proofnet
+    description: "ProofNet — 350 problems aligned NL ↔ Lean"
+    tier: 3
+    source: git
+    url: https://github.com/zhangir-azerbayev/ProofNet.git
+    target: proofnet
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 10
+    grammar: tree-sitter-proofnet-json (TO AUTHOR; ~40 lines)
+
+  - name: naturalproofs
+    description: "NaturalProofs — math proofs in NL with formal symbol references"
+    tier: 3
+    source: git
+    url: https://github.com/wellecks/naturalproofs.git
+    target: naturalproofs
+    license: CC-BY-4.0
+    license_flags: [permissive]
+    size_mb: 50
+    grammar: tree-sitter-naturalproofs-json (TO AUTHOR; ~50 lines)
+
+  - name: coqgym
+    description: "CoqGym — Coq theorem proving dataset"
+    tier: 3
+    source: git
+    url: https://github.com/princeton-vl/CoqGym.git
+    target: coqgym
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 200
+    grammar: tree-sitter-coq (existing community grammar)
+
+  - name: pisa-isabelle
+    description: "PISA — Proof Inference dataset for Isabelle"
+    tier: 3
+    source: git
+    url: https://github.com/albertqjiang/Portal-to-ISAbelle.git
+    target: pisa-isabelle
+    license: MIT
+    license_flags: [permissive]
+    size_mb: 150
+    grammar: tree-sitter-isabelle (TO AUTHOR or community fork)

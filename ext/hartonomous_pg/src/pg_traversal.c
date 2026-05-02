@@ -1,11 +1,11 @@
 /*
  * pg_traversal.c — substrate A* and BFS over hash-as-PK substrate.
  *
- * The substrate dropped surrogate BIGSERIAL ids in 0006/0007: every entity is
- * keyed (entity_type_id, hash hash_value) and every edge is keyed
- * (edge_type_id, hash hash_value). substrate.significance is gone; per-arena
- * Glicko-2 trust lives in substrate.edge_significance partitioned by
- * context_type_id with PK (context_type_id, edge_type_id, edge_hash).
+ * Phase C unification: substrate.entity has hash-only PK. substrate.edge
+ * still keeps composite (edge_type_id, hash) — edge identity is structural
+ * (different edge_type_id with same participant hashes is a different
+ * relation). substrate.edge_member references entities by hash only:
+ * (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position).
  *
  * This file implements the substrate's invention: Glicko-2-rated A* over
  * typed edges, replacing transformer matmul. Bounded indexed traversal,
@@ -13,8 +13,7 @@
  * substrate.edge_significance for the requested arena, falling back at
  * COALESCE level to provenance_edge_authority.initial_mu, then to the
  * formula prior  p.initial_mu * et.semantic_weight * p.derivation_decay
- * — never to a flat 1500.0 default. The formula prior is what makes
- * traversal meaningful before any Glicko comparison events have fired.
+ * — never to a flat 1500.0 default.
  *
  * Memory discipline: every path payload allocated for the result set lives
  * in funcctx->multi_call_memory_ctx. SPI_connect() flips CurrentMemoryContext
@@ -37,7 +36,8 @@
 #include <math.h>
 #include <string.h>
 
-extern int hartonomous_max_traversal_results;
+extern int  hartonomous_max_traversal_results;
+extern bool hartonomous_traversal_trace;
 
 #define SUBSTRATE_HASH_LEN 32
 
@@ -45,34 +45,31 @@ PG_FUNCTION_INFO_V1(pg_neighbors);
 PG_FUNCTION_INFO_V1(pg_traverse_astar);
 
 /*
- * Composite entity key: (entity_type_id, hash[32]). Padded to 8-byte boundary
- * for HASH_BLOBS (memcmp / hashing of the raw struct bytes). The trailing
- * `_pad` bytes are zeroed at construction so two keys with identical contents
- * hash to the same bucket regardless of how the struct was stack-allocated.
+ * Hash-only entity key (Phase C). 32 bytes BLAKE3. Padded to 8-byte boundary
+ * for HASH_BLOBS (memcmp / hashing of the raw struct bytes). Trailing
+ * `_pad` bytes zeroed at construction so two keys with identical contents
+ * hash to the same bucket regardless of stack-allocation pattern.
  */
 typedef struct EntityKey
 {
-    int32_t  type_id;
     uint8_t  hash[SUBSTRATE_HASH_LEN];
-    uint8_t  _pad[4];                 /* keep sizeof(EntityKey) % 8 == 0 */
 } EntityKey;
 
 /*
- * Edge key carried inside path arrays. Same shape as EntityKey for symmetry.
- * (edge_type_id, edge_hash) is the composite PK of substrate.edge.
+ * Edge key carried inside path arrays. (edge_type_id, edge_hash) is the
+ * composite PK of substrate.edge — edge identity is still structural.
  */
 typedef struct EdgeKey
 {
     int32_t  type_id;
     uint8_t  hash[SUBSTRATE_HASH_LEN];
-    uint8_t  _pad[4];
+    uint8_t  _pad[4];                 /* keep sizeof(EdgeKey) % 8 == 0 */
 } EdgeKey;
 
 static inline void
-make_entity_key(EntityKey *k, int32_t type_id, const uint8_t *hash)
+make_entity_key(EntityKey *k, const uint8_t *hash)
 {
     memset(k, 0, sizeof(*k));
-    k->type_id = type_id;
     memcpy(k->hash, hash, SUBSTRATE_HASH_LEN);
 }
 
@@ -106,11 +103,10 @@ extract_hash32(Datum d, bool isnull, uint8_t *out)
     return true;
 }
 
-/* ── BFS Neighbors (composite key form) ────────────────────────────── */
+/* ── BFS Neighbors (hash-only key form) ────────────────────────────── */
 
 typedef struct BfsResult
 {
-    int32   target_etid;
     uint8_t target_hash[SUBSTRATE_HASH_LEN];
     int32   edge_etid;
     uint8_t edge_hash[SUBSTRATE_HASH_LEN];
@@ -142,28 +138,6 @@ typedef struct VisitedEntry
 } VisitedEntry;
 
 /*
- * Construct an INT[] datum from a path of EntityKey entries (entity_type_id
- * column). Uses the SRF result memory context so the array survives across
- * SRF_RETURN_NEXT calls.
- */
-static ArrayType *
-construct_etid_array(MemoryContext mctx, const EntityKey *keys, int n)
-{
-    Datum     *vals;
-    ArrayType *arr;
-    MemoryContext old;
-    int        i;
-
-    old = MemoryContextSwitchTo(mctx);
-    vals = (Datum *) palloc(sizeof(Datum) * n);
-    for (i = 0; i < n; i++)
-        vals[i] = Int32GetDatum(keys[i].type_id);
-    arr = construct_array(vals, n, INT4OID, 4, true, 'i');
-    MemoryContextSwitchTo(old);
-    return arr;
-}
-
-/*
  * Construct a BYTEA[] datum from a path of EntityKey hashes. Each element is
  * a fresh 32-byte bytea palloc'd in mctx.
  */
@@ -185,32 +159,6 @@ construct_hash_array(MemoryContext mctx, const EntityKey *keys, int n)
         vals[i] = PointerGetDatum(b);
     }
     arr = construct_array(vals, n, BYTEAOID, -1, false, 'i');
-    MemoryContextSwitchTo(old);
-    return arr;
-}
-
-/*
- * Same shape but walks an EdgeKey array. Used for the edge-side path output.
- */
-static ArrayType *
-construct_edge_etid_array(MemoryContext mctx, const EdgeKey *keys, int n)
-{
-    Datum     *vals;
-    ArrayType *arr;
-    MemoryContext old;
-    int        i;
-
-    old = MemoryContextSwitchTo(mctx);
-    if (n == 0)
-    {
-        arr = construct_empty_array(INT4OID);
-        MemoryContextSwitchTo(old);
-        return arr;
-    }
-    vals = (Datum *) palloc(sizeof(Datum) * n);
-    for (i = 0; i < n; i++)
-        vals[i] = Int32GetDatum(keys[i].type_id);
-    arr = construct_array(vals, n, INT4OID, 4, true, 'i');
     MemoryContextSwitchTo(old);
     return arr;
 }
@@ -252,7 +200,6 @@ pg_neighbors(PG_FUNCTION_ARGS)
     if (SRF_IS_FIRSTCALL())
     {
         MemoryContext   oldctx;
-        int32           seed_type_id;
         bytea          *seed_hash_in;
         uint8_t         seed_hash[SUBSTRATE_HASH_LEN];
         int32           edge_type_filter;
@@ -266,19 +213,18 @@ pg_neighbors(PG_FUNCTION_ARGS)
         BfsResult      *results;
         int             num_results, results_cap;
         SPIPlanPtr      plan;
-        Oid             argtypes[3];
+        Oid             argtypes[2];
         EntityKey       seed_key;
 
         funcctx = SRF_FIRSTCALL_INIT();
         oldctx = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-        if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+        if (PG_ARGISNULL(0))
             ereport(ERROR,
                     (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-                     errmsg("seed_entity_type_id and seed_entity_hash must not be NULL")));
+                     errmsg("seed_entity_hash must not be NULL")));
 
-        seed_type_id = PG_GETARG_INT32(0);
-        seed_hash_in = PG_GETARG_BYTEA_PP(1);
+        seed_hash_in = PG_GETARG_BYTEA_PP(0);
         if (VARSIZE_ANY_EXHDR(seed_hash_in) != SUBSTRATE_HASH_LEN)
             ereport(ERROR,
                     (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -286,17 +232,17 @@ pg_neighbors(PG_FUNCTION_ARGS)
                             SUBSTRATE_HASH_LEN)));
         memcpy(seed_hash, VARDATA_ANY(seed_hash_in), SUBSTRATE_HASH_LEN);
 
-        if (PG_ARGISNULL(2))
+        if (PG_ARGISNULL(1))
         {
             edge_type_filter = 0;
             edge_type_is_null = true;
         }
         else
         {
-            edge_type_filter = PG_GETARG_INT32(2);
+            edge_type_filter = PG_GETARG_INT32(1);
             edge_type_is_null = false;
         }
-        max_hops = PG_ARGISNULL(3) ? 1 : PG_GETARG_INT32(3);
+        max_hops = PG_ARGISNULL(2) ? 1 : PG_GETARG_INT32(2);
 
         if (max_hops < 1)
             max_hops = 1;
@@ -324,7 +270,7 @@ pg_neighbors(PG_FUNCTION_ARGS)
         num_results = 0;
 
         /* Seed */
-        make_entity_key(&seed_key, seed_type_id, seed_hash);
+        make_entity_key(&seed_key, seed_hash);
         {
             bool found;
             VisitedEntry *ve = hash_search(visited, &seed_key, HASH_ENTER, &found);
@@ -341,29 +287,27 @@ pg_neighbors(PG_FUNCTION_ARGS)
         SPI_connect();
 
         /*
-         * Bulk neighbor expansion query, hash-as-PK. One SPI per popped node.
-         * $1 = source entity_type_id, $2 = source entity_hash (BYTEA),
-         * $3 = edge_type_filter (NULL = any).
+         * Bulk neighbor expansion query, hash-only entity reference.
+         * One SPI per popped node.
+         * $1 = source entity_hash (BYTEA),
+         * $2 = edge_type_filter (NULL = any).
          *
          * Returns every co-member of every edge in which the source entity
-         * participates. Self-rows (same entity in any role) are filtered out.
+         * participates. Self-rows (same entity in any role) filtered out.
          */
-        argtypes[0] = INT4OID;
-        argtypes[1] = BYTEAOID;
-        argtypes[2] = INT4OID;
+        argtypes[0] = BYTEAOID;
+        argtypes[1] = INT4OID;
         plan = SPI_prepare(
-            "SELECT em2.entity_type_id, em2.entity_hash, "
+            "SELECT em2.entity_hash, "
             "       em1.edge_type_id, em1.edge_hash "
             "FROM substrate.edge_member em1 "
             "JOIN substrate.edge_member em2 "
             "  ON em2.edge_type_id = em1.edge_type_id "
             " AND em2.edge_hash    = em1.edge_hash "
-            "WHERE em1.entity_type_id = $1 "
-            "  AND em1.entity_hash    = $2 "
-            "  AND NOT (em2.entity_type_id = em1.entity_type_id "
-            "           AND em2.entity_hash = em1.entity_hash) "
-            "  AND ($3::int IS NULL OR em1.edge_type_id = $3)",
-            3, argtypes
+            "WHERE em1.entity_hash = $1 "
+            "  AND em2.entity_hash <> em1.entity_hash "
+            "  AND ($2::int IS NULL OR em1.edge_type_id = $2)",
+            2, argtypes
         );
 
         if (plan == NULL)
@@ -374,30 +318,22 @@ pg_neighbors(PG_FUNCTION_ARGS)
         while (queue_head < queue_tail && num_results < max_results)
         {
             BfsQueueEntry cur = queue[queue_head++];
-            Datum   args[3];
-            char    nulls[3];
+            Datum   args[2];
+            char    nulls[2];
             bytea  *src_hash_arg;
             int     ret, row;
 
             if (cur.depth >= max_hops)
                 continue;
 
-            /*
-             * The source-hash bytea passed to SPI must live at least until
-             * SPI_execute_plan returns. Allocate in CurrentMemoryContext (the
-             * SPI procedure context) — it is freed at SPI_finish, but we are
-             * still inside the SPI block here.
-             */
             src_hash_arg = (bytea *) palloc(VARHDRSZ + SUBSTRATE_HASH_LEN);
             SET_VARSIZE(src_hash_arg, VARHDRSZ + SUBSTRATE_HASH_LEN);
             memcpy(VARDATA(src_hash_arg), cur.key.hash, SUBSTRATE_HASH_LEN);
 
-            args[0] = Int32GetDatum(cur.key.type_id);
-            args[1] = PointerGetDatum(src_hash_arg);
-            args[2] = Int32GetDatum(edge_type_filter);
+            args[0] = PointerGetDatum(src_hash_arg);
+            args[1] = Int32GetDatum(edge_type_filter);
             nulls[0] = ' ';
-            nulls[1] = ' ';
-            nulls[2] = edge_type_is_null ? 'n' : ' ';
+            nulls[1] = edge_type_is_null ? 'n' : ' ';
 
             ret = SPI_execute_plan(plan, args, nulls, true, 0);
             if (ret != SPI_OK_SELECT)
@@ -412,7 +348,6 @@ pg_neighbors(PG_FUNCTION_ARGS)
                 HeapTuple   tuple = SPI_tuptable->vals[row];
                 TupleDesc   spi_tupdesc = SPI_tuptable->tupdesc;
                 bool        isnull;
-                int32       nbr_etid;
                 uint8_t     nbr_hash[SUBSTRATE_HASH_LEN];
                 int32       edge_etid;
                 uint8_t     edge_hash[SUBSTRATE_HASH_LEN];
@@ -422,27 +357,19 @@ pg_neighbors(PG_FUNCTION_ARGS)
                 Datum       d;
 
                 d = SPI_getbinval(tuple, spi_tupdesc, 1, &isnull);
-                if (isnull) continue;
-                nbr_etid = DatumGetInt32(d);
-                d = SPI_getbinval(tuple, spi_tupdesc, 2, &isnull);
                 if (!extract_hash32(d, isnull, nbr_hash)) continue;
-                d = SPI_getbinval(tuple, spi_tupdesc, 3, &isnull);
+                d = SPI_getbinval(tuple, spi_tupdesc, 2, &isnull);
                 if (isnull) continue;
                 edge_etid = DatumGetInt32(d);
-                d = SPI_getbinval(tuple, spi_tupdesc, 4, &isnull);
+                d = SPI_getbinval(tuple, spi_tupdesc, 3, &isnull);
                 if (!extract_hash32(d, isnull, edge_hash)) continue;
 
-                make_entity_key(&nbr_key, nbr_etid, nbr_hash);
+                make_entity_key(&nbr_key, nbr_hash);
 
                 hash_search(visited, &nbr_key, HASH_ENTER, &found);
                 if (found)
                     continue;
 
-                /*
-                 * Allocate path in multi_call_memory_ctx so it survives
-                 * SPI_finish at the end of FIRSTCALL setup. SRF_PERCALL_SETUP
-                 * later dereferences these pointers.
-                 */
                 new_path = MemoryContextAlloc(funcctx->multi_call_memory_ctx,
                                               sizeof(EntityKey) * (cur.path_len + 1));
                 memcpy(new_path, cur.entity_path, sizeof(EntityKey) * cur.path_len);
@@ -453,7 +380,6 @@ pg_neighbors(PG_FUNCTION_ARGS)
                     results_cap *= 2;
                     results = repalloc(results, sizeof(BfsResult) * results_cap);
                 }
-                results[num_results].target_etid = nbr_etid;
                 memcpy(results[num_results].target_hash, nbr_hash, SUBSTRATE_HASH_LEN);
                 results[num_results].edge_etid = edge_etid;
                 memcpy(results[num_results].edge_hash, edge_hash, SUBSTRATE_HASH_LEN);
@@ -477,11 +403,6 @@ pg_neighbors(PG_FUNCTION_ARGS)
                 }
             }
 
-            /*
-             * Release tuptable memory before next SPI_execute_plan. Without
-             * this the SPI procedure context accumulates one tuptable per
-             * iteration and exhausts memory at high-degree seeds.
-             */
             if (SPI_tuptable != NULL)
                 SPI_freetuptable(SPI_tuptable);
         }
@@ -509,13 +430,12 @@ pg_neighbors(PG_FUNCTION_ARGS)
     if (state->current < state->num_results)
     {
         BfsResult  *r = &state->results[state->current++];
-        Datum       values[7];
-        bool        nulls[7] = {false, false, false, false, false, false, false};
+        Datum       values[5];
+        bool        nulls[5] = {false, false, false, false, false};
         HeapTuple   tuple;
         Datum       result;
         bytea      *target_hash_b;
         bytea      *edge_hash_b;
-        ArrayType  *etid_arr;
         ArrayType  *hash_arr;
 
         target_hash_b = (bytea *) palloc(VARHDRSZ + SUBSTRATE_HASH_LEN);
@@ -526,16 +446,13 @@ pg_neighbors(PG_FUNCTION_ARGS)
         SET_VARSIZE(edge_hash_b, VARHDRSZ + SUBSTRATE_HASH_LEN);
         memcpy(VARDATA(edge_hash_b), r->edge_hash, SUBSTRATE_HASH_LEN);
 
-        etid_arr = construct_etid_array(CurrentMemoryContext, r->entity_path, r->path_len);
         hash_arr = construct_hash_array(CurrentMemoryContext, r->entity_path, r->path_len);
 
-        values[0] = Int32GetDatum(r->target_etid);
-        values[1] = PointerGetDatum(target_hash_b);
-        values[2] = Int32GetDatum(r->edge_etid);
-        values[3] = PointerGetDatum(edge_hash_b);
-        values[4] = Int32GetDatum(r->depth);
-        values[5] = PointerGetDatum(etid_arr);
-        values[6] = PointerGetDatum(hash_arr);
+        values[0] = PointerGetDatum(target_hash_b);
+        values[1] = Int32GetDatum(r->edge_etid);
+        values[2] = PointerGetDatum(edge_hash_b);
+        values[3] = Int32GetDatum(r->depth);
+        values[4] = PointerGetDatum(hash_arr);
 
         tuple = heap_form_tuple(state->tupdesc, values, nulls);
         result = HeapTupleGetDatum(tuple);
@@ -545,7 +462,7 @@ pg_neighbors(PG_FUNCTION_ARGS)
     SRF_RETURN_DONE(funcctx);
 }
 
-/* ── A* Traversal (composite key form) ─────────────────────────────── */
+/* ── A* Traversal (hash-only entity key form) ────────────────────────── */
 
 typedef struct AstarNode
 {
@@ -625,7 +542,6 @@ heap_pop(AstarHeap *h)
 
 typedef struct AstarResult
 {
-    int32      target_etid;
     uint8_t    target_hash[SUBSTRATE_HASH_LEN];
     int        depth;
     double     total_cost;       /* sum of 1/mu along the path */
@@ -657,7 +573,6 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
     if (SRF_IS_FIRSTCALL())
     {
         MemoryContext   oldctx;
-        int32           seed_etid;
         bytea          *seed_hash_in;
         uint8_t         seed_hash[SUBSTRATE_HASH_LEN];
         int32           edge_type_filter;
@@ -673,20 +588,19 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         AstarResult    *results;
         int             num_results, results_cap;
         SPIPlanPtr      nbr_plan;
-        Oid             argtypes_nbr[4];
+        Oid             argtypes_nbr[3];
         EntityKey       seed_key;
 
         funcctx = SRF_FIRSTCALL_INIT();
         oldctx = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-        /* Required: seed_entity_type_id, seed_entity_hash, arena_id */
-        if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+        /* Required: seed_entity_hash, arena_id */
+        if (PG_ARGISNULL(0))
             ereport(ERROR,
                     (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-                     errmsg("seed_entity_type_id and seed_entity_hash must not be NULL")));
+                     errmsg("seed_entity_hash must not be NULL")));
 
-        seed_etid = PG_GETARG_INT32(0);
-        seed_hash_in = PG_GETARG_BYTEA_PP(1);
+        seed_hash_in = PG_GETARG_BYTEA_PP(0);
         if (VARSIZE_ANY_EXHDR(seed_hash_in) != SUBSTRATE_HASH_LEN)
             ereport(ERROR,
                     (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -694,29 +608,29 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                             SUBSTRATE_HASH_LEN)));
         memcpy(seed_hash, VARDATA_ANY(seed_hash_in), SUBSTRATE_HASH_LEN);
 
-        if (PG_ARGISNULL(2))
+        if (PG_ARGISNULL(1))
         {
             edge_type_filter = 0;
             edge_type_filter_is_null = true;
         }
         else
         {
-            edge_type_filter = PG_GETARG_INT32(2);
+            edge_type_filter = PG_GETARG_INT32(1);
             edge_type_filter_is_null = false;
         }
 
-        if (PG_ARGISNULL(3))
+        if (PG_ARGISNULL(2))
             ereport(ERROR,
                     (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
                      errmsg("arena_id must not be NULL")));
-        arena_id = PG_GETARG_INT32(3);
+        arena_id = PG_GETARG_INT32(2);
 
-        max_depth        = PG_ARGISNULL(4) ? 5   : PG_GETARG_INT32(4);
-        max_results_arg  = PG_ARGISNULL(5) ? 100 : PG_GETARG_INT32(5);
+        max_depth        = PG_ARGISNULL(3) ? 5   : PG_GETARG_INT32(3);
+        max_results_arg  = PG_ARGISNULL(4) ? 100 : PG_GETARG_INT32(4);
 
-        if (PG_NARGS() > 6 && !PG_ARGISNULL(6))
+        if (PG_NARGS() > 5 && !PG_ARGISNULL(5))
         {
-            p_min_mu = PG_GETARG_FLOAT8(6);
+            p_min_mu = PG_GETARG_FLOAT8(5);
             p_min_mu_is_null = false;
         }
         else
@@ -747,7 +661,7 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         num_results = 0;
 
         /* Seed node */
-        make_entity_key(&seed_key, seed_etid, seed_hash);
+        make_entity_key(&seed_key, seed_hash);
         {
             AstarNode  seed;
             CostEntry *ce;
@@ -767,37 +681,40 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             ce->best_cost = 0.0;
         }
 
+        if (hartonomous_traversal_trace)
+        {
+            char hex[9];
+            for (int hb = 0; hb < 4; hb++)
+            {
+                static const char H[] = "0123456789abcdef";
+                hex[hb * 2]     = H[(seed_hash[hb] >> 4) & 0xF];
+                hex[hb * 2 + 1] = H[seed_hash[hb] & 0xF];
+            }
+            hex[8] = '\0';
+            ereport(NOTICE,
+                    (errmsg("traverse_astar: enter seed=%s arena=%d max_depth=%d max_results=%d",
+                            hex, arena_id, max_depth, max_results_arg)));
+        }
+
         SPI_connect();
 
         /*
          * Bulk neighbor + COALESCE-prior bulk JOIN. One SPI per popped node,
          * returning every co-member with the edge's effective μ in the
-         * requested arena. The COALESCE waterfall is the substrate's prior
-         * formula:
-         *   1. substrate.edge_significance.mu (Glicko-2 explicit override
-         *      written by inference outcomes — wins when present)
-         *   2. provenance_edge_authority.initial_mu (per-(source,edge_type)
-         *      specialty override, wins over the default product when the
-         *      source has specialty authority for that edge kind)
+         * requested arena.
+         *   1. substrate.edge_significance.mu
+         *   2. provenance_edge_authority.initial_mu
          *   3. p.initial_mu * et.semantic_weight * p.derivation_decay
-         *      (formula prior — combines source trust × edge structural
-         *      value × authority lineage decay)
          *
-         * Without the formula prior in the COALESCE, traversal degenerates to
-         * uniform-cost BFS (every edge mu = 1500) before any Glicko comparison
-         * events fire — defeating the substrate's invention. AP-1 prohibits
-         * cherry-picking arenas; the arena_id parameter selects ONE arena per
-         * call but is not a hardcoded subset across calls.
-         *
-         * $1 = source entity_type_id, $2 = source entity_hash (BYTEA),
-         * $3 = edge_type_filter (NULL = any), $4 = arena context_type_id.
+         * $1 = source entity_hash (BYTEA),
+         * $2 = edge_type_filter (NULL = any),
+         * $3 = arena context_type_id.
          */
-        argtypes_nbr[0] = INT4OID;
-        argtypes_nbr[1] = BYTEAOID;
+        argtypes_nbr[0] = BYTEAOID;
+        argtypes_nbr[1] = INT4OID;
         argtypes_nbr[2] = INT4OID;
-        argtypes_nbr[3] = INT4OID;
         nbr_plan = SPI_prepare(
-            "SELECT em2.entity_type_id, em2.entity_hash, "
+            "SELECT em2.entity_hash, "
             "       em1.edge_type_id,   em1.edge_hash, "
             "       COALESCE( "
             "           s.mu, "
@@ -817,15 +734,13 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             "  ON em2.edge_type_id = em1.edge_type_id "
             " AND em2.edge_hash    = em1.edge_hash "
             "LEFT JOIN substrate.edge_significance s "
-            "  ON s.context_type_id = $4 "
+            "  ON s.context_type_id = $3 "
             " AND s.edge_type_id    = em1.edge_type_id "
             " AND s.edge_hash       = em1.edge_hash "
-            "WHERE em1.entity_type_id = $1 "
-            "  AND em1.entity_hash    = $2 "
-            "  AND NOT (em2.entity_type_id = em1.entity_type_id "
-            "           AND em2.entity_hash = em1.entity_hash) "
-            "  AND ($3::int IS NULL OR e.edge_type_id = $3)",
-            4, argtypes_nbr
+            "WHERE em1.entity_hash = $1 "
+            "  AND em2.entity_hash <> em1.entity_hash "
+            "  AND ($2::int IS NULL OR e.edge_type_id = $2)",
+            3, argtypes_nbr
         );
 
         if (nbr_plan == NULL)
@@ -838,8 +753,8 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             AstarNode    cur = heap_pop(&heap);
             CostEntry   *ce;
             bool         found;
-            Datum        args[4];
-            char         nulls_arr[4];
+            Datum        args[3];
+            char         nulls_arr[3];
             int          ret, row;
             bytea       *src_hash_arg;
 
@@ -854,14 +769,12 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
             SET_VARSIZE(src_hash_arg, VARHDRSZ + SUBSTRATE_HASH_LEN);
             memcpy(VARDATA(src_hash_arg), cur.key.hash, SUBSTRATE_HASH_LEN);
 
-            args[0] = Int32GetDatum(cur.key.type_id);
+            args[0] = PointerGetDatum(src_hash_arg);
             nulls_arr[0] = ' ';
-            args[1] = PointerGetDatum(src_hash_arg);
-            nulls_arr[1] = ' ';
-            args[2] = Int32GetDatum(edge_type_filter);
-            nulls_arr[2] = edge_type_filter_is_null ? 'n' : ' ';
-            args[3] = Int32GetDatum(arena_id);
-            nulls_arr[3] = ' ';
+            args[1] = Int32GetDatum(edge_type_filter);
+            nulls_arr[1] = edge_type_filter_is_null ? 'n' : ' ';
+            args[2] = Int32GetDatum(arena_id);
+            nulls_arr[2] = ' ';
 
             ret = SPI_execute_plan(nbr_plan, args, nulls_arr, true, 0);
             if (ret != SPI_OK_SELECT)
@@ -880,7 +793,7 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                     HeapTuple   tuple = nbr_tuptable->vals[row];
                     TupleDesc   spi_tupdesc = nbr_tuptable->tupdesc;
                     bool        isnull;
-                    int32       nbr_etid, edge_etid;
+                    int32       edge_etid;
                     uint8_t     nbr_hash[SUBSTRATE_HASH_LEN];
                     uint8_t     edge_hash[SUBSTRATE_HASH_LEN];
                     EntityKey   nbr_key;
@@ -890,43 +803,25 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                     Datum       d;
 
                     d = SPI_getbinval(tuple, spi_tupdesc, 1, &isnull);
-                    if (isnull) continue;
-                    nbr_etid = DatumGetInt32(d);
-                    d = SPI_getbinval(tuple, spi_tupdesc, 2, &isnull);
                     if (!extract_hash32(d, isnull, nbr_hash)) continue;
-                    d = SPI_getbinval(tuple, spi_tupdesc, 3, &isnull);
+                    d = SPI_getbinval(tuple, spi_tupdesc, 2, &isnull);
                     if (isnull) continue;
                     edge_etid = DatumGetInt32(d);
-                    d = SPI_getbinval(tuple, spi_tupdesc, 4, &isnull);
+                    d = SPI_getbinval(tuple, spi_tupdesc, 3, &isnull);
                     if (!extract_hash32(d, isnull, edge_hash)) continue;
-                    /*
-                     * edge_mu read directly from the JOIN's COALESCE — no
-                     * inner SPI per neighbor. NULL would only arise if all of
-                     * (significance, authority override, provenance prior)
-                     * were missing, which the schema does not permit; we still
-                     * skip the edge in that case rather than emit a 1500
-                     * default that would be a silent lie.
-                     */
-                    d = SPI_getbinval(tuple, spi_tupdesc, 5, &isnull);
+                    d = SPI_getbinval(tuple, spi_tupdesc, 4, &isnull);
                     if (isnull) continue;
                     edge_mu = DatumGetFloat8(d);
 
-                    /*
-                     * Significance threshold prune (inference.md Step 1.3) —
-                     * edges below p_min_mu do not enter the candidate pool.
-                     * Applied to edge mu (the Glicko-2 rating of this specific
-                     * relationship in this arena).
-                     */
                     if (!p_min_mu_is_null && edge_mu < p_min_mu)
                         continue;
-
                     if (edge_mu <= 0.0)
                         continue;
 
                     edge_cost = 1.0 / edge_mu;
                     new_cost = cur.cost + edge_cost;
 
-                    make_entity_key(&nbr_key, nbr_etid, nbr_hash);
+                    make_entity_key(&nbr_key, nbr_hash);
 
                     nbr_ce = hash_search(best_costs, &nbr_key, HASH_ENTER, &found);
                     if (found && nbr_ce->best_cost <= new_cost)
@@ -938,13 +833,6 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                     next.depth = cur.depth + 1;
                     next.path_len = cur.path_len + 1;
 
-                    /*
-                     * Allocate path arrays in multi_call_memory_ctx so they
-                     * survive SPI_finish at the end of FIRSTCALL. SPI_connect
-                     * switches CurrentMemoryContext to its private context;
-                     * any palloc here lands there and would be freed by
-                     * SPI_finish, leaving dangling pointers in results[].
-                     */
                     next.entity_path = MemoryContextAlloc(funcctx->multi_call_memory_ctx,
                                                           sizeof(EntityKey) * next.path_len);
                     memcpy(next.entity_path, cur.entity_path,
@@ -960,17 +848,11 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
 
                     heap_push(&heap, next);
 
-                    /*
-                     * Every reached entity is a candidate target; the engine
-                     * filters and ranks downstream. Mirrors NpgsqlTraversal's
-                     * behaviour of recording every reached path.
-                     */
                     if (num_results >= results_cap)
                     {
                         results_cap *= 2;
                         results = repalloc(results, sizeof(AstarResult) * results_cap);
                     }
-                    results[num_results].target_etid = nbr_etid;
                     memcpy(results[num_results].target_hash, nbr_hash, SUBSTRATE_HASH_LEN);
                     results[num_results].depth = next.depth;
                     results[num_results].total_cost = new_cost;
@@ -980,16 +862,17 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                     num_results++;
                 }
 
-                /*
-                 * Release neighbor tuptable before next iteration. Without
-                 * this the SPI procedure context accumulates one tuptable per
-                 * A* hop; high-degree seeds segfault from exhaustion.
-                 */
                 SPI_freetuptable(nbr_tuptable);
             }
         }
 
         SPI_finish();
+
+        if (hartonomous_traversal_trace)
+        {
+            ereport(NOTICE,
+                    (errmsg("traverse_astar: SPI loop done; num_results=%d", num_results)));
+        }
 
         state = palloc(sizeof(AstarState));
         state->results = results;
@@ -1002,6 +885,12 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
                      errmsg("function returning record called in context that cannot accept type record")));
         BlessTupleDesc(state->tupdesc);
 
+        if (hartonomous_traversal_trace)
+        {
+            ereport(NOTICE,
+                    (errmsg("traverse_astar: tupdesc natts=%d (expected 4)", state->tupdesc->natts)));
+        }
+
         funcctx->user_fctx = state;
         MemoryContextSwitchTo(oldctx);
     }
@@ -1012,12 +901,11 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
     if (state->current < state->num_results)
     {
         AstarResult *r = &state->results[state->current++];
-        Datum        values[6];
-        bool         nulls_arr[6] = {false, false, false, false, false, false};
+        Datum        values[4];
+        bool         nulls_arr[4] = {false, false, false, false};
         HeapTuple    tuple;
         Datum        result;
         bytea       *target_hash_b;
-        ArrayType   *etid_arr;
         ArrayType   *ehash_arr;
         double       total_mu;
 
@@ -1025,28 +913,16 @@ pg_traverse_astar(PG_FUNCTION_ARGS)
         SET_VARSIZE(target_hash_b, VARHDRSZ + SUBSTRATE_HASH_LEN);
         memcpy(VARDATA(target_hash_b), r->target_hash, SUBSTRATE_HASH_LEN);
 
-        /*
-         * total_mu is the path's aggregate trust score: the harmonic-style
-         * inverse of the cost sum. cost = sum(1/mu_i); total_mu = 1/cost.
-         * Higher total_mu = stronger composite path. Matches NpgsqlTraversal's
-         * PathSignificance convention.
-         */
         total_mu = (r->total_cost > 0.0) ? (1.0 / r->total_cost) : 0.0;
 
-        /* Edge path has path_len - 1 entries (one per hop). */
-        etid_arr = construct_edge_etid_array(CurrentMemoryContext,
-                                             r->edge_path,
-                                             r->path_len - 1);
         ehash_arr = construct_edge_hash_array(CurrentMemoryContext,
                                               r->edge_path,
                                               r->path_len - 1);
 
-        values[0] = Int32GetDatum(r->target_etid);
-        values[1] = PointerGetDatum(target_hash_b);
-        values[2] = Int32GetDatum(r->depth);
-        values[3] = Float8GetDatum(total_mu);
-        values[4] = PointerGetDatum(etid_arr);
-        values[5] = PointerGetDatum(ehash_arr);
+        values[0] = PointerGetDatum(target_hash_b);
+        values[1] = Int32GetDatum(r->depth);
+        values[2] = Float8GetDatum(total_mu);
+        values[3] = PointerGetDatum(ehash_arr);
 
         tuple = heap_form_tuple(state->tupdesc, values, nulls_arr);
         result = HeapTupleGetDatum(tuple);

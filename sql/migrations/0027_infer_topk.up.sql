@@ -1,0 +1,6 @@
+-- Stage 0027: substrate.infer_topk — top-K variant of substrate.infer.
+-- Returns the K highest-mu targets per max-pool, each with its recomposed
+-- text and the count of independent (seed × arena) traversal paths that
+-- reached it. Required by the Gödel Engine for Self-Consistency voting,
+-- Tree-of-Thought branch selection, and honest abstention.
+-- @include schema/functions/infer_topk.sql

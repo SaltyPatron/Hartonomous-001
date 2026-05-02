@@ -70,7 +70,9 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         TotalCommitTime          = _totalCommitTime,
     };
 
-    public IIngestionBatch CreateBatch() => new IngestionBatch();
+    public IIngestionBatch CreateBatch(string provenanceCode) => new IngestionBatch(provenanceCode);
+
+    public IIngestionBatch CreateBatch() => new IngestionBatch("system_computed");
 
     public async Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct)
     {

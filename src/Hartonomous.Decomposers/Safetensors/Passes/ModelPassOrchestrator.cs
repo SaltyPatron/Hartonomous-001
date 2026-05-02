@@ -143,7 +143,7 @@ internal sealed partial class ModelPassOrchestrator
 
         byte[] archHash = BuildArchitectureSignature(arch);
 
-        IIngestionBatch batch = _pipeline.CreateBatch();
+        IIngestionBatch batch = _pipeline.CreateBatch(_provenanceCode);
         EntityHandle modelEntity = batch.AddEntity(archHash, "model_architecture");
         batch.AddJunction("model_architecture_class", modelEntity, archClassId);
         batch.AddEntityModelSource(modelEntity, modelSourceId);
@@ -156,12 +156,17 @@ internal sealed partial class ModelPassOrchestrator
             byte[] archNameBytes = Encoding.UTF8.GetBytes(arch.ArchitectureClass);
             if (archNameBytes.Length > 0)
             {
-                TextDecomposer.TextIngestionResult archNameResult = TextDecomposer.IngestUtf8DocumentIntoBatch(
-                    batch, archNameBytes, _codepointProperties, ModelDerivedTrustMu, _logger, ct);
+                Hartonomous.Core.Text.TextDecomposeResult archNameResult =
+                    Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                        batch, archNameBytes, _codepointProperties,
+                        new Hartonomous.Core.Text.TextDecomposeOptions(
+                            ProvenanceCode: _provenanceCode,
+                            TopEntityType: "text_composition",
+                            TrustMu: ModelDerivedTrustMu));
                 batch.AddEdge("has_architecture_name", _provenanceCode,
                 [
                     new EdgeMemberSpec(modelEntity, "source", 0),
-                    new EdgeMemberSpec(archNameResult.DocumentHandle, "target", 1),
+                    new EdgeMemberSpec(archNameResult.RootHandle, "target", 1),
                 ]);
             }
         }
@@ -220,7 +225,7 @@ internal sealed partial class ModelPassOrchestrator
             if (batch.EntityCount >= _batchSize || batch.EdgeCount >= _batchSize)
             {
                 await _pipeline.SubmitBatchAsync(batch, ct);
-                batch = _pipeline.CreateBatch();
+                batch = _pipeline.CreateBatch(_provenanceCode);
                 modelEntity = batch.AddEntity(archHash, "model_architecture");
                 batch.AddEntityModelSource(modelEntity, modelSourceId);
             }
@@ -399,12 +404,17 @@ internal sealed partial class ModelPassOrchestrator
             return;
         }
         byte[] bytes = Encoding.UTF8.GetBytes(text);
-        TextDecomposer.TextIngestionResult result = TextDecomposer.IngestUtf8DocumentIntoBatch(
-            batch, bytes, _codepointProperties, ModelDerivedTrustMu, _logger, ct);
+        Hartonomous.Core.Text.TextDecomposeResult result =
+            Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                batch, bytes, _codepointProperties,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: _provenanceCode,
+                    TopEntityType: "text_composition",
+                    TrustMu: ModelDerivedTrustMu));
         batch.AddEdge(edgeCode, _provenanceCode,
         [
             new EdgeMemberSpec(source, "source", 0),
-            new EdgeMemberSpec(result.DocumentHandle, "target", 1),
+            new EdgeMemberSpec(result.RootHandle, "target", 1),
         ]);
     }
 

@@ -7,9 +7,11 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
+using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Recomposition;
 using Hartonomous.Core.Query;
+using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Query;
 using Hartonomous.Engine.Inference;
@@ -42,11 +44,11 @@ builder.Services.AddSingleton<NpgsqlEntityReader>(sp => new NpgsqlEntityReader(
 builder.Services.AddSingleton<IEntityReader>(sp => sp.GetRequiredService<NpgsqlEntityReader>());
 builder.Services.AddSingleton<ITextRecompositionReader>(sp => sp.GetRequiredService<NpgsqlEntityReader>());
 builder.Services.AddSingleton<IInferenceEngine>(sp => new SubstrateInferenceEngine(
-    sp.GetRequiredService<ITraversal>(),
-    sp.GetRequiredService<IEntityReader>(),
+    sp.GetRequiredService<NpgsqlDataSource>(),
+    sp.GetRequiredService<IIngestionPipeline>(),
+    sp.GetRequiredService<ICodepointProperties>(),
     sp.GetRequiredService<IReferenceDataReader>(),
-    sp.GetRequiredService<ILogger<SubstrateInferenceEngine>>(),
-    sp.GetService<ITextRecompositionReader>()));
+    sp.GetRequiredService<ILogger<SubstrateInferenceEngine>>()));
 builder.Services.AddSingleton<IRecomposer<string>>(sp => new TextRecomposer(
     sp.GetRequiredService<IEntityReader>()));
 builder.Services.AddSingleton<IPhysicalityReader>(sp => new NpgsqlPhysicalityReader(

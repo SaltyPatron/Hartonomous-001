@@ -1,0 +1,22 @@
+-- Stage 0029: brain primitives — hub view + intersection + 4D distance,
+-- and substrate.recall as the brain's primary direct operation built on
+-- top of them.
+--
+-- Architecture: every substrate.entity is a typed hub. The "answer" to a
+-- prompt is the entity (or entities) most strongly intersected across the
+-- prompt's seed entities, where intersection signal is a weighted blend of:
+--   * shared edges (in/out, every typed relation)
+--   * sequence adjacency (composition parents/children)
+--   * 4D geometric proximity (cross-decomposer surface bridging — same
+--     content via different surface forms whose trajectories cluster)
+--
+-- substrate.recall composes these into one operation: prompt → seeds →
+-- intersect → top entity → recompose (direct or via has_gloss/has_text/
+-- has_example bridge to a recomposable text_composition).
+--
+-- Order matters: dist_4d → neighborhood (uses dist_4d) → intersect (uses
+-- neighborhood) → recall (uses intersect).
+-- @include schema/functions/dist_4d.sql
+-- @include schema/functions/neighborhood.sql
+-- @include schema/functions/intersect.sql
+-- @include schema/functions/recall.sql

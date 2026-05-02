@@ -41,7 +41,8 @@ namespace Hartonomous.Decomposers.Tatoeba;
 /// </summary>
 public sealed partial class TatoebaDecomposer : BaseDecomposer
 {
-    public override string ProvenanceCode => "tatoeba";
+    public override string ProvenanceCode => TatoebaProvenanceCode;
+    private const string TatoebaProvenanceCode = "tatoeba";
     public override string DisplayName => "Tatoeba";
     public override IReadOnlyList<Phase> Phases => [Phase.Tatoeba];
 
@@ -113,7 +114,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         // entity_language junction — all using EntityHandles in the same batch.
         // No phase-wide ResolveEntityIdsAsync; the pipeline's ON CONFLICT (hash,
         // entity_type_id) DO NOTHING dedupes repeated emissions across passes.
-        IIngestionBatch batch = pipeline.CreateBatch();
+        IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
         long pass1Count = 0;
         long pass1Filtered = 0;
         foreach (TatoebaSentenceRow row in TatoebaCsvReader.ReadSentences(sentencesPath))
@@ -131,7 +132,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 batchNum++;
                 await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
                     batchNum, "sentences", ct);
-                batch = pipeline.CreateBatch();
+                batch = pipeline.CreateBatch(ProvenanceCode);
             }
 
             EmitSentence(batch, row, _codepointProperties, languageMap, sentenceIdToHash,
@@ -156,7 +157,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         // committed. Re-emit both AddEntity calls in this batch; ON CONFLICT
         // dedupe gives us in-batch handles that map to the existing substrate
         // rows. translation_link edge uses those handles inline.
-        batch = pipeline.CreateBatch();
+        batch = pipeline.CreateBatch(ProvenanceCode);
         long pass2Count = 0;
         long pass2Skipped = 0;
         foreach (TatoebaLinkRow link in TatoebaCsvReader.ReadLinks(linksPath))
@@ -174,7 +175,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 batchNum++;
                 await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
                     batchNum, "links", ct);
-                batch = pipeline.CreateBatch();
+                batch = pipeline.CreateBatch(ProvenanceCode);
             }
 
             EmitLink(batch, link, sentenceIdToHash, ref edgeCount);
@@ -197,7 +198,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         long pass3Count = 0;
         if (File.Exists(audioPath))
         {
-            batch = pipeline.CreateBatch();
+            batch = pipeline.CreateBatch(ProvenanceCode);
             foreach (TatoebaAudioRow ar in TatoebaCsvReader.ReadAudio(audioPath))
             {
                 ct.ThrowIfCancellationRequested();
@@ -207,7 +208,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                     batchNum++;
                     await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
                         batchNum, "audio", ct);
-                    batch = pipeline.CreateBatch();
+                    batch = pipeline.CreateBatch(ProvenanceCode);
                 }
 
                 EmitAudio(batch, ar, _codepointProperties, sentenceIdToHash, ref entityCount, ref edgeCount);
@@ -257,9 +258,19 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             // word_forms → text_composition); same content from Tatoeba +
             // WordNet examples + Wiktionary citations + user prompts all
             // collapse to ONE text_composition entity.
-            (EntityHandle textEntity, byte[] textHash) =
-                TextSegmentationEmitter.EmitTextComposition(
-                    batch, row.Text, codepointProperties, "text_composition", TrustPriorMu);
+            // Canonical text decomposer routes through CanonicalTextDecomposer
+            // — same hash this same content emitted by WordNet / Wiktionary /
+            // prompts. Cross-decomposer dedup is automatic.
+            byte[] textUtf8 = System.Text.Encoding.UTF8.GetBytes(row.Text);
+            Hartonomous.Core.Text.TextDecomposeResult textResult =
+                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                    batch, textUtf8, codepointProperties,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: TatoebaProvenanceCode,
+                        TopEntityType: "text_composition",
+                        TrustMu: TrustPriorMu));
+            EntityHandle textEntity = textResult.RootHandle;
+            byte[] textHash = textResult.RootHash;
             sentHash = textHash;
             sentEntity = textEntity;
             entityCount++;
@@ -336,9 +347,15 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
             // Contributor handle decomposes via the canonical Merkle path so the
             // text_composition converges with any other Merkle-hashed occurrence
             // of the same handle (e.g. mention in a Wiktionary citation).
-            (EntityHandle contribEntity, byte[] _) =
-                TextSegmentationEmitter.EmitTextComposition(
-                    batch, row.Contributor, codepointProperties, "text_composition", TrustPriorMu);
+            byte[] contribUtf8 = System.Text.Encoding.UTF8.GetBytes(row.Contributor);
+            Hartonomous.Core.Text.TextDecomposeResult contribResult =
+                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
+                    batch, contribUtf8, codepointProperties,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: TatoebaProvenanceCode,
+                        TopEntityType: "text_composition",
+                        TrustMu: TrustPriorMu));
+            EntityHandle contribEntity = contribResult.RootHandle;
             entityCount++;
 
             batch.AddEdge(EdgeHasContributor, "tatoeba",

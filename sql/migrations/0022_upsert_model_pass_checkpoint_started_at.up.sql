@@ -1,0 +1,22 @@
+-- Stage 0022: fix substrate.upsert_model_pass_checkpoint NOT NULL violation
+-- on first-batch INSERT.
+--
+-- Background: substrate.model_pass_checkpoint.started_at is NOT NULL with a
+-- DEFAULT NOW(). The previous upsert function body explicitly wrote NULL into
+-- started_at on the INSERT path whenever p_status was anything other than
+-- 'started'. That overrode the column default. The only producer
+-- (Hartonomous.Engine.Data.NpgsqlCheckpointStore.UpsertAsync) sends
+-- 'in_flight' / 'completed' / 'failed' — never 'started' — so every first
+-- INSERT for a (model_source_id, pass_name) pair tripped 23502.
+-- Observed in production logs as Safetensors decomposer dying on the first
+-- batch of model.attention_components with:
+--     null value in column "started_at" of relation "model_pass_checkpoint"
+--     violates not-null constraint
+--
+-- Fix: on INSERT, started_at is unconditionally NOW(). The INSERT branch
+-- only fires when no existing row matches the (model_source_id, pass_name)
+-- unique key, which means the pass is being observed for the first time —
+-- by definition the start instant. ON CONFLICT DO UPDATE already preserves
+-- the original started_at via COALESCE on subsequent calls.
+--
+-- @include schema/functions/upsert_model_pass_checkpoint.sql

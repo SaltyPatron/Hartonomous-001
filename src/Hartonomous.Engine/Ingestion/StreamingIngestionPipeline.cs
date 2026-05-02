@@ -72,6 +72,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     // without coordinating with other kinds. SingleReader=true means the
     // drain side is lock-free.
     private readonly Channel<EntityRecord> _entities;
+    private readonly Channel<EntityClassificationRecord> _entityClassifications;
     private readonly Channel<EdgeRecord> _edges;
     private readonly Channel<EdgeMemberRecord> _edgeMembers;
     private readonly Channel<JunctionRecord> _junctions;
@@ -86,6 +87,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     // Per-kind row counters, updated atomically by drain tasks. Surfaces via
     // PipelineStats for observability and end-of-phase summary.
     private long _entitiesEmitted;
+    private long _entityClassificationsEmitted;
     private long _edgesEmitted;
     private long _edgeMembersEmitted;
     private long _junctionsEmitted;
@@ -114,18 +116,20 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             SingleWriter = false,
         };
 
-        _entities             = Channel.CreateBounded<EntityRecord>(opts);
-        _edges                = Channel.CreateBounded<EdgeRecord>(opts);
-        _edgeMembers          = Channel.CreateBounded<EdgeMemberRecord>(opts);
-        _junctions            = Channel.CreateBounded<JunctionRecord>(opts);
-        _physicalities        = Channel.CreateBounded<PhysicalityRecord>(opts);
-        _sequences            = Channel.CreateBounded<SequenceRecord>(opts);
-        _entitySignificances  = Channel.CreateBounded<EntitySignificanceRecord>(opts);
-        _entityModelSources   = Channel.CreateBounded<EntityModelSourceRecord>(opts);
+        _entities              = Channel.CreateBounded<EntityRecord>(opts);
+        _entityClassifications = Channel.CreateBounded<EntityClassificationRecord>(opts);
+        _edges                 = Channel.CreateBounded<EdgeRecord>(opts);
+        _edgeMembers           = Channel.CreateBounded<EdgeMemberRecord>(opts);
+        _junctions             = Channel.CreateBounded<JunctionRecord>(opts);
+        _physicalities         = Channel.CreateBounded<PhysicalityRecord>(opts);
+        _sequences             = Channel.CreateBounded<SequenceRecord>(opts);
+        _entitySignificances   = Channel.CreateBounded<EntitySignificanceRecord>(opts);
+        _entityModelSources    = Channel.CreateBounded<EntityModelSourceRecord>(opts);
 
         _drainTasks = new[]
         {
             Task.Run(() => DrainEntitiesAsync(_shutdown.Token)),
+            Task.Run(() => DrainEntityClassificationsAsync(_shutdown.Token)),
             Task.Run(() => DrainEdgesAsync(_shutdown.Token)),
             Task.Run(() => DrainEdgeMembersAsync(_shutdown.Token)),
             Task.Run(() => DrainJunctionsAsync(_shutdown.Token)),
@@ -138,16 +142,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     public StreamingPipelineStats Stats => new()
     {
-        EntitiesEmitted             = _entitiesEmitted,
-        EdgesEmitted                = _edgesEmitted,
-        EdgeMembersEmitted          = _edgeMembersEmitted,
-        JunctionsEmitted            = _junctionsEmitted,
-        PhysicalitiesEmitted        = _physicalitiesEmitted,
-        SequencesEmitted            = _sequencesEmitted,
-        EntitySignificancesEmitted  = _entitySignificancesEmitted,
-        EntityModelSourcesEmitted   = _entityModelSourcesEmitted,
-        CopyCommits                 = _copyCommits,
-        CopyErrors                  = _copyErrors,
+        EntitiesEmitted               = _entitiesEmitted,
+        EntityClassificationsEmitted  = _entityClassificationsEmitted,
+        EdgesEmitted                  = _edgesEmitted,
+        EdgeMembersEmitted            = _edgeMembersEmitted,
+        JunctionsEmitted              = _junctionsEmitted,
+        PhysicalitiesEmitted          = _physicalitiesEmitted,
+        SequencesEmitted              = _sequencesEmitted,
+        EntitySignificancesEmitted    = _entitySignificancesEmitted,
+        EntityModelSourcesEmitted     = _entityModelSourcesEmitted,
+        CopyCommits                   = _copyCommits,
+        CopyErrors                    = _copyErrors,
     };
 
     // ── IIngestionPipeline compatibility shim ───────────────────────────
@@ -161,7 +166,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     // E1..E9 just remove the IngestionBatch accumulation in favor of direct
     // EmitAsync calls. Until then, the shim does the unfolding for them.
 
-    public IIngestionBatch CreateBatch() => new IngestionBatch();
+    public IIngestionBatch CreateBatch(string provenanceCode) => new IngestionBatch(provenanceCode);
+
+    public IIngestionBatch CreateBatch() => new IngestionBatch("system_computed");
 
     public async Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct)
     {
@@ -170,15 +177,24 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             throw new ArgumentException("Batch must be created by this pipeline.", nameof(batch));
         }
 
-        // Entities first — substrate FKs reference (entity_type_id, entity_hash).
+        // Batch-level provenance is the decomposer's assertion stamp. Every
+        // entity classification and every edge in this batch attributes to it
+        // unless explicitly overridden. Falling back to "system_computed" via
+        // the no-arg CreateBatch() is honest ("no decomposer is asserting
+        // this") but should be rare — decomposers should pass their own
+        // ProvenanceCode at batch creation.
+        string batchProvenance = b.ProvenanceCode;
+
+        // Entities first. Each EntityRecord fans into staging_entity (hash only)
+        // AND staging_entity_classification (hash, type, provenance) via the
+        // pipeline's EmitAsync.
         foreach (EntityEntry e in b.Entities)
         {
-            await EmitAsync(new EntityRecord(e.EntityTypeCode, e.Hash), ct).ConfigureAwait(false);
+            await EmitAsync(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance), ct).ConfigureAwait(false);
         }
 
-        // Edges + their members. EdgeHash is computed inside EmitEdgeAsync's
-        // analogue, but here we mirror the old IngestionBatch.AddEdge contract:
-        // the EdgeEntry already knows its members in role-position order.
+        // Edges + their members. EdgeHash is computed from
+        // (edge_type_id, role-ordered participant hashes).
         foreach (EdgeEntry edge in b.Edges)
         {
             int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct).ConfigureAwait(false);
@@ -198,8 +214,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             {
                 await EmitAsync(new EdgeMemberRecord(
                     edge.EdgeTypeCode, edgeHash,
-                    sorted[j].Entity.EntityTypeCode, sorted[j].Entity.Hash,
-                    sorted[j].RoleCode), ct).ConfigureAwait(false);
+                    sorted[j].Entity.Hash,
+                    sorted[j].RoleCode,
+                    sorted[j].Position), ct).ConfigureAwait(false);
             }
         }
 
@@ -207,7 +224,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         foreach (JunctionEntry j in b.Junctions)
         {
             await EmitAsync(new JunctionRecord(
-                j.JunctionTable, j.Entity.EntityTypeCode, j.Entity.Hash,
+                j.JunctionTable, j.Entity.Hash,
                 j.ReferenceId, j.Mu), ct).ConfigureAwait(false);
         }
 
@@ -216,16 +233,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             byte[] contentHash = Hartonomous.Core.Compute.Common.Blake3.Hash(p.Wkb.AsSpan());
             await EmitAsync(new PhysicalityRecord(
                 p.PhysicalityTypeCode,
-                p.Entity.EntityTypeCode, p.Entity.Hash,
+                p.Entity.Hash,
                 contentHash, p.Wkb), ct).ConfigureAwait(false);
         }
 
         foreach (SequenceEntry s in b.Sequences)
         {
             await EmitAsync(new SequenceRecord(
-                s.Parent.EntityTypeCode, s.Parent.Hash,
+                s.Parent.Hash,
                 s.Ordinal,
-                s.Child.EntityTypeCode, s.Child.Hash,
+                s.Child.Hash,
                 s.RleCount), ct).ConfigureAwait(false);
         }
 
@@ -233,14 +250,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             await EmitAsync(new EntitySignificanceRecord(
                 sig.ContextTypeCode,
-                sig.Entity.EntityTypeCode, sig.Entity.Hash,
+                sig.Entity.Hash,
                 sig.InitialMu), ct).ConfigureAwait(false);
         }
 
         foreach (EntityModelSourceEntry e in b.EntityModelSources)
         {
             await EmitAsync(new EntityModelSourceRecord(
-                e.Entity.EntityTypeCode, e.Entity.Hash,
+                e.Entity.Hash,
                 e.ModelSourceId), ct).ConfigureAwait(false);
         }
     }
@@ -290,7 +307,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         return record switch
         {
-            EntityRecord r              => _entities.Writer.WriteAsync(r, ct),
+            EntityRecord r              => EmitEntityWithClassificationAsync(r, ct),
+            EntityClassificationRecord r => _entityClassifications.Writer.WriteAsync(r, ct),
             EdgeRecord r                => _edges.Writer.WriteAsync(r, ct),
             EdgeMemberRecord r          => _edgeMembers.Writer.WriteAsync(r, ct),
             JunctionRecord r            => _junctions.Writer.WriteAsync(r, ct),
@@ -303,11 +321,24 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         };
     }
 
+    // EntityRecord fans into two channels: hash-only into staging_entity AND
+    // (hash, type, provenance) into staging_entity_classification. This is
+    // the Phase C unification — content identity vs decomposer-asserted
+    // classification metadata.
+    private async ValueTask EmitEntityWithClassificationAsync(EntityRecord r, CancellationToken ct)
+    {
+        await _entities.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        await _entityClassifications.Writer.WriteAsync(
+            new EntityClassificationRecord(r.Hash, r.EntityTypeCode, r.ProvenanceCode), ct)
+            .ConfigureAwait(false);
+    }
+
     public async ValueTask FlushAsync(CancellationToken ct)
     {
         // Mark all channels complete so drain loops exit their reader loops
         // after consuming everything currently buffered.
         _entities.Writer.TryComplete();
+        _entityClassifications.Writer.TryComplete();
         _edges.Writer.TryComplete();
         _edgeMembers.Writer.TryComplete();
         _junctions.Writer.TryComplete();
@@ -319,7 +350,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         // Wait for all drain tasks to finish their final chunks.
         await Task.WhenAll(_drainTasks).ConfigureAwait(false);
         Log.PipelineFlushed(_logger,
-            _entitiesEmitted, _edgesEmitted, _edgeMembersEmitted,
+            _entitiesEmitted, _entityClassificationsEmitted,
+            _edgesEmitted, _edgeMembersEmitted,
             _junctionsEmitted, _physicalitiesEmitted, _sequencesEmitted,
             _entitySignificancesEmitted, _entityModelSourcesEmitted,
             _copyCommits, _copyErrors);
@@ -358,15 +390,32 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _entities.Reader,
-            "COPY substrate.staging_entity (entity_type_id, hash) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_entity (hash) FROM STDIN (FORMAT binary)",
             "entities",
             async (writer, rec) =>
             {
-                int typeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(typeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.Hash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _entitiesEmitted);
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task DrainEntityClassificationsAsync(CancellationToken ct)
+    {
+        await DrainKindAsync(
+            _entityClassifications.Reader,
+            "COPY substrate.staging_entity_classification (entity_hash, entity_type_id, provenance_id) FROM STDIN (FORMAT binary)",
+            "entity_classifications",
+            async (writer, rec) =>
+            {
+                int typeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
+                int provenanceId = await _codeResolver.ProvenanceIdAsync(rec.ProvenanceCode, ct).ConfigureAwait(false);
+                await writer.StartRowAsync(ct).ConfigureAwait(false);
+                await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                await writer.WriteAsync(typeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                await writer.WriteAsync(provenanceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                Interlocked.Increment(ref _entityClassificationsEmitted);
             },
             ct).ConfigureAwait(false);
     }
@@ -394,19 +443,18 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _edgeMembers.Reader,
-            "COPY substrate.staging_edge_member (edge_type_id, edge_hash, entity_type_id, entity_hash, edge_role_id) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position) FROM STDIN (FORMAT binary)",
             "edge_members",
             async (writer, rec) =>
             {
                 int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(rec.EdgeTypeCode, ct).ConfigureAwait(false);
-                int entityTypeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
                 int roleId = await _codeResolver.EdgeRoleIdAsync(rec.RoleCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(edgeTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EdgeHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(roleId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                await writer.WriteAsync(rec.RolePosition, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _edgeMembersEmitted);
             },
             ct).ConfigureAwait(false);
@@ -416,7 +464,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _junctions.Reader,
-            "COPY substrate.staging_junction (table_name, entity_type_id, entity_hash, ref_id, mu) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_junction (table_name, entity_hash, ref_id, mu) FROM STDIN (FORMAT binary)",
             "junctions",
             async (writer, rec) =>
             {
@@ -425,10 +473,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     throw new ArgumentException(
                         $"JunctionRecord.JunctionTable not in allowlist: '{rec.JunctionTable}'");
                 }
-                int entityTypeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.JunctionTable, NpgsqlDbType.Text, ct).ConfigureAwait(false);
-                await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.ReferenceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 if (rec.Mu.HasValue)
@@ -448,15 +494,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _physicalities.Reader,
-            "COPY substrate.staging_physicality (physicality_type_id, entity_type_id, entity_hash, content_hash, wkb) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_physicality (physicality_type_id, entity_hash, content_hash, wkb) FROM STDIN (FORMAT binary)",
             "physicalities",
             async (writer, rec) =>
             {
                 int physTypeId = await _codeResolver.PhysicalityTypeIdAsync(rec.PhysicalityTypeCode, ct).ConfigureAwait(false);
-                int entityTypeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(physTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.ContentHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.Wkb, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
@@ -469,17 +513,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _sequences.Reader,
-            "COPY substrate.staging_sequence (parent_entity_type_id, parent_entity_hash, ordinal, child_entity_type_id, child_entity_hash, rle_count) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_sequence (parent_hash, ordinal, child_hash, rle_count) FROM STDIN (FORMAT binary)",
             "sequences",
             async (writer, rec) =>
             {
-                int parentTypeId = await _codeResolver.EntityTypeIdAsync(rec.ParentEntityTypeCode, ct).ConfigureAwait(false);
-                int childTypeId = await _codeResolver.EntityTypeIdAsync(rec.ChildEntityTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(parentTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.ParentEntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.Ordinal, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(childTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.ChildEntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.RleCount, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _sequencesEmitted);
@@ -491,15 +531,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _entitySignificances.Reader,
-            "COPY substrate.staging_entity_significance (context_type_id, entity_type_id, entity_hash, mu) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_entity_significance (context_type_id, entity_hash, mu) FROM STDIN (FORMAT binary)",
             "entity_significances",
             async (writer, rec) =>
             {
                 int contextId = await _codeResolver.SignificanceContextIdAsync(rec.ContextTypeCode, ct).ConfigureAwait(false);
-                int entityTypeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(contextId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.InitialMu, NpgsqlDbType.Double, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _entitySignificancesEmitted);
@@ -511,13 +549,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         await DrainKindAsync(
             _entityModelSources.Reader,
-            "COPY substrate.staging_entity_model_source (entity_type_id, entity_hash, model_source_id) FROM STDIN (FORMAT binary)",
+            "COPY substrate.staging_entity_model_source (entity_hash, model_source_id) FROM STDIN (FORMAT binary)",
             "entity_model_sources",
             async (writer, rec) =>
             {
-                int entityTypeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync((int)rec.ModelSourceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _entityModelSourcesEmitted);
@@ -646,9 +682,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         public static partial void DrainTaskCrashed(ILogger logger, string kind, Exception ex);
 
         [LoggerMessage(Level = LogLevel.Information,
-            Message = "Pipeline flushed: entities={Entities} edges={Edges} edge_members={EdgeMembers} junctions={Junctions} physicalities={Physicalities} sequences={Sequences} entity_significances={EntitySigs} entity_model_sources={ModelSources} commits={Commits} errors={Errors}")]
+            Message = "Pipeline flushed: entities={Entities} classifications={Classifications} edges={Edges} edge_members={EdgeMembers} junctions={Junctions} physicalities={Physicalities} sequences={Sequences} entity_significances={EntitySigs} entity_model_sources={ModelSources} commits={Commits} errors={Errors}")]
         public static partial void PipelineFlushed(ILogger logger,
-            long entities, long edges, long edgeMembers, long junctions,
+            long entities, long classifications, long edges, long edgeMembers, long junctions,
             long physicalities, long sequences, long entitySigs, long modelSources,
             long commits, long errors);
     }

@@ -1,0 +1,15 @@
+-- Stage 0024: substrate.infer — substrate-side forward pass.
+--
+-- Replaces the C# SubstrateInferenceEngine orchestration that did
+-- text.Split in process memory, per-token hash lookups, per-arena
+-- Task.WhenAll, and a C# Dictionary max-pool. The forward pass is now
+-- one PG round trip.
+--
+-- The C# layer continues to own prompt decomposition (TextDecomposer
+-- writes prompt entities to substrate with provenance='user_session'
+-- via the existing pipeline), then calls this function with the
+-- prompt's text_composition handle. The function does seed activation,
+-- cross-arena traverse_astar fan-out, max-pool by terminal entity, and
+-- recompose. Returns answer + trace summary in one row.
+--
+-- @include schema/functions/infer.sql

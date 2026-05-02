@@ -30,15 +30,65 @@ internal static class WiktionaryJsonlParser
     private static readonly IReadOnlyList<WiktEtymologyTemplate> EmptyEtymTemplates = Array.Empty<WiktEtymologyTemplate>();
 
     public static IEnumerable<WiktEntry> Parse(string path)
+        => Parse(path, langCodeFilter: null);
+
+    /// <summary>
+    /// Streams entries with an optional substring pre-filter on <c>lang_code</c>.
+    /// When <paramref name="langCodeFilter"/> is non-null, lines whose raw text does not
+    /// contain any <c>"lang_code":"&lt;code&gt;"</c> token are skipped before
+    /// <see cref="JsonDocument.Parse"/> runs. The full multilingual master dump
+    /// (raw-wiktextract-data.jsonl, ~21 GB) carries ~10M entries of which only a
+    /// fraction match any given filter; the substring scan rejects the rest at
+    /// memory-bandwidth speed instead of paying full JSON-parse cost on each line.
+    /// False positives (e.g., a French entry whose translations array references
+    /// "lang_code":"en") still parse fully and are rejected by the entry-level
+    /// LanguageAllowed check in the decomposer — correct, just no speed win on those.
+    /// </summary>
+    public static IEnumerable<WiktEntry> Parse(string path, IReadOnlyCollection<string>? langCodeFilter)
     {
+        string[]? prefilter = BuildPrefilter(langCodeFilter);
         foreach (string line in File.ReadLines(path))
         {
+            if (prefilter is not null && !LineCarriesAllowedLangCode(line, prefilter))
+            {
+                continue;
+            }
             WiktEntry? entry = ParseLine(line);
             if (entry is not null)
             {
                 yield return entry;
             }
         }
+    }
+
+    private static string[]? BuildPrefilter(IReadOnlyCollection<string>? langCodeFilter)
+    {
+        if (langCodeFilter is null || langCodeFilter.Count == 0)
+        {
+            return null;
+        }
+        // wiktextract's JSONL is compact (no whitespace between key and value), but
+        // handle the spaced variant too in case the source is ever reformatted.
+        string[] patterns = new string[langCodeFilter.Count * 2];
+        int i = 0;
+        foreach (string code in langCodeFilter)
+        {
+            patterns[i++] = "\"lang_code\":\"" + code + "\"";
+            patterns[i++] = "\"lang_code\": \"" + code + "\"";
+        }
+        return patterns;
+    }
+
+    private static bool LineCarriesAllowedLangCode(string line, string[] patterns)
+    {
+        foreach (string p in patterns)
+        {
+            if (line.Contains(p, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static WiktEntry? ParseLine(string line)

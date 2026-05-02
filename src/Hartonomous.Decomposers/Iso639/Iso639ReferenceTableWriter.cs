@@ -46,16 +46,14 @@ internal sealed class Iso639ReferenceTableWriter : BaseReferenceTableWriter
         Dictionary<string, int> langIdMap,
         CancellationToken ct)
     {
-        // language_name entities live in entity partition 18 (entity_unicode).
-        // Build the (entity_type_id, entity_hash, language_id) triples directly
-        // — no resolve, no surrogate id.
-        const int LanguageNameEntityTypeId = 18;
-        List<(int EntityTypeId, byte[] EntityHash, int LangId)> entries = new(nameEntities.Count);
+        // language_name entities are now hash-only references; classification
+        // metadata lives on substrate.entity_classification.
+        List<(byte[] EntityHash, int LangId)> entries = new(nameEntities.Count);
         foreach ((string code, byte[] nameHash) in nameEntities)
         {
             if (langIdMap.TryGetValue(code, out int langId))
             {
-                entries.Add((LanguageNameEntityTypeId, nameHash, langId));
+                entries.Add((nameHash, langId));
             }
         }
 

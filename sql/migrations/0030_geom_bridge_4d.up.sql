@@ -1,0 +1,9 @@
+-- Stage 0030: PostGIS GeometryZM ↔ libhartonomous compute bridge.
+-- Replaces substrate.dist_4d's pure-SQL math with a thin bridge that
+-- extracts vertices via ST_DumpPoints and calls native frechet_4d /
+-- distance_4d. Adds frechet_4d_geom / hausdorff_4d_geom variants that
+-- accept arbitrary GeometryZM (POINT / LINESTRING / MULTILINESTRING /
+-- POLYGON / GEOMETRYCOLLECTION) so the substrate keeps the full PostGIS
+-- type generality on physicality.geom while routing all heavy compute
+-- through libhartonomous via the C extension.
+-- @include schema/functions/geom_bridge_4d.sql

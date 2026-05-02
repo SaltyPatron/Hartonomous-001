@@ -1,5 +1,11 @@
--- Entity types: 42 rows in canonical insertion order. SERIAL ids 1..42 must
--- match partition declarations in tables/core/entity_*.sql.
+-- Entity types: 54 rows in canonical insertion order. SERIAL ids 1..42 are
+-- pinned to the entity_model named partition (tables/core/entity_model.sql).
+-- IDs 43..54 (per-role-unit families added for the analysis-pass DAG —
+-- attention components, conv/codec filters, MoE expert neurons + route
+-- directions, vision/conformer/diffusion/LoRA/modality/object-query/bbox/
+-- class-head per-row units) currently route through entity_default. A
+-- follow-up migration can detach/extend entity_model's FOR VALUES list to
+-- bring them under the named partition for index locality.
 --
 -- Content-kind only. No dataset-named, algorithm-named, or relation-shaped
 -- types. The substrate's identity model (BLAKE3 over content) requires that
@@ -91,4 +97,22 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     ('codec_codevector',         'model_weights'),  -- 39
     ('vocab_coverage_profile',   'model_weights'),  -- 40
     ('codebook',                 'model_weights'),  -- 41
-    ('codevector',               'model_weights');  -- 42
+    ('codevector',               'model_weights'),  -- 42
+    -- Per-role-unit entity types for analysis passes (see edge_type.sql for
+    -- the matching has_* edge codes that bind a tensor to its rows). Each
+    -- row is content-hashed via PerRowContentPass canonical f64 encoding so
+    -- identical row content across models / shards collapses to ONE entity.
+    -- (AttentionComponentPass reuses attention_pattern (id 19) as its entity
+    -- type — has_attention_component is the edge that bears the binding.)
+    ('audio_codec_filter',       'model_weights'),  -- 43 (audio codec filter row)
+    ('bbox_projection',          'model_weights'),  -- 44 (detection bbox-head projection)
+    ('class_projection',         'model_weights'),  -- 45 (classification head projection)
+    ('conformer_component',      'model_weights'),  -- 46 (conformer block component row)
+    ('conv_filter',              'model_weights'),  -- 47 (per-channel conv filter)
+    ('diffusion_component',      'model_weights'),  -- 48 (diffusion U-Net component row)
+    ('lora_component',           'model_weights'),  -- 49 (LoRA adapter rank-1 component)
+    ('modality_basis_vector',    'model_weights'),  -- 50 (cross-modal basis direction)
+    ('moe_expert_neuron',        'model_weights'),  -- 51 (per-expert FFN neuron)
+    ('moe_route_direction',      'model_weights'),  -- 52 (router gate direction)
+    ('object_query_slot',        'model_weights'),  -- 53 (object-detection query slot)
+    ('vision_feature_direction', 'model_weights');  -- 54 (vision-feature row direction)
