@@ -9,8 +9,27 @@ namespace Hartonomous.Engine.Text;
 /// In-memory cache of UCD properties loaded from
 /// <c>substrate.codepoint_property</c>. Populated once at startup; then every
 /// <see cref="ICodepointProperties"/> / <see cref="ICaseFoldingProperties"/>
-/// lookup is an O(1) array index. The substrate is the source of truth — when
-/// migration 0022 re-seeds are applied, the cache is reloaded.
+/// lookup is an O(1) array index.
+///
+/// LEGACY SURFACE (post-W3B). The hot ingestion path (WordNet, Wiktionary,
+/// Safetensors text artifacts) now goes through
+/// <see cref="Hartonomous.Decomposers.Text.SubstrateTextDecomposer"/> which
+/// hands UTF-8 to <c>substrate.text_decompose</c> — properties come from the
+/// embedded UCD blob baked into the C extension at build time. This cache
+/// is retained ONLY for cold paths still calling
+/// <see cref="Hartonomous.Core.Text.CanonicalTextDecomposer.Emit"/> directly:
+/// Iso639 / UD / OMW / Tatoeba / Text decomposers, plus the inference-side
+/// label-rendering surfaces (GodelEngine, SubQuestionDecomposer,
+/// SubstrateInferenceEngine, Api/Program.cs). When those paths migrate to
+/// <c>substrate.cp_*</c> SQL functions or
+/// <c>substrate.recompose_text(entity_hash)</c>, this class plus the entire
+/// <c>Hartonomous.Core.Text.Segmentation</c> + <c>ICaseFoldingProperties</c>
+/// surface can be deleted (~1330 LOC of UAX #29 in C#).
+///
+/// Per AP-7: callers that only need a small working set MUST use
+/// <see cref="LoadForCodepointsAsync"/>; the eager <see cref="LoadAsync"/>
+/// is reserved for seed phases that genuinely need every codepoint and is
+/// being phased out.
 /// </summary>
 public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointProperties, ICaseFoldingProperties
 {

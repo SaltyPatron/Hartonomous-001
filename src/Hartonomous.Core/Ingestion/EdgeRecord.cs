@@ -6,13 +6,23 @@ namespace Hartonomous.Core.Ingestion;
 /// trust prior is resolved by code at sink time.
 ///
 /// Edge members are emitted as separate <see cref="EdgeMemberRecord"/> values
-/// so the sink can COPY edge and edge_member into different staging tables
-/// in parallel without coupling them in one record shape. Decomposer is
-/// responsible for emitting the EdgeRecord first, then all its EdgeMemberRecord
-/// values — the substrate's composite-FK enforcement happens at flush time
-/// (drain_staging_edge_member runs after drain_staging_edge in the worker).
+/// so the sink can write edge and edge_member to different drain queues in
+/// parallel. Decomposers emit the EdgeRecord first, then all its
+/// EdgeMemberRecord values — substrate-side composite-PK enforcement on
+/// edge_member's INSERT-SELECT references the edge row inserted by the same
+/// chunk (within-session) or a prior chunk (cross-session, ON CONFLICT
+/// handled).
+///
+/// <see cref="GeomWkb"/> carries an optional pre-built LINESTRINGZM EWKB
+/// for the edge's trajectory (participant centroids in role order). When
+/// non-null, the drain INSERT lifts it via ST_GeomFromWKB straight into
+/// substrate.edge.geom — no post-pass populate. When null, the row goes in
+/// with geom = NULL and an end-of-phase
+/// substrate.populate_edge_trajectories backfills from
+/// substrate.edge_member ⋈ substrate.physicality (s3_position).
 /// </summary>
 public sealed record EdgeRecord(
     string EdgeTypeCode,
     byte[] EdgeHash,
-    string ProvenanceCode) : IngestionRecord;
+    string ProvenanceCode,
+    byte[]? GeomWkb = null) : IngestionRecord;

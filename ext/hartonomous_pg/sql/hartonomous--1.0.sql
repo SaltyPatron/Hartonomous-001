@@ -1793,6 +1793,26 @@ CREATE FUNCTION normalize_4d(point4d) RETURNS point4d
     AS 'MODULE_PATHNAME', 'pg_normalize_4d'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- substrate.ls4d_from_centroids — build a PostGIS LINESTRINGZM from an
+-- ordered point4d[] participant array. Used by edge emission paths to
+-- materialize edge.geom from participant centroids in role order. The
+-- inner C function returns EWKB; ST_GeomFromWKB lifts it to geometry.
+-- Producers can also build the same EWKB directly in C# and skip this
+-- round-trip when emitting via binary COPY.
+CREATE FUNCTION substrate.ls4d_from_centroids_wkb(point4d[]) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_ls4d_from_centroids_wkb'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION substrate.ls4d_from_centroids(point4d[])
+RETURNS geometry(LINESTRINGZM)
+LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT ST_GeomFromWKB(substrate.ls4d_from_centroids_wkb($1), 0)::geometry(LINESTRINGZM);
+$$;
+
+COMMENT ON FUNCTION substrate.ls4d_from_centroids(point4d[]) IS
+    'Build a LINESTRINGZM from an ordered participant centroid array. Used to compute edge.geom inline from participants in role order, avoiding any post-insert geometry-population pass. SRID 0 (substrate is not georeferenced).';
+
 CREATE FUNCTION slerp(point4d, point4d, double precision) RETURNS point4d
     AS 'MODULE_PATHNAME', 'pg_slerp'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
@@ -2480,6 +2500,10 @@ CREATE OPERATOR CLASS geometry4d_spgist_ops
 -- via #pragma omp parallel for. Determinism via MKL CBWR + UCD-table
 -- property lookups (Law #6).
 -- ═══════════════════════════════════════════════════════════════════════
+-- 9-field summary: 7 counts + root composition hash + root entity_type_id.
+-- The root fields let C# callers immediately wire downstream edges
+-- (has_text, has_gloss, has_example, has_name, has_token_string, etc.)
+-- without recomputing the BLAKE3 themselves. Empty-input → root NULL.
 CREATE TYPE substrate.text_decompose_summary AS (
     entity_count          BIGINT,
     edge_count            BIGINT,
@@ -2487,14 +2511,21 @@ CREATE TYPE substrate.text_decompose_summary AS (
     physicality_count     BIGINT,
     sequence_count        BIGINT,
     significance_count    BIGINT,
-    classification_count  BIGINT
+    classification_count  BIGINT,
+    root_hash             bytea,
+    root_entity_type_id   INT
 );
 
+-- text_decompose now writes DIRECTLY to substrate.entity / entity_classification
+-- / physicality / sequence / entity_significance with ON CONFLICT DO NOTHING.
+-- No staging detour. p_model_source_id is OPTIONAL: when supplied, the root
+-- composition entity gets an entity_model_source row pointing at that source.
 CREATE FUNCTION substrate.text_decompose(
     p_utf8                  bytea,
     p_top_entity_type_code  text,
     p_trust_mu              double precision,
-    p_provenance_code       text
+    p_provenance_code       text,
+    p_model_source_id       int DEFAULT NULL
 ) RETURNS substrate.text_decompose_summary
     AS 'MODULE_PATHNAME', 'pg_text_decompose'
     LANGUAGE C VOLATILE;
@@ -2503,16 +2534,17 @@ CREATE FUNCTION substrate.text_decompose_batch(
     p_utf8s                  bytea[],
     p_top_entity_type_codes  text[],
     p_trust_mus              double precision[],
-    p_provenance_codes       text[]
+    p_provenance_codes       text[],
+    p_model_source_ids       int[] DEFAULT NULL
 ) RETURNS substrate.text_decompose_summary
     AS 'MODULE_PATHNAME', 'pg_text_decompose_batch'
     LANGUAGE C VOLATILE;
 
-COMMENT ON FUNCTION substrate.text_decompose(bytea, text, double precision, text) IS
-    'Native UAX #29 + BLAKE3 + 4D centroid pipeline. Decodes UTF-8, runs grapheme + word boundary detection against substrate.codepoint_property (cached per backend), emits codepoint/grapheme_cluster/word_form/composition entities + sequence + physicality + significance rows directly into substrate.staging_* via SPI. Replaces CanonicalTextDecomposer.Emit on the hot path.';
+COMMENT ON FUNCTION substrate.text_decompose(bytea, text, double precision, text, int) IS
+    'Native UAX #29 + BLAKE3 + 4D centroid pipeline. Decodes UTF-8, runs grapheme + word boundary detection from the embedded UCD blob, emits codepoint/grapheme_cluster/word_form/composition entities + sequence + physicality + significance rows DIRECTLY into substrate core tables (no staging) via SPI with ON CONFLICT DO NOTHING. When p_model_source_id is non-NULL, the root composition is also linked via substrate.entity_model_source. Returns counts + root_hash + root_entity_type_id so callers can wire downstream edges without recomputing BLAKE3.';
 
-COMMENT ON FUNCTION substrate.text_decompose_batch(bytea[], text[], double precision[], text[]) IS
-    'Batched variant: processes N texts concurrently via #pragma omp parallel for. Bulk-flushes accumulated staging rows in one pass. Use for high-volume callers (Wiktionary-scale ingest) to saturate cores from a single SQL invocation.';
+COMMENT ON FUNCTION substrate.text_decompose_batch(bytea[], text[], double precision[], text[], int[]) IS
+    'Batched variant: processes N texts in one SQL invocation, recursing into text_decompose per row. Per-row optional p_model_source_ids[i] parameter — NULL element skips linkage. Returns aggregated counts only; root_hash/root_entity_type_id are always NULL for the batch form (call text_decompose() one at a time when per-row roots are needed).';
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- (21) Tier-0 codepoint atoms — embedded UCD/UCA, O(1) array lookups

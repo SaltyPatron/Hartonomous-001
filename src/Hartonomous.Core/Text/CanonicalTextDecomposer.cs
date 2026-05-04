@@ -8,14 +8,26 @@ using Hartonomous.Core.Text.Segmentation;
 namespace Hartonomous.Core.Text;
 
 /// <summary>
-/// THE canonical text decomposer. The single, authoritative implementation
-/// of <c>UTF-8 bytes → substrate content recording</c>. Every text-bearing
-/// content from any decomposer (WordNet glosses/lemmas/synsets, Wiktionary
-/// lemmas/etymology/pronunciation/translation/example, OMW foreign lemmas,
-/// UD tokens/sentences, Tatoeba sentences, Safetensors model artifacts,
-/// prompts) routes through <see cref="Emit"/>. One implementation, one
-/// hash per content, full Merkle DAG plus 4D geometry plus structure
-/// preserved every time.
+/// LEGACY canonical text decomposer (C# implementation). Post-W3B the
+/// canonical hot path is <c>substrate.text_decompose</c> in the C extension
+/// (called via <see cref="Hartonomous.Decomposers.Text.SubstrateTextDecomposer"/>).
+/// This C# implementation is retained for cold paths that still call
+/// <see cref="Emit"/> directly:
+/// <list type="bullet">
+///   <item>Iso639 / UD / OMW / Tatoeba / Text decomposers — to be migrated</item>
+///   <item>Recall / Godel CLI prompt-ingestion paths — to be migrated</item>
+///   <item>Inference-side prompt decomposition (SubstrateInferenceEngine,
+///         GodelEngine, SubQuestionDecomposer)</item>
+/// </list>
+/// When those callers move to <c>SubstrateTextDecomposer</c>, this class +
+/// <c>NpgsqlCodepointPropertiesCache</c> + the <c>Hartonomous.Core.Text.Segmentation</c>
+/// (~1330 LOC of UAX #29 in C#) can be deleted.
+///
+/// Same UTF-8 input still produces byte-identical hashes via the original
+/// algorithm: codepoint hash = BLAKE3(big-endian 4-byte rune); grapheme
+/// hash = Merkle of codepoint hashes; word_form hash = Merkle of grapheme
+/// hashes; composition hash = Merkle of child hashes. The C extension
+/// uses the same algorithm — the hashes match.
 ///
 /// This replaces the four prior text-decomposition surfaces:
 ///   Hartonomous.Core.Text.Segmentation.TextSegmentationEmitter.EmitTextComposition

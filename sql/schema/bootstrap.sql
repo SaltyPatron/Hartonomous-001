@@ -165,16 +165,14 @@
 -- ── Phase 11: meta tables ────────────────────────────────────────────
 -- @include schema/tables/meta/arena_priming_state.sql
 
--- ── Phase 12: staging tables ─────────────────────────────────────────
--- @include schema/tables/staging/staging_entity.sql
--- @include schema/tables/staging/staging_entity_classification.sql
--- @include schema/tables/staging/staging_edge.sql
--- @include schema/tables/staging/staging_edge_member.sql
--- @include schema/tables/staging/staging_physicality.sql
--- @include schema/tables/staging/staging_sequence.sql
--- @include schema/tables/staging/staging_entity_significance.sql
--- @include schema/tables/staging/staging_entity_model_source.sql
--- @include schema/tables/staging/staging_junction.sql
+-- (Phase 12 deleted post-W2E refactor: substrate.staging_* tables and the
+--  drain_staging_*_chunk / drain_all_staging functions are gone. The
+--  StreamingIngestionPipeline writes DIRECTLY into substrate core tables
+--  via session-local pg_temp.X_inflight tables created per drain-task
+--  connection. ON CONFLICT DO NOTHING guards within-session and cross-
+--  session duplicates. The post-pass populate_edge_trajectories +
+--  prime_unprimed_edges_chunk run once per phase from FlushAsync; no
+--  background drain worker, no background significance primer.)
 
 -- ── Phase 13: functions ──────────────────────────────────────────────
 -- Reference / utility helpers
@@ -226,8 +224,10 @@
 -- @include schema/functions/composition_subtrajectory.sql
 -- @include schema/functions/composition_parents.sql
 -- @include schema/functions/recompose_text_v2.sql
--- Significance machinery
--- @include schema/functions/prime_edge_significance_per_arena.sql
+-- Significance machinery (prime_edge_significance_per_arena removed —
+-- it referenced substrate.staging_edge which no longer exists. The
+-- per-arena chunked primer below is what the C# pipeline calls at end of
+-- phase via PrimeAllSignificanceAsync.)
 -- @include schema/functions/prime_unprimed_edges_chunk.sql
 -- @include schema/functions/prune_significance.sql
 -- @include schema/functions/record_comparison.sql
@@ -247,15 +247,9 @@
 -- @include schema/functions/populate_blocks_from_ext.sql
 -- @include schema/functions/populate_break_properties_from_ext.sql
 -- @include schema/functions/populate_codepoint_property_from_ext.sql
--- Staging drain
--- @include schema/functions/flush_entities_from_staging.sql
--- @include schema/functions/flush_edges_from_staging.sql
--- @include schema/functions/flush_edge_members_from_staging.sql
--- @include schema/functions/flush_physicality_from_staging.sql
--- @include schema/functions/flush_sequence_from_staging.sql
--- @include schema/functions/flush_entity_significance_from_staging.sql
--- @include schema/functions/drain_staging_chunk.sql
--- @include schema/functions/drain_all_staging.sql
+-- (Staging drain functions deleted post-W2E refactor. The pipeline now
+--  drains within the same connection that COPY-loaded a session-local
+--  temp table — no persistent staging, no auto-discovered drain manifest.)
 -- Inference / recall
 -- @include schema/functions/infer.sql
 -- @include schema/functions/infer_topk.sql

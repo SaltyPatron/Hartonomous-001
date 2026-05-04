@@ -12,29 +12,39 @@ namespace Hartonomous.Decomposers;
 /// <summary>
 /// Base class for decomposers that ingest free-text strings (glosses,
 /// examples, etymology text, IPA, hyphenations, etc.) into the substrate's
-/// shared text DAG. Centralizes the previously copy-pasted IngestText helper
-/// and adds a per-instance memoization cache so repeated content
-/// (e.g., Wiktionary etymology boilerplate appearing in tens of thousands
-/// of entries) short-circuits the codepoint → grapheme → word_form →
-/// text_composition decompose path.
+/// shared text DAG. Centralizes the IngestText helper and adds a per-instance
+/// memoization cache so repeated content (e.g., Wiktionary etymology
+/// boilerplate appearing in tens of thousands of entries) short-circuits
+/// even the substrate-side round-trip.
 ///
-/// Subclasses override <see cref="CodepointProperties"/> and
-/// <see cref="TrustPriorMu"/> to bind their per-decomposer constants.
+/// Post-W3B: <see cref="IngestText"/> hands UTF-8 bytes to the
+/// C-implemented <c>substrate.text_decompose</c> extension function via
+/// <see cref="SubstrateTextDecomposer"/>. The codepoint/grapheme/word_form/
+/// composition entities + their physicalities + sequence rows + significance
+/// rows are emitted DIRECTLY by the extension to substrate core tables —
+/// they never flow through the C# pipeline channels. Only the root entity
+/// is registered on the batch so downstream edges can FK to it.
 ///
-/// Cache stats are emitted via <see cref="LogTextCacheStats"/> at the end
-/// of decomposition so each run reports its hit ratio.
+/// Subclasses override <see cref="CodepointProperties"/> (legacy hook —
+/// no longer referenced on the IngestText path; retained until W3C audit
+/// completes) and <see cref="TrustPriorMu"/> to bind per-decomposer
+/// constants.
 /// </summary>
 public abstract partial class TextIngestingDecomposer : BaseDecomposer
 {
     private readonly TextIngestionCache _textCache;
+    private readonly SubstrateTextDecomposer _substrateTextDecomposer;
 
     protected TextIngestingDecomposer(
         DecomposerConfig config,
+        SubstrateTextDecomposer substrateTextDecomposer,
         ILogger logger,
         int textCacheCapacity = 100_000)
         : base(config, logger)
     {
         _textCache = new TextIngestionCache(textCacheCapacity);
+        _substrateTextDecomposer = substrateTextDecomposer
+            ?? throw new ArgumentNullException(nameof(substrateTextDecomposer));
     }
 
     protected abstract ICodepointProperties CodepointProperties { get; }
@@ -44,12 +54,12 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     /// <summary>
     /// Ingest a UTF-16 string as a text_composition entity. On cache hit,
     /// only the document entity is registered in the current batch (so
-    /// downstream edges can FK to it); all sub-tree emission is skipped
-    /// because the substrate either already has the rows from the first
-    /// occurrence's flush, or will receive them via the same batch's drain.
-    /// On cache miss, the full <c>codepoint → grapheme → word_form →
-    /// text_composition</c> DAG is emitted and the resulting document hash
-    /// is cached for subsequent calls.
+    /// downstream edges can FK to it); the substrate already has the
+    /// codepoint/grapheme/word/composition DAG from a prior call. On cache
+    /// miss, <see cref="SubstrateTextDecomposer.EmitAsync"/> hands UTF-8
+    /// bytes to the C extension which writes the full DAG to substrate
+    /// core tables in a single SPI call; we register the returned root
+    /// hash on the batch and cache it for subsequent calls.
     /// </summary>
     protected EntityHandle IngestText(IIngestionBatch batch, string text)
     {
@@ -57,17 +67,26 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
         {
             return batch.AddEntity(cachedHash!, "text_composition");
         }
-        // Canonical text decomposer — single authoritative path. Same content
-        // from any decomposer collapses to one hash.
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
-        Hartonomous.Core.Text.TextDecomposeResult r = Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-            batch, utf8, CodepointProperties,
-            new Hartonomous.Core.Text.TextDecomposeOptions(
-                ProvenanceCode: ProvenanceCode,
-                TopEntityType: "text_composition",
-                TrustMu: TrustPriorMu));
+        // The substrate-side call is one SPI invocation that does all the
+        // work in C. Blocking on the async API here is fine — the cost is
+        // dominated by the substrate execution, not the .NET continuation.
+        Hartonomous.Core.Text.TextDecomposeResult r = _substrateTextDecomposer
+            .EmitAsync(
+                utf8,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: ProvenanceCode,
+                    TopEntityType: "text_composition",
+                    TrustMu: TrustPriorMu),
+                modelSourceId: null,
+                ct: CancellationToken.None)
+            .GetAwaiter().GetResult();
         _textCache.Add(text, r.RootHash);
-        return r.RootHandle;
+        // Register the root on the batch so downstream batch.AddEdge calls
+        // can express FKs via the returned handle. The duplicate-entity
+        // INSERT that would result from the batch flush is caught by ON
+        // CONFLICT (hash) DO NOTHING in the pipeline drain.
+        return batch.AddEntity(r.RootHash, "text_composition");
     }
 
     /// <summary>

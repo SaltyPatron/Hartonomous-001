@@ -91,23 +91,18 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         LogPromptIngested(_logger, query.Text.Length, promptEntityCount);
 
         await _pipeline.SubmitBatchAsync(batch, ct).ConfigureAwait(false);
-        // No pipeline-level Flush call — IIngestionPipeline doesn't expose
-        // one and we don't need it. SubmitBatchAsync writes the records into
-        // the producer channels; the drain task pulls them into staging
-        // continuously; the StagingFlushWorker pulls staging into substrate
-        // continuously. The poll below waits for the prompt to land. For
-        // any prompt size (a word, Moby Dick) this works the same way.
-
-        // Step 0b: drain barrier. The StagingFlushWorker drains continuously;
-        // poll substrate.entity for the prompt's text_composition until it
-        // lands. For tiny prompts this is sub-second; for Moby Dick it can
-        // take seconds — proportional to drain throughput, not prompt size
-        // in any pathological way.
+        // Post-W2E: SubmitBatchAsync writes records into bounded channels;
+        // the per-kind drain task COPY-loads its session-local temp table
+        // and immediately INSERT-SELECTs into substrate within the same
+        // connection. The barrier poll below is still useful because
+        // SubmitBatchAsync returns once channels accept the records — actual
+        // drain may complete a few ms later. For one-shot prompts this is
+        // sub-second; for very large prompts it scales with chunk count.
         bool drained = await WaitForDocumentAsync(docHash, ct).ConfigureAwait(false);
         if (!drained)
         {
             throw new TimeoutException(
-                "Prompt did not drain to substrate within 5 minutes. Check StagingFlushWorker health.");
+                "Prompt did not drain to substrate within 5 minutes. Check pipeline drain task health.");
         }
 
         // Steps 1-4: substrate-side forward pass. One round trip.
@@ -128,14 +123,12 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
 
     /// <summary>
     /// Poll until the prompt's text_composition AND its child sequence rows
-    /// have drained from staging into substrate. Waiting only for the entity
-    /// is insufficient — substrate.entity and substrate.sequence drain on
-    /// independent staging tables, so the document can land in entity
-    /// before its sequence rows land. Inference's seed activation walks
+    /// have drained into substrate. Waiting only for the entity is insufficient
+    /// — substrate.entity and substrate.sequence drain via independent
+    /// per-kind drain tasks (post-W2E: each on its own connection with a
+    /// session-local temp table), so the document can land in entity before
+    /// its sequence rows land. Inference's seed activation walks
     /// substrate.sequence, so we must wait for that too.
-    ///
-    /// The drain runs on the StagingFlushWorker on its own connection; this
-    /// poll does not stall it.
     /// </summary>
     private async Task<bool> WaitForDocumentAsync(byte[] hash, CancellationToken ct)
     {

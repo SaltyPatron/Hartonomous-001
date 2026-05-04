@@ -147,30 +147,35 @@ BEGIN
     RAISE NOTICE 'junction tables: % present.', array_length(expected, 1);
 END $$;
 
--- ─── Staging tables ──────────────────────────────────────────────────
+-- ─── Staging tables (REMOVED post-W2E) ───────────────────────────────
+-- substrate.staging_* tables are gone. The pipeline writes directly into
+-- substrate core tables via session-local pg_temp.X_inflight tables that
+-- live for the duration of a drain-task connection. Asserting NO staging
+-- tables exist in substrate.* — drift back to persistent staging would be
+-- an architectural regression.
 DO $$
 DECLARE
-    expected TEXT[] := ARRAY[
+    forbidden TEXT[] := ARRAY[
         'staging_entity', 'staging_entity_classification', 'staging_edge',
         'staging_edge_member', 'staging_physicality', 'staging_sequence',
         'staging_entity_significance', 'staging_entity_model_source', 'staging_junction'
     ];
-    missing TEXT[] := ARRAY[]::TEXT[];
+    present TEXT[] := ARRAY[]::TEXT[];
     t       TEXT;
 BEGIN
-    FOREACH t IN ARRAY expected LOOP
-        IF NOT EXISTS (
+    FOREACH t IN ARRAY forbidden LOOP
+        IF EXISTS (
             SELECT 1 FROM pg_class c
               JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'substrate' AND c.relname = t
         ) THEN
-            missing := array_append(missing, t);
+            present := array_append(present, t);
         END IF;
     END LOOP;
-    IF array_length(missing, 1) IS NOT NULL THEN
-        RAISE EXCEPTION 'staging tables missing: %', missing;
+    IF array_length(present, 1) IS NOT NULL THEN
+        RAISE EXCEPTION 'substrate.staging_* tables must be absent post-W2E refactor; found: %', present;
     END IF;
-    RAISE NOTICE 'staging tables: % present.', array_length(expected, 1);
+    RAISE NOTICE 'substrate.staging_* absent: %.', array_length(forbidden, 1);
 END $$;
 
 -- ─── Model tables ────────────────────────────────────────────────────
@@ -235,7 +240,7 @@ DECLARE
         'recompose_text', 'get_composition_children',
         'prime_unprimed_edges_chunk', 'prune_significance',
         'create_arena', 'create_model_trust_arena',
-        'drain_all_staging',
+        'populate_edge_trajectories',
         'dist_4d', 'entity_centroid_4d',
         'entity_outbound_edges', 'entity_inbound_edges', 'entity_neighbors',
         'resolve_entity_handles', 'get_entity_info_by_handles',
@@ -303,11 +308,12 @@ BEGIN
 END $$;
 
 -- ─── Round-trip: arena machinery ─────────────────────────────────────
--- create_arena registers async backfill via arena_priming_state; the
--- C# BackgroundSignificancePrimer drains it (not exercised by this test).
--- Cleanup removes any arena_priming_state row + the significance_context
--- row. Edge/entity significance rows are only created by the primer, so
--- there are none to delete during test execution.
+-- create_arena registers backfill via arena_priming_state; the C#
+-- pipeline's PrimeAllSignificanceAsync end-of-phase pass drains it via
+-- prime_unprimed_edges_chunk (not exercised by this test). Cleanup
+-- removes any arena_priming_state row + the significance_context row.
+-- Edge/entity significance rows are only created by the primer, so there
+-- are none to delete during test execution.
 DO $$
 DECLARE
     v_arena_id      INT;

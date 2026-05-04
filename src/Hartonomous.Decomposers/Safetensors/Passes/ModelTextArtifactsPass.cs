@@ -54,11 +54,16 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
 
     private readonly ILogger _logger;
     private readonly ICodepointProperties _codepointProperties;
+    private readonly SubstrateTextDecomposer _substrateTextDecomposer;
 
-    public ModelTextArtifactsPass(ILogger logger, ICodepointProperties codepointProperties)
+    public ModelTextArtifactsPass(
+        ILogger logger,
+        ICodepointProperties codepointProperties,
+        SubstrateTextDecomposer substrateTextDecomposer)
     {
         _logger = logger;
         _codepointProperties = codepointProperties;
+        _substrateTextDecomposer = substrateTextDecomposer;
     }
 
     public async Task RunAsync(ModelPassContext context, IPassSession session, CancellationToken ct)
@@ -93,33 +98,42 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
 
             Log.ArtifactStart(_logger, context.Source.ModelId, fileName, utf8Bytes.Length);
 
-            Hartonomous.Core.Text.TextDecomposeResult result =
-                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                    session.Batch,
-                    utf8Bytes,
-                    _codepointProperties,
-                    new Hartonomous.Core.Text.TextDecomposeOptions(
-                        ProvenanceCode: context.ProvenanceCode,
-                        TopEntityType: "text_composition",
-                        TrustMu: ModelDerivedTrustMu));
+            // Substrate-side text decomposition. The C extension writes the
+            // codepoint/grapheme/word/composition DAG directly to substrate
+            // core tables in one SPI call. We get back the root hash and
+            // register it on the batch so the has_*_artifact edge below can
+            // FK to it. Per AP-9 the model_source linkage is placement
+            // metadata — passed via p_model_source_id, NOT in the entity hash.
+            // entity_model_source.model_source_id is INT in schema; the C# side
+            // carries it as long for downstream API compatibility.
+            int? modelSourceId = checked((int)context.Source.ModelSourceId);
+            Hartonomous.Core.Text.TextDecomposeResult result = await _substrateTextDecomposer.EmitAsync(
+                utf8Bytes,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: context.ProvenanceCode,
+                    TopEntityType: "text_composition",
+                    TrustMu: ModelDerivedTrustMu),
+                modelSourceId,
+                ct);
+
+            EntityHandle artifactHandle = session.Batch.AddEntity(result.RootHash, "text_composition");
 
             session.Batch.AddEdge(edgeCode, context.ProvenanceCode,
             [
                 new EdgeMemberSpec(session.ModelEntity, "source", 0),
-                new EdgeMemberSpec(result.RootHandle, "target", 1),
+                new EdgeMemberSpec(artifactHandle, "target", 1),
             ]);
 
             artifactsIngested++;
             totalEntities += result.EntitiesEmitted;
             Log.ArtifactComplete(_logger, context.Source.ModelId, fileName, result.EntitiesEmitted);
 
-            // Force-flush after every artifact. tokenizer.json alone on a
-            // large-vocab model produces 60K-450K entities; letting two of
-            // them coexist in one batch trips the Postgres B-tree dedup
-            // page limit (XX000 "deduplication failed to add tuple to
-            // page") on the (hash, entity_type_id) UNIQUE index. Per-artifact
-            // flush is the boundary that keeps every commit small enough
-            // for the partition's per-page dedup state to converge.
+            // Per-artifact flush boundary: tokenizer.json on a large-vocab
+            // model produces 60K-450K entities. The substrate-side path
+            // already inserts each chunk with ON CONFLICT DO NOTHING, but
+            // we still flush per artifact to keep the C# pipeline's edge
+            // / edge_member channels from queueing too far ahead of the
+            // text DAG that's already in substrate.
             await session.FlushAsync(ct);
         }
 

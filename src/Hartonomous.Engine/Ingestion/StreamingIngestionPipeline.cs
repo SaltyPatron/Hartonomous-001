@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Microsoft.Extensions.Logging;
@@ -111,6 +113,25 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private long _entityModelSourcesEmitted;
     private long _copyCommits;
     private long _copyErrors;
+    private long _producerDedupHits;
+
+    /// <summary>
+    /// Per-channel within-session dedup state. Producer drops emissions whose
+    /// dedup key is already present so the bounded channel + temp staging
+    /// never sees a duplicate twice. Memory cost: 32-byte struct per unique
+    /// key, no boxing, no byte[] allocation per lookup. Cross-session
+    /// duplicates still flow through and are caught by ON CONFLICT DO NOTHING
+    /// at the substrate-side INSERT — dedup here is bandwidth optimization,
+    /// not correctness.
+    /// </summary>
+    private const int DedupCapacityPerChannel = 1_048_576; // ~32 MB per channel cap
+
+    private readonly ConcurrentDictionary<Hash32, byte> _entityDedup = new();
+    private readonly ConcurrentDictionary<Hash32, byte> _edgeDedup = new();
+    private readonly ConcurrentDictionary<Hash32, byte> _physicalityDedup = new();
+    private readonly ConcurrentDictionary<Hash32, byte> _sequenceDedup = new();
+    private readonly ConcurrentDictionary<Hash32, byte> _entitySignificanceDedup = new();
+    private readonly ConcurrentDictionary<Hash32, byte> _edgeSignificanceDedup = new();
 
     public StreamingIngestionPipeline(
         string connectionString,
@@ -198,6 +219,32 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             await EmitAsync(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance), ct).ConfigureAwait(false);
         }
 
+        // Build a within-batch centroid map from any POINTZM physicalities
+        // emitted by the decomposer. When an edge's participants are all
+        // atoms with POINTZM physicality (the common case for codepoint /
+        // word_form / lemma edges), we can attach the LINESTRINGZM EWKB
+        // inline so the drain INSERT writes geom directly. Edges whose
+        // participants don't have POINTZM here (compositions whose physicality
+        // is LINESTRINGZM, or participants from prior batches) leave geom
+        // NULL and are backfilled by PopulateEdgeTrajectoriesAsync.
+        Dictionary<Hash32, (double X, double Y, double Z, double M)>? centroidMap = null;
+        foreach (PhysicalityEntry p in b.Physicalities)
+        {
+            // POINTZM EWKB layout: byte_order(1) + type(4) + 4*float8(32) = 37 bytes.
+            // Type word: 0xC0000001 (PostGIS EWKB POINT|Z|M) or 3001 (ISO).
+            if (p.Wkb.Length != 37) continue;
+            if (p.Wkb[0] != 0x01) continue; // require little-endian
+            uint typeWord = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Wkb.AsSpan(1, 4));
+            bool isPointZM = (typeWord == 0xC0000001u) || (typeWord == 3001u);
+            if (!isPointZM) continue;
+            double x = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(5, 8));
+            double y = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(13, 8));
+            double z = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(21, 8));
+            double m = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(29, 8));
+            centroidMap ??= new Dictionary<Hash32, (double, double, double, double)>();
+            centroidMap[new Hash32(p.Entity.Hash)] = (x, y, z, m);
+        }
+
         foreach (EdgeEntry edge in b.Edges)
         {
             int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct).ConfigureAwait(false);
@@ -212,7 +259,31 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             }
             byte[] edgeHash = ComputeEdgeHash(edgeTypeId, orderedHashes);
 
-            await EmitAsync(new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode), ct).ConfigureAwait(false);
+            // Try to build inline LINESTRINGZM EWKB if every participant has
+            // a POINTZM centroid in the batch. Otherwise leave geom NULL for
+            // the post-pass populate.
+            byte[]? inlineGeomWkb = null;
+            if (centroidMap is not null && sorted.Length >= 2)
+            {
+                (double X, double Y, double Z, double M)[] verts =
+                    new (double, double, double, double)[sorted.Length];
+                bool allPresent = true;
+                for (int j = 0; j < sorted.Length; j++)
+                {
+                    if (!centroidMap.TryGetValue(new Hash32(sorted[j].Entity.Hash), out var c))
+                    {
+                        allPresent = false;
+                        break;
+                    }
+                    verts[j] = c;
+                }
+                if (allPresent)
+                {
+                    inlineGeomWkb = PostGisWkbBuilder.LineStringZM(verts.AsSpan());
+                }
+            }
+
+            await EmitAsync(new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode, inlineGeomWkb), ct).ConfigureAwait(false);
             for (int j = 0; j < sorted.Length; j++)
             {
                 await EmitAsync(new EdgeMemberRecord(
@@ -264,12 +335,28 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         }
     }
 
-    public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
+    public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
     {
-        // No-op: edge trajectories are now emitted INLINE by producers via
-        // PhysicalityRecord on edge emission (W2C). No post-pass population.
-        // Hook retained for IIngestionPipeline compatibility.
-        return Task.CompletedTask;
+        // Backfill geom on edges where the producer didn't (or couldn't)
+        // attach an inline LINESTRINGZM EWKB. The substrate function is
+        // set-based: one UPDATE walks substrate.edge WHERE geom IS NULL,
+        // joins substrate.edge_member, calls substrate.entity_centroid_4d
+        // per participant, and ST_MakeLine ORDER BY edge_role_id assembles
+        // the trajectory preserving Z and M dimensions.
+        const int chunkSize = 65_536;
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        long totalUpdated = 0;
+        while (true)
+        {
+            await using NpgsqlCommand cmd = new(
+                "SELECT substrate.populate_edge_trajectories($1)", conn);
+            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
+            object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            long updated = result is long l ? l : (long?)result ?? 0L;
+            totalUpdated += updated;
+            if (updated == 0) break;
+        }
+        Log.EdgeTrajectoriesPopulated(_logger, totalUpdated);
     }
 
     PipelineStats IIngestionPipeline.Stats => new()
@@ -309,13 +396,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             EntityRecord r              => EmitEntityWithClassificationAsync(r, ct),
             EntityClassificationRecord r => _entityClassifications.Writer.WriteAsync(r, ct),
-            EdgeRecord r                => _edges.Writer.WriteAsync(r, ct),
+            EdgeRecord r                => EmitEdgeAsync(r, ct),
             EdgeMemberRecord r          => _edgeMembers.Writer.WriteAsync(r, ct),
             JunctionRecord r            => _junctions.Writer.WriteAsync(r, ct),
-            PhysicalityRecord r         => _physicalities.Writer.WriteAsync(r, ct),
-            SequenceRecord r            => _sequences.Writer.WriteAsync(r, ct),
-            EntitySignificanceRecord r  => _entitySignificances.Writer.WriteAsync(r, ct),
-            EdgeSignificanceRecord r    => _edgeSignificances.Writer.WriteAsync(r, ct),
+            PhysicalityRecord r         => EmitPhysicalityAsync(r, ct),
+            SequenceRecord r            => EmitSequenceAsync(r, ct),
+            EntitySignificanceRecord r  => EmitEntitySignificanceAsync(r, ct),
+            EdgeSignificanceRecord r    => EmitEdgeSignificanceAsync(r, ct),
             EntityModelSourceRecord r   => _entityModelSources.Writer.WriteAsync(r, ct),
             _ => throw new ArgumentException(
                 $"Unknown IngestionRecord subtype: {record.GetType().Name}", nameof(record)),
@@ -325,12 +412,146 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     // EntityRecord fans into two channels: hash-only into substrate.entity AND
     // (hash, type, provenance) into substrate.entity_classification. Phase C
     // unification: content identity vs decomposer-asserted classification.
+    // Dedup: substrate.entity is content-only PK on hash, so two emissions of
+    // the same content collapse — drop the second before COPY. Classification
+    // PK is (entity_hash, entity_type_id, provenance_id) so a different
+    // classification on the same content goes through.
     private async ValueTask EmitEntityWithClassificationAsync(EntityRecord r, CancellationToken ct)
     {
-        await _entities.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        Hash32 key = new(r.Hash);
+        if (TryAddDedup(_entityDedup, key))
+        {
+            await _entities.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        }
+        // Classification always goes through — substrate.entity_classification
+        // ON CONFLICT handles cross-session dupes; within-session a decomposer
+        // emitting the same (entity, type, provenance) twice is harmless.
         await _entityClassifications.Writer.WriteAsync(
             new EntityClassificationRecord(r.Hash, r.EntityTypeCode, r.ProvenanceCode), ct)
             .ConfigureAwait(false);
+    }
+
+    private async ValueTask EmitEdgeAsync(EdgeRecord r, CancellationToken ct)
+    {
+        // Dedup key includes edge type because (edge_type_id, hash) is the PK.
+        Hash32 key = ComposeKey(r.EdgeTypeCode, r.EdgeHash);
+        if (TryAddDedup(_edgeDedup, key))
+        {
+            await _edges.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask EmitPhysicalityAsync(PhysicalityRecord r, CancellationToken ct)
+    {
+        // (physicality_type_id, entity_hash, content_hash) is the PK.
+        Hash32 key = ComposeKey(r.PhysicalityTypeCode, r.EntityHash, r.ContentHash);
+        if (TryAddDedup(_physicalityDedup, key))
+        {
+            await _physicalities.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask EmitSequenceAsync(SequenceRecord r, CancellationToken ct)
+    {
+        // (parent_hash, ordinal) is the PK; child_hash and rle_count not in PK.
+        Hash32 key = ComposeKey(r.ParentEntityHash, r.Ordinal);
+        if (TryAddDedup(_sequenceDedup, key))
+        {
+            await _sequences.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask EmitEntitySignificanceAsync(EntitySignificanceRecord r, CancellationToken ct)
+    {
+        Hash32 key = ComposeKey(r.ContextTypeCode, r.EntityHash);
+        if (TryAddDedup(_entitySignificanceDedup, key))
+        {
+            await _entitySignificances.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask EmitEdgeSignificanceAsync(EdgeSignificanceRecord r, CancellationToken ct)
+    {
+        Hash32 key = ComposeKey(r.ContextTypeCode, r.EdgeTypeCode, r.EdgeHash);
+        if (TryAddDedup(_edgeSignificanceDedup, key))
+        {
+            await _edgeSignificances.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Try to record a dedup key. Returns true if the key was added (i.e.,
+    /// the caller should proceed to emit); false if already present (drop).
+    /// When the dictionary exceeds <see cref="DedupCapacityPerChannel"/> the
+    /// dedup state is cleared — false negatives become possible afterward
+    /// (re-emission of an earlier hash) but ON CONFLICT DO NOTHING in the
+    /// drain INSERT-SELECT catches them. Bounded memory by design.
+    /// </summary>
+    private bool TryAddDedup(ConcurrentDictionary<Hash32, byte> dedup, Hash32 key)
+    {
+        if (dedup.Count >= DedupCapacityPerChannel)
+        {
+            // Best-effort reset; another thread may add concurrently — fine.
+            dedup.Clear();
+        }
+        if (dedup.TryAdd(key, 0))
+        {
+            return true;
+        }
+        Interlocked.Increment(ref _producerDedupHits);
+        return false;
+    }
+
+    /// <summary>
+    /// Mix a string code and a 32-byte hash into a Hash32 dedup key. Uses
+    /// BLAKE3 over the concatenation. Used for composite PKs whose key
+    /// includes a reference-table code that the producer hasn't yet
+    /// resolved to an int (resolution happens in the drain task at write
+    /// time). Stable across calls because BLAKE3 is deterministic.
+    /// </summary>
+    private static Hash32 ComposeKey(string code, byte[] hash)
+    {
+        byte[] codeBytes = System.Text.Encoding.UTF8.GetBytes(code);
+        byte[] buf = new byte[codeBytes.Length + 1 + hash.Length];
+        Buffer.BlockCopy(codeBytes, 0, buf, 0, codeBytes.Length);
+        buf[codeBytes.Length] = 0x1F; // unit separator
+        Buffer.BlockCopy(hash, 0, buf, codeBytes.Length + 1, hash.Length);
+        return new Hash32(Hartonomous.Core.Compute.Common.Blake3.Hash(buf));
+    }
+
+    private static Hash32 ComposeKey(string codeA, byte[] hashA, byte[] hashB)
+    {
+        byte[] codeBytes = System.Text.Encoding.UTF8.GetBytes(codeA);
+        byte[] buf = new byte[codeBytes.Length + 1 + hashA.Length + 1 + hashB.Length];
+        int o = 0;
+        Buffer.BlockCopy(codeBytes, 0, buf, o, codeBytes.Length); o += codeBytes.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(hashA, 0, buf, o, hashA.Length); o += hashA.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(hashB, 0, buf, o, hashB.Length);
+        return new Hash32(Hartonomous.Core.Compute.Common.Blake3.Hash(buf));
+    }
+
+    private static Hash32 ComposeKey(string codeA, string codeB, byte[] hash)
+    {
+        byte[] aBytes = System.Text.Encoding.UTF8.GetBytes(codeA);
+        byte[] bBytes = System.Text.Encoding.UTF8.GetBytes(codeB);
+        byte[] buf = new byte[aBytes.Length + 1 + bBytes.Length + 1 + hash.Length];
+        int o = 0;
+        Buffer.BlockCopy(aBytes, 0, buf, o, aBytes.Length); o += aBytes.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(bBytes, 0, buf, o, bBytes.Length); o += bBytes.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(hash, 0, buf, o, hash.Length);
+        return new Hash32(Hartonomous.Core.Compute.Common.Blake3.Hash(buf));
+    }
+
+    private static Hash32 ComposeKey(byte[] hash, int ordinal)
+    {
+        byte[] buf = new byte[hash.Length + 4];
+        Buffer.BlockCopy(hash, 0, buf, 0, hash.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(hash.Length, 4), ordinal);
+        return new Hash32(Hartonomous.Core.Compute.Common.Blake3.Hash(buf));
     }
 
     public async ValueTask FlushAsync(CancellationToken ct)
@@ -359,6 +580,77 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             _junctionsEmitted, _physicalitiesEmitted, _sequencesEmitted,
             _entitySignificancesEmitted, _edgeSignificancesEmitted, _entityModelSourcesEmitted,
             _copyCommits, _copyErrors);
+
+        // End-of-phase post-passes (replaces the deleted background workers):
+        //   1. Backfill substrate.edge.geom for any edges whose producer
+        //      didn't attach inline LINESTRINGZM EWKB (compositions whose
+        //      participants have LINESTRINGZM physicality, cross-batch
+        //      participants, etc.).
+        //   2. Prime substrate.edge_significance with the compound-formula
+        //      μ across every arena currently in substrate.significance_context
+        //      (AP-1: cross-product, no cherry-picking).
+        // Both are idempotent (ON CONFLICT DO NOTHING / IS NULL guards) and
+        // run set-based once per phase. No long-lived background tasks.
+        try
+        {
+            await PopulateEdgeTrajectoriesAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.PostPassFailed(_logger, "populate_edge_trajectories", ex);
+        }
+        try
+        {
+            await PrimeAllSignificanceAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.PostPassFailed(_logger, "prime_significance", ex);
+        }
+    }
+
+    /// <summary>
+    /// Prime substrate.edge_significance for every arena currently in
+    /// substrate.significance_context, walking unprimed edges via the
+    /// watermark-based <c>substrate.prime_unprimed_edges_chunk</c>. Replaces
+    /// the deleted BackgroundSignificancePrimer's continuous loop — runs once
+    /// per phase from FlushAsync. AP-1 compliant: re-reads the arena list
+    /// at call time so newly-added arenas auto-prime against existing edges.
+    /// </summary>
+    public async Task PrimeAllSignificanceAsync(CancellationToken ct)
+    {
+        const int chunkSize = 65_536;
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+
+        // Snapshot the arena list at call time. AP-1: cross-product against
+        // every arena that exists right now. Don't filter, don't cherry-pick.
+        List<int> arenaIds = new();
+        await using (NpgsqlCommand listCmd = new(
+            "SELECT id FROM substrate.significance_context ORDER BY id", conn))
+        await using (NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            while (await r.ReadAsync(ct).ConfigureAwait(false))
+            {
+                arenaIds.Add(r.GetInt32(0));
+            }
+        }
+
+        long totalPrimed = 0;
+        foreach (int arenaId in arenaIds)
+        {
+            while (true)
+            {
+                await using NpgsqlCommand cmd = new(
+                    "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+                cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
+                cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
+                object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                long inserted = result is long l ? l : (long?)result ?? 0L;
+                totalPrimed += inserted;
+                if (inserted == 0) break;
+            }
+        }
+        Log.SignificancePrimed(_logger, arenaIds.Count, totalPrimed);
     }
 
     public async ValueTask DisposeAsync()
@@ -455,14 +747,21 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 CREATE TEMP TABLE IF NOT EXISTS edge_inflight (
                     edge_type_id  INT   NOT NULL,
                     hash          BYTEA NOT NULL,
-                    provenance_id INT   NOT NULL
+                    provenance_id INT   NOT NULL,
+                    geom_wkb      BYTEA
                 )
                 """,
-            copySql: "COPY pg_temp.edge_inflight (edge_type_id, hash, provenance_id) FROM STDIN (FORMAT binary)",
+            copySql: "COPY pg_temp.edge_inflight (edge_type_id, hash, provenance_id, geom_wkb) FROM STDIN (FORMAT binary)",
             truncateSql: "TRUNCATE pg_temp.edge_inflight",
+            // Inline geom path: ST_GeomFromWKB lifts producer-built EWKB to
+            // substrate.edge.geom. Edges with NULL geom_wkb go in with
+            // geom = NULL and are backfilled by substrate.populate_edge_trajectories
+            // at end-of-phase via PopulateEdgeTrajectoriesAsync.
             drainSql: """
-                INSERT INTO substrate.edge (edge_type_id, hash, provenance_id)
-                SELECT DISTINCT ON (edge_type_id, hash) edge_type_id, hash, provenance_id
+                INSERT INTO substrate.edge (edge_type_id, hash, provenance_id, geom)
+                SELECT DISTINCT ON (edge_type_id, hash)
+                       edge_type_id, hash, provenance_id,
+                       CASE WHEN geom_wkb IS NULL THEN NULL ELSE ST_GeomFromWKB(geom_wkb, 0) END
                   FROM pg_temp.edge_inflight
                 ON CONFLICT (edge_type_id, hash) DO NOTHING
                 """,
@@ -475,6 +774,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 await writer.WriteAsync(edgeTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EdgeHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(provenanceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                if (rec.GeomWkb is null)
+                {
+                    await writer.WriteNullAsync(ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    await writer.WriteAsync(rec.GeomWkb, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                }
                 Interlocked.Increment(ref _edgesEmitted);
             },
             ct).ConfigureAwait(false);
@@ -947,5 +1254,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             long entities, long classifications, long edges, long edgeMembers, long junctions,
             long physicalities, long sequences, long entitySigs, long edgeSigs, long modelSources,
             long commits, long errors);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Edge trajectories populated (post-pass): edges_updated={EdgesUpdated}")]
+        public static partial void EdgeTrajectoriesPopulated(ILogger logger, long edgesUpdated);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Edge significance primed (post-pass): arenas={Arenas} edges_primed={EdgesPrimed}")]
+        public static partial void SignificancePrimed(ILogger logger, int arenas, long edgesPrimed);
+
+        [LoggerMessage(Level = LogLevel.Error,
+            Message = "Pipeline post-pass FAILED: pass={Pass}")]
+        public static partial void PostPassFailed(ILogger logger, string pass, Exception ex);
     }
 }

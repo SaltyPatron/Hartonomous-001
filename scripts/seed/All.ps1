@@ -69,13 +69,14 @@ try {
         Invoke-HartStep -Name 'seed.Safetensors' -Action { Invoke-Sub 'Safetensors.ps1' $commonArgs }
     }
 
-    # Edge significance is primed CONTINUOUSLY by Hartonomous.Engine.Ingestion.
-    # BackgroundSignificancePrimer (running in every seed phase) — the per-arena
-    # watermark scan keeps substrate.edge_significance current as edges land.
-    # No separate "SignificanceField phase" is needed; running it as a final
-    # batch over millions of edges is redundant scaffolding from before the
-    # streaming primer existed. Glicko-2 ratings update at inference time via
-    # substrate.record_comparison / record_corroboration on real outcomes.
+    # Post-W2E: edge significance is primed at end of each phase by the
+    # StreamingIngestionPipeline.PrimeAllSignificanceAsync call inside
+    # FlushAsync (which iterates the arena list at call time and loops
+    # substrate.prime_unprimed_edges_chunk per arena). No separate
+    # "SignificanceField phase" needed; no continuous background loop;
+    # no SignificanceField step here. Glicko-2 ratings update at inference
+    # time via substrate.record_comparison / record_corroboration on real
+    # outcomes.
 
     Invoke-HartStep -Name 'Validate' -Action {
         Invoke-Sub 'Validate.ps1' @()

@@ -63,12 +63,13 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
 
     public WordNetDecomposer(
         DecomposerConfig config,
+        Hartonomous.Decomposers.Text.SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<WordNetDecomposer> logger,
         ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
-        : base(config, logger)
+        : base(config, substrateTextDecomposer, logger)
     {
         _dictDir = config.SourceDirectory;
         _codepointProperties = codepointProperties;

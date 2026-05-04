@@ -1060,11 +1060,20 @@ internal static class Program
         NpgsqlJunctionWriter junctionWriter = new(phaseDs);
         NpgsqlReferenceDataWriter refDataWriter = new(phaseDs);
 
-        // Codepoint-property cache for all decomposers that go through
-        // TextSegmentationEmitter (Tatoeba, WordNet glosses/examples,
-        // Wiktionary text bodies, runtime TextDecomposer). Loaded eagerly
-        // for the full Unicode range so non-English seed content (Greek,
-        // CJK, Arabic, RTL, combining marks) segments correctly per UAX #29.
+        // Substrate-side text decomposer. Hands UTF-8 to the C-implemented
+        // substrate.text_decompose extension function in one SPI round-trip;
+        // the extension does UAX #29 + BLAKE3 + 4D centroids in C against
+        // the embedded UCD blob and writes directly to substrate core
+        // tables. Subclasses of TextIngestingDecomposer call this through
+        // IngestText. Post-W3B path; replaces CanonicalTextDecomposer.Emit
+        // on the hot ingestion surface.
+        Hartonomous.Decomposers.Text.SubstrateTextDecomposer substrateTextDecomposer = new(phaseDs);
+
+        // Codepoint-property cache. Legacy hook retained until W4 deletion
+        // sweep — still referenced by inference paths and the residual
+        // TextDecomposer. The hot text-ingestion paths (WordNet glosses,
+        // Wiktionary etymology, Tatoeba sentences) bypass it entirely now
+        // that they go through the C extension.
         NpgsqlCodepointPropertiesCache cpProps = await NpgsqlCodepointPropertiesCache.LoadAsync(
             conn,
             logFactory.CreateLogger<NpgsqlCodepointPropertiesCache>(),
@@ -1098,7 +1107,7 @@ internal static class Program
             [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [
-                new WordNetDecomposer(wordnetConfig, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
+                new WordNetDecomposer(wordnetConfig, substrateTextDecomposer, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
                 new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.UniversalDeps] =
@@ -1107,11 +1116,11 @@ internal static class Program
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, codepointProperties: cpProps, alignmentDataSource: phaseDs),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, codepointProperties: cpProps, alignmentDataSource: phaseDs, substrateTextDecomposer: substrateTextDecomposer),
             ],
             [Phase.Wiktionary] =
             [
-                new WiktionaryDecomposer(wiktionaryConfig, logFactory.CreateLogger<WiktionaryDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
+                new WiktionaryDecomposer(wiktionaryConfig, substrateTextDecomposer, logFactory.CreateLogger<WiktionaryDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.Tatoeba] =
             [
@@ -1133,27 +1142,12 @@ internal static class Program
         // unfolds each batch into per-record emits across the channels.
         await using StreamingIngestionPipeline pipeline = new(conn, refDataReader, logFactory.CreateLogger<StreamingIngestionPipeline>());
 
-        // Background flush worker: drains substrate.staging_* → substrate.*
-        // continuously on its own connection. Decoupled from producer
-        // transactions; never inside a per-batch transaction.
-        await using NpgsqlDataSource flushDs = NpgsqlDataSource.Create(conn);
-        await using StagingFlushWorker flushWorker = new(flushDs, logFactory.CreateLogger<StagingFlushWorker>());
-        await flushWorker.StartAsync();
-
-        // Hard barrier: drain any pre-existing staging residue (from a prior
-        // CLI run that died before its catch-up drain completed) BEFORE
-        // producers are allowed to emit new content. Throws on unrecoverable
-        // PG failure — proceeding under that condition would compound the
-        // loss. Staging is persistent across CLI restarts (migration 0019),
-        // so this is the recovery path for any prior shutdown drain that
-        // didn't finish cleanly.
-        await flushWorker.DrainPreExistingResidueAsync(ct);
-
-        // Background significance primer: drains substrate.edge → substrate.edge_significance
-        // per arena. The synchronous prime call inside producer batches that
-        // crashed PG is GONE — priming is now a separate background loop.
-        await using BackgroundSignificancePrimer primer = new(flushDs, logFactory.CreateLogger<BackgroundSignificancePrimer>());
-        await primer.StartAsync();
+        // Post-W2E: no separate staging flush worker, no background
+        // significance primer. The pipeline drains directly into substrate
+        // core tables via session-local temp staging within the same
+        // connection that COPY-loaded each chunk. PrimeAllSignificance and
+        // PopulateEdgeTrajectories run as set-based post-passes from
+        // pipeline.FlushAsync at end of phase.
         ConsoleProgressReporter reporter = new();
         NpgsqlSessionStore sessionStore = new(phaseDs);
         SequentialPhaseRunner runner = new(
@@ -1254,38 +1248,20 @@ internal static class Program
             }
         }
 
-        // Flush all in-flight channel contents to staging before we tear down.
-        // Background drain worker continues after that until staging is empty.
+        // Flush channels into substrate. Post-W2E, FlushAsync also runs the
+        // end-of-phase post-passes (populate_edge_trajectories +
+        // prime_unprimed_edges per arena) inside the same call. By the time
+        // it returns, every emitted record + its derived geometry +
+        // per-arena significance prime is in the partitioned core tables.
+        // No background workers, no shutdown-drain race.
         await pipeline.FlushAsync(ct);
 
-        // Stop background workers so the final drain pass lands in substrate
-        // and the primer catches up before the process exits.
-        await primer.StopAsync();
-        await flushWorker.StopAsync();
-
         StreamingPipelineStats sStats = pipeline.Stats;
-        StagingFlushStats fStats = flushWorker.Stats;
-        SignificancePrimerStats pStats = primer.Stats;
-        Console.WriteLine($"\nStreaming pipeline emitted: {sStats.EntitiesEmitted:N0} entities, {sStats.EdgesEmitted:N0} edges, {sStats.EdgeMembersEmitted:N0} edge_members, {sStats.JunctionsEmitted:N0} junctions, {sStats.PhysicalitiesEmitted:N0} physicalities, {sStats.SequencesEmitted:N0} sequences ({sStats.CopyCommits:N0} COPY commits, {sStats.CopyErrors:N0} errors)");
-        string fStatsBreakdown = string.Join(", ",
-            fStats.RowsDrainedByFunction.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value:N0}"));
-        Console.WriteLine($"Background flush drained:    {fStats.TotalRowsDrained:N0} total rows ({fStats.IdleCycles:N0} idle cycles) — {fStatsBreakdown}");
-        Console.WriteLine($"Significance primer:         {pStats.EdgesPrimed:N0} edges primed across {pStats.ArenaCount} arenas ({pStats.IdleCycles:N0} idle cycles)");
-
-        // If shutdown drain left rows in substrate.staging_*, the substrate is
-        // incomplete relative to what producers emitted. monitor.phase_status
-        // may report phases as "completed" but downstream consumers will see
-        // missing entities / sequences. Surface this as a non-zero exit code
-        // so orchestration scripts halt instead of trusting the run. The next
-        // CLI invocation will eagerly drain the residue (DrainPreExistingResidueAsync)
-        // before producing new content — staging is persistent across runs
-        // (migration 0019).
-        if (!flushWorker.LastShutdownDrainCompleted)
+        Console.WriteLine($"\nStreaming pipeline emitted: {sStats.EntitiesEmitted:N0} entities, {sStats.EdgesEmitted:N0} edges, {sStats.EdgeMembersEmitted:N0} edge_members, {sStats.JunctionsEmitted:N0} junctions, {sStats.PhysicalitiesEmitted:N0} physicalities, {sStats.SequencesEmitted:N0} sequences, {sStats.EntitySignificancesEmitted:N0} entity_sigs, {sStats.EdgeSignificancesEmitted:N0} edge_sigs ({sStats.CopyCommits:N0} drain commits, {sStats.CopyErrors:N0} errors)");
+        if (sStats.CopyErrors > 0)
         {
             Console.Error.WriteLine();
-            Console.Error.WriteLine("ERROR: shutdown drain did not empty substrate.staging_*.");
-            Console.Error.WriteLine("       Substrate is incomplete relative to producer emissions.");
-            Console.Error.WriteLine("       Re-run the CLI: startup will drain the residue before any new phase work.");
+            Console.Error.WriteLine($"ERROR: {sStats.CopyErrors:N0} chunk drain errors during ingestion. Substrate may be incomplete.");
             Environment.ExitCode = 1;
         }
     }
@@ -1593,19 +1569,14 @@ internal static class Program
                     CancellationToken.None);
 
             // Same pipeline machinery the seed phases use. Prompts go through
-            // the SAME path: producer batch → channels → staging → substrate.
-            // Pipeline handles arbitrary size (one word, Moby Dick, multi-MB).
+            // the SAME path: producer batch → channels → session-local temp
+            // staging → substrate (within the same connection that COPY-loaded
+            // each chunk; no persistent staging tables, no background drain
+            // worker post-W2E).
             await using Hartonomous.Engine.Ingestion.StreamingIngestionPipeline pipeline = new(
                 conn,
                 refReader,
                 lf.CreateLogger<Hartonomous.Engine.Ingestion.StreamingIngestionPipeline>());
-            await using Npgsql.NpgsqlDataSource flushDs = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Hartonomous.Engine.Ingestion.StagingFlushWorker flushWorker =
-                new(flushDs, lf.CreateLogger<Hartonomous.Engine.Ingestion.StagingFlushWorker>());
-            await flushWorker.StartAsync();
-            // Drain any pre-existing residue before we emit the prompt — same
-            // hard barrier the seed phases use.
-            await flushWorker.DrainPreExistingResidueAsync(CancellationToken.None);
 
             Hartonomous.Engine.Inference.SubstrateInferenceEngine engine = new(
                 ds, pipeline, codepointCache, refReader,
@@ -1678,13 +1649,12 @@ internal static class Program
             await using Hartonomous.Engine.Ingestion.StreamingIngestionPipeline pipeline = new(
                 conn, refReader,
                 lf.CreateLogger<Hartonomous.Engine.Ingestion.StreamingIngestionPipeline>());
-            await using Npgsql.NpgsqlDataSource flushDs = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Hartonomous.Engine.Ingestion.StagingFlushWorker flushWorker =
-                new(flushDs, lf.CreateLogger<Hartonomous.Engine.Ingestion.StagingFlushWorker>());
-            await flushWorker.StartAsync();
-            await flushWorker.DrainPreExistingResidueAsync(CancellationToken.None);
 
-            // Step 0: ingest prompt as substrate content.
+            // Step 0: ingest prompt as substrate content. Post-W2E the
+            // pipeline writes directly into substrate via per-connection
+            // temp staging — no separate background flush worker. FlushAsync
+            // both drains the channels AND runs end-of-phase post-passes
+            // (populate_edge_trajectories + prime_unprimed_edges).
             Hartonomous.Core.Ingestion.IIngestionBatch batch = pipeline.CreateBatch();
             byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(text);
             Hartonomous.Core.Text.TextDecomposeResult ingest =
@@ -1695,42 +1665,22 @@ internal static class Program
                         TopEntityType: "text_composition",
                         TrustMu: 1000.0));
             await pipeline.SubmitBatchAsync(batch, CancellationToken.None);
-
-            // Step 0b: drain barrier.
-            System.Diagnostics.Stopwatch barrierSw = System.Diagnostics.Stopwatch.StartNew();
             byte[] promptHash = ingest.RootHash;
-            const int MaxAttempts = 6000;
-            bool drained = false;
-            for (int i = 0; i < MaxAttempts; i++)
-            {
-                await using Npgsql.NpgsqlConnection conn0 = await ds.OpenConnectionAsync(CancellationToken.None);
-                await using Npgsql.NpgsqlCommand cmd0 = new(
-                    @"WITH e AS (SELECT 1 FROM substrate.entity WHERE hash = $1 LIMIT 1),
-                           s AS (SELECT 1 FROM substrate.sequence WHERE parent_hash = $1 LIMIT 1)
-                      SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM s)", conn0);
-                cmd0.Parameters.AddWithValue(promptHash);
-                await using Npgsql.NpgsqlDataReader r0 = await cmd0.ExecuteReaderAsync(CancellationToken.None);
-                if (await r0.ReadAsync(CancellationToken.None) && r0.GetInt64(0) > 0 && r0.GetInt64(1) > 0)
-                {
-                    drained = true;
-                    break;
-                }
-                await Task.Delay(50, CancellationToken.None);
-            }
+
+            // FlushAsync drains all channels into substrate (each chunk's
+            // INSERT-SELECT runs inside the same connection that COPY-loaded
+            // its temp table) then runs the post-passes. By the time it
+            // returns, every emitted record is in substrate. No drain barrier
+            // poll loop needed.
+            System.Diagnostics.Stopwatch barrierSw = System.Diagnostics.Stopwatch.StartNew();
+            await pipeline.FlushAsync(CancellationToken.None);
             barrierSw.Stop();
 
             Console.WriteLine("=== substrate.recall ===");
             Console.WriteLine($"  prompt: {text}");
             Console.WriteLine($"  hash:   {Convert.ToHexString(promptHash)[..16]}…");
-            Console.WriteLine($"  drain:  {(drained ? $"{barrierSw.ElapsedMilliseconds} ms" : "TIMEOUT")}");
+            Console.WriteLine($"  drain:  {barrierSw.ElapsedMilliseconds} ms");
             Console.WriteLine();
-
-            if (!drained)
-            {
-                Console.Error.WriteLine("ERROR: prompt did not drain to substrate. StagingFlushWorker may be unhealthy.");
-                await flushWorker.StopAsync();
-                return;
-            }
 
             // Step 1-4: hub-intersection recall via substrate.recall.
             await using (Npgsql.NpgsqlConnection conn1 = await ds.OpenConnectionAsync(CancellationToken.None))
@@ -1764,8 +1714,6 @@ internal static class Program
                     Console.WriteLine($"  forward-pass:     {elapsedMs} ms");
                 }
             }
-
-            await flushWorker.StopAsync();
         });
 
         return recall;
@@ -1821,11 +1769,6 @@ internal static class Program
             await using Hartonomous.Engine.Ingestion.StreamingIngestionPipeline pipeline = new(
                 conn, refReader,
                 lf.CreateLogger<Hartonomous.Engine.Ingestion.StreamingIngestionPipeline>());
-            await using Npgsql.NpgsqlDataSource flushDs = Npgsql.NpgsqlDataSource.Create(conn);
-            await using Hartonomous.Engine.Ingestion.StagingFlushWorker flushWorker =
-                new(flushDs, lf.CreateLogger<Hartonomous.Engine.Ingestion.StagingFlushWorker>());
-            await flushWorker.StartAsync();
-            await flushWorker.DrainPreExistingResidueAsync(CancellationToken.None);
 
             Hartonomous.Engine.Godel.GodelEngine engine = new(
                 ds, pipeline, codepointCache,
@@ -1882,7 +1825,9 @@ internal static class Program
                 }
             }
 
-            await flushWorker.StopAsync();
+            // FlushAsync drains any residual session-emitted records into
+            // substrate before the pipeline disposes. Post-W2E.
+            await pipeline.FlushAsync(CancellationToken.None);
         });
 
         return godel;

@@ -65,12 +65,13 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 
     public WiktionaryDecomposer(
         DecomposerConfig config,
+        Hartonomous.Decomposers.Text.SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<WiktionaryDecomposer> logger,
         ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
-        : base(config, logger)
+        : base(config, substrateTextDecomposer, logger)
     {
         _jsonlPath = ResolveJsonlPath(config.SourceDirectory);
         _codepointProperties = codepointProperties;

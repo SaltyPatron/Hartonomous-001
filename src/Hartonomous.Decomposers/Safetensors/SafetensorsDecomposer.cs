@@ -39,6 +39,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private readonly IReferenceDataWriter? _referenceDataWriter;
     private readonly Hartonomous.Core.Text.Segmentation.ICodepointProperties? _codepointProperties;
     private readonly NpgsqlDataSource? _alignmentDataSource;
+    private readonly Hartonomous.Decomposers.Text.SubstrateTextDecomposer? _substrateTextDecomposer;
 
     public SafetensorsDecomposer(
         DecomposerConfig config,
@@ -49,7 +50,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null,
         Hartonomous.Core.Text.Segmentation.ICodepointProperties? codepointProperties = null,
-        NpgsqlDataSource? alignmentDataSource = null)
+        NpgsqlDataSource? alignmentDataSource = null,
+        Hartonomous.Decomposers.Text.SubstrateTextDecomposer? substrateTextDecomposer = null)
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;
@@ -61,6 +63,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         _referenceDataWriter = referenceDataWriter;
         _codepointProperties = codepointProperties;
         _alignmentDataSource = alignmentDataSource;
+        _substrateTextDecomposer = substrateTextDecomposer;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() => [_hubRoot];
@@ -187,11 +190,12 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             new FfnEdgeDecompositionPass(_loggerFactory.CreateLogger<FfnEdgeDecompositionPass>()),
         ];
 
-        if (_codepointProperties is not null)
+        if (_codepointProperties is not null && _substrateTextDecomposer is not null)
         {
             passes.Add(new ModelTextArtifactsPass(
                 _loggerFactory.CreateLogger<ModelTextArtifactsPass>(),
-                _codepointProperties));
+                _codepointProperties,
+                _substrateTextDecomposer));
         }
 
         return passes;
