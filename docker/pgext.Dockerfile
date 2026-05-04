@@ -52,11 +52,22 @@ RUN cmake .. \
     cmake --build . -j"$(nproc)" && \
     cmake --install .
 
-# ----- libhartonomous (native, icx for numerical kernels) -----
+# ----- libhartonomous (icx for C numerical kernels, g++ for C++) -----
+# icpx 2025.3.2 SIGSEGVs inside its hir-ssa-deconstruction optimization pass
+# when compiling either of the two C++ sources (laplacian_eigenmap.cpp,
+# delaunay_4d.cpp) — even at -O0. The pass is integral to icpx's pipeline
+# and isn't toggleable via flags. The .cpp files only #include Eigen + Spectra
+# (header-only) and call MKL via standard linkage; gcc compiles them
+# correctly. C numerical kernels stay on icx where it actually wins.
 COPY ext/libhartonomous /src/libhartonomous
+# libhartonomous's CMakeLists references the generated UCD .c/.h files
+# under ../hartonomous_pg/src/generated relative to its source root.
+# Copy that subtree into place BEFORE the libhartonomous configure so the
+# add_library() call sees the source files.
+COPY ext/hartonomous_pg/src/generated /src/hartonomous_pg/src/generated
 WORKDIR /src/libhartonomous/build
 RUN source ${ONEAPI_ROOT}/setvars.sh --force && \
-    CC=icx CXX=icpx \
+    CC=icx CXX=g++ \
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DHARTONOMOUS_BUILD_TESTS=OFF \

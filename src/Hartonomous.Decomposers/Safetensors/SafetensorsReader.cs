@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 using Hartonomous.Core.Compute.Common;
+using Hartonomous.Decomposers.Safetensors.Packages;
 
 namespace Hartonomous.Decomposers.Safetensors;
 
@@ -9,6 +10,40 @@ public static class SafetensorsReader
 {
     // 1 MiB streaming chunk. Balances syscall overhead against CPU cache pressure.
     private const int StreamingChunkBytes = 1 << 20;
+
+    /// <summary>
+    /// Opens a Stream positioned at the tensor's first byte, returning a stream
+    /// that yields exactly (info.EndByte - info.BeginByte) bytes. Routes:
+    ///   donor:// FilePath → IDonorPackageReader.ReadTensorAsync via DonorReaderRegistry
+    ///   anything else     → File.OpenRead(filePath) + Seek(BeginByte)
+    /// The donor:// path materializes the full tensor into a MemoryStream so the
+    /// existing chunked-streaming code can read it linearly. For pickle / multi-subdir
+    /// donors this is the cost of leaving SafetensorsReader's static API surface
+    /// intact; safetensors-format donors keep the original zero-copy file-stream path.
+    /// </summary>
+    private static Stream OpenTensorStream(SafetensorsTensorInfo info)
+    {
+        if (DonorReaderRegistry.TryParsePath(info.FilePath, out int slot, out string tensorName))
+        {
+            IDonorPackageReader reader = DonorReaderRegistry.Resolve(slot);
+            ReadOnlyMemory<byte> bytes = reader.ReadTensorAsync(tensorName, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            long expected = info.EndByte - info.BeginByte;
+            if (bytes.Length != expected)
+            {
+                throw new InvalidDataException(
+                    $"Donor reader returned {bytes.Length} bytes for {tensorName}; expected {expected}.");
+            }
+            byte[] copy = bytes.ToArray();
+            return new MemoryStream(copy, writable: false);
+        }
+        FileStream fs = File.OpenRead(info.FilePath);
+        if (info.BeginByte > 0)
+        {
+            fs.Seek(info.BeginByte, SeekOrigin.Begin);
+        }
+        return fs;
+    }
 
     /// <summary>
     /// Stream the tensor's raw bytes into <paramref name="hasher"/> without ever
@@ -23,8 +58,7 @@ public static class SafetensorsReader
             throw new InvalidDataException($"Tensor {info.Name} has negative byte span {totalBytes}");
         }
 
-        using FileStream fs = File.OpenRead(info.FilePath);
-        fs.Seek(info.BeginByte, SeekOrigin.Begin);
+        using Stream fs = OpenTensorStream(info);
 
         byte[] buf = new byte[StreamingChunkBytes];
         long remaining = totalBytes;
@@ -60,8 +94,7 @@ public static class SafetensorsReader
                 $"Tensor {info.Name} size mismatch: {totalBytes} bytes vs expected {numElements * bpe}");
         }
 
-        using FileStream fs = File.OpenRead(info.FilePath);
-        fs.Seek(info.BeginByte, SeekOrigin.Begin);
+        using Stream fs = OpenTensorStream(info);
 
         int maxElementsPerChunk = StreamingChunkBytes / bpe;
         byte[] buf = new byte[maxElementsPerChunk * bpe];
@@ -160,8 +193,7 @@ public static class SafetensorsReader
                 $"Tensor {info.Name} size mismatch: {totalBytes} bytes vs expected {numElements * bpe}");
         }
 
-        using FileStream fs = File.OpenRead(info.FilePath);
-        fs.Seek(info.BeginByte, SeekOrigin.Begin);
+        using Stream fs = OpenTensorStream(info);
 
         int maxElementsPerChunk = StreamingChunkBytes / bpe;
         byte[] byteBuf = new byte[maxElementsPerChunk * bpe];
@@ -191,8 +223,7 @@ public static class SafetensorsReader
         int n = (int)numElements;
         double[] result = new double[n];
 
-        using FileStream fs = File.OpenRead(info.FilePath);
-        fs.Seek(info.BeginByte, SeekOrigin.Begin);
+        using Stream fs = OpenTensorStream(info);
 
         int bpe = info.BytesPerElement;
         long totalBytes = info.EndByte - info.BeginByte;

@@ -8,6 +8,7 @@ using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Core.Text;
+using Hartonomous.Decomposers.Safetensors.Packages;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Safetensors.Passes;
@@ -172,11 +173,33 @@ internal sealed partial class ModelPassOrchestrator
         }
 
         List<SafetensorsTensorInfo> rawTensors = [];
-        foreach (string st in model.SafetensorsFiles)
+        int tensorSourceCount;
+        if (model.Reader is not null)
         {
-            rawTensors.AddRange(SafetensorsReader.ReadHeader(st));
+            // Polymorphic donor path: enumerate via the IDonorPackageReader
+            // (safetensors / pickle / multi-subdir) and bridge each TensorMetadata
+            // to a SafetensorsTensorInfo whose donor:// FilePath routes
+            // SafetensorsReader.StreamHash through the registered reader.
+            IReadOnlyList<TensorMetadata> mds = model.Reader.EnumerateTensors();
+            rawTensors.Capacity = mds.Count;
+            foreach (TensorMetadata md in mds)
+            {
+                rawTensors.Add(DonorTensorBridge.ToSafetensorsTensorInfo(md, model.ReaderSlot));
+            }
+            tensorSourceCount = 1; // one logical reader, regardless of underlying shard count
         }
-        Log.TensorsFound(_logger, rawTensors.Count, model.SafetensorsFiles.Count);
+        else
+        {
+            // Legacy HuggingFace cache path: each .safetensors file gets its
+            // header read directly. FilePath in each emitted SafetensorsTensorInfo
+            // is the on-disk path; OpenTensorStream uses File.OpenRead.
+            foreach (string st in model.SafetensorsFiles)
+            {
+                rawTensors.AddRange(SafetensorsReader.ReadHeader(st));
+            }
+            tensorSourceCount = model.SafetensorsFiles.Count;
+        }
+        Log.TensorsFound(_logger, rawTensors.Count, tensorSourceCount);
 
         // Hash + classify each tensor. We track the EntityHandle returned by
         // batch.AddEntity directly — no cross-batch resolve, since the hash

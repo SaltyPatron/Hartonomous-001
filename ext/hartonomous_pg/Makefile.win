@@ -31,6 +31,8 @@ OBJS = \
     src\hartonomous.obj \
     src\pg_blake3.obj \
     src\pg_traversal.obj \
+    src\pg_similarity_topk.obj \
+    src\pg_recompose_walk.obj \
     src\pg_point4d.obj \
     src\pg_box4d.obj \
     src\pg_distance.obj \

@@ -1,9 +1,11 @@
 using Hartonomous.Core.Compute;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Decomposers.Safetensors.Packages;
 using Hartonomous.Decomposers.Safetensors.Passes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -73,7 +75,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         IProgressReporter reporter,
         CancellationToken ct)
     {
-        List<DiscoveredModel> models = DiscoverModels(_hubRoot);
+        List<DiscoveredModel> models = DiscoverModels(_hubRoot, _loggerFactory);
 
         // Apply ModelFilter: when set, only process models whose ModelId
         // ("publisher/name") is in the allowlist. Lets the dependency chain
@@ -147,6 +149,26 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         finally
         {
             await refWriter.DisposeAsync();
+            // Release polymorphic donor reader slots and dispose the readers we own.
+            foreach (DiscoveredModel m in models)
+            {
+                if (m.Reader is null)
+                {
+                    continue;
+                }
+                if (m.ReaderSlot != 0)
+                {
+                    DonorReaderRegistry.Release(m.ReaderSlot);
+                }
+                try
+                {
+                    await m.Reader.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.ReaderDisposeFailed(Logger, ex, m.ModelId);
+                }
+            }
         }
     }
 
@@ -202,12 +224,22 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     }
 
     /// <summary>
-    /// Resolves the source path against three valid HuggingFace cache shapes:
-    ///   (1) a hub root containing many <c>models--{publisher}--{name}/</c> dirs → iterate all,
-    ///   (2) a single <c>models--{publisher}--{name}/</c> dir → iterate its snapshots,
-    ///   (3) a single <c>snapshots/{revision}/</c> dir with <c>config.json</c> + <c>*.safetensors</c> → ingest just that snapshot.
+    /// Resolves the source path against the four supported donor layouts:
+    ///   (1) a hub root containing many <c>models--{publisher}--{name}/</c> dirs → iterate all (HF cache),
+    ///   (2) a single <c>models--{publisher}--{name}/</c> dir → iterate its snapshots (HF cache),
+    ///   (3) a single <c>snapshots/{revision}/</c> dir with <c>config.json</c> + <c>*.safetensors</c> → ingest just that snapshot (HF cache),
+    ///   (4) ANY other directory the polymorphic <see cref="DonorPackageReaderFactory"/> recognizes —
+    ///       bare safetensors, .pt / .pth / .bin (PyTorch pickle), multi-subdir (FLUX-style with
+    ///       <c>model_index.json</c>). For these the discovered model carries an
+    ///       <see cref="IDonorPackageReader"/> and the reader is registered with
+    ///       <see cref="DonorReaderRegistry"/> so static SafetensorsReader streaming helpers
+    ///       can route tensor-byte reads through it via the donor:// URI scheme.
+    /// AWQ / GGUF packages are rejected by the factory and skipped here.
     /// </summary>
     internal static List<DiscoveredModel> DiscoverModels(string sourcePath)
+        => DiscoverModels(sourcePath, NullLoggerFactory.Instance);
+
+    internal static List<DiscoveredModel> DiscoverModels(string sourcePath, ILoggerFactory loggerFactory)
     {
         List<DiscoveredModel> models = [];
         if (!Directory.Exists(sourcePath))
@@ -222,6 +254,10 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             {
                 models.Add(single);
             }
+            else
+            {
+                TryAddPolymorphic(sourcePath, models, loggerFactory);
+            }
             return models;
         }
 
@@ -231,11 +267,161 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
             return models;
         }
 
+        // HF-cache discovery first (well-known shape).
+        HashSet<string> consumed = new(StringComparer.OrdinalIgnoreCase);
         foreach (string modelDir in Directory.EnumerateDirectories(sourcePath, "models--*"))
         {
             CollectFromModelDir(modelDir, models);
+            consumed.Add(modelDir);
         }
+
+        // Polymorphic discovery for everything else under the hub root.
+        foreach (string anyDir in Directory.EnumerateDirectories(sourcePath))
+        {
+            if (consumed.Contains(anyDir))
+            {
+                continue;
+            }
+            string name = Path.GetFileName(anyDir);
+            if (name.StartsWith("datasets--", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            TryAddPolymorphic(anyDir, models, loggerFactory);
+        }
+
         return models;
+    }
+
+    private static void TryAddPolymorphic(string packageRoot, List<DiscoveredModel> sink, ILoggerFactory loggerFactory)
+    {
+        // HF-style cache layouts that didn't match the canonical "models--*"
+        // prefix (e.g. "xmodels--", "ymodels--" for sort-prefixed directories)
+        // still contain snapshots/<sha>/<files>. Resolve to the latest snapshot
+        // before handing to the polymorphic factory.
+        string effectiveRoot = ResolveSnapshotChildIfPresent(packageRoot);
+        IDonorPackageReader reader;
+        try
+        {
+            reader = DonorPackageReaderFactory.Open(effectiveRoot, loggerFactory);
+        }
+        catch (NotSupportedException)
+        {
+            return;
+        }
+        catch (InvalidDataException)
+        {
+            return;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return;
+        }
+        catch (FileNotFoundException)
+        {
+            return;
+        }
+
+        DiscoveredModel? built = TryBuildPolymorphicDiscoveredModel(packageRoot, effectiveRoot, reader);
+        if (built is null)
+        {
+            try { reader.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
+            return;
+        }
+        sink.Add(built);
+    }
+
+    private static DiscoveredModel? TryBuildPolymorphicDiscoveredModel(
+        string identityRoot, string effectiveRoot, IDonorPackageReader reader)
+    {
+        (string publisherSlug, string modelSlug) = ParsePolymorphicIdentity(identityRoot);
+        string modelId = $"{publisherSlug}/{modelSlug}";
+
+        // Revision = BLAKE3 of the canonical absolute effective root (32 bytes,
+        // hex 64 chars — satisfies model_source.revision CHECK of 20 or 32
+        // bytes). Deterministic across runs on the same machine.
+        string canonicalPath = Path.GetFullPath(effectiveRoot).Replace('\\', '/');
+        byte[] revision = Blake3.Hash(System.Text.Encoding.UTF8.GetBytes(canonicalPath));
+        string revisionHex = Convert.ToHexString(revision).ToLowerInvariant();
+
+        // ConfigPath: prefer a real config.json at the effective root; for
+        // multi-subdir packages fall back to the first child component's
+        // config.json so ArchitectureDetector has something to parse.
+        string configPath = Path.Combine(effectiveRoot, "config.json");
+        if (!File.Exists(configPath))
+        {
+            string? firstSubConfig = FindFirstNestedConfig(effectiveRoot);
+            if (firstSubConfig is null)
+            {
+                return null;
+            }
+            configPath = firstSubConfig;
+        }
+
+        int slot = DonorReaderRegistry.Register(reader);
+        // SafetensorsFiles intentionally empty — the reader is the source of truth.
+        return new DiscoveredModel(
+            ModelId: modelId,
+            PublisherSlug: publisherSlug,
+            ModelSlug: modelSlug,
+            Revision: revision,
+            RevisionHex: revisionHex,
+            ConfigPath: configPath,
+            SafetensorsFiles: Array.Empty<string>(),
+            Reader: reader,
+            ReaderSlot: slot);
+    }
+
+    private static (string Publisher, string Model) ParsePolymorphicIdentity(string packageRoot)
+    {
+        string name = Path.GetFileName(packageRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        // Strip leading single-letter sort prefixes (x/y/z/w) commonly used to
+        // re-order HF cache directories on disk: "xmodels--..." → "models--...".
+        if (name.Length > 0 && name[0] is 'x' or 'y' or 'z' or 'w' && name.Length > 1)
+        {
+            string maybe = name[1..];
+            if (maybe.StartsWith("models--", StringComparison.Ordinal))
+            {
+                name = maybe;
+            }
+        }
+        if (name.StartsWith("models--", StringComparison.Ordinal))
+        {
+            string body = name["models--".Length..];
+            int sep = body.IndexOf("--", StringComparison.Ordinal);
+            if (sep > 0)
+            {
+                return (body[..sep], body[(sep + 2)..]);
+            }
+            return ("unknown", body);
+        }
+        return ("local", name);
+    }
+
+    private static string? FindFirstNestedConfig(string packageRoot)
+    {
+        foreach (string subdir in Directory.EnumerateDirectories(packageRoot))
+        {
+            string candidate = Path.Combine(subdir, "config.json");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static string ResolveSnapshotChildIfPresent(string packageRoot)
+    {
+        string snapshotsDir = Path.Combine(packageRoot, "snapshots");
+        if (!Directory.Exists(snapshotsDir))
+        {
+            return packageRoot;
+        }
+        string? latest = Directory.EnumerateDirectories(snapshotsDir)
+            .OrderByDescending(d => d, StringComparer.Ordinal)
+            .FirstOrDefault();
+        return latest ?? packageRoot;
     }
 
     private static bool LooksLikeSnapshotDir(string dir)
@@ -399,5 +585,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Error, Message = "Model FAILED {ModelId} ({Idx}/{Total}) — isolated, continuing with remaining models")]
         public static partial void ModelFailed(ILogger logger, Exception ex, string modelId, int idx, int total);
+
+        [LoggerMessage(Level = LogLevel.Warning, Message = "Donor reader dispose failed for {ModelId} — registry slot released regardless")]
+        public static partial void ReaderDisposeFailed(ILogger logger, Exception ex, string modelId);
     }
 }

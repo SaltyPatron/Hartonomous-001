@@ -6,6 +6,8 @@ MODULE_big   = hartonomous
 OBJS         = src/hartonomous.o \
                src/pg_blake3.o \
                src/pg_traversal.o \
+               src/pg_similarity_topk.o \
+               src/pg_recompose_walk.o \
                src/pg_point4d.o \
                src/pg_box4d.o \
                src/pg_distance.o \

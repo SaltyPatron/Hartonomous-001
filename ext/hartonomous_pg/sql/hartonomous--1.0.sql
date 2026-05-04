@@ -2028,6 +2028,36 @@ CREATE FUNCTION traverse_astar(
     AS 'MODULE_PATHNAME', 'pg_traverse_astar'
     LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
 
+-- ── substrate.similarity_topk ───────────────────────────────────────────
+-- Bounded-K nearest-neighbor scan over an arbitrary candidate query.
+-- Distance kind dispatches by name to a substrate-side wrapper:
+--   '4d'      → substrate.dist_4d(geometry, geometry)
+--   's3'      → substrate.dist_s3(geometry, geometry)
+--   'frechet' → substrate.frechet_4d_geom(geometry, geometry)
+-- The candidate query MUST yield (entity_type_id int, entity_hash bytea, geom geometry).
+-- Optional distance threshold filters per-candidate before the top-K cut.
+CREATE OR REPLACE FUNCTION substrate.similarity_topk(
+    p_seed_geom          geometry,
+    p_k                  int,
+    p_distance_kind      text,
+    p_candidate_query    text,
+    p_distance_threshold double precision DEFAULT NULL
+) RETURNS TABLE (entity_type_id int, entity_hash bytea, distance double precision)
+    AS 'MODULE_PATHNAME', 'pg_similarity_topk'
+    LANGUAGE C STABLE STRICT;
+
+-- ── substrate.recompose_walk ────────────────────────────────────────────
+-- Iterative DFS over substrate.sequence starting at p_root_hash. Emits the
+-- root first then descendants in left-to-right depth-first order. content_label
+-- is always NULL — substrate.entity is hash-only; the C# layer joins content
+-- (codepoint_value, classification, etc.) out-of-band.
+CREATE OR REPLACE FUNCTION substrate.recompose_walk(
+    p_root_hash bytea,
+    p_max_depth int DEFAULT 16
+) RETURNS TABLE (entity_hash bytea, ordinal_position int, content_label text, depth int)
+    AS 'MODULE_PATHNAME', 'pg_recompose_walk'
+    LANGUAGE C STABLE STRICT;
+
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- (9) linestring4d — varlena polyline type for 4D trajectories
@@ -5523,6 +5553,295 @@ $$;
 
 COMMENT ON FUNCTION substrate.surprise(INT, INT) IS
     'Open-ended fact selector. Picks up to p_top_k high-mu synsets that have associated gloss text, returns each with confidence and recomposed text. Used by the brain when the prompt does not point at a specific entity.';
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- AI operation primitives (V1)
+
+-- ── sql/schema/functions/embed_lookup.sql ───────────────────────────────────────
+-- substrate.embed_lookup(seed_hash, entity_type_code, k, distance_kind)
+--
+-- Top-k entities by 4D distance from the seed's stored physicality. The seed
+-- supplies its own geometry; the candidate set is filtered by entity_type
+-- (which lives on substrate.entity_classification, since substrate.entity is
+-- hash-only). All inner work — neighbor enumeration, distance evaluation,
+-- top-k heap — happens inside the pg_similarity_topk C SRF; this plpgsql
+-- function only resolves the seed centroid and the entity-type filter, then
+-- hands the candidate query to the C kernel.
+--
+-- Distance kinds:
+--   '4d'      → substrate.dist_4d (POINTZM short-circuits to native
+--               distance_4d; multi-vertex geometries fall through to native
+--               frechet_4d via ST_DumpPoints).
+--   'frechet' → substrate.frechet_4d_geom (always Fréchet over depth-first
+--               vertex sequence, even for two POINTs — costs more, but
+--               useful when comparing trajectory shapes).
+--   's3'      → reserved for unit-quaternion S3 distance; not yet wired
+--               (substrate.dist_s3(geometry, geometry) wrapper is a TODO).
+--               pg_similarity_topk will ereport on this kind today.
+DROP FUNCTION IF EXISTS substrate.embed_lookup(BYTEA, TEXT, INT, TEXT, DOUBLE PRECISION);
+CREATE OR REPLACE FUNCTION substrate.embed_lookup(
+    p_seed_hash         BYTEA,
+    p_entity_type_code  TEXT,
+    p_k                 INT              DEFAULT 10,
+    p_distance_kind     TEXT             DEFAULT '4d',
+    p_distance_threshold DOUBLE PRECISION DEFAULT NULL
+) RETURNS TABLE (
+    entity_type_id INT,
+    entity_hash    BYTEA,
+    distance       DOUBLE PRECISION,
+    elapsed_ms     INT
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_started          TIMESTAMP := clock_timestamp();
+    v_entity_type_id   INT;
+    v_seed_geom        GEOMETRY;
+    v_candidate_query  TEXT;
+BEGIN
+    SELECT id INTO v_entity_type_id
+    FROM substrate.entity_type
+    WHERE code = p_entity_type_code;
+
+    IF v_entity_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown entity_type code: %', p_entity_type_code
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    -- Resolve the seed centroid. Take the first physicality available for
+    -- this entity (most entities have exactly one; multi-physicality entities
+    -- like firefly atoms get the lowest physicality_type_id deterministically).
+    SELECT geom INTO v_seed_geom
+    FROM substrate.physicality
+    WHERE entity_hash = p_seed_hash
+    ORDER BY physicality_type_id
+    LIMIT 1;
+
+    IF v_seed_geom IS NULL THEN
+        RAISE EXCEPTION 'seed entity has no physicality: hash=%',
+            encode(p_seed_hash, 'hex')
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    -- Candidate query: every entity classified as the requested type that
+    -- has a physicality. The (entity_type_id, entity_hash) index on
+    -- substrate.entity_classification gives O(log N) bounded scan; the JOIN
+    -- to physicality is selective via the same hash. We exclude the seed
+    -- itself from candidates.
+    v_candidate_query := format(
+        'SELECT %s::int AS entity_type_id, p.entity_hash, p.geom '
+        || 'FROM substrate.entity_classification c '
+        || 'JOIN substrate.physicality p ON p.entity_hash = c.entity_hash '
+        || 'WHERE c.entity_type_id = %s '
+        || '  AND c.entity_hash <> %L::bytea',
+        v_entity_type_id,
+        v_entity_type_id,
+        p_seed_hash);
+
+    RETURN QUERY
+    SELECT
+        s.entity_type_id,
+        s.entity_hash,
+        s.distance,
+        EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT AS elapsed_ms
+    FROM substrate.similarity_topk(
+        v_seed_geom,
+        p_k,
+        p_distance_kind,
+        v_candidate_query,
+        p_distance_threshold) s;
+END $$;
+
+COMMENT ON FUNCTION substrate.embed_lookup(BYTEA, TEXT, INT, TEXT, DOUBLE PRECISION) IS
+    'Top-k entities by 4D distance from the seed entity''s stored physicality, filtered to a target entity_type via substrate.entity_classification. Uses the pg_similarity_topk C SRF for the inner scan and heap. Distance kinds: 4d (default; POINTZM fast path) | frechet (always vertex-stream Fréchet) | s3 (reserved, not yet wired).';
+
+-- ── sql/schema/functions/classify.sql ───────────────────────────────────────
+-- substrate.classify(seed_hash, junction_kind, k)
+--
+-- Top-k labels for an entity from a junction table, ranked by Glicko-2 mu
+-- desc, sigma asc (tighter confidence wins ties). Junction kinds:
+--   'pos'           → substrate.entity_pos          (Glicko-2 native)
+--   'sense'         → substrate.entity_sense        (Glicko-2 native)
+--   'pattern_deprel'→ substrate.pattern_deprel      (Glicko-2 native)
+--   'language'      → substrate.entity_language     (no Glicko, single per-entity assertion)
+--   'morph_feature' → substrate.entity_morph_feature(no Glicko, per-feature assertion)
+--   'classification'→ substrate.entity_classification(entity_type provenance trail)
+--
+-- This is reference-table-resolution, not edge traversal. The substrate's
+-- "what kind of thing is this entity" surface is junction-indexed and
+-- microsecond-fast. Edge-graph traversal lives in substrate.infer / .recall.
+DROP FUNCTION IF EXISTS substrate.classify(BYTEA, TEXT, INT);
+CREATE OR REPLACE FUNCTION substrate.classify(
+    p_seed_hash      BYTEA,
+    p_junction_kind  TEXT,
+    p_k              INT DEFAULT 10
+) RETURNS TABLE (
+    label_id    INT,
+    label_code  TEXT,
+    mu          DOUBLE PRECISION,
+    sigma       DOUBLE PRECISION,
+    games       INT,
+    elapsed_ms  INT
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_started TIMESTAMP := clock_timestamp();
+BEGIN
+    IF p_junction_kind = 'pos' THEN
+        RETURN QUERY
+        SELECT p.id, p.code, ep.mu, ep.sigma, ep.games,
+               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+        FROM substrate.entity_pos ep
+        JOIN substrate.pos p ON p.id = ep.pos_id
+        WHERE ep.entity_hash = p_seed_hash
+        ORDER BY ep.mu DESC, ep.sigma ASC
+        LIMIT p_k;
+
+    ELSIF p_junction_kind = 'sense' THEN
+        RETURN QUERY
+        SELECT s.id, s.code, es.mu, es.sigma, es.games,
+               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+        FROM substrate.entity_sense es
+        JOIN substrate.sense s ON s.id = es.sense_id
+        WHERE es.entity_hash = p_seed_hash
+        ORDER BY es.mu DESC, es.sigma ASC
+        LIMIT p_k;
+
+    ELSIF p_junction_kind = 'pattern_deprel' THEN
+        RETURN QUERY
+        SELECT d.id, d.code, pd.mu, pd.sigma, pd.games,
+               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+        FROM substrate.pattern_deprel pd
+        JOIN substrate.deprel d ON d.id = pd.deprel_id
+        WHERE pd.entity_hash = p_seed_hash
+        ORDER BY pd.mu DESC, pd.sigma ASC
+        LIMIT p_k;
+
+    ELSIF p_junction_kind = 'language' THEN
+        RETURN QUERY
+        SELECT l.id, l.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+        FROM substrate.entity_language el
+        JOIN substrate.language l ON l.id = el.language_id
+        WHERE el.entity_hash = p_seed_hash
+        ORDER BY l.code ASC
+        LIMIT p_k;
+
+    ELSIF p_junction_kind = 'morph_feature' THEN
+        RETURN QUERY
+        SELECT mf.id, mf.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+        FROM substrate.entity_morph_feature emf
+        JOIN substrate.morph_feature mf ON mf.id = emf.morph_feature_id
+        WHERE emf.entity_hash = p_seed_hash
+        ORDER BY mf.code ASC
+        LIMIT p_k;
+
+    ELSIF p_junction_kind = 'classification' THEN
+        RETURN QUERY
+        SELECT et.id, et.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+        FROM substrate.entity_classification ec
+        JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+        WHERE ec.entity_hash = p_seed_hash
+        ORDER BY et.code ASC
+        LIMIT p_k;
+
+    ELSE
+        RAISE EXCEPTION 'unknown junction_kind: %, expected pos|sense|pattern_deprel|language|morph_feature|classification', p_junction_kind
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+END $$;
+
+COMMENT ON FUNCTION substrate.classify(BYTEA, TEXT, INT) IS
+    'Top-k labels from a junction table for an entity, ranked by Glicko-2 mu (where present). Junction kinds: pos, sense, pattern_deprel (Glicko-2 native); language, morph_feature, classification (no Glicko, alphabetical).';
+
+-- ── sql/schema/functions/rerank.sql ───────────────────────────────────────
+-- substrate.rerank(candidate_hashes, arena_code, k)
+--
+-- Rerank a candidate set of entities by their Glicko-2 mu in the named
+-- arena (sigma asc as tie-break — tighter confidence wins). Candidates that
+-- have no rating in the arena get default 1500 mu / 350 sigma so unrated
+-- candidates fall mid-pack rather than being silently dropped. Returns the
+-- top-k.
+--
+-- Use cases:
+--   - Cross-source rerank: union top-k from embed_lookup across multiple
+--     entity_types, then rerank by global semantic_relevance arena.
+--   - Authority-weighted rerank: same candidate set, sort by source_authority
+--     arena to prefer canonical sources.
+--   - Multi-arena composite: caller invokes rerank twice in different arenas
+--     and combines results.
+DROP FUNCTION IF EXISTS substrate.rerank(BYTEA[], TEXT, INT);
+CREATE OR REPLACE FUNCTION substrate.rerank(
+    p_candidate_hashes BYTEA[],
+    p_arena_code       TEXT,
+    p_k                INT DEFAULT 25
+) RETURNS TABLE (
+    entity_hash BYTEA,
+    mu          DOUBLE PRECISION,
+    sigma       DOUBLE PRECISION,
+    games       INT,
+    rank        INT,
+    elapsed_ms  INT
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_started     TIMESTAMP := clock_timestamp();
+    v_arena_id    INT;
+    v_default_mu  DOUBLE PRECISION := 1500.0;
+    v_default_sig DOUBLE PRECISION := 350.0;
+BEGIN
+    SELECT id INTO v_arena_id
+    FROM substrate.significance_context
+    WHERE code = p_arena_code;
+
+    IF v_arena_id IS NULL THEN
+        RAISE EXCEPTION 'unknown arena code: %', p_arena_code
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    IF p_candidate_hashes IS NULL OR array_length(p_candidate_hashes, 1) IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    WITH cands AS (
+        SELECT DISTINCT h AS entity_hash
+        FROM unnest(p_candidate_hashes) h
+        WHERE h IS NOT NULL
+    ),
+    ranked AS (
+        SELECT
+            c.entity_hash,
+            COALESCE(s.mu,    v_default_mu)  AS mu,
+            COALESCE(s.sigma, v_default_sig) AS sigma,
+            COALESCE(s.games, 0)             AS games
+        FROM cands c
+        LEFT JOIN substrate.entity_significance s
+               ON s.context_type_id = v_arena_id
+              AND s.entity_hash     = c.entity_hash
+    )
+    SELECT
+        r.entity_hash,
+        r.mu,
+        r.sigma,
+        r.games,
+        ROW_NUMBER() OVER (ORDER BY r.mu DESC, r.sigma ASC, r.entity_hash ASC)::INT AS rank,
+        EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT AS elapsed_ms
+    FROM ranked r
+    ORDER BY r.mu DESC, r.sigma ASC, r.entity_hash ASC
+    LIMIT p_k;
+END $$;
+
+COMMENT ON FUNCTION substrate.rerank(BYTEA[], TEXT, INT) IS
+    'Rerank a candidate entity set by Glicko-2 mu in the named arena (sigma asc tie-break). Unrated candidates get default 1500 mu / 350 sigma so they fall mid-pack instead of being dropped. Returns top-k with rank, mu, sigma, games.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

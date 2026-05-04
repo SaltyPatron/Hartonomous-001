@@ -149,12 +149,6 @@ set(HARTONOMOUS_SOURCES
     # ── Native text decomposition (was substrate.text_decompose round-trip) ──
     src/ucd_atoms_blob.c
     src/text_decompose.c
-    # Generated UCD 17.0.0 property tables — the same data the PG extension
-    # links via its own Makefile. Compiled into libhartonomous so the C# side
-    # gets it via P/Invoke without going across the wire.
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_segmentation.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_classification.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_pictographic.c
 )
 
 set(HARTONOMOUS_HEADERS
@@ -165,6 +159,33 @@ if(HARTONOMOUS_BUILD_SHARED)
     add_library(hartonomous SHARED ${HARTONOMOUS_SOURCES} ${HARTONOMOUS_HEADERS})
 else()
     add_library(hartonomous STATIC ${HARTONOMOUS_SOURCES} ${HARTONOMOUS_HEADERS})
+endif()
+
+# Generated UCD 17.0.0 property tables.
+#
+# On Windows, libhartonomous ships its own copy so the C# P/Invoke surface
+# is self-contained — there's no postgres-extension to provide the tables.
+#
+# On Linux (Docker pgext build), libhartonomous is loaded INTO the postgres
+# backend by the hartonomous PG extension. The PG extension already
+# compiles these same .c files into hartonomous.so with default visibility
+# (PGXS uses -Wl,--export-dynamic). When the same generated arrays appeared
+# in BOTH libhartonomous.so AND hartonomous.so the duplicate definitions
+# in the same process address space caused a stack-canary abort during
+# the 1.1M-row populate_codepoint_property_from_ext bulk insert (PG18.3
+# backend pid was killed by SIGABRT from glibc's __stack_chk_fail).
+#
+# Resolution: Linux build leaves uc_gcb / uc_wb / uc_extended_pictographic_bitmap
+# / uc_incb as undefined symbols in libhartonomous.so. The dynamic loader
+# binds them at runtime to the PG extension's copies (default visibility,
+# exported). text_decompose.c only fires when the PG ext is loaded above
+# us, so this works.
+if(WIN32)
+    target_sources(hartonomous PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_segmentation.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_classification.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_pictographic.c
+    )
 endif()
 
 target_include_directories(hartonomous
@@ -220,6 +241,17 @@ if(NOT MSVC)
         -static-libgcc
     )
 endif()
+
+# Workaround: Intel icpx 2025.3.2 crashes (clang frontend SIGSEGV) inside its
+# hir-ssa-deconstruction optimization pass when compiling
+# src/laplacian_eigenmap.cpp at -O3 (the CMake Release default). Drop the
+# optimization level for this single file so the build completes; the perf
+# delta is irrelevant during ingestion (Lanczos eigensolve is dominated by
+# Spectra/MKL calls, not host-side loop optimization).
+# icpx 2025.3.2 SIGSEGV workaround now lives in docker/pgext.Dockerfile
+# (CXX=g++ for libhartonomous). On the Windows / native builds the C++
+# sources compile with MSVC and hit no crash, so no per-file override is
+# needed here.
 
 if(HARTONOMOUS_BUILD_TESTS)
     enable_testing()

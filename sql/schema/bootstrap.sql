@@ -257,6 +257,10 @@
 -- @include schema/functions/intersect.sql
 -- @include schema/functions/neighborhood.sql
 -- @include schema/functions/surprise.sql
+-- AI operation primitives (V1)
+-- @include schema/functions/embed_lookup.sql
+-- @include schema/functions/classify.sql
+-- @include schema/functions/rerank.sql
 -- Universal substrate query surface (V1)
 -- @include schema/functions/model_inventory.sql
 -- @include schema/functions/model_vocab_recovered.sql

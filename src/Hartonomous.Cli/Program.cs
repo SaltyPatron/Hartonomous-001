@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Cli.Commands;
 using Hartonomous.Cli.Migrations;
 using Hartonomous.Core;
 using Hartonomous.Core.Data;
@@ -82,6 +83,21 @@ internal static class Program
 
         Command bootstrap = BuildBootstrapCommand();
         root.AddCommand(bootstrap);
+
+        Command catalogDonors = CatalogDonorsCommand.Build();
+        root.AddCommand(catalogDonors);
+
+        Command embedLookup = EmbedLookupCommand.Build(DefaultConnectionString);
+        root.AddCommand(embedLookup);
+
+        Command classify = ClassifyCommand.Build(DefaultConnectionString);
+        root.AddCommand(classify);
+
+        Command rerank = RerankCommand.Build(DefaultConnectionString);
+        root.AddCommand(rerank);
+
+        Command quote = QuoteCommand.Build(DefaultConnectionString);
+        root.AddCommand(quote);
 
         return await root.InvokeAsync(args);
     }

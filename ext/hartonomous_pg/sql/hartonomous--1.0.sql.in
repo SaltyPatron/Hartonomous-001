@@ -437,6 +437,36 @@ CREATE FUNCTION traverse_astar(
     AS 'MODULE_PATHNAME', 'pg_traverse_astar'
     LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
 
+-- ── substrate.similarity_topk ───────────────────────────────────────────
+-- Bounded-K nearest-neighbor scan over an arbitrary candidate query.
+-- Distance kind dispatches by name to a substrate-side wrapper:
+--   '4d'      → substrate.dist_4d(geometry, geometry)
+--   's3'      → substrate.dist_s3(geometry, geometry)
+--   'frechet' → substrate.frechet_4d_geom(geometry, geometry)
+-- The candidate query MUST yield (entity_type_id int, entity_hash bytea, geom geometry).
+-- Optional distance threshold filters per-candidate before the top-K cut.
+CREATE OR REPLACE FUNCTION substrate.similarity_topk(
+    p_seed_geom          geometry,
+    p_k                  int,
+    p_distance_kind      text,
+    p_candidate_query    text,
+    p_distance_threshold double precision DEFAULT NULL
+) RETURNS TABLE (entity_type_id int, entity_hash bytea, distance double precision)
+    AS 'MODULE_PATHNAME', 'pg_similarity_topk'
+    LANGUAGE C STABLE STRICT;
+
+-- ── substrate.recompose_walk ────────────────────────────────────────────
+-- Iterative DFS over substrate.sequence starting at p_root_hash. Emits the
+-- root first then descendants in left-to-right depth-first order. content_label
+-- is always NULL — substrate.entity is hash-only; the C# layer joins content
+-- (codepoint_value, classification, etc.) out-of-band.
+CREATE OR REPLACE FUNCTION substrate.recompose_walk(
+    p_root_hash bytea,
+    p_max_depth int DEFAULT 16
+) RETURNS TABLE (entity_hash bytea, ordinal_position int, content_label text, depth int)
+    AS 'MODULE_PATHNAME', 'pg_recompose_walk'
+    LANGUAGE C STABLE STRICT;
+
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- (9) linestring4d — varlena polyline type for 4D trajectories
