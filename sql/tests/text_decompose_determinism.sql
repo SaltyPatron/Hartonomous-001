@@ -96,20 +96,62 @@ BEGIN
 END $$;
 
 -- ── text_decompose round-trip on a tiny fixed string ────────────────
+-- Verifies (a) emission lands in substrate core tables, NOT staging;
+-- (b) repeating the same input is idempotent (ON CONFLICT DO NOTHING);
+-- (c) the new root_hash + root_entity_type_id fields are populated;
+-- (d) the root entity exists in substrate.entity post-call (no drain).
 DO $$
 DECLARE
-    summary substrate.text_decompose_summary;
+    summary1 substrate.text_decompose_summary;
+    summary2 substrate.text_decompose_summary;
+    n_entity_after_first BIGINT;
+    n_entity_after_second BIGINT;
+    root_exists BOOLEAN;
 BEGIN
-    summary := substrate.text_decompose(
+    summary1 := substrate.text_decompose(
         convert_to('Hello world', 'UTF8'),
         'text_composition',
         20000.0,
         'unicode_consortium');
-    IF summary.entity_count <= 0 THEN
+    IF summary1.entity_count <= 0 THEN
         RAISE EXCEPTION 'text_decompose produced 0 entities for "Hello world"';
     END IF;
-    RAISE NOTICE 'text_decompose("Hello world"): entities=%, sequence=%, physicality=%',
-        summary.entity_count, summary.sequence_count, summary.physicality_count;
+    IF summary1.root_hash IS NULL THEN
+        RAISE EXCEPTION 'text_decompose returned NULL root_hash for non-empty input';
+    END IF;
+    IF length(summary1.root_hash) <> 32 THEN
+        RAISE EXCEPTION 'root_hash length = % (expected 32)', length(summary1.root_hash);
+    END IF;
+    IF summary1.root_entity_type_id IS NULL OR summary1.root_entity_type_id <= 0 THEN
+        RAISE EXCEPTION 'root_entity_type_id = % (expected > 0)', summary1.root_entity_type_id;
+    END IF;
+
+    SELECT EXISTS (SELECT 1 FROM substrate.entity WHERE hash = summary1.root_hash)
+      INTO root_exists;
+    IF NOT root_exists THEN
+        RAISE EXCEPTION 'root entity not found in substrate.entity post-call — direct-write path broken';
+    END IF;
+
+    SELECT COUNT(*) INTO n_entity_after_first FROM substrate.entity;
+
+    -- Idempotency: same input → ON CONFLICT DO NOTHING, no new rows.
+    summary2 := substrate.text_decompose(
+        convert_to('Hello world', 'UTF8'),
+        'text_composition',
+        20000.0,
+        'unicode_consortium');
+    IF summary2.root_hash IS DISTINCT FROM summary1.root_hash THEN
+        RAISE EXCEPTION 'idempotency broken: second call returned different root_hash';
+    END IF;
+    SELECT COUNT(*) INTO n_entity_after_second FROM substrate.entity;
+    IF n_entity_after_second <> n_entity_after_first THEN
+        RAISE EXCEPTION 'idempotency broken: substrate.entity row count changed (% -> %)',
+            n_entity_after_first, n_entity_after_second;
+    END IF;
+
+    RAISE NOTICE 'text_decompose("Hello world"): entities=%, sequence=%, physicality=%, root=%, type_id=%',
+        summary1.entity_count, summary1.sequence_count, summary1.physicality_count,
+        encode(summary1.root_hash, 'hex'), summary1.root_entity_type_id;
 END $$;
 
 \echo Tier-0 determinism checks passed.

@@ -730,7 +730,74 @@ static bytea* linestring4d_to_wkb(const double* verts /* k * 4 */, int k)
 }
 
 /* ═════════════════════════════════════════════════════════════════════
- * (9) Bulk INSERT helpers — flush each accumulator into staging.
+ * (8b) Public WKB constructor — substrate.ls4d_from_centroids
+ *
+ * Lifts the in-process LINESTRINGZM EWKB writer to a SQL-callable
+ * function. Producers building edges from participant centroids can call
+ * this once per edge; recompose / inference paths use it when only
+ * hashes are known and centroids must be joined from substrate.physicality.
+ *
+ * Returns bytea (EWKB). The SQL declaration wraps with
+ * ST_GeomFromWKB(..., 0)::geometry(LINESTRINGZM) so callers receive a
+ * proper PostGIS geometry without re-encoding.
+ * ═════════════════════════════════════════════════════════════════════ */
+PG_FUNCTION_INFO_V1(pg_ls4d_from_centroids_wkb);
+
+Datum pg_ls4d_from_centroids_wkb(PG_FUNCTION_ARGS)
+{
+    ArrayType* arr = PG_GETARG_ARRAYTYPE_P(0);
+    int n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+    if (n < 2) {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("ls4d_from_centroids: at least 2 vertices required (got %d)", n)));
+    }
+
+    /* point4d on-disk layout: 4 × float8, alignment double, plain storage,
+     * 32 bytes per element. The element OID is point4d's typoid. We use
+     * deconstruct_array with -1 typlen and pass-by-reference because point4d
+     * is a fixed-size composite stored as a varlena-like blob with alignment
+     * 'd'. Per pg_point4d.c, INTERNALLENGTH = 32 and ALIGNMENT = double. */
+    Oid elem_type = ARR_ELEMTYPE(arr);
+    int16 typlen;
+    bool  typbyval;
+    char  typalign;
+    get_typlenbyvalalign(elem_type, &typlen, &typbyval, &typalign);
+
+    Datum* elems;
+    bool*  nulls;
+    int    nelems;
+    deconstruct_array(arr, elem_type, typlen, typbyval, typalign, &elems, &nulls, &nelems);
+
+    double* verts = (double*) palloc(sizeof(double) * 4 * nelems);
+    for (int i = 0; i < nelems; i++) {
+        if (nulls[i]) {
+            ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+                            errmsg("ls4d_from_centroids: NULL element at index %d", i)));
+        }
+        /* point4d is INTERNALLENGTH=32, no varlena header — Datum points
+         * directly at the 4 × double payload. */
+        const double* p = (const double*) DatumGetPointer(elems[i]);
+        verts[i*4+0] = p[0];
+        verts[i*4+1] = p[1];
+        verts[i*4+2] = p[2];
+        verts[i*4+3] = p[3];
+    }
+
+    bytea* wkb = linestring4d_to_wkb(verts, nelems);
+    PG_RETURN_BYTEA_P(wkb);
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+ * (9) Bulk INSERT helpers — flush each accumulator DIRECTLY into the
+ *     substrate core tables. No staging detour. Each insert uses
+ *     ON CONFLICT DO NOTHING so re-emission of the same content
+ *     collapses to a single substrate row (Law #6: same content =
+ *     same hash = same row).
+ *
+ *     Partition routing for substrate.{edge, edge_member, physicality,
+ *     entity_significance, edge_significance} is handled automatically
+ *     by PostgreSQL — the LIST partition declarations make INSERT into
+ *     the parent table route to the correct partition.
  * ═════════════════════════════════════════════════════════════════════ */
 
 static ArrayType* build_bytea_array(bytea** items, int n)
@@ -766,8 +833,9 @@ static void flush_entities(HashList* L)
     Oid types[1] = { BYTEAARRAYOID };
     Datum vals[1] = { PointerGetDatum(build_bytea_array(L->hashes, L->count)) };
     int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.staging_entity (hash) "
-        "SELECT h FROM unnest($1::bytea[]) AS h",
+        "INSERT INTO substrate.entity (hash) "
+        "SELECT DISTINCT h FROM unnest($1::bytea[]) AS h "
+        "ON CONFLICT (hash) DO NOTHING",
         1, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_entities: SPI_execute (%d)", rc);
 }
@@ -782,8 +850,9 @@ static void flush_classifications(ClassList* L, int provenance_id)
         Int32GetDatum(provenance_id)
     };
     int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.staging_entity_classification (entity_hash, entity_type_id, provenance_id) "
-        "SELECT h, t, $3 FROM unnest($1::bytea[], $2::int[]) AS u(h, t)",
+        "INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id) "
+        "SELECT DISTINCT h, t, $3 FROM unnest($1::bytea[], $2::int[]) AS u(h, t) "
+        "ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING",
         3, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_classifications: SPI_execute (%d)", rc);
 }
@@ -799,8 +868,10 @@ static void flush_physicalities(PhysList* L)
         PointerGetDatum(build_bytea_array(L->wkbs, L->count))
     };
     int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.staging_physicality (physicality_type_id, entity_hash, content_hash, wkb) "
-        "SELECT pt, eh, ch, wkb FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, wkb)",
+        "INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom) "
+        "SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, ST_GeomFromWKB(wkb, 0) "
+        "  FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, wkb) "
+        "ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING",
         4, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_physicalities: SPI_execute (%d)", rc);
 }
@@ -816,8 +887,10 @@ static void flush_sequences(SeqList* L)
         PointerGetDatum(build_int4_array(L->rle_counts, L->count))
     };
     int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.staging_sequence (parent_hash, ordinal, child_hash, rle_count) "
-        "SELECT p, o, c, r FROM unnest($1::bytea[], $2::int[], $3::bytea[], $4::int[]) AS u(p, o, c, r)",
+        "INSERT INTO substrate.sequence (parent_hash, ordinal, child_hash, rle_count) "
+        "SELECT DISTINCT ON (p, o) p, o, c, r "
+        "  FROM unnest($1::bytea[], $2::int[], $3::bytea[], $4::int[]) AS u(p, o, c, r) "
+        "ON CONFLICT (parent_hash, ordinal) DO NOTHING",
         4, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_sequences: SPI_execute (%d)", rc);
 }
@@ -832,10 +905,29 @@ static void flush_significance(SigList* L)
         PointerGetDatum(build_float8_array(L->mus, L->count))
     };
     int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.staging_entity_significance (context_type_id, entity_hash, mu) "
-        "SELECT c, h, m FROM unnest($1::int[], $2::bytea[], $3::float8[]) AS u(c, h, m)",
+        "INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu) "
+        "SELECT DISTINCT ON (c, h) c, h, m "
+        "  FROM unnest($1::int[], $2::bytea[], $3::float8[]) AS u(c, h, m) "
+        "ON CONFLICT (context_type_id, entity_hash) DO NOTHING",
         3, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_significance: SPI_execute (%d)", rc);
+}
+
+/* When p_model_source_id is supplied, the root composition entity gets
+ * linked to the model source. Single-row insert; no accumulator needed. */
+static void flush_model_source(bytea* root_hash, int model_source_id)
+{
+    Oid types[2] = { BYTEAOID, INT4OID };
+    Datum vals[2] = {
+        PointerGetDatum(root_hash),
+        Int32GetDatum(model_source_id)
+    };
+    int rc = SPI_execute_with_args(
+        "INSERT INTO substrate.entity_model_source (entity_hash, model_source_id) "
+        "VALUES ($1, $2) "
+        "ON CONFLICT (entity_hash, model_source_id) DO NOTHING",
+        2, types, vals, NULL, false, 0);
+    if (rc != SPI_OK_INSERT) elog(ERROR, "flush_model_source: SPI_execute (%d)", rc);
 }
 
 /* ═════════════════════════════════════════════════════════════════════
@@ -849,6 +941,12 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
     text*  top_entity_type_arg = PG_GETARG_TEXT_PP(1);
     double trust_mu            = PG_GETARG_FLOAT8(2);
     text*  provenance_arg      = PG_GETARG_TEXT_PP(3);
+    /* p_model_source_id (5th param) is OPTIONAL with default NULL; when
+     * non-NULL we emit substrate.entity_model_source linking the root
+     * composition entity to that model_source row. Per AP-9 the model
+     * source is placement metadata — never enters the entity hash. */
+    bool   has_model_source    = !PG_ARGISNULL(4);
+    int    model_source_id     = has_model_source ? PG_GETARG_INT32(4) : 0;
 
     const uint8_t* utf8 = (const uint8_t*) VARDATA_ANY(utf8_arg);
     size_t utf8_len     = VARSIZE_ANY_EXHDR(utf8_arg);
@@ -885,8 +983,10 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
                             errmsg("pg_text_decompose: composite type expected")));
         }
         BlessTupleDesc(tupdesc);
-        Datum values[7] = {0,0,0,0,0,0,0};
-        bool nulls[7] = { false,false,false,false,false,false,false };
+        /* 9-field summary: 7 counts + root_hash + root_entity_type_id.
+         * Empty input → counts at 0, root fields NULL. */
+        Datum values[9] = {0,0,0,0,0,0,0,0,0};
+        bool  nulls[9]  = { false,false,false,false,false,false,false, true, true };
         for (int i=0;i<7;i++) values[i] = Int64GetDatum(0);
         HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
         PG_RETURN_DATUM(HeapTupleGetDatum(tup));
@@ -1088,8 +1188,10 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
     }
 
     /* Composition entity (root). */
+    bytea* root_hash_out = NULL;
     {
         bytea* ch = hash_to_bytea(comp_hash);
+        root_hash_out = ch;
         ent.hashes[ent.count++] = ch;
         cls.entity_hashes[cls.count] = ch;
         cls.entity_type_ids[cls.count] = top_entity_type_id;
@@ -1115,12 +1217,17 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
         }
     }
 
-    /* ── Bulk flush all staging tables ────────────────────────── */
+    /* ── Bulk flush directly into substrate core tables ─────────── */
     flush_entities(&ent);
     flush_classifications(&cls, ids.provenance_id);
     flush_physicalities(&phys);
     flush_sequences(&seq);
     flush_significance(&sig);
+    /* Optional model_source linkage for the root composition (e.g.,
+     * Safetensors config.json text artifacts get linked to their model). */
+    if (has_model_source && root_hash_out != NULL) {
+        flush_model_source(root_hash_out, model_source_id);
+    }
 
     summary.entity_count        = ent.count;
     summary.classification_count = cls.count;
@@ -1139,8 +1246,10 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
     }
     BlessTupleDesc(tupdesc);
 
-    Datum values[7];
-    bool  nulls[7] = { false, false, false, false, false, false, false };
+    /* 9-field summary: 7 counts + root_hash (bytea) + root_entity_type_id (int).
+     * Callers that don't need the root can ignore the last two fields. */
+    Datum values[9];
+    bool  nulls[9] = { false, false, false, false, false, false, false, false, false };
     values[0] = Int64GetDatum(summary.entity_count);
     values[1] = Int64GetDatum(summary.edge_count);
     values[2] = Int64GetDatum(summary.edge_member_count);
@@ -1148,6 +1257,15 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
     values[4] = Int64GetDatum(summary.sequence_count);
     values[5] = Int64GetDatum(summary.significance_count);
     values[6] = Int64GetDatum(summary.classification_count);
+    if (root_hash_out != NULL) {
+        values[7] = PointerGetDatum(root_hash_out);
+        values[8] = Int32GetDatum(top_entity_type_id);
+    } else {
+        values[7] = (Datum) 0;
+        values[8] = (Datum) 0;
+        nulls[7]  = true;
+        nulls[8]  = true;
+    }
 
     HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
     PG_RETURN_DATUM(HeapTupleGetDatum(tup));
@@ -1171,6 +1289,11 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
     ArrayType* types_arr = PG_GETARG_ARRAYTYPE_P(1);
     ArrayType* mus_arr   = PG_GETARG_ARRAYTYPE_P(2);
     ArrayType* provs_arr = PG_GETARG_ARRAYTYPE_P(3);
+    /* p_model_source_ids (5th param, OPTIONAL int[]). NULL or omitted →
+     * no model-source linkage. Per-row NULL elements skip linkage for
+     * that row only. */
+    bool       has_model_sources = !PG_ARGISNULL(4);
+    ArrayType* msrc_arr = has_model_sources ? PG_GETARG_ARRAYTYPE_P(4) : NULL;
 
     int n = ArrayGetNItems(ARR_NDIM(utf8s_arr), ARR_DIMS(utf8s_arr));
     if (n != ArrayGetNItems(ARR_NDIM(types_arr), ARR_DIMS(types_arr)) ||
@@ -1178,6 +1301,11 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
         n != ArrayGetNItems(ARR_NDIM(provs_arr), ARR_DIMS(provs_arr))) {
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("pg_text_decompose_batch: input arrays must have matching length")));
+    }
+    if (has_model_sources &&
+        n != ArrayGetNItems(ARR_NDIM(msrc_arr), ARR_DIMS(msrc_arr))) {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("pg_text_decompose_batch: model_source_ids array length mismatch")));
     }
 
     /* Iterate elements; recurse into pg_text_decompose for each.
@@ -1188,23 +1316,34 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
     Datum* type_d; bool* type_n;
     Datum* mu_d;   bool* mu_n;
     Datum* prov_d; bool* prov_n;
+    Datum* msrc_d = NULL; bool* msrc_n = NULL;
     int dummy;
     deconstruct_array(utf8s_arr, BYTEAOID, -1, false, TYPALIGN_INT, &utf8_d, &utf8_n, &dummy);
     deconstruct_array(types_arr, TEXTOID, -1, false, TYPALIGN_INT, &type_d, &type_n, &dummy);
     deconstruct_array(mus_arr,   FLOAT8OID, sizeof(float8), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE, &mu_d, &mu_n, &dummy);
     deconstruct_array(provs_arr, TEXTOID, -1, false, TYPALIGN_INT, &prov_d, &prov_n, &dummy);
+    if (has_model_sources) {
+        deconstruct_array(msrc_arr, INT4OID, sizeof(int32), true, TYPALIGN_INT, &msrc_d, &msrc_n, &dummy);
+    }
 
     TextDecomposeSummary total;
     memset(&total, 0, sizeof(total));
 
     for (int i = 0; i < n; i++) {
         if (utf8_n[i] || type_n[i] || mu_n[i] || prov_n[i]) continue;
-        LOCAL_FCINFO(inner, 4);
-        InitFunctionCallInfoData(*inner, NULL, 4, InvalidOid, NULL, NULL);
+        LOCAL_FCINFO(inner, 5);
+        InitFunctionCallInfoData(*inner, NULL, 5, InvalidOid, NULL, NULL);
         inner->args[0].value = utf8_d[i]; inner->args[0].isnull = false;
         inner->args[1].value = type_d[i]; inner->args[1].isnull = false;
         inner->args[2].value = mu_d[i];   inner->args[2].isnull = false;
         inner->args[3].value = prov_d[i]; inner->args[3].isnull = false;
+        if (msrc_d != NULL && !msrc_n[i]) {
+            inner->args[4].value  = msrc_d[i];
+            inner->args[4].isnull = false;
+        } else {
+            inner->args[4].value  = (Datum) 0;
+            inner->args[4].isnull = true;
+        }
         Datum result = pg_text_decompose(inner);
         if (!inner->isnull) {
             HeapTupleHeader hth = DatumGetHeapTupleHeader(result);
@@ -1231,8 +1370,11 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
     }
     BlessTupleDesc(tupdesc);
 
-    Datum values[7];
-    bool  nulls[7] = { false,false,false,false,false,false,false };
+    /* 9-field summary. Batch never returns a single root — root_hash and
+     * root_entity_type_id are always NULL. Callers that need per-row
+     * roots should iterate text_decompose() one row at a time. */
+    Datum values[9];
+    bool  nulls[9] = { false,false,false,false,false,false,false,true,true };
     values[0] = Int64GetDatum(total.entity_count);
     values[1] = Int64GetDatum(total.edge_count);
     values[2] = Int64GetDatum(total.edge_member_count);
@@ -1240,6 +1382,8 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
     values[4] = Int64GetDatum(total.sequence_count);
     values[5] = Int64GetDatum(total.significance_count);
     values[6] = Int64GetDatum(total.classification_count);
+    values[7] = (Datum) 0;
+    values[8] = (Datum) 0;
     HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
     PG_RETURN_DATUM(HeapTupleGetDatum(tup));
 }
