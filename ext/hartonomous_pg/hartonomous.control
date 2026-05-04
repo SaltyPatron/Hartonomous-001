@@ -1,6 +1,14 @@
-comment = 'Hartonomous substrate extension — BLAKE3, S3 geometry, graph traversal'
+comment = 'Hartonomous substrate — schemas, types, tables, BLAKE3, S^3 geometry, traversal, UCD/UCA atoms'
 default_version = '1.0'
 module_pathname = '$libdir/hartonomous'
+# relocatable = false because the extension creates objects in two named
+# schemas (substrate, monitor) explicitly. The schema parameter is not set
+# below because we manage both schemas inline at the top of the script.
 relocatable = false
+# superuser = true because the .so loads C functions at backend init via
+# _PG_init (mmap of the UCD atoms blob, MKL initialization). A trusted
+# (non-superuser-installable) extension cannot do that safely.
 superuser = true
-requires = 'postgis'
+# Prerequisite extensions are auto-installed by CREATE EXTENSION hartonomous
+# when missing. Their schemas (typically public) are visible to our script.
+requires = 'postgis,btree_gist,pg_trgm'

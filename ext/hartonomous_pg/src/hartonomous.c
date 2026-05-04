@@ -3,17 +3,21 @@
 #include "funcapi.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
+#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
-
-#define _GNU_SOURCE
-#include <execinfo.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <string.h>
-#include <unistd.h>
-#include <ucontext.h>
-#include <sys/ucontext.h>
-#include <fcntl.h>
+
+#ifndef _WIN32
+  #define _GNU_SOURCE
+  #include <execinfo.h>
+  #include <unistd.h>
+  #include <ucontext.h>
+  #include <sys/ucontext.h>
+  #include <fcntl.h>
+#endif
 
 #include "hartonomous.h"
 
@@ -28,6 +32,7 @@ static int hartonomous_resolved_cbwr_branch = -1;
 
 void _PG_init(void);
 
+#ifndef _WIN32
 /*
  * Crash backtrace handler. Installed in _PG_init for SIGSEGV, SIGABRT,
  * SIGBUS, SIGFPE, SIGILL. When a backend dies hard inside C code, the
@@ -40,6 +45,11 @@ void _PG_init(void);
  *
  * Async-signal-safe: backtrace_symbols_fd uses no malloc, no FILE*. write()
  * is the only stdio. Do not call elog/ereport from here — they allocate.
+ *
+ * Linux-only — uses execinfo.h backtrace APIs and POSIX sigaction. On
+ * Windows the install function is a no-op (PG handles SEH at the OS level
+ * via vectored exception handlers; substrate-side hooking would need
+ * StackWalk64 + SymFromAddr from DbgHelp).
  */
 static void
 hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
@@ -284,6 +294,14 @@ hartonomous_install_crash_handlers(void)
         }
     }
 }
+#else  /* _WIN32 */
+/* Windows: PG already installs vectored exception handlers via the
+ * postmaster; substrate-side backtrace capture would require DbgHelp
+ * (StackWalk64 + SymFromAddr), which we haven't wired. No-op for now —
+ * crashes still surface in PG's own logs, just without a substrate-side
+ * stack dump. */
+static void hartonomous_install_crash_handlers(void) { }
+#endif  /* _WIN32 */
 
 void
 _PG_init(void)
@@ -355,6 +373,35 @@ _PG_init(void)
     hartonomous_install_crash_handlers();
     ereport(LOG,
             (errmsg("hartonomous: crash backtrace handlers installed (SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL)")));
+
+    /*
+     * Lazy-mmap UCD atoms blob. The blob lives next to the extension SQL
+     * file at $libdir/../share/extension/hartonomous-ucd/ by default.
+     * The directory can be overridden via GUC (hartonomous.ucd_blob_dir);
+     * if the index file is missing the loader returns gracefully and
+     * substrate.cp_hash() / cp_centroid() / cp_hilbert() return NULL.
+     * Backends that never touch those functions never page in the blob.
+     */
+    {
+        extern int huc_load_atoms_blob(const char* dir);
+        char dir[1024];
+        const char* env = getenv("HARTONOMOUS_UCD_BLOB_DIR");
+        if (env && *env) {
+            snprintf(dir, sizeof(dir), "%s", env);
+        } else {
+            /* Default: $share/extension/hartonomous-ucd/ */
+            char share[MAXPGPATH];
+            get_share_path(my_exec_path, share);
+            snprintf(dir, sizeof(dir), "%s/extension/hartonomous-ucd", share);
+        }
+        if (huc_load_atoms_blob(dir) != 0) {
+            ereport(WARNING,
+                    (errmsg("hartonomous: UCD atoms blob not loaded from %s — "
+                            "cp_hash/centroid/hilbert will return NULL", dir),
+                     errhint("Install the blob via scripts/db/InstallUcdBlob.ps1 "
+                             "or set HARTONOMOUS_UCD_BLOB_DIR env var.")));
+        }
+    }
 }
 
 PG_FUNCTION_INFO_V1(pg_hartonomous_version);

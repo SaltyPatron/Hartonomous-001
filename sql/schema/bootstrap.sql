@@ -1,0 +1,292 @@
+-- BUILD-TIME @INCLUDE MANIFEST for the consolidated PostgreSQL extension.
+--
+-- This file is no longer the runtime apply path. The substrate is now
+-- packaged as a proper PG extension (see ext/hartonomous_pg/) and
+-- installed via `CREATE EXTENSION hartonomous`. At build time, the
+-- script scripts/build/concat_extension_sql.py walks the @include
+-- directives below in order, expands them recursively, strips psql
+-- meta-commands, splices in the hand-written
+-- ext/hartonomous_pg/sql/hartonomous--1.0.sql.in (C-binding declarations)
+-- before the first functions/* include, and emits the consolidated
+-- ext/hartonomous_pg/sql/hartonomous--1.0.sql that PostgreSQL runs
+-- atomically when CREATE EXTENSION fires.
+--
+-- Same pattern as PostGIS / pgvector: many small per-object source files
+-- + a build-time concatenator → single extension script.
+--
+-- Order below is the FK + function dependency chain. Reference tables
+-- before core tables that FK to them; core tables before junctions that
+-- FK to entity; functions last so every table they query exists.
+--
+-- Schema/extensions/*.sql files (postgis, btree_gist, pg_trgm,
+-- hartonomous itself) are SKIPPED by the concatenator: prerequisite
+-- extensions are declared in hartonomous.control's `requires` and
+-- auto-installed by CREATE EXTENSION ... CASCADE; the hartonomous
+-- self-include cannot CREATE EXTENSION inside its own install script.
+--
+-- ── Phase 1: extensions ──────────────────────────────────────────────
+-- @include schema/extensions/postgis.sql
+-- @include schema/extensions/btree_gist.sql
+-- @include schema/extensions/pg_trgm.sql
+
+-- ── Phase 2: schemas ─────────────────────────────────────────────────
+-- @include schema/schemas/substrate.sql
+-- @include schema/schemas/monitor.sql
+
+-- ── Phase 3: domains ─────────────────────────────────────────────────
+-- @include schema/domains/hash_value.sql
+-- @include schema/domains/significance_mu.sql
+-- @include schema/domains/significance_sigma.sql
+-- @include schema/domains/significance_volatility.sql
+-- @include schema/domains/ordinal_position.sql
+-- @include schema/domains/rle_count.sql
+-- @include schema/domains/code_value.sql
+-- @include schema/domains/tier_number.sql
+
+-- ── Phase 4: composite types ─────────────────────────────────────────
+-- @include schema/types/entity_ref.sql
+-- @include schema/types/edge_ref.sql
+
+-- ── Phase 5: reference tables (no FK to substrate-side) ──────────────
+-- @include schema/tables/reference/entity_type.sql
+-- @include schema/tables/reference/edge_role.sql
+-- @include schema/tables/reference/physicality_type.sql
+-- @include schema/tables/reference/significance_context.sql
+-- @include schema/tables/reference/provenance.sql
+-- @include schema/tables/reference/architecture_class.sql
+-- @include schema/tables/reference/tensor_role.sql
+-- @include schema/tables/reference/script.sql
+-- @include schema/tables/reference/block.sql
+-- @include schema/tables/reference/break_property.sql
+-- @include schema/tables/reference/language.sql
+-- @include schema/tables/reference/general_category.sql
+-- @include schema/tables/reference/semantic_relation_type.sql
+-- @include schema/tables/reference/pos.sql
+-- @include schema/tables/reference/deprel.sql
+-- @include schema/tables/reference/morph_feature.sql
+-- @include schema/tables/reference/lexname.sql
+-- @include schema/tables/reference/edge_type.sql
+
+-- ── Phase 6: reference seed (entity_type before edge_type — FK code lookup) ─
+-- provenance_edge_authority seed is deferred to Phase 8b (after the
+-- junction table is created) since it INSERTs against substrate.provenance_edge_authority.
+-- @include schema/seed/entity_type.sql
+-- @include schema/seed/physicality_type.sql
+-- @include schema/seed/physicality_type_embedding_firefly.sql
+-- @include schema/seed/edge_role.sql
+-- @include schema/seed/significance_context.sql
+-- @include schema/seed/provenance.sql
+-- @include schema/seed/lexname.sql
+-- @include schema/seed/pos.sql
+-- @include schema/seed/edge_type.sql
+-- @include schema/seed/validate.sql
+
+-- ── Phase 7: core tables + LIST partitions ───────────────────────────
+-- @include schema/tables/core/entity.sql
+-- @include schema/tables/core/edge.sql
+-- @include schema/tables/core/edge_structural.sql
+-- @include schema/tables/core/edge_cross_lingual.sql
+-- @include schema/tables/core/edge_cross_modal.sql
+-- @include schema/tables/core/edge_unicode.sql
+-- @include schema/tables/core/edge_model.sql
+-- @include schema/tables/core/edge_default.sql
+-- @include schema/tables/core/edge_member.sql
+-- @include schema/tables/core/edge_member_structural.sql
+-- @include schema/tables/core/edge_member_cross_lingual.sql
+-- @include schema/tables/core/edge_member_cross_modal.sql
+-- @include schema/tables/core/edge_member_unicode.sql
+-- @include schema/tables/core/edge_member_model.sql
+-- @include schema/tables/core/edge_member_default.sql
+-- @include schema/tables/core/physicality.sql
+-- @include schema/tables/core/physicality_s3.sql
+-- @include schema/tables/core/physicality_hilbert.sql
+-- @include schema/tables/core/physicality_audio.sql
+-- @include schema/tables/core/physicality_model.sql
+-- @include schema/tables/core/physicality_contour.sql
+-- @include schema/tables/core/physicality_default.sql
+-- @include schema/tables/core/sequence.sql
+-- @include schema/tables/core/entity_significance.sql
+-- @include schema/tables/core/entity_significance_lexical.sql
+-- @include schema/tables/core/entity_significance_syntactic.sql
+-- @include schema/tables/core/entity_significance_translation.sql
+-- @include schema/tables/core/entity_significance_model.sql
+-- @include schema/tables/core/entity_significance_authority.sql
+-- @include schema/tables/core/entity_significance_relevance.sql
+-- @include schema/tables/core/entity_significance_corroboration.sql
+-- @include schema/tables/core/entity_significance_frequency.sql
+-- @include schema/tables/core/entity_significance_attention.sql
+-- @include schema/tables/core/entity_significance_morphological.sql
+-- @include schema/tables/core/entity_significance_default.sql
+-- @include schema/tables/core/edge_significance.sql
+-- @include schema/tables/core/edge_significance_lexical.sql
+-- @include schema/tables/core/edge_significance_syntactic.sql
+-- @include schema/tables/core/edge_significance_translation.sql
+-- @include schema/tables/core/edge_significance_model.sql
+-- @include schema/tables/core/edge_significance_authority.sql
+-- @include schema/tables/core/edge_significance_relevance.sql
+-- @include schema/tables/core/edge_significance_corroboration.sql
+-- @include schema/tables/core/edge_significance_frequency.sql
+-- @include schema/tables/core/edge_significance_attention.sql
+-- @include schema/tables/core/edge_significance_morphological.sql
+-- @include schema/tables/core/edge_significance_default.sql
+
+-- ── Phase 8: junction tables ─────────────────────────────────────────
+-- @include schema/tables/junctions/entity_pos.sql
+-- @include schema/tables/junctions/entity_lexname.sql
+-- @include schema/tables/junctions/entity_language.sql
+-- @include schema/tables/junctions/entity_morph_feature.sql
+-- @include schema/tables/junctions/codepoint_property.sql
+-- @include schema/tables/junctions/model_architecture_class.sql
+-- @include schema/tables/junctions/tensor_tensor_role.sql
+-- @include schema/tables/junctions/pattern_deprel.sql
+-- @include schema/tables/junctions/provenance_edge_authority.sql
+-- @include schema/tables/junctions/entity_classification.sql
+
+-- ── Phase 8b: post-junction seed (depends on junction tables existing) ─
+-- @include schema/seed/provenance_edge_authority.sql
+
+-- ── Phase 9: model tables ────────────────────────────────────────────
+-- @include schema/tables/models/model_registry.sql
+-- @include schema/tables/models/model_publisher.sql
+-- @include schema/tables/models/model_source.sql
+-- @include schema/tables/models/model_pass_checkpoint.sql
+-- @include schema/tables/models/entity_model_source.sql
+
+-- ── Phase 10: monitor tables ─────────────────────────────────────────
+-- @include schema/tables/monitor/ingestion_progress.sql
+-- @include schema/tables/monitor/phase_status.sql
+-- @include schema/tables/monitor/error_log.sql
+-- @include schema/tables/monitor/substrate_health.sql
+-- @include schema/tables/monitor/inference_metrics.sql
+-- @include schema/tables/monitor/session.sql
+-- @include schema/tables/monitor/comparison_event.sql
+-- @include schema/tables/monitor/significance_snapshot.sql
+
+-- ── Phase 11: meta tables ────────────────────────────────────────────
+-- @include schema/tables/meta/arena_priming_state.sql
+
+-- ── Phase 12: staging tables ─────────────────────────────────────────
+-- @include schema/tables/staging/staging_entity.sql
+-- @include schema/tables/staging/staging_entity_classification.sql
+-- @include schema/tables/staging/staging_edge.sql
+-- @include schema/tables/staging/staging_edge_member.sql
+-- @include schema/tables/staging/staging_physicality.sql
+-- @include schema/tables/staging/staging_sequence.sql
+-- @include schema/tables/staging/staging_entity_significance.sql
+-- @include schema/tables/staging/staging_entity_model_source.sql
+-- @include schema/tables/staging/staging_junction.sql
+
+-- ── Phase 13: functions ──────────────────────────────────────────────
+-- Reference / utility helpers
+-- @include schema/functions/reference_code_map.sql
+-- @include schema/functions/reference_key_value_map.sql
+-- @include schema/functions/reference_code_text_map.sql
+-- @include schema/functions/reference_int64_set.sql
+-- @include schema/functions/reference_id_by_code.sql
+-- @include schema/functions/resolve_context_id.sql
+-- @include schema/functions/resolve_entity_handles.sql
+-- Reference-data populators
+-- @include schema/functions/populate_general_categories.sql
+-- @include schema/functions/populate_scripts.sql
+-- @include schema/functions/populate_blocks.sql
+-- @include schema/functions/populate_break_properties.sql
+-- @include schema/functions/populate_languages.sql
+-- @include schema/functions/populate_morph_features.sql
+-- @include schema/functions/populate_deprels.sql
+-- @include schema/functions/populate_senses.sql
+-- @include schema/functions/load_wordnet_offset_synset_map.sql
+-- Upserters
+-- @include schema/functions/upsert_reference_edge_type.sql
+-- @include schema/functions/upsert_homogeneous_edge_types.sql
+-- @include schema/functions/upsert_architecture_class.sql
+-- @include schema/functions/upsert_model_registry.sql
+-- @include schema/functions/upsert_model_publisher.sql
+-- @include schema/functions/upsert_model_source.sql
+-- @include schema/functions/upsert_model_pass_checkpoint.sql
+-- @include schema/functions/get_completed_model_passes.sql
+-- Geometry / 4D operators
+-- @include schema/functions/dist_4d.sql
+-- @include schema/functions/geom_bridge_4d.sql
+-- @include schema/functions/entity_centroid_4d.sql
+-- @include schema/functions/populate_edge_trajectories_v2.sql
+-- Read helpers
+-- @include schema/functions/health_summary.sql
+-- @include schema/functions/entity_outbound_edges.sql
+-- @include schema/functions/entity_inbound_edges.sql
+-- @include schema/functions/entity_neighbors.sql
+-- @include schema/functions/get_entity_info_by_handles.sql
+-- @include schema/functions/get_edge_info_by_handles.sql
+-- @include schema/functions/get_outbound_edge_targets.sql
+-- @include schema/functions/get_composition_children.sql
+-- Composition / sequence
+-- @include schema/functions/composition_at.sql
+-- @include schema/functions/composition_before.sql
+-- @include schema/functions/composition_after.sql
+-- @include schema/functions/composition_range.sql
+-- @include schema/functions/composition_subtrajectory.sql
+-- @include schema/functions/composition_parents.sql
+-- @include schema/functions/recompose_text_v2.sql
+-- Significance machinery
+-- @include schema/functions/prime_edge_significance_per_arena.sql
+-- @include schema/functions/prime_unprimed_edges_chunk.sql
+-- @include schema/functions/prune_significance.sql
+-- @include schema/functions/record_comparison.sql
+-- @include schema/functions/record_corroboration.sql
+-- @include schema/functions/record_outcome.sql
+-- @include schema/functions/create_arena.sql
+-- @include schema/functions/create_model_trust_arena.sql
+-- @include schema/functions/populate_codepoint_atoms.sql
+-- Extension-driven UCD/UCA reference + property population (replaces the
+-- C# UCD decomposer's per-codepoint round-trips with five SQL calls). The
+-- functions below depend on the hartonomous extension being loaded —
+-- bootstrap.sql loads it last (Phase 16), so these are declared here but
+-- only callable post-bootstrap. Seed phases (scripts/seed/Ucd.ps1) invoke
+-- them in this exact order.
+-- @include schema/functions/populate_general_categories_from_ext.sql
+-- @include schema/functions/populate_scripts_from_ext.sql
+-- @include schema/functions/populate_blocks_from_ext.sql
+-- @include schema/functions/populate_break_properties_from_ext.sql
+-- @include schema/functions/populate_codepoint_property_from_ext.sql
+-- Staging drain
+-- @include schema/functions/flush_entities_from_staging.sql
+-- @include schema/functions/flush_edges_from_staging.sql
+-- @include schema/functions/flush_edge_members_from_staging.sql
+-- @include schema/functions/flush_physicality_from_staging.sql
+-- @include schema/functions/flush_sequence_from_staging.sql
+-- @include schema/functions/flush_entity_significance_from_staging.sql
+-- @include schema/functions/drain_staging_chunk.sql
+-- @include schema/functions/drain_all_staging.sql
+-- Inference / recall
+-- @include schema/functions/infer.sql
+-- @include schema/functions/infer_topk.sql
+-- @include schema/functions/recall.sql
+-- @include schema/functions/intersect.sql
+-- @include schema/functions/neighborhood.sql
+-- @include schema/functions/surprise.sql
+-- Universal substrate query surface (V1)
+-- @include schema/functions/model_inventory.sql
+-- @include schema/functions/model_vocab_recovered.sql
+-- @include schema/functions/cross_model_consensus.sql
+-- @include schema/functions/cross_model_divergence.sql
+-- @include schema/functions/preview_target_arch.sql
+-- @include schema/functions/refinement_summary.sql
+-- @include schema/functions/tensor_provenance_chain.sql
+-- @include schema/functions/recompose_audit_walk.sql
+
+-- ── Phase 14: procedures ─────────────────────────────────────────────
+-- @include schema/procedures/monitor_create_session.sql
+-- @include schema/procedures/monitor_close_session.sql
+-- @include schema/procedures/monitor_archive_session.sql
+-- @include schema/procedures/monitor_update_phase_status.sql
+-- @include schema/procedures/monitor_report_progress.sql
+-- @include schema/procedures/monitor_snapshot_health.sql
+
+-- ── Phase 15: views ──────────────────────────────────────────────────
+-- @include schema/views/substrate_dashboard.sql
+-- @include schema/views/v_active_runs.sql
+
+-- (No Phase 16 hartonomous CREATE EXTENSION. The hartonomous-pg/sql/
+--  hartonomous--1.0.sql.in template — containing all C-binding type
+--  declarations + substrate.cp_*, ucd_*, text_decompose etc. — is
+--  spliced into the assembled extension SQL at build time, BEFORE the
+--  Phase 13 functions block. See scripts/build/concat_extension_sql.py.)

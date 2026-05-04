@@ -57,7 +57,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         {
             ct.ThrowIfCancellationRequested();
             (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensor, options, ct);
-            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, ct);
+            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, options, ct);
             tensors[name] = new TensorData(dtype, shape, bytes);
         }
 
@@ -80,7 +80,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         {
             ct.ThrowIfCancellationRequested();
             (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensor, options, ct);
-            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, ct);
+            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, options, ct);
             tensors[name] = new TensorData(dtype, shape, bytes);
         }
 
@@ -95,7 +95,104 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         CancellationToken ct)
     {
         SafetensorsFile file = await RecomposeAsync(entity, options, ct);
-        await SafetensorsWriter.WriteAsync(file, output, ct);
+        IReadOnlyDictionary<string, string>? auditMetadata = BuildAuditMetadata(options);
+        await SafetensorsWriter.WriteAsync(file, output, auditMetadata, ct);
+    }
+
+    /// <summary>
+    /// Sharded recompose: writes one or more model-NNNNN-of-MMMMM.safetensors
+    /// shards plus a model.safetensors.index.json into <paramref name="outputDir"/>,
+    /// honoring <see cref="RecompositionOptions.MaxShardBytes"/>. Loads in
+    /// HuggingFace transformers / vLLM / llama.cpp without modification.
+    /// </summary>
+    public async Task RecomposeToShardsAsync(
+        EntityHandle entity,
+        RecompositionOptions options,
+        string outputDir,
+        CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDir);
+        Directory.CreateDirectory(outputDir);
+
+        SafetensorsFile file = await RecomposeAsync(entity, options, ct);
+        IReadOnlyDictionary<string, string>? auditMetadata = BuildAuditMetadata(options);
+
+        List<ShardSplitter.TensorEntry> entries = new(file.Tensors.Count);
+        foreach (KeyValuePair<string, TensorData> kv in file.Tensors)
+        {
+            entries.Add(new ShardSplitter.TensorEntry(kv.Key, kv.Value.Data.Length));
+        }
+        IReadOnlyList<ShardSplitter.ShardPlan> plans =
+            ShardSplitter.Plan(entries, options.MaxShardBytes);
+
+        if (plans.Count == 0)
+        {
+            return;
+        }
+
+        if (plans.Count == 1)
+        {
+            string single = Path.Combine(outputDir, ShardSplitter.ShardFileName(1, 1));
+            await using FileStream fs = File.Create(single);
+            await SafetensorsWriter.WriteAsync(file, fs, auditMetadata, ct);
+            return;
+        }
+
+        foreach (ShardSplitter.ShardPlan plan in plans)
+        {
+            ct.ThrowIfCancellationRequested();
+            Dictionary<string, TensorData> shardTensors = new(plan.TensorNames.Count, StringComparer.Ordinal);
+            foreach (string name in plan.TensorNames)
+            {
+                shardTensors[name] = file.Tensors[name];
+            }
+            SafetensorsFile shardFile = new(shardTensors, file.ModelName);
+            string path = Path.Combine(outputDir, ShardSplitter.ShardFileName(plan.ShardIndex, plan.ShardCount));
+            await using FileStream fs = File.Create(path);
+            await SafetensorsWriter.WriteAsync(shardFile, fs, auditMetadata, ct);
+        }
+
+        string indexPath = Path.Combine(outputDir, "model.safetensors.index.json");
+        await File.WriteAllTextAsync(indexPath, ShardSplitter.BuildIndexJson(plans), ct);
+    }
+
+    private static Dictionary<string, string>? BuildAuditMetadata(RecompositionOptions options)
+    {
+        if (!options.IncludeProvenance)
+        {
+            return null;
+        }
+        Dictionary<string, string> meta = new(StringComparer.Ordinal)
+        {
+            ["hartonomous_recomposer_version"] = "v1",
+            ["hartonomous_mode"] = options.Mode.ToString(),
+            ["hartonomous_refinement_policy"] = options.RefinementPolicy.ToString(),
+            ["hartonomous_quantization_policy"] = options.QuantizationPolicy.ToString(),
+            ["hartonomous_lora_policy"] = options.LoraPolicy.ToString(),
+        };
+        if (!string.IsNullOrEmpty(options.RecipeId))
+        {
+            meta["hartonomous_recipe_id"] = options.RecipeId;
+        }
+        if (!string.IsNullOrEmpty(options.RequantizeTarget))
+        {
+            meta["hartonomous_requantize_target"] = options.RequantizeTarget;
+        }
+        if (options.ArenaCodes is { Count: > 0 } arenaCodes)
+        {
+            meta["hartonomous_arena_codes"] = string.Join(",", arenaCodes);
+        }
+        if (options.SignificanceThreshold > 0)
+        {
+            meta["hartonomous_significance_threshold"] =
+                options.SignificanceThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (options.NoiseFloor > 0)
+        {
+            meta["hartonomous_noise_floor"] =
+                options.NoiseFloor.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return meta;
     }
 
     private async Task<(string Name, string Dtype, int[] Shape)> ReadTensorMetadataAsync(
@@ -139,8 +236,12 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
     /// outcome with no per-position content is a zero-filled buffer of the
     /// correct size — Law #11 sparsity.
     /// </summary>
-    private async Task<byte[]> AssembleTensorBytesAsync(
+    private Task<byte[]> AssembleTensorBytesAsync(
         EntityHandle tensor, string dtype, int[] shape, CancellationToken ct)
+        => AssembleTensorBytesAsync(tensor, dtype, shape, RecompositionOptions.Default, ct);
+
+    private async Task<byte[]> AssembleTensorBytesAsync(
+        EntityHandle tensor, string dtype, int[] shape, RecompositionOptions options, CancellationToken ct)
     {
         long elementCount = 1;
         for (int i = 0; i < shape.Length; i++)
@@ -184,6 +285,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             }
             double[] sliced = new double[length];
             Array.Copy(values, sliced, length);
+            ApplyNoiseFloor(sliced, options.NoiseFloor);
             PackToWire(sliced, dtype, buffer);
             return buffer;
         }
@@ -227,6 +329,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
 
         if (anyScattered)
         {
+            ApplyNoiseFloor(accum, options.NoiseFloor);
             PackToWire(accum, dtype, buffer);
             return buffer;
         }
@@ -264,8 +367,21 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                 }
             }
         }
+        ApplyNoiseFloor(accum, options.NoiseFloor);
         PackToWire(accum, dtype, buffer);
         return buffer;
+    }
+
+    private static void ApplyNoiseFloor(double[] values, double noiseFloor)
+    {
+        if (noiseFloor <= 0 || values is null) { return; }
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (Math.Abs(values[i]) < noiseFloor)
+            {
+                values[i] = 0.0;
+            }
+        }
     }
 
     private async Task<double[]?> TryReadUnitContourAsync(

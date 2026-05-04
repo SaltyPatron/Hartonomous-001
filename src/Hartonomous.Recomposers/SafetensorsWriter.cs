@@ -27,7 +27,22 @@ namespace Hartonomous.Recomposers;
 /// </summary>
 public static class SafetensorsWriter
 {
-    public static async Task WriteAsync(SafetensorsFile file, Stream output, CancellationToken ct)
+    public static Task WriteAsync(SafetensorsFile file, Stream output, CancellationToken ct)
+        => WriteAsync(file, output, auditMetadata: null, ct);
+
+    /// <summary>
+    /// Writes a safetensors file with optional audit-chain metadata embedded
+    /// in the <c>__metadata__</c> block. <paramref name="auditMetadata"/>
+    /// keys (e.g., <c>hartonomous_substrate_state</c>,
+    /// <c>hartonomous_recipe_id</c>, <c>hartonomous_recomposer_version</c>,
+    /// <c>hartonomous_provenance_chain</c>) are written verbatim alongside
+    /// the existing model_name field.
+    /// </summary>
+    public static async Task WriteAsync(
+        SafetensorsFile file,
+        Stream output,
+        IReadOnlyDictionary<string, string>? auditMetadata,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(output);
@@ -58,9 +73,18 @@ public static class SafetensorsWriter
             {
                 writer.WriteStartObject();
 
-                // Optional __metadata__ block carries the model name.
+                // __metadata__ carries the model name plus any audit-chain
+                // keys the recomposer supplied (substrate state Merkle root,
+                // recipe id, recomposer version, provenance chain).
                 writer.WriteStartObject("__metadata__");
                 writer.WriteString("model_name", file.ModelName);
+                if (auditMetadata is not null)
+                {
+                    foreach (KeyValuePair<string, string> kv in auditMetadata)
+                    {
+                        writer.WriteString(kv.Key, kv.Value);
+                    }
+                }
                 writer.WriteEndObject();
 
                 foreach (KeyValuePair<string, TensorData> kv in ordered)

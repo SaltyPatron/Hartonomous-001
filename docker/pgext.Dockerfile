@@ -87,6 +87,12 @@ COPY --from=builder /usr/local/lib/libhartonomous.so /usr/local/lib/libhartonomo
 COPY --from=builder /opt/pg18/lib/postgresql/hartonomous.so /opt/pg18/lib/postgresql/hartonomous.so
 COPY --from=builder /opt/pg18/share/postgresql/extension/hartonomous.control /opt/pg18/share/postgresql/extension/hartonomous.control
 COPY --from=builder /opt/pg18/share/postgresql/extension/hartonomous--*.sql /opt/pg18/share/postgresql/extension/
+# UCD/UCA atom blob: per-block math files + index + global reverse table.
+# Built by `make install-ucd-blob` (PGXS hook in Makefile) into builder's
+# $datadir/extension/hartonomous-ucd/ from src/generated/. Backend mmaps
+# these on _PG_init; without them, substrate.cp_hash/centroid/hilbert
+# return NULL and the determinism gate fails.
+COPY --from=builder /opt/pg18/share/postgresql/extension/hartonomous-ucd /opt/pg18/share/postgresql/extension/hartonomous-ucd
 
 RUN ldconfig
 

@@ -4,23 +4,25 @@
   Drop + recreate the substrate database. Destructive.
 
 .DESCRIPTION
-  Convenience wrapper around Drop + Create + migrate up. Use this when you
-  want the DB back to a pristine migration-applied (but unseeded) state.
+  Convenience wrapper around Drop + Create + Bootstrap. Use this when you
+  want the DB back to a pristine bootstrap-applied (but unseeded) state.
+  Pre-v1 the substrate is bootstrap-only; sql/schema/ is the canonical
+  source of truth.
 
 .PARAMETER Force
   Skip confirmation prompts on the Drop step.
 
-.PARAMETER NoMigrate
-  Skip running migrations after recreating.
+.PARAMETER NoBootstrap
+  Skip running bootstrap after recreating (leaves an empty database).
 
 .EXAMPLE
   pwsh scripts/db/Reset.ps1 -Force
-  pwsh scripts/db/Reset.ps1 -Force -NoMigrate
+  pwsh scripts/db/Reset.ps1 -Force -NoBootstrap
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact='High')]
 param(
     [switch]$Force,
-    [switch]$NoMigrate
+    [switch]$NoBootstrap
 )
 
 Import-Module "$PSScriptRoot\..\lib\Hartonomous.Common.psm1" -Force
@@ -42,9 +44,9 @@ try {
     Invoke-HartStep -Name 'Create database' -Action {
         Invoke-Sub 'Create.ps1' @()
     }
-    if (-not $NoMigrate) {
-        Invoke-HartStep -Name 'migrate up' -Action {
-            Invoke-Sub 'Migrate.ps1' @('-Action', 'up')
+    if (-not $NoBootstrap) {
+        Invoke-HartStep -Name 'bootstrap' -Action {
+            Invoke-Sub 'Bootstrap.ps1' @()
         }
     }
     Exit-Hartonomous -Code $Cfg.ExitCodes.Ok -Message 'Database reset complete.'

@@ -35,6 +35,8 @@ internal static class Program
 {
     private static readonly string[] ConnAliases = ["--connection", "-c"];
     private static readonly string[] DirAliases = ["--dir", "-d"];
+    private static readonly string[] AuditWalkSafetensorsCandidates = ["model.safetensors"];
+    private static readonly string[] ManifestAliases = ["--manifest", "-m"];
 
     public static async Task<int> Main(string[] args)
     {
@@ -68,10 +70,261 @@ internal static class Program
         Command compareModel = BuildCompareModelCommand();
         root.AddCommand(compareModel);
 
+        Command querySubstrate = BuildQuerySubstrateCommand();
+        root.AddCommand(querySubstrate);
+
+        Command auditWalk = BuildAuditWalkCommand();
+        root.AddCommand(auditWalk);
+
         Command health = BuildHealthCommand();
         root.AddCommand(health);
 
+        Command bootstrap = BuildBootstrapCommand();
+        root.AddCommand(bootstrap);
+
         return await root.InvokeAsync(args);
+    }
+
+    private static Command BuildBootstrapCommand()
+    {
+        Option<string> connOpt = new(ConnAliases, () => DefaultConnectionString(), "Connection string");
+        Option<string> manifestOpt = new(
+            ManifestAliases,
+            getDefaultValue: () => Path.Combine("sql", "schema", "bootstrap.sql"),
+            description: "Path to the bootstrap manifest. Default: sql/schema/bootstrap.sql. The file's @include directives are recursively resolved via MigrationFileLoader.LoadResolved before execution.");
+
+        Command cmd = new("bootstrap",
+            "Apply the canonical substrate schema from sql/schema/ to a fresh database. "
+            + "No version tracking, no schema_version writes, no migration numbering — the "
+            + "manifest @includes the schema/ tree in dependency order; reseed re-applies "
+            + "everything. Pre-v1: edit canonical schema files in place, drop+create+bootstrap.");
+        cmd.AddOption(connOpt);
+        cmd.AddOption(manifestOpt);
+
+        cmd.SetHandler(async (string conn, string manifest) =>
+        {
+            string fullPath = Path.IsPathRooted(manifest)
+                ? manifest
+                : Path.GetFullPath(manifest);
+            if (!File.Exists(fullPath))
+            {
+                Console.Error.WriteLine($"Bootstrap manifest not found: {fullPath}");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            Console.WriteLine($"==== Bootstrap: resolving {fullPath} ====");
+            string sql = Hartonomous.Cli.Migrations.MigrationFileLoader.LoadResolved(fullPath);
+
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            await using NpgsqlConnection c = await ds.OpenConnectionAsync(CancellationToken.None);
+            await using NpgsqlTransaction tx = await c.BeginTransactionAsync(CancellationToken.None);
+            try
+            {
+                await using NpgsqlCommand command = new(sql, c, tx);
+                command.CommandTimeout = 600; // bootstrap can apply ~hundreds of statements
+                await command.ExecuteNonQueryAsync(CancellationToken.None);
+                await tx.CommitAsync(CancellationToken.None);
+                Console.WriteLine("==== Bootstrap complete ====");
+            }
+            catch (Exception ex)
+            {
+                await tx.RollbackAsync(CancellationToken.None);
+                Console.Error.WriteLine($"Bootstrap failed: {ex.Message}");
+                throw;
+            }
+        }, connOpt, manifestOpt);
+
+        return cmd;
+    }
+
+    private static Command BuildQuerySubstrateCommand()
+    {
+        Option<string> connOpt = new(ConnAliases, () => DefaultConnectionString(), "Connection string");
+        Option<string> archHashOpt = new("--arch-hash", "model_architecture entity BLAKE3 hash (64 hex chars)");
+        archHashOpt.IsRequired = true;
+
+        Command cmd = new("query-substrate",
+            "Print the universal substrate inventory for an ingested model: tensor count, "
+            + "distinct layers/heads/MoE-experts, vocab recovered, firefly count, refinement preview "
+            + "rows. Calls substrate.model_inventory + substrate.model_vocab_recovered + "
+            + "substrate.refinement_summary. Drives the future model-config UI's model card.");
+        cmd.AddOption(connOpt);
+        cmd.AddOption(archHashOpt);
+
+        cmd.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
+            string archHashHex = ctx.ParseResult.GetValueForOption(archHashOpt)!;
+            byte[] archHash = Convert.FromHexString(archHashHex);
+
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            await using NpgsqlConnection c = await ds.OpenConnectionAsync(CancellationToken.None);
+
+            Console.WriteLine($"=== Substrate inventory for arch={archHashHex[..16]}… ===");
+
+            // model_inventory
+            await using (NpgsqlCommand inv = new(
+                "SELECT metric_code, metric_value, metric_detail FROM substrate.model_inventory($1) ORDER BY metric_code", c))
+            {
+                inv.Parameters.Add(new NpgsqlParameter { Value = archHash });
+                await using NpgsqlDataReader r = await inv.ExecuteReaderAsync(CancellationToken.None);
+                while (await r.ReadAsync(CancellationToken.None))
+                {
+                    string code = r.GetString(0);
+                    long val = r.GetInt64(1);
+                    string detail = r.IsDBNull(2) ? "" : "  (" + r.GetString(2) + ")";
+                    Console.WriteLine($"  {code,-32} {val,15:N0}{detail}");
+                }
+            }
+
+            // model_vocab_recovered
+            await using (NpgsqlCommand vc = new("SELECT substrate.model_vocab_recovered($1)", c))
+            {
+                vc.Parameters.Add(new NpgsqlParameter { Value = archHash });
+                object? result = await vc.ExecuteScalarAsync(CancellationToken.None);
+                Console.WriteLine($"  {"vocab_recovered",-32} {Convert.ToInt64(result, CultureInfo.InvariantCulture),15:N0}");
+            }
+
+            // refinement_summary (top 20 by delta_mu)
+            Console.WriteLine();
+            Console.WriteLine($"=== Refinement summary (top 20 by Δμ in corroboration_strength) ===");
+            await using (NpgsqlCommand rs = new(@"
+                SELECT edge_type_code, source_only_mu, consensus_mu, delta_mu, above_threshold
+                  FROM substrate.refinement_summary($1, 'corroboration_strength')
+                 ORDER BY delta_mu DESC NULLS LAST
+                 LIMIT 20", c))
+            {
+                rs.Parameters.Add(new NpgsqlParameter { Value = archHash });
+                await using NpgsqlDataReader r = await rs.ExecuteReaderAsync(CancellationToken.None);
+                int row = 0;
+                while (await r.ReadAsync(CancellationToken.None))
+                {
+                    row++;
+                    string edgeType = r.GetString(0);
+                    double srcOnly = r.IsDBNull(1) ? 0 : r.GetDouble(1);
+                    double consensus = r.IsDBNull(2) ? 0 : r.GetDouble(2);
+                    double delta = r.IsDBNull(3) ? 0 : r.GetDouble(3);
+                    bool above = r.IsDBNull(4) ? false : r.GetBoolean(4);
+                    Console.WriteLine($"  {edgeType,-32} src_only={srcOnly,12:F0} consensus={consensus,12:F0} Δ={delta,+12:F0} {(above ? "✓" : " ")}");
+                }
+                if (row == 0)
+                {
+                    Console.WriteLine("  (no refinement summary rows; cross-source corroboration arena empty)");
+                }
+            }
+        });
+
+        return cmd;
+    }
+
+    private static Command BuildAuditWalkCommand()
+    {
+        Option<string> connOpt = new(ConnAliases, () => DefaultConnectionString(), "Connection string");
+        Option<string> outputDirOpt = new("--output-dir", "Path to a recomposed safetensors directory containing model.safetensors (or shards) with __metadata__ audit chain.");
+        outputDirOpt.IsRequired = true;
+
+        Command cmd = new("audit-walk",
+            "Read a recomposed safetensors file's __metadata__.hartonomous_provenance_chain "
+            + "and verify every (tensor, source, arena, μ) tuple via "
+            + "substrate.recompose_audit_walk. Reports drift between claimed and actual μ.");
+        cmd.AddOption(connOpt);
+        cmd.AddOption(outputDirOpt);
+
+        cmd.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
+        {
+            string conn = ctx.ParseResult.GetValueForOption(connOpt)!;
+            string outputDir = ctx.ParseResult.GetValueForOption(outputDirOpt)!;
+
+            string? safetensorsPath = null;
+            foreach (string candidate in AuditWalkSafetensorsCandidates)
+            {
+                string p = Path.Combine(outputDir, candidate);
+                if (File.Exists(p)) { safetensorsPath = p; break; }
+            }
+            if (safetensorsPath is null)
+            {
+                foreach (string p in Directory.EnumerateFiles(outputDir, "model-*.safetensors"))
+                {
+                    safetensorsPath = p; break;
+                }
+            }
+            if (safetensorsPath is null)
+            {
+                Console.Error.WriteLine($"No model.safetensors[-shard] found in {outputDir}");
+                ctx.ExitCode = 2;
+                return;
+            }
+
+            // Read 8-byte LE header length, then header JSON, extract __metadata__.
+            await using FileStream fs = File.OpenRead(safetensorsPath);
+            byte[] sizeBuf = new byte[8];
+            int read = 0;
+            while (read < 8)
+            {
+                int n = await fs.ReadAsync(sizeBuf.AsMemory(read, 8 - read), CancellationToken.None);
+                if (n == 0) { break; }
+                read += n;
+            }
+            ulong headerLen = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(sizeBuf);
+            byte[] headerBytes = new byte[headerLen];
+            read = 0;
+            while (read < (int)headerLen)
+            {
+                int n = await fs.ReadAsync(headerBytes.AsMemory(read, (int)headerLen - read), CancellationToken.None);
+                if (n == 0) { break; }
+                read += n;
+            }
+
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(headerBytes);
+            if (!doc.RootElement.TryGetProperty("__metadata__", out var meta))
+            {
+                Console.Error.WriteLine("No __metadata__ block in safetensors header.");
+                ctx.ExitCode = 3;
+                return;
+            }
+
+            Console.WriteLine($"=== Audit chain for {safetensorsPath} ===");
+            foreach (var prop in meta.EnumerateObject())
+            {
+                Console.WriteLine($"  {prop.Name,-40} {prop.Value.GetString() ?? "(non-string)"}");
+            }
+
+            if (!meta.TryGetProperty("hartonomous_provenance_chain", out var chain))
+            {
+                Console.WriteLine();
+                Console.WriteLine("(No hartonomous_provenance_chain key — audit walk skipped.)");
+                return;
+            }
+
+            await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
+            await using NpgsqlConnection c = await ds.OpenConnectionAsync(CancellationToken.None);
+            await using NpgsqlCommand walk = new(
+                "SELECT chain_index, encode(tensor_hash, 'hex'), claimed_mu, actual_mu, verified, detail "
+                + "FROM substrate.recompose_audit_walk($1::jsonb)", c);
+            walk.Parameters.Add(new NpgsqlParameter { Value = chain.GetRawText() });
+            await using NpgsqlDataReader r = await walk.ExecuteReaderAsync(CancellationToken.None);
+
+            int verifiedCount = 0;
+            int totalCount = 0;
+            while (await r.ReadAsync(CancellationToken.None))
+            {
+                totalCount++;
+                int idx = r.GetInt32(0);
+                string th = r.GetString(1);
+                double claimed = r.IsDBNull(2) ? 0 : r.GetDouble(2);
+                double actual = r.IsDBNull(3) ? double.NaN : r.GetDouble(3);
+                bool verified = r.GetBoolean(4);
+                string detail = r.IsDBNull(5) ? "" : r.GetString(5);
+                if (verified) { verifiedCount++; }
+                Console.WriteLine($"  [{idx,4}] tensor={th[..16]}… claimed={claimed,10:F0} actual={(double.IsNaN(actual) ? "NULL" : actual.ToString("F0", CultureInfo.InvariantCulture)),10} {(verified ? "✓" : "✗")} {detail}");
+            }
+            Console.WriteLine();
+            Console.WriteLine($"Verified {verifiedCount}/{totalCount} chain entries.");
+            if (verifiedCount < totalCount) { ctx.ExitCode = 1; }
+        });
+
+        return cmd;
     }
 
     private static Command BuildHealthCommand()
@@ -259,7 +512,7 @@ internal static class Program
         Option<string> connOpt = new(ConnAliases, () => DefaultConnectionString(), "Connection string");
         Option<string> archHashOpt = new("--arch-hash", "model_architecture entity BLAKE3 hash (64 hex chars)");
         archHashOpt.IsRequired = true;
-        Option<string> outputOpt = new("--output", "Output safetensors path");
+        Option<string> outputOpt = new("--output", "Output safetensors path (file for single-shard, directory when --shard is set)");
         outputOpt.IsRequired = true;
         Option<long[]> sourceIdsOpt = new("--source-id",
             "model_source_id to filter on (repeat for multiple). Omit for unfiltered export.");
@@ -270,11 +523,26 @@ internal static class Program
             "Significance arena context code (e.g. 'model_trust', 'semantic_relevance').");
         Option<int?> limitOpt = new("--limit",
             "Maximum number of tensors to include in the distilled export.");
+        Option<string?> recipeOpt = new("--recipe",
+            "Path to a recipe JSON (Mode/RefinementPolicy/QuantizationPolicy/etc.). Overrides individual flags when present.");
+        Option<double> noiseFloorOpt = new("--noise-floor",
+            getDefaultValue: () => 0.0,
+            description: "Per-element |x| below this is zeroed at recompose (Law #11 sparsity enforcement).");
+        Option<bool> shardOpt = new("--shard",
+            getDefaultValue: () => false,
+            description: "Multi-shard output via ShardSplitter; --output is treated as a directory; emits model.safetensors.index.json.");
+        Option<long> maxShardBytesOpt = new("--max-shard-bytes",
+            getDefaultValue: () => 5_000_000_000L,
+            description: "Maximum bytes per shard when --shard is set (default 5 GB).");
+        Option<bool> includeProvenanceOpt = new("--include-provenance",
+            getDefaultValue: () => true,
+            description: "Emit __metadata__ audit chain (recipe id, recomposer version, mode, policies).");
 
         Command exportModel = new("export-model",
             "Recompose a substrate model_architecture into a safetensors file. "
             + "With filter options the export becomes a distillation query (architecture.md "
-            + "\"Distillation = WHERE clause\").");
+            + "\"Distillation = WHERE clause\"). With --recipe or --shard the full V1 recipe DSL "
+            + "applies (mode, refinement policy, quantization policy, sharding, audit metadata).");
         exportModel.AddOption(connOpt);
         exportModel.AddOption(archHashOpt);
         exportModel.AddOption(outputOpt);
@@ -282,6 +550,11 @@ internal static class Program
         exportModel.AddOption(minMuOpt);
         exportModel.AddOption(contextOpt);
         exportModel.AddOption(limitOpt);
+        exportModel.AddOption(recipeOpt);
+        exportModel.AddOption(noiseFloorOpt);
+        exportModel.AddOption(shardOpt);
+        exportModel.AddOption(maxShardBytesOpt);
+        exportModel.AddOption(includeProvenanceOpt);
 
         exportModel.SetHandler(async (System.CommandLine.Invocation.InvocationContext ctx) =>
         {
@@ -294,6 +567,11 @@ internal static class Program
             double? minMu = ctx.ParseResult.GetValueForOption(minMuOpt);
             string? context = ctx.ParseResult.GetValueForOption(contextOpt);
             int? limit = ctx.ParseResult.GetValueForOption(limitOpt);
+            string? recipePath = ctx.ParseResult.GetValueForOption(recipeOpt);
+            double noiseFloor = ctx.ParseResult.GetValueForOption(noiseFloorOpt);
+            bool shard = ctx.ParseResult.GetValueForOption(shardOpt);
+            long maxShardBytes = ctx.ParseResult.GetValueForOption(maxShardBytesOpt);
+            bool includeProvenance = ctx.ParseResult.GetValueForOption(includeProvenanceOpt);
 
             await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
             Hartonomous.Engine.Data.NpgsqlEntityReader entityReader = new(ds);
@@ -305,6 +583,25 @@ internal static class Program
 
             bool filtered = sourceIds.Length > 0 || minMu.HasValue || !string.IsNullOrEmpty(context) || limit.HasValue;
 
+            // Build options. --recipe path takes precedence; individual flags
+            // override otherwise.
+            Hartonomous.Core.Recomposition.RecompositionOptions opts;
+            if (!string.IsNullOrEmpty(recipePath))
+            {
+                opts = LoadRecipeOptions(recipePath, noiseFloor, maxShardBytes, includeProvenance);
+                Console.WriteLine($"=== Recipe: {recipePath} ===");
+            }
+            else
+            {
+                opts = new()
+                {
+                    MaxDepth = 20,
+                    NoiseFloor = noiseFloor,
+                    MaxShardBytes = maxShardBytes,
+                    IncludeProvenance = includeProvenance,
+                };
+            }
+
             Console.WriteLine($"=== {(filtered ? "Distilling" : "Exporting")} model_architecture {archHandle} → {output} ===");
             if (filtered)
             {
@@ -313,9 +610,30 @@ internal static class Program
                 if (!string.IsNullOrEmpty(context)) { Console.WriteLine($"  --context={context}"); }
                 if (limit.HasValue) { Console.WriteLine($"  --limit={limit.Value}"); }
             }
+            if (noiseFloor > 0)            { Console.WriteLine($"  --noise-floor={noiseFloor}"); }
+            if (opts.SignificanceThreshold > 0) { Console.WriteLine($"  significance_threshold={opts.SignificanceThreshold}"); }
+            if (shard)                     { Console.WriteLine($"  --shard --max-shard-bytes={maxShardBytes:N0}"); }
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
 
-            Hartonomous.Core.Recomposition.RecompositionOptions opts = new() { MaxDepth = 20 };
+            if (shard)
+            {
+                Directory.CreateDirectory(output);
+                await recomposer.RecomposeToShardsAsync(archHandle, opts, output, CancellationToken.None);
+                sw.Stop();
+                long total = 0;
+                int shardCount = 0;
+                foreach (string shardFile in Directory.EnumerateFiles(output, "*.safetensors"))
+                {
+                    total += new FileInfo(shardFile).Length;
+                    shardCount++;
+                }
+                Console.WriteLine($"Shards written: {shardCount}");
+                Console.WriteLine($"Total bytes: {total:N0}");
+                Console.WriteLine($"Index: {Path.Combine(output, "model.safetensors.index.json")}");
+                Console.WriteLine($"Elapsed: {sw.Elapsed.TotalSeconds:F1}s");
+                return;
+            }
+
             Hartonomous.Recomposers.SafetensorsFile file;
             if (filtered)
             {
@@ -333,9 +651,29 @@ internal static class Program
                 file = await recomposer.RecomposeAsync(archHandle, opts, CancellationToken.None);
             }
 
+            // Build audit metadata when --include-provenance is set, mirroring
+            // RecomposeToStreamAsync's path.
+            IReadOnlyDictionary<string, string>? auditMetadata = null;
+            if (includeProvenance)
+            {
+                auditMetadata = new Dictionary<string, string>
+                {
+                    ["hartonomous_recomposer_version"] = "v1",
+                    ["hartonomous_mode"] = opts.Mode.ToString(),
+                    ["hartonomous_refinement_policy"] = opts.RefinementPolicy.ToString(),
+                    ["hartonomous_quantization_policy"] = opts.QuantizationPolicy.ToString(),
+                    ["hartonomous_lora_policy"] = opts.LoraPolicy.ToString(),
+                    ["hartonomous_noise_floor"] = noiseFloor.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                };
+                if (!string.IsNullOrEmpty(opts.RecipeId))
+                {
+                    ((Dictionary<string, string>)auditMetadata)["hartonomous_recipe_id"] = opts.RecipeId;
+                }
+            }
+
             await using (FileStream fs = File.Create(output))
             {
-                await Hartonomous.Recomposers.SafetensorsWriter.WriteAsync(file, fs, CancellationToken.None);
+                await Hartonomous.Recomposers.SafetensorsWriter.WriteAsync(file, fs, auditMetadata, CancellationToken.None);
             }
 
             sw.Stop();
@@ -346,6 +684,93 @@ internal static class Program
         });
 
         return exportModel;
+    }
+
+    private static Hartonomous.Core.Recomposition.RecompositionOptions LoadRecipeOptions(
+        string recipePath, double cliNoiseFloor, long cliMaxShardBytes, bool cliIncludeProvenance)
+    {
+        if (!File.Exists(recipePath))
+        {
+            throw new FileNotFoundException($"Recipe file not found: {recipePath}");
+        }
+        string json = File.ReadAllText(recipePath);
+        using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json);
+        System.Text.Json.JsonElement root = doc.RootElement;
+
+        Hartonomous.Core.Recomposition.RecompositionMode mode =
+            root.TryGetProperty("mode", out var m) && Enum.TryParse(m.GetString(),
+                out Hartonomous.Core.Recomposition.RecompositionMode parsedMode)
+                ? parsedMode
+                : Hartonomous.Core.Recomposition.RecompositionMode.Refinement;
+
+        Hartonomous.Core.Recomposition.RefinementPolicy policy =
+            root.TryGetProperty("refinement_policy", out var rp) && Enum.TryParse(rp.GetString(),
+                out Hartonomous.Core.Recomposition.RefinementPolicy parsedPolicy)
+                ? parsedPolicy
+                : Hartonomous.Core.Recomposition.RefinementPolicy.SourceOnly;
+
+        Hartonomous.Core.Recomposition.QuantizationPolicy qp =
+            root.TryGetProperty("quantization_policy", out var qpe) && Enum.TryParse(qpe.GetString(),
+                out Hartonomous.Core.Recomposition.QuantizationPolicy parsedQp)
+                ? parsedQp
+                : Hartonomous.Core.Recomposition.QuantizationPolicy.Preserve;
+
+        Hartonomous.Core.Recomposition.LoraPolicy lp =
+            root.TryGetProperty("lora_policy", out var lpe) && Enum.TryParse(lpe.GetString(),
+                out Hartonomous.Core.Recomposition.LoraPolicy parsedLp)
+                ? parsedLp
+                : Hartonomous.Core.Recomposition.LoraPolicy.None;
+
+        double noiseFloor = root.TryGetProperty("noise_floor", out var nf) && nf.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? nf.GetDouble()
+            : cliNoiseFloor;
+
+        double sigThreshold = root.TryGetProperty("significance_threshold", out var st) && st.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? st.GetDouble()
+            : 0.0;
+
+        long maxShardBytes = root.TryGetProperty("max_shard_bytes", out var msb) && msb.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? msb.GetInt64()
+            : cliMaxShardBytes;
+
+        string? requantizeTarget = root.TryGetProperty("requantize_target", out var rt) ? rt.GetString() : null;
+        string? provenanceFilter = root.TryGetProperty("provenance_filter", out var pf) ? pf.GetString() : null;
+
+        List<string>? arenaCodes = null;
+        if (root.TryGetProperty("arena_codes", out var ac) && ac.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            arenaCodes = [];
+            foreach (var ace in ac.EnumerateArray())
+            {
+                string? s = ace.GetString();
+                if (!string.IsNullOrEmpty(s)) { arenaCodes.Add(s); }
+            }
+        }
+
+        string? targetArchSpecJson = root.TryGetProperty("target_arch_spec", out var tas)
+            ? tas.GetRawText()
+            : null;
+
+        // Compute recipe content hash for replayable identity.
+        Hartonomous.Core.Compute.IComputeFacade compute = Hartonomous.Core.Compute.ComputeFacade.Instance;
+        Hartonomous.Core.Recomposition.RecompositionOptions opts = new()
+        {
+            MaxDepth = 20,
+            Mode = mode,
+            RefinementPolicy = policy,
+            QuantizationPolicy = qp,
+            LoraPolicy = lp,
+            RequantizeTarget = requantizeTarget,
+            ProvenanceFilter = provenanceFilter,
+            ArenaCodes = arenaCodes,
+            SignificanceThreshold = sigThreshold,
+            NoiseFloor = noiseFloor,
+            MaxShardBytes = maxShardBytes,
+            IncludeProvenance = cliIncludeProvenance,
+            TargetArchSpecJson = targetArchSpecJson,
+        };
+        string recipeId = Hartonomous.Recomposers.RecipeContentHash.Compute(opts, compute);
+        return opts with { RecipeId = recipeId };
     }
 
     private static void PrepareNativeLoadPath()
@@ -791,6 +1216,12 @@ internal static class Program
                         if (depResult.Status == PhaseStatus.Failed)
                         {
                             Console.Error.WriteLine($"Dependency {dep} failed: {depResult.ErrorMessage}");
+                            // Exit non-zero so wrapper scripts (scripts/seed/*.ps1)
+                            // see the dependency failure. Plain `return` exits 0
+                            // and silently masks the error — bug observed when
+                            // every seed phase reported "OK" while UcdUca dep
+                            // was duplicate-keying on substrate.codepoint_property.
+                            Environment.ExitCode = 1;
                             return;
                         }
                     }
@@ -802,6 +1233,10 @@ internal static class Program
             if (result.ErrorMessage is not null)
             {
                 Console.Error.WriteLine($"  Error: {result.ErrorMessage}");
+            }
+            if (result.Status == PhaseStatus.Failed)
+            {
+                Environment.ExitCode = 1;
             }
         }
         else

@@ -19,9 +19,29 @@ OBJS         = src/hartonomous.o \
                src/pg_casts.o \
                src/pg_geometry4d.o \
                src/pg_gist_geometry4d.o \
-               src/pg_spgist_geometry4d.o
+               src/pg_spgist_geometry4d.o \
+               src/pg_text_decompose.o \
+               src/pg_codepoint_atoms_pg.o \
+               src/pg_ucd_atoms_blob.o \
+               src/generated/pg_ucd_segmentation.o \
+               src/generated/pg_ucd_classification.o \
+               src/generated/pg_ucd_casing.o \
+               src/generated/pg_ucd_pictographic.o \
+               src/generated/pg_ucd_decomp.o \
+               src/generated/pg_ucd_fcf.o \
+               src/generated/pg_ucd_uca.o \
+               src/generated/pg_ucd_names.o \
+               src/generated/pg_ucd_inventory.o \
+               src/generated/pg_ucd_tier1.o
 
 DATA         = sql/hartonomous--$(EXTVERSION).sql
+
+# UCD atoms blob — math-derived per-codepoint data, shipped under
+# $share/extension/hartonomous-ucd/ for runtime mmap. The loader in
+# pg_ucd_atoms_blob.c looks here by default; HARTONOMOUS_UCD_BLOB_DIR
+# env var overrides.
+UCD_BLOB_DIR = $(DESTDIR)$(datadir)/extension/hartonomous-ucd
+UCD_BLOB_SRC = src/generated
 PG_CPPFLAGS  = -I$(srcdir)/../libhartonomous/include
 # Disable LTO: PG's default CFLAGS on Debian/Ubuntu enable -flto which triggers
 # a GCC internal compiler error (try_forward_edges, cfgcleanup.cc) on the
@@ -52,3 +72,15 @@ REGRESS_OPTS = --inputdir=test
 PG_CONFIG   ?= pg_config
 PGXS        := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+# Install UCD atoms blob (idx + reverse + per-block files) alongside
+# the extension. PGXS hooks 'install' via the 'all' target — we tack
+# the blob deploy on as a post-install action.
+.PHONY: install-ucd-blob
+install-ucd-blob:
+	@mkdir -p $(UCD_BLOB_DIR)/blocks
+	@cp -f $(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.idx $(UCD_BLOB_DIR)/
+	@cp -f $(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.reverse.bin $(UCD_BLOB_DIR)/
+	@cp -f $(UCD_BLOB_SRC)/blocks/*.bin $(UCD_BLOB_DIR)/blocks/
+	@echo "hartonomous-ucd: deployed $(UCD_BLOB_DIR)"
+install: install-ucd-blob

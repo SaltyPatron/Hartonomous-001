@@ -104,15 +104,40 @@ public static class CanonicalTextDecomposer
         //   * the codepoint_property junction is populated by the UCD/UCA
         //     decomposer at seed time, not here — but inference can JOIN
         //     against it given a codepoint hash, so this hash IS the bridge
-        EntityHandle[] cpHandles = new EntityHandle[codepoints.Count];
-        byte[][] cpHashes = new byte[codepoints.Count][];
+        //
+        // Hashing is offloaded to native via Blake3.HashMany — one FFI call
+        // per text instead of per-codepoint, eliminating ~N P/Invoke
+        // trampolines per text. The C# loop is pure marshalling: fill rune
+        // bytes, call native, then write the staging records.
+        int cpCount = codepoints.Count;
+        EntityHandle[] cpHandles = new EntityHandle[cpCount];
+        byte[][] cpHashes = new byte[cpCount][];
         (double X, double Y, double Z, double M)[] cpCentroids =
-            new (double, double, double, double)[codepoints.Count];
+            new (double, double, double, double)[cpCount];
 
-        for (int i = 0; i < codepoints.Count; i++)
+        // Pack each rune as 4 big-endian bytes into a single contiguous
+        // buffer, then expose per-codepoint slices to Blake3.HashMany via
+        // ReadOnlyMemory<byte> windows. One pinned region, one native call.
+        byte[] cpRuneBuf = new byte[cpCount * 4];
+        ReadOnlyMemory<byte>[] cpInputs = new ReadOnlyMemory<byte>[cpCount];
+        for (int i = 0; i < cpCount; i++)
         {
             int rune = codepoints[i].Codepoint;
-            byte[] hash = HashCodepoint(rune);
+            int off = i * 4;
+            cpRuneBuf[off]     = (byte)(rune >> 24);
+            cpRuneBuf[off + 1] = (byte)(rune >> 16);
+            cpRuneBuf[off + 2] = (byte)(rune >> 8);
+            cpRuneBuf[off + 3] = (byte)rune;
+            cpInputs[i] = new ReadOnlyMemory<byte>(cpRuneBuf, off, 4);
+        }
+        byte[] cpHashFlat = new byte[cpCount * Blake3.HashLen];
+        Blake3.HashMany(cpInputs, cpHashFlat);
+
+        for (int i = 0; i < cpCount; i++)
+        {
+            int rune = codepoints[i].Codepoint;
+            byte[] hash = new byte[Blake3.HashLen];
+            cpHashFlat.AsSpan(i * Blake3.HashLen, Blake3.HashLen).CopyTo(hash);
             EntityHandle handle = batch.AddEntity(hash, "codepoint");
             cpHandles[i] = handle;
             cpHashes[i] = hash;
@@ -149,10 +174,11 @@ public static class CanonicalTextDecomposer
         //   * multi-cp graphemes get a contour LINESTRINGZM through codepoint centroids
         //   * sequence: grapheme → codepoint at each ordinal, RLE-compressed
         //   * source_authority significance prior
-        EntityHandle[] gcHandles = new EntityHandle[graphemeRanges.Count];
-        byte[][] gcHashes = new byte[graphemeRanges.Count][];
+        int gcN = graphemeRanges.Count;
+        EntityHandle[] gcHandles = new EntityHandle[gcN];
+        byte[][] gcHashes = new byte[gcN][];
         (double X, double Y, double Z, double M)[] gcCentroids =
-            new (double, double, double, double)[graphemeRanges.Count];
+            new (double, double, double, double)[gcN];
 
         // Build offset → codepoint-index map once for O(1) range slicing.
         Dictionary<long, int> cpIndexByByteOffset = new(codepoints.Count);
@@ -161,14 +187,48 @@ public static class CanonicalTextDecomposer
             cpIndexByByteOffset[codepoints[i].ByteOffset] = i;
         }
 
-        for (int gi = 0; gi < graphemeRanges.Count; gi++)
+        // Batch all grapheme Merkle hashes in one native call. For each
+        // grapheme range, build a contiguous concat-of-child-hashes input
+        // and hand the whole array to Blake3.HashMany — single P/Invoke
+        // instead of one per grapheme cluster.
+        int[] gcFirstCp = new int[gcN];
+        int[] gcCpCnt   = new int[gcN];
+        long totalConcatBytes = 0;
+        for (int gi = 0; gi < gcN; gi++)
         {
             GraphemeRange gr = graphemeRanges[gi];
-            int firstCp = cpIndexByByteOffset[gr.ByteOffset];
-            int gcCpCount = gr.CodepointLength;
+            gcFirstCp[gi] = cpIndexByByteOffset[gr.ByteOffset];
+            gcCpCnt[gi]   = gr.CodepointLength;
+            totalConcatBytes += (long)gr.CodepointLength * Blake3.HashLen;
+        }
+        byte[] gcConcatBuf = new byte[totalConcatBytes];
+        ReadOnlyMemory<byte>[] gcInputs = new ReadOnlyMemory<byte>[gcN];
+        long gcOff = 0;
+        for (int gi = 0; gi < gcN; gi++)
+        {
+            int firstCp = gcFirstCp[gi];
+            int cnt     = gcCpCnt[gi];
+            int regionLen = cnt * Blake3.HashLen;
+            for (int k = 0; k < cnt; k++)
+            {
+                cpHashes[firstCp + k].CopyTo(gcConcatBuf.AsSpan((int)(gcOff + (long)k * Blake3.HashLen)));
+            }
+            gcInputs[gi] = new ReadOnlyMemory<byte>(gcConcatBuf, (int)gcOff, regionLen);
+            gcOff += regionLen;
+        }
+        byte[] gcHashFlat = new byte[gcN * Blake3.HashLen];
+        if (gcN > 0)
+        {
+            Blake3.HashMany(gcInputs, gcHashFlat);
+        }
 
-            // Slice the codepoint hashes belonging to this grapheme cluster.
-            byte[] gcHash = ComputeMerkleHashSlice(cpHashes, firstCp, gcCpCount);
+        for (int gi = 0; gi < gcN; gi++)
+        {
+            int firstCp = gcFirstCp[gi];
+            int gcCpCount = gcCpCnt[gi];
+
+            byte[] gcHash = new byte[Blake3.HashLen];
+            gcHashFlat.AsSpan(gi * Blake3.HashLen, Blake3.HashLen).CopyTo(gcHash);
             EntityHandle gcHandle = batch.AddEntity(gcHash, "grapheme_cluster");
             gcHandles[gi] = gcHandle;
             gcHashes[gi] = gcHash;
@@ -217,7 +277,7 @@ public static class CanonicalTextDecomposer
         // raw_span text_compositions so byte-identical round-trip recompose
         // works. AlphaNumeric / language-specific ranges are emitted as
         // word_form entities.
-        List<WordRange> wordRanges =
+        List<WordRange> rawWordRanges =
             WordBoundaries.EnumerateWords(utf8, codepointProperties);
 
         Dictionary<long, int> gcIndexByByteOffset = new(graphemeRanges.Count);
@@ -226,23 +286,73 @@ public static class CanonicalTextDecomposer
             gcIndexByByteOffset[graphemeRanges[gi].ByteOffset] = gi;
         }
 
+        // Filter to word ranges that align to grapheme cluster boundaries.
+        // UAX #29 word boundaries occasionally fall mid-grapheme (emoji ZWJ
+        // sequences inside word context, etc.). Keeping only aligned words
+        // means entity emission and centroid trajectory walk both iterate
+        // the same list — no divergent indices.
+        List<WordRange> wordRanges = new(rawWordRanges.Count);
+        foreach (WordRange wr in rawWordRanges)
+        {
+            if (gcIndexByByteOffset.ContainsKey(wr.ByteOffset))
+            {
+                wordRanges.Add(wr);
+            }
+        }
+
         // Each word range covers some prefix of grapheme clusters starting
         // at gr.ByteOffset == word.ByteOffset. We walk forward grapheme by
         // grapheme until we reach word.ByteOffset + word.ByteLength.
-        List<EntityHandle> compositionChildHandles = new(wordRanges.Count);
-        List<byte[]> compositionChildHashes = new(wordRanges.Count);
+        int wN = wordRanges.Count;
+        List<EntityHandle> compositionChildHandles = new(wN);
+        List<byte[]> compositionChildHashes = new(wN);
 
-        for (int wi = 0; wi < wordRanges.Count; wi++)
+        // Batch all word_form Merkle hashes in one native call. Same shape as
+        // the grapheme batch above — pre-compute every hash via Blake3.HashMany
+        // (one P/Invoke), then iterate for staging emission.
+        int[] wFirstGc = new int[wN];
+        int[] wGcCnt   = new int[wN];
+        long wTotalBytes = 0;
+        for (int wi = 0; wi < wN; wi++)
         {
             WordRange wr = wordRanges[wi];
-            int firstGc = gcIndexByByteOffset[wr.ByteOffset];
-            int gcCount = CountGraphemesInWord(graphemeRanges, firstGc, wr);
+            wFirstGc[wi] = gcIndexByByteOffset[wr.ByteOffset];
+            wGcCnt[wi]   = CountGraphemesInWord(graphemeRanges, wFirstGc[wi], wr);
+            wTotalBytes += (long)wGcCnt[wi] * Blake3.HashLen;
+        }
+        byte[] wConcatBuf = new byte[wTotalBytes];
+        ReadOnlyMemory<byte>[] wInputs = new ReadOnlyMemory<byte>[wN];
+        long wOff = 0;
+        for (int wi = 0; wi < wN; wi++)
+        {
+            int firstGc = wFirstGc[wi];
+            int cnt     = wGcCnt[wi];
+            int regionLen = cnt * Blake3.HashLen;
+            for (int k = 0; k < cnt; k++)
+            {
+                gcHashes[firstGc + k].CopyTo(wConcatBuf.AsSpan((int)(wOff + (long)k * Blake3.HashLen)));
+            }
+            wInputs[wi] = new ReadOnlyMemory<byte>(wConcatBuf, (int)wOff, regionLen);
+            wOff += regionLen;
+        }
+        byte[] wHashFlat = new byte[wN * Blake3.HashLen];
+        if (wN > 0)
+        {
+            Blake3.HashMany(wInputs, wHashFlat);
+        }
+
+        for (int wi = 0; wi < wN; wi++)
+        {
+            WordRange wr = wordRanges[wi];
+            int firstGc = wFirstGc[wi];
+            int gcCount = wGcCnt[wi];
 
             string entityType = wr.Kind == WordKind.Other
                 ? "text_composition"  // raw spans (whitespace/punct) — recursive composition
                 : "word_form";
 
-            byte[] wfHash = ComputeMerkleHashSlice(gcHashes, firstGc, gcCount);
+            byte[] wfHash = new byte[Blake3.HashLen];
+            wHashFlat.AsSpan(wi * Blake3.HashLen, Blake3.HashLen).CopyTo(wfHash);
             EntityHandle wfHandle = batch.AddEntity(wfHash, entityType);
 
             // Word_form trajectory = LINESTRINGZM through grapheme_cluster

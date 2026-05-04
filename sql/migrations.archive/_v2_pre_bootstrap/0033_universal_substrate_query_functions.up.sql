@@ -1,0 +1,18 @@
+-- Stage 0037: Universal substrate query surface for V1 mix-and-match recompose
+-- and audit. Adds the SQL functions that drive:
+--   1. Validation gates: model_inventory, model_vocab_recovered, refinement_summary
+--   2. Cross-model analysis: cross_model_consensus, cross_model_divergence
+--   3. Mix-and-match preview: preview_target_arch
+--   4. Audit chain: tensor_provenance_chain, recompose_audit_walk
+--
+-- Per the V1 plan's Phase 3. Future visualization UI consumes these functions
+-- directly; future model-config UI's Preview panel calls preview_target_arch.
+--
+-- @include schema/functions/model_inventory.sql
+-- @include schema/functions/model_vocab_recovered.sql
+-- @include schema/functions/cross_model_consensus.sql
+-- @include schema/functions/cross_model_divergence.sql
+-- @include schema/functions/preview_target_arch.sql
+-- @include schema/functions/refinement_summary.sql
+-- @include schema/functions/tensor_provenance_chain.sql
+-- @include schema/functions/recompose_audit_walk.sql

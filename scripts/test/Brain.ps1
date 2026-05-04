@@ -21,7 +21,8 @@ Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
 $testFiles = @(
     "sql/tests/brain_4d_tests.sql",
-    "sql/tests/geom_4d_tests.sql"
+    "sql/tests/geom_4d_tests.sql",
+    "sql/tests/schema_completeness_tests.sql"
 )
 foreach ($f in $testFiles) {
     if (-not (Test-Path $f)) {

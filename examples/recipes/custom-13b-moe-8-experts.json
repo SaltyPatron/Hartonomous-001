@@ -1,0 +1,41 @@
+{
+  "name": "custom-13b-moe-8-experts",
+  "description": "Mode 2 origination — Laplace original. Custom 13B-parameter decoder-only MoE with 8 experts top-2 routed, vocab subset of top 32K tokens by cross-model consensus, BF16 weights. Substrate clusters edges by arena dominance into the 8 experts at recompose. No retraining; pure substrate projection.",
+  "mode": "Origination",
+  "refinement_policy": "Consensus",
+  "quantization_policy": "Preserve",
+  "lora_policy": "None",
+  "max_shard_bytes": 5000000000,
+  "provenance_filter": "p.curator_class IN ('authoritative_standard', 'academic_curated', 'model_derived')",
+  "arena_codes": ["semantic_relevance", "corroboration_strength", "syntactic_role_fitness"],
+  "significance_threshold": 60000.0,
+  "noise_floor": 1e-3,
+  "target_arch_spec": {
+    "architecture_class": "LlamaForCausalLM",
+    "hidden_size": 5120,
+    "num_layers": 40,
+    "num_attention_heads": 40,
+    "num_kv_heads": 8,
+    "vocab_size": 32768,
+    "ffn_intermediate": 13824,
+    "max_position_embeddings": 32768,
+    "moe_experts": {
+      "num_experts": 8,
+      "top_k": 2,
+      "experts": [
+        {"size": "5120x13824", "arena": "semantic_relevance"},
+        {"size": "5120x13824", "arena": "syntactic_role_fitness"},
+        {"size": "5120x13824", "arena": "translation_quality"},
+        {"size": "5120x13824", "arena": "corroboration_strength"},
+        {"size": "5120x13824", "arena": "lexical_disambiguation"},
+        {"size": "5120x13824", "arena": "morphological_productivity"},
+        {"size": "5120x13824", "arena": "frequency_significance"},
+        {"size": "5120x13824", "arena": "attention_pattern_confidence"}
+      ]
+    },
+    "rope_theta": 500000.0
+  },
+  "vocab_subset_strategy": "top_k_by_consensus",
+  "vocab_subset_size": 32768,
+  "include_provenance": true
+}

@@ -1,0 +1,6 @@
+-- Stage 0031: register the embedding_firefly physicality type. The
+-- existing EmbeddingFireflyPass calls AddPhysicalityPoint4d(token_entity,
+-- "embedding_firefly", x, y, z, magnitude) — without this row in
+-- substrate.physicality_type, every firefly insert dangles on a
+-- non-existent type_id. Single-line additive migration.
+-- @include schema/seed/physicality_type_embedding_firefly.sql

@@ -220,6 +220,45 @@ public sealed partial class BackgroundSignificancePrimer : IAsyncDisposable
         Log.ArenasRefreshed(_logger, _arenas.Count);
     }
 
+    /// <summary>
+    /// Prime a single arena synchronously: loop substrate.prime_unprimed_edges_chunk(arenaId, chunkSize)
+    /// in C# until it returns 0 newly-inserted rows. The chunking control loop lives here, in .NET — the
+    /// SQL function does one set-based INSERT per chunk and nothing else. Use this for explicit init
+    /// (e.g., after creating a new arena via substrate.create_arena) when the caller needs the backfill
+    /// completed before proceeding rather than waiting for the background pass to drain it.
+    /// </summary>
+    public async Task<long> InitializeArenaAsync(int arenaId, CancellationToken ct = default)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        long total = 0;
+        long primed;
+        do
+        {
+            ct.ThrowIfCancellationRequested();
+            Stopwatch sw = Stopwatch.StartNew();
+            await using NpgsqlCommand cmd = new(
+                "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = arenaId });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = PrimeChunkRows });
+            cmd.CommandTimeout = 1800;
+            object? raw = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            primed = raw switch
+            {
+                long l => l,
+                int i  => i,
+                _      => 0L,
+            };
+            total += primed;
+            if (primed > 0)
+            {
+                Interlocked.Add(ref _edgesPrimed, primed);
+                Log.ArenaPrimed(_logger, arenaId, primed, sw.Elapsed);
+            }
+        }
+        while (primed > 0);
+        return total;
+    }
+
     private static partial class Log
     {
         [LoggerMessage(Level = LogLevel.Information, Message = "BackgroundSignificancePrimer started")]

@@ -124,6 +124,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 
             IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
+            using WiktionaryJsonlParser.StreamingReader reader =
+                new(_jsonlPath, LanguageFilter);
+
             async Task FlushBatchAsync()
             {
                 if (batch.EntityCount == 0 && batch.EdgeCount == 0)
@@ -131,6 +134,10 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                     return;
                 }
                 batchNum++;
+                double pct = reader.TotalBytes > 0
+                    ? 100.0 * (double)reader.BytesRead / (double)reader.TotalBytes
+                    : 0.0;
+                Log.Progress(Logger, pct, reader.BytesRead, reader.TotalBytes, reader.EntriesParsed, batchNum);
                 await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
                     batchNum, "wiktionary", ct);
                 batch = pipeline.CreateBatch(ProvenanceCode);
@@ -154,7 +161,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 return langIdMap.TryGetValue(langCode, out int id) ? id : (int?)null;
             }
 
-            foreach (WiktEntry entry in WiktionaryJsonlParser.Parse(_jsonlPath, LanguageFilter))
+            foreach (WiktEntry entry in reader)
             {
                 ct.ThrowIfCancellationRequested();
                 entryCount++;
@@ -541,5 +548,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         [LoggerMessage(Level = LogLevel.Information,
             Message = "Wiktionary complete: {Entries} entries scanned, {Entities} entities, {Edges} edges")]
         public static partial void DecompositionComplete(ILogger logger, long entries, long entities, long edges);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "wiktionary progress: {Pct:F2}% ({BytesRead:N0}/{TotalBytes:N0} bytes), {Entries:N0} parsed, batch #{BatchNum}")]
+        public static partial void Progress(ILogger logger, double pct, long bytesRead, long totalBytes, long entries, int batchNum);
     }
 }

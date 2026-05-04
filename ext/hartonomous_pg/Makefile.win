@@ -44,7 +44,20 @@ OBJS = \
     src\pg_casts.obj \
     src\pg_geometry4d.obj \
     src\pg_gist_geometry4d.obj \
-    src\pg_spgist_geometry4d.obj
+    src\pg_spgist_geometry4d.obj \
+    src\pg_text_decompose.obj \
+    src\pg_codepoint_atoms_pg.obj \
+    src\pg_ucd_atoms_blob.obj \
+    src\generated\pg_ucd_segmentation.obj \
+    src\generated\pg_ucd_classification.obj \
+    src\generated\pg_ucd_casing.obj \
+    src\generated\pg_ucd_pictographic.obj \
+    src\generated\pg_ucd_decomp.obj \
+    src\generated\pg_ucd_fcf.obj \
+    src\generated\pg_ucd_uca.obj \
+    src\generated\pg_ucd_names.obj \
+    src\generated\pg_ucd_inventory.obj \
+    src\generated\pg_ucd_tier1.obj
 
 REGRESS = hartonomous_test
 REGRESS_OPTS = --inputdir=test --load-extension=$(EXTENSION)
@@ -106,6 +119,11 @@ install: all
 	copy $(EXTENSION).control "$(SHAREDIR)\extension"
 	copy sql\$(EXTENSION)--*.sql "$(SHAREDIR)\extension"
 	copy "$(HARTONOMOUS_DLL_DIR)\hartonomous.dll" "$(BINDIR)"
+	if not exist "$(SHAREDIR)\extension\hartonomous-ucd" mkdir "$(SHAREDIR)\extension\hartonomous-ucd"
+	if not exist "$(SHAREDIR)\extension\hartonomous-ucd\blocks" mkdir "$(SHAREDIR)\extension\hartonomous-ucd\blocks"
+	copy /Y "src\generated\hartonomous-ucd-17.0.0.idx" "$(SHAREDIR)\extension\hartonomous-ucd\"
+	copy /Y "src\generated\hartonomous-ucd-17.0.0.reverse.bin" "$(SHAREDIR)\extension\hartonomous-ucd\"
+	copy /Y "src\generated\blocks\*.bin" "$(SHAREDIR)\extension\hartonomous-ucd\blocks\"
 
 installcheck:
 	"$(PG_REGRESS)" --bindir="$(BINDIR)" $(REGRESS_OPTS) $(REGRESS)

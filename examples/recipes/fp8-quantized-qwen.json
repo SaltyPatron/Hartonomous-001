@@ -1,0 +1,19 @@
+{
+  "name": "fp8-quantized-qwen",
+  "description": "Mode 1 refinement + FP8 E4M3 quantization conversion. Refined Qwen2.5-0.5B emitted as FP8 weights for hardware-targeted deployment. Substrate stores canonical full-precision; QuantizationConvert applies FP8 encoding at materialization.",
+  "mode": "Refinement",
+  "refinement_policy": "Consensus",
+  "quantization_policy": "RequantizeTo",
+  "requantize_target": "fp8-E4M3",
+  "lora_policy": "None",
+  "max_shard_bytes": 5000000000,
+  "arena_codes": ["semantic_relevance", "corroboration_strength"],
+  "significance_threshold": 50000.0,
+  "noise_floor": 1e-3,
+  "hardware_profile": {
+    "vram_gb": 24,
+    "target_throughput_tps": 100,
+    "preferred_dtype": "fp8-E4M3"
+  },
+  "include_provenance": true
+}

@@ -35,19 +35,28 @@ try {
         }
     }
 
-    Invoke-HartStep -Name 'Ensure PostGIS extension' -Action {
-        if (-not (Test-HartPostgisEnabled -Cfg $Cfg)) {
-            Invoke-HartPsql -Cfg $Cfg -Sql 'CREATE EXTENSION IF NOT EXISTS postgis' | Out-Null
+    # PostGIS is declared as a prerequisite in hartonomous.control's
+    # `requires`, so CREATE EXTENSION hartonomous CASCADE will install
+    # it automatically. This step is kept only as a fast-fail signal in
+    # case the postgis extension files are missing from the container.
+    Invoke-HartStep -Name 'Probe PostGIS availability' -Action {
+        $available = Invoke-HartPsqlScalar -Cfg $Cfg -Database $Cfg.Postgres.MaintenanceDatabase `
+            -Sql "SELECT count(*) FROM pg_available_extensions WHERE name = 'postgis'"
+        if ([int]$available -lt 1) {
+            throw "postgis extension is not available in this PG install — check the docker image."
         }
-        Write-HartInfo 'PostGIS ready.'
+        Write-HartInfo 'PostGIS available (will auto-install via hartonomous CASCADE).'
     }
 
-    Invoke-HartStep -Name 'Ensure hartonomous extension' -Action {
-        Invoke-HartPsql -Cfg $Cfg -Sql 'CREATE EXTENSION IF NOT EXISTS hartonomous' | Out-Null
-        Write-HartInfo 'hartonomous extension ready.'
-    }
+    # The hartonomous extension is the substrate. Installing it via
+    # Bootstrap.ps1 creates: substrate + monitor schemas, all domains,
+    # composite types, reference + core + junction tables (with LIST
+    # partitions), reference seed data, native types (point4d/box4d/
+    # geometry4d), C-bound functions (BLAKE3, traversal, glicko_bulk,
+    # text_decompose, cp_*), substrate helper functions, views, opclasses
+    # — atomically in one transaction. Same pattern as PostGIS / pgvector.
 
-    Exit-Hartonomous -Code $Cfg.ExitCodes.Ok -Message 'Database ready.'
+    Exit-Hartonomous -Code $Cfg.ExitCodes.Ok -Message 'Database ready (run Bootstrap.ps1 next to install hartonomous).'
 }
 catch {
     Write-HartError $_.Exception.Message

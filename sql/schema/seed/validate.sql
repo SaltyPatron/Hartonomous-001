@@ -1,29 +1,32 @@
--- Halt apply if seed counts deviate from canonical inventory.
+-- Seed inventory check. Set-based: collects every count that diverges
+-- from the canonical inventory in one pass and raises with the full list,
+-- so a fresh-DB apply doesn't fail on the first count and hide the rest.
 DO $$
 DECLARE
-    cnt INT;
+    failures TEXT[] := ARRAY[]::TEXT[];
+    rec      RECORD;
+    actual   BIGINT;
 BEGIN
-    SELECT COUNT(*) INTO cnt FROM substrate.entity_type;
-    IF cnt <> 54 THEN RAISE EXCEPTION 'entity_type count=% (expected 54)', cnt; END IF;
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('substrate.entity_type',           54),
+            ('substrate.physicality_type',      14),
+            ('substrate.edge_role',              7),
+            ('substrate.significance_context',  10),
+            ('substrate.provenance',            10),
+            ('substrate.lexname',               45),
+            ('substrate.pos',                   17),
+            ('substrate.edge_type',            111)
+        ) AS t(table_name, expected)
+    LOOP
+        EXECUTE format('SELECT count(*) FROM %s', rec.table_name) INTO actual;
+        IF actual <> rec.expected THEN
+            failures := array_append(failures,
+                format('%s = %s (expected %s)', rec.table_name, actual, rec.expected));
+        END IF;
+    END LOOP;
 
-    SELECT COUNT(*) INTO cnt FROM substrate.physicality_type;
-    IF cnt <> 13 THEN RAISE EXCEPTION 'physicality_type count=% (expected 13)', cnt; END IF;
-
-    SELECT COUNT(*) INTO cnt FROM substrate.edge_role;
-    IF cnt <> 7 THEN RAISE EXCEPTION 'edge_role count=% (expected 7)', cnt; END IF;
-
-    SELECT COUNT(*) INTO cnt FROM substrate.significance_context;
-    IF cnt <> 10 THEN RAISE EXCEPTION 'significance_context count=% (expected 10)', cnt; END IF;
-
-    SELECT COUNT(*) INTO cnt FROM substrate.provenance;
-    IF cnt <> 10 THEN RAISE EXCEPTION 'provenance count=% (expected 10)', cnt; END IF;
-
-    SELECT COUNT(*) INTO cnt FROM substrate.lexname;
-    IF cnt <> 45 THEN RAISE EXCEPTION 'lexname count=% (expected 45)', cnt; END IF;
-
-    SELECT COUNT(*) INTO cnt FROM substrate.pos;
-    IF cnt <> 17 THEN RAISE EXCEPTION 'pos count=% (expected 17)', cnt; END IF;
-
-    SELECT COUNT(*) INTO cnt FROM substrate.edge_type;
-    IF cnt <> 111 THEN RAISE EXCEPTION 'edge_type count=% (expected 111)', cnt; END IF;
-END$$;
+    IF array_length(failures, 1) IS NOT NULL THEN
+        RAISE EXCEPTION 'seed inventory mismatch: %', array_to_string(failures, '; ');
+    END IF;
+END $$;

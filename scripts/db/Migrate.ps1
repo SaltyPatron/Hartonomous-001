@@ -1,47 +1,39 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Drive the Hartonomous.Cli migration runner.
+  Deprecated. Pre-v1 substrate is bootstrap-only — there is no migration
+  ledger and no incremental migration runner.
 
-.PARAMETER Action
-  up | down | status.
+.DESCRIPTION
+  This script is retained as a deprecation redirect. The bootstrap apply
+  path is:
 
-.PARAMETER Target
-  Version to roll down to (only with -Action down).
+      pwsh scripts/db/Bootstrap.ps1
 
-.PARAMETER NoBuild
-  Skip the implicit dotnet build before running the CLI.
+  …which runs sql/schema/bootstrap.sql through MigrationFileLoader and
+  applies the canonical schema/ tree in one transaction. Pre-v1 means
+  drop + create + bootstrap is the workflow; edit canonical files in
+  place; reseed re-applies them.
 
-.EXAMPLE
-  pwsh scripts/db/Migrate.ps1 -Action status
-  pwsh scripts/db/Migrate.ps1 -Action up
-  pwsh scripts/db/Migrate.ps1 -Action down -Target 20
+  The legacy migrations directory was retired to
+  sql/migrations.archive/_v2_pre_bootstrap/.
+
+  When the substrate ships v1 and starts maintaining a deployed history,
+  stage migrations re-enter the picture — not before.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [ValidateSet('up','down','status')] [string]$Action,
+    [string]$Action,
     [int]$Target,
     [switch]$NoBuild
 )
 
-Import-Module "$PSScriptRoot\..\lib\Hartonomous.Common.psm1" -Force
-Import-Module "$PSScriptRoot\..\lib\Hartonomous.Phases.psm1"  -Force
+Write-Host '==== scripts/db/Migrate.ps1 is deprecated ====' -ForegroundColor Yellow
+Write-Host 'Pre-v1 substrate is bootstrap-only.' -ForegroundColor Yellow
+Write-Host 'Run scripts/db/Bootstrap.ps1 instead.'  -ForegroundColor Yellow
+Write-Host ''
+Write-Host 'Forwarding to Bootstrap.ps1...'         -ForegroundColor Cyan
+Write-Host ''
 
-$Cfg = Get-HartonomousConfig
-Start-HartonomousLog -ScriptName "db.Migrate.$Action" -Cfg $Cfg
-
-try {
-    Invoke-HartStep -Name "migrate $Action" -Action {
-        if ($Action -eq 'down' -and $PSBoundParameters.ContainsKey('Target')) {
-            Invoke-HartMigrate -Cfg $Cfg -Action $Action -Target $Target -NoBuild:$NoBuild
-        } else {
-            Invoke-HartMigrate -Cfg $Cfg -Action $Action -NoBuild:$NoBuild
-        }
-    }
-    Exit-Hartonomous -Code $Cfg.ExitCodes.Ok -Message "migrate $Action complete."
-}
-catch {
-    Write-HartError $_.Exception.Message
-    Exit-Hartonomous -Code $Cfg.ExitCodes.GenericError
-}
+& (Join-Path $PSScriptRoot 'Bootstrap.ps1')
+exit $LASTEXITCODE

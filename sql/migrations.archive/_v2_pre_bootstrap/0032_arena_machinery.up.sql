@@ -1,0 +1,25 @@
+-- Stage 0036: Arena creation + per-model trust arena convenience.
+--
+-- The substrate already has:
+--   substrate.prime_edge_significance_for_staging() — compound-formula
+--     priming across every arena currently in significance_context.
+--   substrate.initialize_significance(arena_id) — backfill a new arena
+--     against every existing edge.
+--   substrate.record_outcome / record_comparison / record_corroboration —
+--     the Glicko-2 update path.
+--
+-- This migration adds:
+--   substrate.create_arena(code, backfill) — INSERT into significance_context
+--     plus initialize_significance in one operation. The supported entry
+--     point for adding a new arena at runtime, ensuring backfill-by-default.
+--   substrate.create_model_trust_arena(provenance_code) — convenience
+--     wrapper that creates the per-model `model_trust:<provenance>` arena
+--     when a model is ingested.
+--
+-- @include schema/functions/create_arena.sql
+-- @include schema/functions/create_model_trust_arena.sql
+
+-- The CREATE FUNCTION statements live in the @include files referenced above.
+-- This migration body intentionally has no DDL — the function-include layer
+-- (Hartonomous.Cli's migration tool) materializes the functions from the
+-- referenced source files, mirroring the pattern used by 0024 / 0027 / 0029.
