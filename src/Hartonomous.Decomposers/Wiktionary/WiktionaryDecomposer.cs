@@ -12,7 +12,7 @@ using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
 using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Decomposers.Text;
+using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Wiktionary;
@@ -65,7 +65,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 
     public WiktionaryDecomposer(
         DecomposerConfig config,
-        Hartonomous.Decomposers.Text.SubstrateTextDecomposer substrateTextDecomposer,
+        Hartonomous.Core.Text.SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<WiktionaryDecomposer> logger,
         ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,

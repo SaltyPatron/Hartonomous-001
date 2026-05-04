@@ -39,7 +39,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private readonly IReferenceDataWriter? _referenceDataWriter;
     private readonly Hartonomous.Core.Text.Segmentation.ICodepointProperties? _codepointProperties;
     private readonly NpgsqlDataSource? _alignmentDataSource;
-    private readonly Hartonomous.Decomposers.Text.SubstrateTextDecomposer? _substrateTextDecomposer;
+    private readonly Hartonomous.Core.Text.SubstrateTextDecomposer? _substrateTextDecomposer;
 
     public SafetensorsDecomposer(
         DecomposerConfig config,
@@ -51,7 +51,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         IReferenceDataWriter? referenceDataWriter = null,
         Hartonomous.Core.Text.Segmentation.ICodepointProperties? codepointProperties = null,
         NpgsqlDataSource? alignmentDataSource = null,
-        Hartonomous.Decomposers.Text.SubstrateTextDecomposer? substrateTextDecomposer = null)
+        Hartonomous.Core.Text.SubstrateTextDecomposer? substrateTextDecomposer = null)
         : base(config, logger)
     {
         _hubRoot = config.SourceDirectory;

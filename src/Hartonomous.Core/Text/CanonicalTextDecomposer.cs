@@ -10,7 +10,7 @@ namespace Hartonomous.Core.Text;
 /// <summary>
 /// LEGACY canonical text decomposer (C# implementation). Post-W3B the
 /// canonical hot path is <c>substrate.text_decompose</c> in the C extension
-/// (called via <see cref="Hartonomous.Decomposers.Text.SubstrateTextDecomposer"/>).
+/// (called via <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/>).
 /// This C# implementation is retained for cold paths that still call
 /// <see cref="Emit"/> directly:
 /// <list type="bullet">

@@ -13,7 +13,7 @@ using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
 using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Decomposers.Text;
+using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.WordNet;
@@ -63,7 +63,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
 
     public WordNetDecomposer(
         DecomposerConfig config,
-        Hartonomous.Decomposers.Text.SubstrateTextDecomposer substrateTextDecomposer,
+        Hartonomous.Core.Text.SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<WordNetDecomposer> logger,
         ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,

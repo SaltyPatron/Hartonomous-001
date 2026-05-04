@@ -1,7 +1,7 @@
 using System.IO;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Decomposers.Text;
+using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Safetensors.Passes;
@@ -98,25 +98,22 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
 
             Log.ArtifactStart(_logger, context.Source.ModelId, fileName, utf8Bytes.Length);
 
-            // Substrate-side text decomposition. The C extension writes the
-            // codepoint/grapheme/word/composition DAG directly to substrate
-            // core tables in one SPI call. We get back the root hash and
-            // register it on the batch so the has_*_artifact edge below can
-            // FK to it. Per AP-9 the model_source linkage is placement
-            // metadata — passed via p_model_source_id, NOT in the entity hash.
-            // entity_model_source.model_source_id is INT in schema; the C# side
-            // carries it as long for downstream API compatibility.
-            int? modelSourceId = checked((int)context.Source.ModelSourceId);
-            Hartonomous.Core.Text.TextDecomposeResult result = await _substrateTextDecomposer.EmitAsync(
+            // In-process text decomposition. libhartonomous walks UAX#29 +
+            // BLAKE3 + 4D centroids and fires a callback per record; the
+            // callback populates session.Batch. One P/Invoke per artifact;
+            // no SQL roundtrip. AP-9: model_source linkage is placement
+            // metadata; we attach it AFTER the root entity exists in the batch.
+            long modelSourceId = context.Source.ModelSourceId;
+            Hartonomous.Core.Text.TextDecomposeResult result = _substrateTextDecomposer.Emit(
+                session.Batch,
                 utf8Bytes,
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: context.ProvenanceCode,
                     TopEntityType: "text_composition",
-                    TrustMu: ModelDerivedTrustMu),
-                modelSourceId,
-                ct);
+                    TrustMu: ModelDerivedTrustMu));
 
-            EntityHandle artifactHandle = session.Batch.AddEntity(result.RootHash, "text_composition");
+            EntityHandle artifactHandle = result.RootHandle;
+            session.Batch.AddEntityModelSource(artifactHandle, modelSourceId);
 
             session.Batch.AddEdge(edgeCode, context.ProvenanceCode,
             [

@@ -79,9 +79,12 @@ public sealed partial class TextDecomposer : BaseDecomposer
         Log.FileRead(Logger, _sourcePath, utf8Bytes.Length);
 
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
+        // In-process via libhartonomous (no SQL roundtrip). Same UAX#29 +
+        // BLAKE3 + 4D centroid pipeline as the PG-extension text_decompose
+        // — same hashes, same physicality (Law #6).
         Hartonomous.Core.Text.TextDecomposeResult canonical =
-            Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                batch, utf8Bytes, _codepointProperties,
+            Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
+                batch, utf8Bytes,
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: ProvenanceCode,
                     TopEntityType: "text_composition",

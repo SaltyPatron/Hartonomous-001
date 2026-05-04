@@ -699,6 +699,108 @@ HARTONOMOUS_API double hartonomous_hausdorff_4d(
     const double* b, size_t nb
 );
 
+/* ── Text decomposition (in-process, native) ────────────────────────
+ *
+ * Replaces the per-text round-trip to substrate.text_decompose with an
+ * in-process call. The native pipeline does the entire UAX#29 + BLAKE3 +
+ * S^3-centroid walk against the embedded UCD 17.0.0 tables (compiled into
+ * libhartonomous at build time) and emits records via a callback. No
+ * Postgres handshake, no parse/plan/execute per text.
+ *
+ * Determinism: Law #6. Same UTF-8 input + same UCD blob = byte-identical
+ * hash output. Algorithm matches pg_text_decompose's substrate-side
+ * version exactly.
+ *
+ * Atom blob: must be loaded once per process via hartonomous_ucd_load
+ * before calling hartonomous_text_decompose. The blob path must contain
+ *   hartonomous-ucd-<ver>.idx
+ *   hartonomous-ucd-<ver>.reverse.bin
+ *   blocks/<startHex>-<name>.bin
+ * (same on-disk layout the PG extension consumes).
+ */
+
+/* Record kinds emitted by the pipeline. */
+#define HARTONOMOUS_REC_ENTITY        1   /* a unique content hash */
+#define HARTONOMOUS_REC_CLASSIFICATION 2  /* (entity_hash, kind) */
+#define HARTONOMOUS_REC_PHYSICALITY   3   /* (entity_hash, content_hash, kind, wkb) */
+#define HARTONOMOUS_REC_SEQUENCE      4   /* (parent_hash, ordinal, child_hash) */
+#define HARTONOMOUS_REC_SIGNIFICANCE  5   /* (entity_hash, context_kind, mu) */
+
+/* Entity-kind tags passed in record.subkind / out_root_kind. The integers
+ * match substrate.entity_type ids 1..3 + 9 in the project schema, but the
+ * native side does NOT depend on that mapping — callers translate kind →
+ * substrate.entity_type code. */
+#define HARTONOMOUS_KIND_CODEPOINT         1
+#define HARTONOMOUS_KIND_GRAPHEME_CLUSTER  2
+#define HARTONOMOUS_KIND_WORD_FORM         3
+#define HARTONOMOUS_KIND_TEXT_COMPOSITION  9
+
+/* Physicality-kind tags. */
+#define HARTONOMOUS_PHYS_S3_POSITION  1   /* POINTZM (atom) */
+#define HARTONOMOUS_PHYS_CONTOUR      2   /* LINESTRINGZM (composition) */
+
+/* Significance-kind tags. */
+#define HARTONOMOUS_SIG_SOURCE_AUTHORITY  1
+
+typedef struct hartonomous_text_record {
+    int             kind;        /* HARTONOMOUS_REC_* */
+    int             subkind;     /* entity-kind / phys-kind / sig-kind / 0 */
+    const uint8_t*  hash_a;      /* entity_hash | parent_hash */
+    const uint8_t*  hash_b;      /* content_hash | child_hash | 0 */
+    int             int_param;   /* ordinal | rle_count | 0 */
+    double          double_param;/* mu | 0 */
+    const uint8_t*  wkb;         /* EWKB bytes | 0 */
+    size_t          wkb_len;     /* 0 when wkb is 0 */
+} hartonomous_text_record_t;
+
+/* Callback fires once per emitted record. Return 0 to continue, non-zero to
+ * abort the walk (the function returns that value). The callback runs on the
+ * same thread that called hartonomous_text_decompose. */
+typedef int (*hartonomous_text_emit_cb)(
+    void* ctx,
+    const hartonomous_text_record_t* rec
+);
+
+/*
+ * Load the UCD per-block blob from `dir`. Idempotent — calling repeatedly
+ * is a no-op after the first success. Must be called before
+ * hartonomous_text_decompose. Returns 0 on success, -1 if any required
+ * file is missing or malformed. Thread-safe via internal mutex.
+ */
+HARTONOMOUS_API int hartonomous_ucd_load(const char* dir);
+
+/*
+ * Release any mmap'd UCD pages. Optional; the OS reclaims on process exit.
+ */
+HARTONOMOUS_API void hartonomous_ucd_unload(void);
+
+/*
+ * Decompose UTF-8 bytes into the substrate's text DAG.
+ *   utf8 / utf8_len    — input document
+ *   top_kind           — HARTONOMOUS_KIND_* for the root composition
+ *   trust_mu           — initial μ for source_authority significance rows
+ *   emit / ctx         — callback fired once per emitted record
+ *   out_root_hash      — 32-byte buffer; receives the root composition hash
+ *   out_root_kind      — receives the resolved top kind (== top_kind)
+ *
+ * Returns:
+ *    0 on success,
+ *   -1 on null required arg,
+ *   -2 if hartonomous_ucd_load was not called or failed,
+ *   -3 if utf8_len is 0 (callers should check before calling),
+ *   any non-zero value returned by `emit` to abort the walk.
+ */
+HARTONOMOUS_API int hartonomous_text_decompose(
+    const uint8_t* utf8,
+    size_t utf8_len,
+    int top_kind,
+    double trust_mu,
+    hartonomous_text_emit_cb emit,
+    void* ctx,
+    uint8_t out_root_hash[HARTONOMOUS_HASH_LEN],
+    int* out_root_kind
+);
+
 /* ── Glicko-2 bulk update ───────────────────────────────────── */
 HARTONOMOUS_API int hartonomous_glicko2_bulk_update(
     int64_t n,

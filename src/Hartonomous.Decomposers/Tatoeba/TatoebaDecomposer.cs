@@ -39,7 +39,7 @@ namespace Hartonomous.Decomposers.Tatoeba;
 /// final substrate state because every emitted entity and edge is content-addressed +
 /// ON CONFLICT DO NOTHING.
 /// </summary>
-public sealed partial class TatoebaDecomposer : BaseDecomposer
+public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
 {
     public override string ProvenanceCode => TatoebaProvenanceCode;
     private const string TatoebaProvenanceCode = "tatoeba";
@@ -52,7 +52,9 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
     // Glicko-2 Flow 4.2/4.3 at ingest. Emission stays deterministic because content-
     // addressed hashing means the same sentence content yields the same entity row,
     // so corroboration arrives as separate hash collisions on the same identity.
-    private const double TrustPriorMu = 50000.0;
+    private const double TrustPriorMuConst = 50000.0;
+    protected override double TrustPriorMu => TrustPriorMuConst;
+    protected override ICodepointProperties CodepointProperties => _codepointProperties;
 
     private const string EdgeTranslationLink = "translation_link";
     private const string EdgeRecordingOf = "recording_of";
@@ -66,12 +68,13 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
     public TatoebaDecomposer(
         DecomposerConfig config,
+        Hartonomous.Core.Text.SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<TatoebaDecomposer> logger,
         ICodepointProperties codepointProperties,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
-        : base(config, logger)
+        : base(config, substrateTextDecomposer, logger)
     {
         _rootDir = config.SourceDirectory;
         _codepointProperties = codepointProperties;
@@ -135,7 +138,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                 batch = pipeline.CreateBatch(ProvenanceCode);
             }
 
-            EmitSentence(batch, row, _codepointProperties, languageMap, sentenceIdToHash,
+            EmitSentence(batch, row, languageMap, sentenceIdToHash,
                 ref entityCount, ref edgeCount);
             pass1Count++;
             if (pass1Count % 500_000 == 0)
@@ -211,7 +214,7 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
                     batch = pipeline.CreateBatch(ProvenanceCode);
                 }
 
-                EmitAudio(batch, ar, _codepointProperties, sentenceIdToHash, ref entityCount, ref edgeCount);
+                EmitAudio(batch, ar, sentenceIdToHash, ref entityCount, ref edgeCount);
                 pass3Count++;
                 if (pass3Count % 250_000 == 0)
                 {
@@ -233,46 +236,29 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         Log.Pass3Complete(Logger, pass3Count, entityCount, edgeCount);
     }
 
-    private static void EmitSentence(
+    private void EmitSentence(
         IIngestionBatch batch,
         TatoebaSentenceRow row,
-        ICodepointProperties codepointProperties,
         Dictionary<string, int> languageMap,
         Dictionary<int, byte[]> sentenceIdToHash,
         ref long entityCount,
         ref long edgeCount)
     {
-        // Sentence text decomposes via the canonical Merkle path:
-        //   codepoint → grapheme_cluster → word_form (UAX #29) + raw_span → text_composition.
-        // Routes through TextSegmentationEmitter so the word_form layer is preserved
-        // and identical word_forms across Tatoeba, WordNet, UD, Wiktionary, and the
-        // runtime TextDecomposer collapse to the same content-addressed entity (Law #1).
-        // Empty-text rows fall back to a stable Tatoeba-ID-derived hash so the
-        // sentence remains addressable for translation_link / recording_of.
+        // Sentence text routes through SubstrateTextDecomposer (via IngestText) —
+        // one SPI call to substrate.text_decompose does the full
+        // codepoint → grapheme_cluster → word_form (UAX #29) → text_composition
+        // walk in C against the embedded UCD blob, batches BLAKE3 natively,
+        // and writes directly to substrate. Same content from Tatoeba +
+        // WordNet examples + Wiktionary citations + user prompts collapses
+        // to ONE text_composition entity.
+        // Empty-text rows fall back to a stable Tatoeba-ID-derived hash so
+        // the sentence remains addressable for translation_link / recording_of.
         byte[] sentHash;
         EntityHandle sentEntity;
         if (!string.IsNullOrEmpty(row.Text))
         {
-            // Tatoeba sentence IS a text_composition. The text decomposer
-            // produces the canonical Merkle hash (codepoints → graphemes →
-            // word_forms → text_composition); same content from Tatoeba +
-            // WordNet examples + Wiktionary citations + user prompts all
-            // collapse to ONE text_composition entity.
-            // Canonical text decomposer routes through CanonicalTextDecomposer
-            // — same hash this same content emitted by WordNet / Wiktionary /
-            // prompts. Cross-decomposer dedup is automatic.
-            byte[] textUtf8 = System.Text.Encoding.UTF8.GetBytes(row.Text);
-            Hartonomous.Core.Text.TextDecomposeResult textResult =
-                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                    batch, textUtf8, codepointProperties,
-                    new Hartonomous.Core.Text.TextDecomposeOptions(
-                        ProvenanceCode: TatoebaProvenanceCode,
-                        TopEntityType: "text_composition",
-                        TrustMu: TrustPriorMu));
-            EntityHandle textEntity = textResult.RootHandle;
-            byte[] textHash = textResult.RootHash;
-            sentHash = textHash;
-            sentEntity = textEntity;
+            sentEntity = IngestText(batch, row.Text);
+            sentHash = sentEntity.Hash;
             entityCount++;
         }
         else
@@ -316,10 +302,9 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
         edgeCount++;
     }
 
-    private static void EmitAudio(
+    private void EmitAudio(
         IIngestionBatch batch,
         TatoebaAudioRow row,
-        ICodepointProperties codepointProperties,
         Dictionary<int, byte[]> sentenceIdToHash,
         ref long entityCount,
         ref long edgeCount)
@@ -344,18 +329,11 @@ public sealed partial class TatoebaDecomposer : BaseDecomposer
 
         if (!string.IsNullOrEmpty(row.Contributor))
         {
-            // Contributor handle decomposes via the canonical Merkle path so the
-            // text_composition converges with any other Merkle-hashed occurrence
-            // of the same handle (e.g. mention in a Wiktionary citation).
-            byte[] contribUtf8 = System.Text.Encoding.UTF8.GetBytes(row.Contributor);
-            Hartonomous.Core.Text.TextDecomposeResult contribResult =
-                Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                    batch, contribUtf8, codepointProperties,
-                    new Hartonomous.Core.Text.TextDecomposeOptions(
-                        ProvenanceCode: TatoebaProvenanceCode,
-                        TopEntityType: "text_composition",
-                        TrustMu: TrustPriorMu));
-            EntityHandle contribEntity = contribResult.RootHandle;
+            // Contributor handle through SubstrateTextDecomposer (via IngestText)
+            // — same content from anywhere in the substrate (Wiktionary citation,
+            // user_session prompt referencing the contributor, etc.) collapses to
+            // ONE text_composition entity. C extension does the walk in C.
+            EntityHandle contribEntity = IngestText(batch, row.Contributor);
             entityCount++;
 
             batch.AddEdge(EdgeHasContributor, "tatoeba",

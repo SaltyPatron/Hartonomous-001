@@ -435,12 +435,19 @@ public abstract partial class BaseDecomposer : IDecomposer
     {
         ArgumentNullException.ThrowIfNull(text);
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
-        Hartonomous.Core.Text.TextDecomposeResult r = Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-            batch, utf8, codepointProperties,
-            new Hartonomous.Core.Text.TextDecomposeOptions(
-                ProvenanceCode: ProvenanceCode,
-                TopEntityType: topEntityType,
-                TrustMu: trustMu));
+        // Routes through libhartonomous's in-process native pipeline
+        // (hartonomous_text_decompose + UCD blob), NOT a per-text Npgsql
+        // roundtrip. The codepointProperties argument is ignored — the
+        // native walker consults the same UCD 17.0.0 tables compiled into
+        // libhartonomous. Kept in the signature so existing call sites
+        // don't change shape.
+        Hartonomous.Core.Text.TextDecomposeResult r =
+            Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
+                batch, utf8,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: ProvenanceCode,
+                    TopEntityType: topEntityType,
+                    TrustMu: trustMu));
         return (r.RootHandle, r.RootHash, r.RootCentroid);
     }
 

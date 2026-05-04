@@ -17,6 +17,7 @@ using Hartonomous.Decomposers.Ucd;
 using Hartonomous.Decomposers.Omw;
 using Hartonomous.Decomposers.Safetensors;
 using Hartonomous.Decomposers.Tatoeba;
+using Hartonomous.Core.Text;
 using Hartonomous.Decomposers.Text;
 using Hartonomous.Decomposers.Ud;
 using Hartonomous.Decomposers.Wiktionary;
@@ -1067,7 +1068,7 @@ internal static class Program
         // tables. Subclasses of TextIngestingDecomposer call this through
         // IngestText. Post-W3B path; replaces CanonicalTextDecomposer.Emit
         // on the hot ingestion surface.
-        Hartonomous.Decomposers.Text.SubstrateTextDecomposer substrateTextDecomposer = new(phaseDs);
+        Hartonomous.Core.Text.SubstrateTextDecomposer substrateTextDecomposer = new(phaseDs);
 
         // Codepoint-property cache. Legacy hook retained until W4 deletion
         // sweep — still referenced by inference paths and the residual
@@ -1124,7 +1125,7 @@ internal static class Program
             ],
             [Phase.Tatoeba] =
             [
-                new TatoebaDecomposer(tatoebaConfig, logFactory.CreateLogger<TatoebaDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
+                new TatoebaDecomposer(tatoebaConfig, substrateTextDecomposer, logFactory.CreateLogger<TatoebaDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.TextDecomp] = textDecomposers,
             [Phase.SignificanceField] =
@@ -1600,8 +1601,9 @@ internal static class Program
             Console.WriteLine($"  distinct targets: {result.NodesVisited}");
             Console.WriteLine($"  elapsed:          {sw.Elapsed.TotalMilliseconds:F1} ms");
 
-            // Stop the flush worker cleanly so any remaining staging drains.
-            await flushWorker.StopAsync();
+            // FlushAsync drains any residual session-emitted records into
+            // substrate via the per-connection temp staging path. Post-W2E.
+            await pipeline.FlushAsync(CancellationToken.None);
         });
 
         return query;

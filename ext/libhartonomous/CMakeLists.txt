@@ -146,6 +146,15 @@ set(HARTONOMOUS_SOURCES
     src/box4d.c
     src/trajectory.c
     src/glicko_bulk.c
+    # ── Native text decomposition (was substrate.text_decompose round-trip) ──
+    src/ucd_atoms_blob.c
+    src/text_decompose.c
+    # Generated UCD 17.0.0 property tables — the same data the PG extension
+    # links via its own Makefile. Compiled into libhartonomous so the C# side
+    # gets it via P/Invoke without going across the wire.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_segmentation.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_classification.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_pictographic.c
 )
 
 set(HARTONOMOUS_HEADERS
@@ -162,6 +171,14 @@ target_include_directories(hartonomous
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        # Generated UCD headers (pg_unicode_version.h, pg_ucd_segmentation.h,
+        # pg_ucd_classification.h, pg_ucd_pictographic.h, pg_ucd_atoms_blob.h)
+        # currently live under the PG extension source tree; libhartonomous
+        # consumes the same files. text_decompose.c #includes
+        # "generated/pg_unicode_version.h" — the include path below resolves
+        # that against ext/hartonomous_pg/src/.
+        ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src
 )
 
 target_link_libraries(hartonomous

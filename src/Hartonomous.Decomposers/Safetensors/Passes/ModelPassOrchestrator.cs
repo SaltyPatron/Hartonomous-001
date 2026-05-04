@@ -7,7 +7,7 @@ using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Decomposers.Text;
+using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Safetensors.Passes;

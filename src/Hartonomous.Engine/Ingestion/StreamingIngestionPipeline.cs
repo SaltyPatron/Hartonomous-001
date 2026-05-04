@@ -232,11 +232,20 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             // POINTZM EWKB layout: byte_order(1) + type(4) + 4*float8(32) = 37 bytes.
             // Type word: 0xC0000001 (PostGIS EWKB POINT|Z|M) or 3001 (ISO).
-            if (p.Wkb.Length != 37) continue;
-            if (p.Wkb[0] != 0x01) continue; // require little-endian
+            if (p.Wkb.Length != 37)
+            {
+                continue;
+            }
+            if (p.Wkb[0] != 0x01)
+            {
+                continue; // require little-endian
+            }
             uint typeWord = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Wkb.AsSpan(1, 4));
             bool isPointZM = (typeWord == 0xC0000001u) || (typeWord == 3001u);
-            if (!isPointZM) continue;
+            if (!isPointZM)
+            {
+                continue;
+            }
             double x = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(5, 8));
             double y = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(13, 8));
             double z = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(21, 8));
@@ -354,7 +363,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
             long updated = result is long l ? l : (long?)result ?? 0L;
             totalUpdated += updated;
-            if (updated == 0) break;
+            if (updated == 0)
+            {
+                break;
+            }
         }
         Log.EdgeTrajectoriesPopulated(_logger, totalUpdated);
     }
@@ -647,7 +659,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
                 long inserted = result is long l ? l : (long?)result ?? 0L;
                 totalPrimed += inserted;
-                if (inserted == 0) break;
+                if (inserted == 0)
+                {
+                    break;
+                }
             }
         }
         Log.SignificancePrimed(_logger, arenaIds.Count, totalPrimed);

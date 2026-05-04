@@ -4,7 +4,7 @@ using System.Threading;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Decomposers.Text;
+using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers;
@@ -68,25 +68,20 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
             return batch.AddEntity(cachedHash!, "text_composition");
         }
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
-        // The substrate-side call is one SPI invocation that does all the
-        // work in C. Blocking on the async API here is fine — the cost is
-        // dominated by the substrate execution, not the .NET continuation.
-        Hartonomous.Core.Text.TextDecomposeResult r = _substrateTextDecomposer
-            .EmitAsync(
-                utf8,
-                new Hartonomous.Core.Text.TextDecomposeOptions(
-                    ProvenanceCode: ProvenanceCode,
-                    TopEntityType: "text_composition",
-                    TrustMu: TrustPriorMu),
-                modelSourceId: null,
-                ct: CancellationToken.None)
-            .GetAwaiter().GetResult();
+        // In-process native call. libhartonomous's hartonomous_text_decompose
+        // walks the codepoint/grapheme/word/composition DAG against the
+        // embedded UCD blob and fires a callback per emission; the callback
+        // populates `batch`. No SQL roundtrip, no Postgres handshake — just
+        // one P/Invoke + N callback fires.
+        Hartonomous.Core.Text.TextDecomposeResult r = _substrateTextDecomposer.Emit(
+            batch,
+            utf8,
+            new Hartonomous.Core.Text.TextDecomposeOptions(
+                ProvenanceCode: ProvenanceCode,
+                TopEntityType: "text_composition",
+                TrustMu: TrustPriorMu));
         _textCache.Add(text, r.RootHash);
-        // Register the root on the batch so downstream batch.AddEdge calls
-        // can express FKs via the returned handle. The duplicate-entity
-        // INSERT that would result from the batch flush is caught by ON
-        // CONFLICT (hash) DO NOTHING in the pipeline drain.
-        return batch.AddEntity(r.RootHash, "text_composition");
+        return r.RootHandle;
     }
 
     /// <summary>

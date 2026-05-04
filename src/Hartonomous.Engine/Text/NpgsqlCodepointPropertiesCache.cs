@@ -13,7 +13,7 @@ namespace Hartonomous.Engine.Text;
 ///
 /// LEGACY SURFACE (post-W3B). The hot ingestion path (WordNet, Wiktionary,
 /// Safetensors text artifacts) now goes through
-/// <see cref="Hartonomous.Decomposers.Text.SubstrateTextDecomposer"/> which
+/// <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/> which
 /// hands UTF-8 to <c>substrate.text_decompose</c> — properties come from the
 /// embedded UCD blob baked into the C extension at build time. This cache
 /// is retained ONLY for cold paths still calling
