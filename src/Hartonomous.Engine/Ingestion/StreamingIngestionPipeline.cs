@@ -246,6 +246,62 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             Task.Run(() => DrainEdgeSignificancesAsync(_shutdown.Token)),
             Task.Run(() => DrainEntityModelSourcesAsync(_shutdown.Token)),
         };
+
+        // Periodic mid-phase progress snapshot. Fires every PeriodicSnapshotInterval
+        // with one line per active kind: rows so far, drain elapsed, producer-wait
+        // elapsed. Lets the operator watch progress live and tell whether the
+        // pipeline is making forward motion or stuck. Fires under the same
+        // CancellationToken; stops on dispose.
+        _periodicSnapshotTask = Task.Run(() => PeriodicSnapshotAsync(_shutdown.Token));
+    }
+
+    private static readonly TimeSpan PeriodicSnapshotInterval = TimeSpan.FromSeconds(10);
+    private readonly Task _periodicSnapshotTask;
+    private readonly Stopwatch _phaseClock = Stopwatch.StartNew();
+
+    private async Task PeriodicSnapshotAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(PeriodicSnapshotInterval, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }
+
+                if (!_logger.IsEnabled(LogLevel.Information))
+                {
+                    continue;
+                }
+
+#pragma warning disable CA1873 // IsEnabled checked above; analyzer can't see across the loop.
+                TimeSpan phaseElapsed = _phaseClock.Elapsed;
+                for (int i = 0; i < KindIndex.Count; i++)
+                {
+                    long rows = Interlocked.Read(ref _drainRowsCommitted[i]);
+                    long drainTicks = Interlocked.Read(ref _drainElapsedTicks[i]);
+                    long waitTicks = Interlocked.Read(ref _producerWaitTicks[i]);
+                    if (rows == 0 && drainTicks == 0 && waitTicks == 0)
+                    {
+                        continue;
+                    }
+                    TimeSpan drainElapsed = TimeSpan.FromSeconds((double)drainTicks / Stopwatch.Frequency);
+                    TimeSpan waitElapsed  = TimeSpan.FromSeconds((double)waitTicks  / Stopwatch.Frequency);
+                    double rowsPerSec = drainElapsed.TotalSeconds > 0
+                        ? rows / drainElapsed.TotalSeconds : 0.0;
+                    Log.LiveSnapshot(_logger, phaseElapsed, KindIndex.Name(i), rows,
+                        drainElapsed, waitElapsed, rowsPerSec);
+                }
+#pragma warning restore CA1873
+            }
+        }
+        catch (Exception ex)
+        {
+            // Snapshot loop must NEVER take down the pipeline. Log and exit.
+            Log.SnapshotLoopCrashed(_logger, ex);
+        }
     }
 
     public StreamingPipelineStats Stats => new()
@@ -780,6 +836,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         catch (OperationCanceledException) { /* shutdown */ }
 
         _shutdown.Cancel();
+        try
+        {
+            await _periodicSnapshotTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { /* shutdown */ }
         _shutdown.Dispose();
         await _dataSource.DisposeAsync().ConfigureAwait(false);
     }
@@ -1398,6 +1459,15 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             Message = "Pipeline kind summary: kind={Kind} rows={Rows} drain={DrainElapsed} producerWait={WaitElapsed} rate={RowsPerSec:F0} rows/s")]
         public static partial void KindSummary(ILogger logger, string kind, long rows,
             TimeSpan drainElapsed, TimeSpan waitElapsed, double rowsPerSec);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Pipeline live: t={PhaseElapsed} kind={Kind} rows={Rows} drain={DrainElapsed} producerWait={WaitElapsed} rate={RowsPerSec:F0} rows/s")]
+        public static partial void LiveSnapshot(ILogger logger, TimeSpan phaseElapsed, string kind, long rows,
+            TimeSpan drainElapsed, TimeSpan waitElapsed, double rowsPerSec);
+
+        [LoggerMessage(Level = LogLevel.Error,
+            Message = "Pipeline periodic snapshot loop crashed")]
+        public static partial void SnapshotLoopCrashed(ILogger logger, Exception ex);
 
         [LoggerMessage(Level = LogLevel.Error,
             Message = "Pipeline post-pass FAILED: pass={Pass}")]
