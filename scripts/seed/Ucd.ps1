@@ -149,49 +149,13 @@ try {
         Write-HartInfo "  +$n codepoint_property rows"
     }
 
-    Invoke-HartStep -Name "Populate codepoint atoms (chunked scalar path)" -Action {
-        $entitySql = @"
-INSERT INTO substrate.entity (hash)
-SELECT substrate.cp_hash(gs.cp)
-FROM generate_series({0}, {1} - 1) AS gs(cp)
-ON CONFLICT (hash) DO NOTHING;
-"@
-        Invoke-ChunkedCodepointSql -StepLabel 'entity' -SqlTemplate $entitySql
-
-        $classificationSql = @"
-INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
-SELECT substrate.cp_hash(gs.cp),
-       (SELECT id FROM substrate.entity_type WHERE code = 'codepoint'),
-       (SELECT id FROM substrate.provenance WHERE code = '$ProvenanceCode')
-FROM generate_series({0}, {1} - 1) AS gs(cp)
-ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
-"@
-        Invoke-ChunkedCodepointSql -StepLabel 'entity_classification' -SqlTemplate $classificationSql
-
-        $physicalitySql = @"
-INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
-SELECT (SELECT id FROM substrate.physicality_type WHERE code = 's3_position'),
-       substrate.cp_hash(gs.cp),
-       substrate.cp_hash(gs.cp),
-       ST_MakePoint(substrate.cp_x(gs.cp), substrate.cp_y(gs.cp), substrate.cp_z(gs.cp), substrate.cp_m(gs.cp))
-FROM generate_series({0}, {1} - 1) AS gs(cp)
-ON CONFLICT DO NOTHING;
-"@
-        Invoke-ChunkedCodepointSql -StepLabel 'physicality' -SqlTemplate $physicalitySql
-
-        $sigSql = @"
-INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
-SELECT (SELECT id FROM substrate.significance_context WHERE code = 'source_authority'),
-       substrate.cp_hash(gs.cp),
-       (SELECT initial_mu FROM substrate.provenance WHERE code = '$ProvenanceCode'),
-       350.0,
-       0.06,
-       0
-FROM generate_series({0}, {1} - 1) AS gs(cp)
-ON CONFLICT DO NOTHING;
-"@
-        Invoke-ChunkedCodepointSql -StepLabel 'entity_significance' -SqlTemplate $sigSql
-    }
+        Invoke-HartStep -Name "substrate.populate_codepoint_atoms('$ProvenanceCode')" -Action {
+        # Server-side function is already crash-safe: it performs all four atom
+        # inserts in bounded 200K-row chunks inside one SQL call. This avoids
+        # thousands of client-side chunk round-trips and is much faster.
+        $n = Invoke-Psql -Sql "SELECT substrate.populate_codepoint_atoms('$ProvenanceCode')" -Label 'populate_codepoint_atoms'
+        Write-HartInfo "  +$n codepoint atoms processed"
+        }
 
     # Mark UcdUca as completed in monitor.phase_status so subsequent
     # phase-runner invocations (Iso639/WordNet/UD/Wiktionary/Tatoeba)

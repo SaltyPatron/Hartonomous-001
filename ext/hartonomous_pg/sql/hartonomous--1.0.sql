@@ -4540,7 +4540,7 @@ COMMENT ON FUNCTION substrate.create_model_trust_arena(TEXT) IS
 -- Replaces the C# UCD/UCA decomposer's per-codepoint emission loop with
 -- a substrate-side bulk INSERT driven by the extension's embedded UCD
 -- 17.0.0 tables. Inserts ~1,114,112 codepoint entities + classifications
--- + S^3 physicalities + significance rows in five SQL statements — same
+-- + S^3 physicalities + significance rows in 200K-row chunks — same
 -- substrate state, ~30× the speed of XML parsing.
 --
 -- Pre-requisites:
@@ -4558,10 +4558,9 @@ COMMENT ON FUNCTION substrate.create_model_trust_arena(TEXT) IS
 --
 -- IMPLEMENTATION NOTE — scalar cp_* accessors over generate_series.
 --
--- The atom path intentionally uses scalar extension accessors over
--- generate_series(0, 1114111), and chunks the significance insert. This
--- keeps statement memory bounded under PG18 while preserving deterministic
--- full-coverage insertion for all 1,114,112 codepoints.
+-- All four insert steps use 200K-row WHILE chunks to keep per-statement
+-- memory bounded on PG18. Scalar cp_* extension accessors run in each
+-- row's per-tuple ExprContext and do not accumulate across rows.
 --
 -- Returns the count of codepoints processed.
 CREATE OR REPLACE FUNCTION substrate.populate_codepoint_atoms(
@@ -4608,31 +4607,52 @@ BEGIN
     END IF;
 
     -- 1. Insert all 1,114,112 codepoint entities.
-    INSERT INTO substrate.entity (hash)
-    SELECT substrate.cp_hash(gs.cp)
-      FROM generate_series(0, 1114111) AS gs(cp)
-    ON CONFLICT (hash) DO NOTHING;
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
 
+        INSERT INTO substrate.entity (hash)
+        SELECT substrate.cp_hash(gs.cp)
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT (hash) DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
+
+    v_lo := 0;
     -- 2. Classify each as 'codepoint' under the given provenance.
-    INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
-    SELECT substrate.cp_hash(gs.cp), v_codepoint_etype, v_provenance_id
-      FROM generate_series(0, 1114111) AS gs(cp)
-    ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
 
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT substrate.cp_hash(gs.cp), v_codepoint_etype, v_provenance_id
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
+
+    v_lo := 0;
     -- 3. S^3 physicality built from scalar axis accessors.
-    INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
-    SELECT v_s3_phys_type,
-           substrate.cp_hash(gs.cp),
-           substrate.cp_hash(gs.cp),
-           ST_MakePoint(
-               substrate.cp_x(gs.cp),
-               substrate.cp_y(gs.cp),
-               substrate.cp_z(gs.cp),
-               substrate.cp_m(gs.cp)
-           )
-      FROM generate_series(0, 1114111) AS gs(cp)
-    ON CONFLICT DO NOTHING;
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
 
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT v_s3_phys_type,
+               substrate.cp_hash(gs.cp),
+               substrate.cp_hash(gs.cp),
+               ST_MakePoint(
+                   substrate.cp_x(gs.cp),
+                   substrate.cp_y(gs.cp),
+                   substrate.cp_z(gs.cp),
+                   substrate.cp_m(gs.cp)
+               )
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
+
+    v_lo := 0;
     -- 4. Source-authority significance prior, chunked to keep per-statement
     -- memory bounded on PG18 under large generated sets.
     WHILE v_lo < 1114112 LOOP
@@ -4788,9 +4808,10 @@ COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
 --
 -- Bulk-populates substrate.codepoint_property from the embedded UCD
 -- catalog. Replaces the C# UCD decomposer's per-codepoint round-trips
--- with one set-based INSERT over generate_series(0, 1114111), using
--- scalar cp_* extension accessors and FK lookup tables for enum-id
--- translation.
+-- with a single C-driven scan: substrate.ucd_codepoints() emits all
+-- 1.1M rows in one call; we JOIN to the reference tables (already
+-- populated by populate_general_categories/scripts/blocks/break_properties)
+-- to translate the embedded enum ids into FK ids.
 --
 -- The reference tables MUST already be populated. Call order in
 -- bootstrap.sql / scripts/seed/Ucd.ps1:
@@ -4814,10 +4835,11 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     inserted int;
-    v_rows int;
-    v_lo int := 0;
-    v_hi int;
 BEGIN
+    -- Warm up: force the substrate.codepoint_atom composite-type tupdesc to
+    -- be resolved + cached BEFORE plpgsql plans the bulk INSERT below.
+    PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
+
     CREATE TEMP TABLE IF NOT EXISTS _gc_lookup ON COMMIT DROP AS
         SELECT v.id AS ext_id, gc.id AS ref_id
         FROM substrate.ucd_general_categories() v
@@ -4830,10 +4852,6 @@ BEGIN
         SELECT v.id AS ext_id, b.id AS ref_id
         FROM substrate.ucd_blocks() v
         JOIN substrate.block b ON b.code = v.code;
-    -- Break-property lookups split by category; each row in the embedded
-    -- inventory has explicit category, so we filter on it directly. The
-    -- enum_id field in the inventory is the per-category small-int that
-    -- ucd_codepoints() returns in gcb/wb/sb/lb columns.
     CREATE TEMP TABLE IF NOT EXISTS _bp_lookup_gcb ON COMMIT DROP AS
         SELECT v.enum_id AS ext_id, bp.id AS ref_id
         FROM substrate.ucd_break_properties() v
@@ -4855,63 +4873,54 @@ BEGIN
         JOIN substrate.break_property bp ON bp.code = v.code AND bp.category = 'LB'
         WHERE v.category = 'LB';
 
-    inserted := 0;
+    INSERT INTO substrate.codepoint_property (
+        entity_hash,
+        codepoint_value,
+        general_category_id,
+        script_id,
+        block_id,
+        gcb_id, wb_id, sb_id, lb_id,
+        is_extended_pictographic,
+        ccc,
+        decomposition_mapping,
+        simple_case_fold,
+        full_case_fold
+    )
+    SELECT
+        a.hash,
+        a.cp,
+        gcl.ref_id,
+        scrl.ref_id,
+        blkl.ref_id,
+        gbpl.ref_id,
+        wbpl.ref_id,
+        sbpl.ref_id,
+        lbpl.ref_id,
+        a.extended_pictographic,
+        a.ccc::SMALLINT,
+        substrate.cp_decomp(a.cp),
+        NULLIF(a.simple_case_fold, -1),
+        substrate.cp_full_case_fold(a.cp)
+    FROM substrate.ucd_codepoints() a
+    LEFT JOIN _gc_lookup       gcl  ON gcl.ext_id  = a.general_category
+    LEFT JOIN _script_lookup   scrl ON scrl.ext_id = a.script
+    LEFT JOIN _block_lookup    blkl ON blkl.ext_id = a.block
+    LEFT JOIN _bp_lookup_gcb   gbpl ON gbpl.ext_id = a.gcb
+    LEFT JOIN _bp_lookup_wb    wbpl ON wbpl.ext_id = a.wb
+    LEFT JOIN _bp_lookup_sb    sbpl ON sbpl.ext_id = a.sb
+    LEFT JOIN _bp_lookup_lb    lbpl ON lbpl.ext_id = a.lb
+    WHERE gcl.ref_id IS NOT NULL
+      AND scrl.ref_id IS NOT NULL
+      AND blkl.ref_id IS NOT NULL
+    ON CONFLICT (entity_hash) DO NOTHING;
 
-    WHILE v_lo < 1114112 LOOP
-        v_hi := LEAST(v_lo + 200000, 1114112);
-
-        INSERT INTO substrate.codepoint_property (
-            entity_hash,
-            codepoint_value,
-            general_category_id,
-            script_id,
-            block_id,
-            gcb_id, wb_id, sb_id, lb_id,
-            is_extended_pictographic,
-            ccc,
-            decomposition_mapping,
-            simple_case_fold,
-            full_case_fold
-        )
-        SELECT
-            substrate.cp_hash(gs.cp),
-            gs.cp,
-            gcl.ref_id,
-            scrl.ref_id,
-            blkl.ref_id,
-            gbpl.ref_id,
-            wbpl.ref_id,
-            sbpl.ref_id,
-            lbpl.ref_id,
-            substrate.cp_extended_pictographic(gs.cp),
-            substrate.cp_ccc(gs.cp)::SMALLINT,
-            substrate.cp_decomp(gs.cp),
-            NULLIF(substrate.cp_simple_case_fold(gs.cp), -1),
-            substrate.cp_full_case_fold(gs.cp)
-        FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
-        LEFT JOIN _gc_lookup       gcl  ON gcl.ext_id  = substrate.cp_general_category(gs.cp)
-        LEFT JOIN _script_lookup   scrl ON scrl.ext_id = substrate.cp_script(gs.cp)
-        LEFT JOIN _block_lookup    blkl ON blkl.ext_id = substrate.cp_block(gs.cp)
-        LEFT JOIN _bp_lookup_gcb   gbpl ON gbpl.ext_id = substrate.cp_gcb(gs.cp)
-        LEFT JOIN _bp_lookup_wb    wbpl ON wbpl.ext_id = substrate.cp_wb(gs.cp)
-        LEFT JOIN _bp_lookup_sb    sbpl ON sbpl.ext_id = substrate.cp_sb(gs.cp)
-        LEFT JOIN _bp_lookup_lb    lbpl ON lbpl.ext_id = substrate.cp_lb(gs.cp)
-        WHERE gcl.ref_id IS NOT NULL
-          AND scrl.ref_id IS NOT NULL
-          AND blkl.ref_id IS NOT NULL
-        ON CONFLICT (entity_hash) DO NOTHING;
-
-        GET DIAGNOSTICS v_rows = ROW_COUNT;
-        inserted := inserted + v_rows;
-        v_lo := v_hi;
-    END LOOP;
-
+    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_from_ext() IS
-    'Bulk-populates substrate.codepoint_property from the embedded UCD catalog in a single set-based INSERT over generate_series(0,1114111) with scalar cp_* accessors. Reference tables (general_category, script, block, break_property) MUST already be populated. Idempotent.';
+    'Bulk-populates substrate.codepoint_property from the embedded UCD catalog in a single SQL statement via substrate.ucd_codepoints(). Reference tables (general_category, script, block, break_property) MUST already be populated. Idempotent.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
