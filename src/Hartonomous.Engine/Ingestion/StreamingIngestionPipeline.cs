@@ -57,18 +57,23 @@ namespace Hartonomous.Engine.Ingestion;
 public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestionPipeline, IAsyncDisposable
 {
     /// <summary>
-    /// Channel capacity per record kind. ~65K bounded → ~MB-scale per-channel
+    /// Channel capacity per record kind. ~256K bounded → ~MB-scale per-channel
     /// memory ceiling regardless of record count. EmitAsync awaits when full.
+    /// Was 65_536 — bumped to reduce producer backpressure on multi-million-row
+    /// seed phases (WordNet, Wiktionary, UD, Tatoeba) where producers were
+    /// blocking on the bounded channel more often than necessary.
     /// </summary>
-    private const int ChannelCapacity = 65_536;
+    private const int ChannelCapacity = 262_144;
 
     /// <summary>
     /// COPY chunk threshold. Each drain task COPY-loads up to this many rows
     /// into its temp table, then drains via INSERT-SELECT into substrate.
     /// Larger chunks amortize COPY overhead better; smaller chunks reduce
-    /// crash blast radius.
+    /// crash blast radius. Was 4096 — bumped to 32_768 to amortize the
+    /// per-chunk TRUNCATE + INSERT-SELECT cost 8× across rows on bulk seed
+    /// phases that emit tens of millions of records.
     /// </summary>
-    private const int CopyChunkRows = 4096;
+    private const int CopyChunkRows = 32_768;
 
     /// <summary>
     /// Idle timeout per drain task. If the channel is empty for this long,
@@ -114,6 +119,72 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private long _copyCommits;
     private long _copyErrors;
     private long _producerDedupHits;
+
+    // Per-kind producer-wait tick counters. Incremented when a producer's
+    // WriteAsync awaits because a bounded channel is full (backpressure).
+    // Indexed by the same KindIndex enum the drain logger uses so end-of-phase
+    // can correlate "channel X drained N rows in T elapsed; producers blocked
+    // for W on this channel" — which directly answers "where is the slowness".
+    private readonly long[] _producerWaitTicks = new long[KindIndex.Count];
+
+    // Per-kind drain elapsed ticks. Drain task adds chunk elapsed here on each
+    // commit so end-of-phase has total drain time per kind, not just per chunk.
+    private readonly long[] _drainElapsedTicks = new long[KindIndex.Count];
+
+    // Per-kind drain row counters; mirror the per-emit counters but counted
+    // post-COPY-commit so end-of-phase numbers are "what landed in substrate"
+    // rather than "what was emitted (and possibly dedupped before COPY)".
+    private readonly long[] _drainRowsCommitted = new long[KindIndex.Count];
+
+    private static class KindIndex
+    {
+        public const int Entity              = 0;
+        public const int EntityClassification = 1;
+        public const int Edge                = 2;
+        public const int EdgeMember          = 3;
+        public const int Junction            = 4;
+        public const int Physicality         = 5;
+        public const int Sequence            = 6;
+        public const int EntitySignificance  = 7;
+        public const int EdgeSignificance    = 8;
+        public const int EntityModelSource   = 9;
+        public const int Count               = 10;
+
+        public static string Name(int idx) => idx switch
+        {
+            Entity              => "entity",
+            EntityClassification => "entity_classification",
+            Edge                => "edge",
+            EdgeMember          => "edge_member",
+            Junction            => "junction",
+            Physicality         => "physicality",
+            Sequence            => "sequence",
+            EntitySignificance  => "entity_significance",
+            EdgeSignificance    => "edge_significance",
+            EntityModelSource   => "entity_model_source",
+            _                   => $"kind_{idx}",
+        };
+    }
+
+    /// <summary>
+    /// Awaits a channel write, tracking elapsed ticks if the write blocked
+    /// (channel full). Fast path returns immediately on completed-synchronously
+    /// writes (the common case when drain keeps up).
+    /// </summary>
+    private async ValueTask WriteTrackedAsync<T>(
+        System.Threading.Channels.ChannelWriter<T> writer,
+        T item, int kindIndex, CancellationToken ct)
+    {
+        ValueTask vt = writer.WriteAsync(item, ct);
+        if (vt.IsCompletedSuccessfully)
+        {
+            await vt.ConfigureAwait(false);
+            return;
+        }
+        long start = Stopwatch.GetTimestamp();
+        await vt.ConfigureAwait(false);
+        Interlocked.Add(ref _producerWaitTicks[kindIndex], Stopwatch.GetTimestamp() - start);
+    }
 
     /// <summary>
     /// Per-channel within-session dedup state. Producer drops emissions whose
@@ -407,15 +478,15 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         return record switch
         {
             EntityRecord r              => EmitEntityWithClassificationAsync(r, ct),
-            EntityClassificationRecord r => _entityClassifications.Writer.WriteAsync(r, ct),
+            EntityClassificationRecord r => WriteTrackedAsync(_entityClassifications.Writer, r, KindIndex.EntityClassification, ct),
             EdgeRecord r                => EmitEdgeAsync(r, ct),
-            EdgeMemberRecord r          => _edgeMembers.Writer.WriteAsync(r, ct),
-            JunctionRecord r            => _junctions.Writer.WriteAsync(r, ct),
+            EdgeMemberRecord r          => WriteTrackedAsync(_edgeMembers.Writer, r, KindIndex.EdgeMember, ct),
+            JunctionRecord r            => WriteTrackedAsync(_junctions.Writer, r, KindIndex.Junction, ct),
             PhysicalityRecord r         => EmitPhysicalityAsync(r, ct),
             SequenceRecord r            => EmitSequenceAsync(r, ct),
             EntitySignificanceRecord r  => EmitEntitySignificanceAsync(r, ct),
             EdgeSignificanceRecord r    => EmitEdgeSignificanceAsync(r, ct),
-            EntityModelSourceRecord r   => _entityModelSources.Writer.WriteAsync(r, ct),
+            EntityModelSourceRecord r   => WriteTrackedAsync(_entityModelSources.Writer, r, KindIndex.EntityModelSource, ct),
             _ => throw new ArgumentException(
                 $"Unknown IngestionRecord subtype: {record.GetType().Name}", nameof(record)),
         };
@@ -433,14 +504,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Hash32 key = new(r.Hash);
         if (TryAddDedup(_entityDedup, key))
         {
-            await _entities.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+            await WriteTrackedAsync(_entities.Writer, r, KindIndex.Entity, ct).ConfigureAwait(false);
         }
         // Classification always goes through — substrate.entity_classification
         // ON CONFLICT handles cross-session dupes; within-session a decomposer
         // emitting the same (entity, type, provenance) twice is harmless.
-        await _entityClassifications.Writer.WriteAsync(
-            new EntityClassificationRecord(r.Hash, r.EntityTypeCode, r.ProvenanceCode), ct)
-            .ConfigureAwait(false);
+        await WriteTrackedAsync(_entityClassifications.Writer,
+            new EntityClassificationRecord(r.Hash, r.EntityTypeCode, r.ProvenanceCode),
+            KindIndex.EntityClassification, ct).ConfigureAwait(false);
     }
 
     private async ValueTask EmitEdgeAsync(EdgeRecord r, CancellationToken ct)
@@ -449,7 +520,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Hash32 key = ComposeKey(r.EdgeTypeCode, r.EdgeHash);
         if (TryAddDedup(_edgeDedup, key))
         {
-            await _edges.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+            await WriteTrackedAsync(_edges.Writer, r, KindIndex.Edge, ct).ConfigureAwait(false);
         }
     }
 
@@ -459,7 +530,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Hash32 key = ComposeKey(r.PhysicalityTypeCode, r.EntityHash, r.ContentHash);
         if (TryAddDedup(_physicalityDedup, key))
         {
-            await _physicalities.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+            await WriteTrackedAsync(_physicalities.Writer, r, KindIndex.Physicality, ct).ConfigureAwait(false);
         }
     }
 
@@ -469,7 +540,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Hash32 key = ComposeKey(r.ParentEntityHash, r.Ordinal);
         if (TryAddDedup(_sequenceDedup, key))
         {
-            await _sequences.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+            await WriteTrackedAsync(_sequences.Writer, r, KindIndex.Sequence, ct).ConfigureAwait(false);
         }
     }
 
@@ -478,7 +549,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Hash32 key = ComposeKey(r.ContextTypeCode, r.EntityHash);
         if (TryAddDedup(_entitySignificanceDedup, key))
         {
-            await _entitySignificances.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+            await WriteTrackedAsync(_entitySignificances.Writer, r, KindIndex.EntitySignificance, ct).ConfigureAwait(false);
         }
     }
 
@@ -487,7 +558,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Hash32 key = ComposeKey(r.ContextTypeCode, r.EdgeTypeCode, r.EdgeHash);
         if (TryAddDedup(_edgeSignificanceDedup, key))
         {
-            await _edgeSignificances.Writer.WriteAsync(r, ct).ConfigureAwait(false);
+            await WriteTrackedAsync(_edgeSignificances.Writer, r, KindIndex.EdgeSignificance, ct).ConfigureAwait(false);
         }
     }
 
@@ -592,6 +663,38 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             _junctionsEmitted, _physicalitiesEmitted, _sequencesEmitted,
             _entitySignificancesEmitted, _edgeSignificancesEmitted, _entityModelSourcesEmitted,
             _copyCommits, _copyErrors);
+
+        // Per-kind drain + producer-wait summary. Surfaces channel-by-channel:
+        //   rows         — count COPYed + INSERT-ON-CONFLICT-committed to substrate
+        //   drain        — total wall time spent in TRUNCATE+COPY+INSERT for this kind
+        //   producerWait — total wall time producers spent blocked because the
+        //                  bounded channel was full (backpressure from this kind's drain
+        //                  not keeping up). Zero = no backpressure on this channel.
+        // Read together: high producerWait + high drain on the same kind = drain
+        // is the bottleneck. High producerWait + low drain = producers are bursty
+        // and the channel isn't sized for the burst. Low producerWait, high drain
+        // = drain is slow but consumers haven't filled it (low producer rate).
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+#pragma warning disable CA1873 // IsEnabled is checked above; analyzer can't see across the loop.
+        for (int i = 0; i < KindIndex.Count; i++)
+        {
+            long rows = Interlocked.Read(ref _drainRowsCommitted[i]);
+            long drainTicks = Interlocked.Read(ref _drainElapsedTicks[i]);
+            long waitTicks = Interlocked.Read(ref _producerWaitTicks[i]);
+            if (rows == 0 && drainTicks == 0 && waitTicks == 0)
+            {
+                continue; // skip silent kinds for terseness
+            }
+            TimeSpan drainElapsed = TimeSpan.FromSeconds((double)drainTicks / Stopwatch.Frequency);
+            TimeSpan waitElapsed  = TimeSpan.FromSeconds((double)waitTicks  / Stopwatch.Frequency);
+            double rowsPerSec = drainElapsed.TotalSeconds > 0
+                ? rows / drainElapsed.TotalSeconds : 0.0;
+            Log.KindSummary(_logger, KindIndex.Name(i), rows,
+                drainElapsed, waitElapsed, rowsPerSec);
+        }
+#pragma warning restore CA1873
+        }
 
         // End-of-phase post-passes (replaces the deleted background workers):
         //   1. Backfill substrate.edge.geom for any edges whose producer
@@ -711,6 +814,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (hash) DO NOTHING
                 """,
             kindName: "entities",
+            kindIndex: KindIndex.Entity,
             writeRow: async (writer, rec) =>
             {
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
@@ -741,6 +845,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
                 """,
             kindName: "entity_classifications",
+            kindIndex: KindIndex.EntityClassification,
             writeRow: async (writer, rec) =>
             {
                 int typeId = await _codeResolver.EntityTypeIdAsync(rec.EntityTypeCode, ct).ConfigureAwait(false);
@@ -781,6 +886,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (edge_type_id, hash) DO NOTHING
                 """,
             kindName: "edges",
+            kindIndex: KindIndex.Edge,
             writeRow: async (writer, rec) =>
             {
                 int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(rec.EdgeTypeCode, ct).ConfigureAwait(false);
@@ -824,6 +930,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT DO NOTHING
                 """,
             kindName: "edge_members",
+            kindIndex: KindIndex.EdgeMember,
             writeRow: async (writer, rec) =>
             {
                 int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(rec.EdgeTypeCode, ct).ConfigureAwait(false);
@@ -918,6 +1025,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ) all_ins
                 """,
             kindName: "junctions",
+            kindIndex: KindIndex.Junction,
             writeRow: async (writer, rec) =>
             {
                 if (!AllowedJunctionTables.Contains(rec.JunctionTable))
@@ -968,6 +1076,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
                 """,
             kindName: "physicalities",
+            kindIndex: KindIndex.Physicality,
             writeRow: async (writer, rec) =>
             {
                 int physTypeId = await _codeResolver.PhysicalityTypeIdAsync(rec.PhysicalityTypeCode, ct).ConfigureAwait(false);
@@ -1002,6 +1111,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (parent_hash, ordinal) DO NOTHING
                 """,
             kindName: "sequences",
+            kindIndex: KindIndex.Sequence,
             writeRow: async (writer, rec) =>
             {
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
@@ -1034,6 +1144,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (context_type_id, entity_hash) DO NOTHING
                 """,
             kindName: "entity_significances",
+            kindIndex: KindIndex.EntitySignificance,
             writeRow: async (writer, rec) =>
             {
                 int contextId = await _codeResolver.SignificanceContextIdAsync(rec.ContextTypeCode, ct).ConfigureAwait(false);
@@ -1067,6 +1178,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING
                 """,
             kindName: "edge_significances",
+            kindIndex: KindIndex.EdgeSignificance,
             writeRow: async (writer, rec) =>
             {
                 int contextId = await _codeResolver.SignificanceContextIdAsync(rec.ContextTypeCode, ct).ConfigureAwait(false);
@@ -1101,6 +1213,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ON CONFLICT (entity_hash, model_source_id) DO NOTHING
                 """,
             kindName: "entity_model_sources",
+            kindIndex: KindIndex.EntityModelSource,
             writeRow: async (writer, rec) =>
             {
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
@@ -1124,6 +1237,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         string truncateSql,
         string drainSql,
         string kindName,
+        int kindIndex,
         Func<NpgsqlBinaryImporter, T, ValueTask> writeRow,
         CancellationToken ct)
     {
@@ -1213,6 +1327,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                         await using NpgsqlCommand drainCmd = new(drainSql, conn);
                         await drainCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                         Interlocked.Increment(ref _copyCommits);
+                        Interlocked.Add(ref _drainElapsedTicks[kindIndex], chunkSw.ElapsedTicks);
+                        Interlocked.Add(ref _drainRowsCommitted[kindIndex], rowsInChunk);
                         Log.ChunkCommitted(_logger, kindName, rowsInChunk, chunkSw.Elapsed);
                     }
                     catch (Exception ex)
@@ -1277,6 +1393,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         [LoggerMessage(Level = LogLevel.Information,
             Message = "Edge significance primed (post-pass): arenas={Arenas} edges_primed={EdgesPrimed}")]
         public static partial void SignificancePrimed(ILogger logger, int arenas, long edgesPrimed);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Pipeline kind summary: kind={Kind} rows={Rows} drain={DrainElapsed} producerWait={WaitElapsed} rate={RowsPerSec:F0} rows/s")]
+        public static partial void KindSummary(ILogger logger, string kind, long rows,
+            TimeSpan drainElapsed, TimeSpan waitElapsed, double rowsPerSec);
 
         [LoggerMessage(Level = LogLevel.Error,
             Message = "Pipeline post-pass FAILED: pass={Pass}")]
