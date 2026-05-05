@@ -4786,18 +4786,19 @@ COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
 --
 -- Bulk-populates substrate.codepoint_property from the embedded UCD
 -- catalog. Replaces the C# UCD decomposer's per-codepoint round-trips
--- with a single C-driven scan: substrate.ucd_codepoints() emits all
--- 1.1M rows in one call; we JOIN to the reference tables (already
--- populated by populate_general_categories/scripts/blocks/break_properties)
--- to translate the embedded enum ids into FK ids.
+-- with chunked C-driven scans: substrate.ucd_codepoints(lo, count) emits
+-- bounded slices; we JOIN to the reference tables (already populated by
+-- populate_general_categories/scripts/blocks/break_properties) to translate
+-- the embedded enum ids into FK ids.
 --
 -- The reference tables MUST already be populated. Call order in
--- bootstrap.sql / scripts/seed/Ucd.ps1:
+-- scripts/seed/Ucd.ps1:
 --   1. populate_general_categories_from_ext()
 --   2. populate_scripts_from_ext()
 --   3. populate_blocks_from_ext()
 --   4. populate_break_properties_from_ext()
---   5. populate_codepoint_property_from_ext()
+--   5. populate_codepoint_property_range_from_ext(lo, count), invoked from
+--      the seed script in separate client-side chunks.
 --
 -- Reference-table FK translation: the embedded catalog's enum ids are
 -- 0-based array indices; substrate reference tables use 1-based SERIAL ids.
@@ -4805,52 +4806,74 @@ COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
 -- the reference tables on (code) / (code, category) so the bulk SELECT
 -- stays planar.
 --
--- Idempotent — ON CONFLICT (entity_hash) DO NOTHING.
+-- Idempotent — ON CONFLICT (entity_hash) DO NOTHING. The range function is
+-- the real bulk-load primitive. Seed scripts call it from separate client-side
+-- chunks so every chunk has its own statement/transaction boundary. Keeping
+-- the batching boundary outside PL/pgSQL avoids a single backend accumulating
+-- executor state for all 1.1M rows.
 
-CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_from_ext()
+CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_range_from_ext(
+    p_start INT,
+    p_count INT
+)
 RETURNS int
-LANGUAGE plpgsql
+LANGUAGE sql
+VOLATILE
+SET max_parallel_workers_per_gather = 0
+SET enable_mergejoin = off
 AS $$
-DECLARE
-    inserted int;
-BEGIN
-    -- Warm up: force the substrate.codepoint_atom composite-type tupdesc to
-    -- be resolved + cached BEFORE plpgsql plans the bulk INSERT below.
-    PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
-
-    CREATE TEMP TABLE IF NOT EXISTS _gc_lookup ON COMMIT DROP AS
+    WITH
+    args AS (
+        SELECT
+            GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112)) AS slice_start,
+            GREATEST(
+                0,
+                LEAST(
+                    COALESCE(p_count, 0),
+                    1114112 - GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112))
+                )
+            ) AS slice_count
+    ),
+    gc_lookup AS (
         SELECT v.id AS ext_id, gc.id AS ref_id
         FROM substrate.ucd_general_categories() v
-        JOIN substrate.general_category gc ON gc.code = v.code;
-    CREATE TEMP TABLE IF NOT EXISTS _script_lookup ON COMMIT DROP AS
+        JOIN substrate.general_category gc ON gc.code = v.code
+    ),
+    script_lookup AS (
         SELECT v.id AS ext_id, s.id AS ref_id
         FROM substrate.ucd_scripts() v
-        JOIN substrate.script s ON s.code = v.code;
-    CREATE TEMP TABLE IF NOT EXISTS _block_lookup ON COMMIT DROP AS
+        JOIN substrate.script s ON s.code = v.code
+    ),
+    block_lookup AS (
         SELECT v.id AS ext_id, b.id AS ref_id
         FROM substrate.ucd_blocks() v
-        JOIN substrate.block b ON b.code = v.code;
-    CREATE TEMP TABLE IF NOT EXISTS _bp_lookup_gcb ON COMMIT DROP AS
+        JOIN substrate.block b ON b.code = v.code
+    ),
+    bp_lookup_gcb AS (
         SELECT v.enum_id AS ext_id, bp.id AS ref_id
         FROM substrate.ucd_break_properties() v
         JOIN substrate.break_property bp ON bp.code = v.code AND bp.category = 'GCB'
-        WHERE v.category = 'GCB';
-    CREATE TEMP TABLE IF NOT EXISTS _bp_lookup_wb ON COMMIT DROP AS
+        WHERE v.category = 'GCB'
+    ),
+    bp_lookup_wb AS (
         SELECT v.enum_id AS ext_id, bp.id AS ref_id
         FROM substrate.ucd_break_properties() v
         JOIN substrate.break_property bp ON bp.code = v.code AND bp.category = 'WB'
-        WHERE v.category = 'WB';
-    CREATE TEMP TABLE IF NOT EXISTS _bp_lookup_sb ON COMMIT DROP AS
+        WHERE v.category = 'WB'
+    ),
+    bp_lookup_sb AS (
         SELECT v.enum_id AS ext_id, bp.id AS ref_id
         FROM substrate.ucd_break_properties() v
         JOIN substrate.break_property bp ON bp.code = v.code AND bp.category = 'SB'
-        WHERE v.category = 'SB';
-    CREATE TEMP TABLE IF NOT EXISTS _bp_lookup_lb ON COMMIT DROP AS
+        WHERE v.category = 'SB'
+    ),
+    bp_lookup_lb AS (
         SELECT v.enum_id AS ext_id, bp.id AS ref_id
         FROM substrate.ucd_break_properties() v
         JOIN substrate.break_property bp ON bp.code = v.code AND bp.category = 'LB'
-        WHERE v.category = 'LB';
-
+        WHERE v.category = 'LB'
+    ),
+    inserted AS (
     INSERT INTO substrate.codepoint_property (
         entity_hash,
         codepoint_value,
@@ -4879,26 +4902,38 @@ BEGIN
         a.decomposition_mapping,
         NULLIF(a.simple_case_fold, -1),
         a.full_case_fold
-    FROM substrate.ucd_codepoints() a
-    LEFT JOIN _gc_lookup       gcl  ON gcl.ext_id  = a.general_category
-    LEFT JOIN _script_lookup   scrl ON scrl.ext_id = a.script
-    LEFT JOIN _block_lookup    blkl ON blkl.ext_id = a.block
-    LEFT JOIN _bp_lookup_gcb   gbpl ON gbpl.ext_id = a.gcb
-    LEFT JOIN _bp_lookup_wb    wbpl ON wbpl.ext_id = a.wb
-    LEFT JOIN _bp_lookup_sb    sbpl ON sbpl.ext_id = a.sb
-    LEFT JOIN _bp_lookup_lb    lbpl ON lbpl.ext_id = a.lb
+    FROM args
+    CROSS JOIN LATERAL substrate.ucd_codepoints(args.slice_start, args.slice_count) a
+    LEFT JOIN gc_lookup       gcl  ON gcl.ext_id  = a.general_category
+    LEFT JOIN script_lookup   scrl ON scrl.ext_id = a.script
+    LEFT JOIN block_lookup    blkl ON blkl.ext_id = a.block
+    LEFT JOIN bp_lookup_gcb   gbpl ON gbpl.ext_id = a.gcb
+    LEFT JOIN bp_lookup_wb    wbpl ON wbpl.ext_id = a.wb
+    LEFT JOIN bp_lookup_sb    sbpl ON sbpl.ext_id = a.sb
+    LEFT JOIN bp_lookup_lb    lbpl ON lbpl.ext_id = a.lb
     WHERE gcl.ref_id IS NOT NULL
       AND scrl.ref_id IS NOT NULL
       AND blkl.ref_id IS NOT NULL
-    ON CONFLICT (entity_hash) DO NOTHING;
+        ON CONFLICT (entity_hash) DO NOTHING
+        RETURNING 1
+        )
+        SELECT count(*)::int FROM inserted;
+$$;
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
-    RETURN inserted;
+COMMENT ON FUNCTION substrate.populate_codepoint_property_range_from_ext(INT, INT) IS
+    'Populates a bounded codepoint_property slice from the embedded UCD catalog. Intended seed primitive; callers provide client-side chunk boundaries so each chunk has a separate statement/transaction boundary.';
+
+CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_from_ext()
+RETURNS int
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'populate_codepoint_property_from_ext() is intentionally disabled for the full UCD load; call populate_codepoint_property_range_from_ext(start,count) from the seed script so each chunk has a real client-side statement boundary';
 END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_from_ext() IS
-    'Bulk-populates substrate.codepoint_property from the embedded UCD catalog in a single SQL statement via substrate.ucd_codepoints(). Reference tables (general_category, script, block, break_property) MUST already be populated. Idempotent.';
+    'Disabled compatibility wrapper. Use populate_codepoint_property_range_from_ext(start,count) from client-side chunks so each bounded insert has a real statement/transaction boundary.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

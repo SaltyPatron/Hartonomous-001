@@ -15,8 +15,9 @@
     4. populate_blocks_from_ext()               — reference table; ranges
        derived via aggregation over the 1.1M-row bulk SRF.
     5. populate_break_properties_from_ext()     — reference table.
-    6. populate_codepoint_property_from_ext()   — junction; replaces the
-       per-codepoint round-trip from the prior C# decomposer.
+     6. populate_codepoint_property_range_from_ext() in client-side chunks —
+         junction; replaces the per-codepoint round-trip from the prior C#
+         decomposer without a monolithic server-side load.
     7. populate_codepoint_atoms()               — substrate.entity +
        physicality + significance for the 1,114,112 tier-0 atoms.
 
@@ -94,15 +95,20 @@ function Invoke-ChunkedCodepointSql {
 
     $maxCp = 1114112
     $chunk = 0
+    [int64]$total = 0
     for ($lo = 0; $lo -lt $maxCp; $lo += $ChunkSize) {
         $hi = [Math]::Min($lo + $ChunkSize, $maxCp)
         $sql = [string]::Format($SqlTemplate, $lo, $hi)
-        $null = Invoke-Psql -Sql $sql -Label "$StepLabel chunk [$lo,$hi)"
+        $result = Invoke-Psql -Sql $sql -Label "$StepLabel chunk [$lo,$hi)"
+        if (-not [string]::IsNullOrWhiteSpace($result)) {
+            $total += [int64]$result
+        }
         $chunk += 1
         if (($chunk % 4) -eq 0 -or $hi -eq $maxCp) {
             Write-HartInfo "  $StepLabel progress: [$lo,$hi)"
         }
     }
+    return $total
 }
 
 try {
@@ -128,11 +134,14 @@ try {
         $n = Invoke-Psql -Sql 'SELECT substrate.populate_break_properties_from_ext()' -Label 'populate_break_properties_from_ext'
         Write-HartInfo "  +$n break_property rows"
     }
-    Invoke-HartStep -Name 'substrate.populate_codepoint_property_from_ext()' -Action {
-        # Uses the SQL function directly — it builds proper temp lookup tables joining
-        # on (code, category) so WB/SB/LB break-property IDs are resolved correctly
-        # regardless of serial assignment order.
-        $n = Invoke-Psql -Sql 'SELECT substrate.populate_codepoint_property_from_ext()' -Label 'populate_codepoint_property_from_ext'
+    Invoke-HartStep -Name 'substrate.populate_codepoint_property_range_from_ext() chunks' -Action {
+        # Use client-side chunks so each bounded set-based insert has its own
+        # statement/transaction boundary. The range function keeps FK checks on
+        # and resolves WB/SB/LB break-property IDs by (code, category).
+        $n = Invoke-ChunkedCodepointSql `
+            -StepLabel 'codepoint_property' `
+            -SqlTemplate 'SELECT substrate.populate_codepoint_property_range_from_ext({0}, {1} - {0})' `
+            -ChunkSize 8192
         Write-HartInfo "  +$n codepoint_property rows"
     }
 

@@ -24,6 +24,7 @@ runtimes/
 .env
 .env.local
 *.log
+.crash_dumps/
 
 # Data
 data/

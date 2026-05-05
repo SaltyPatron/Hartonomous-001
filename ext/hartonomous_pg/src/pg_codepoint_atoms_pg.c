@@ -199,11 +199,20 @@ Datum pg_ucd_version(PG_FUNCTION_ARGS)
 
 /* ─── Variable-length per-codepoint payloads ─────────────────────────── */
 /* Build an int[] from a slice of uc_decomp_data / uc_fcf_data / uc_uca_data.
- * Empty slices return an empty int[] (NOT NULL) so SQL callers can
- * ARRAY_LENGTH() without nullability ceremony. */
-static ArrayType* slice_int_array(const int32_t* data, uint32_t off, uint16_t len)
+ * Empty slices return PostgreSQL's canonical zero-dimensional empty int[]
+ * (NOT NULL) so SQL callers can ARRAY_LENGTH() without nullability ceremony. */
+static ArrayType* slice_int_array(const int32_t* data, uint32_t data_len, uint32_t off, uint16_t len)
 {
-    Datum* elems = (Datum*) palloc(sizeof(Datum) * (len == 0 ? 1 : len));
+    if (len == 0) {
+        return construct_empty_array(INT4OID);
+    }
+    if (off > data_len || (uint32_t) len > data_len - off) {
+        ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+                        errmsg("generated UCD slice out of range: off=%u len=%u data_len=%u",
+                               off, (unsigned int) len, data_len)));
+    }
+
+    Datum* elems = (Datum*) palloc(sizeof(Datum) * len);
     for (uint16_t i = 0; i < len; ++i) {
         elems[i] = Int32GetDatum(data[off + i]);
     }
@@ -220,6 +229,7 @@ Datum pg_cp_decomp(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     PG_RETURN_ARRAYTYPE_P(slice_int_array(uc_decomp_data,
+                                          UC_DECOMP_DATA_LEN,
                                           uc_decomp_off[cp],
                                           uc_decomp_len[cp]));
 }
@@ -229,6 +239,7 @@ Datum pg_cp_full_case_fold(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     PG_RETURN_ARRAYTYPE_P(slice_int_array(uc_fcf_data,
+                                          UC_FCF_DATA_LEN,
                                           uc_fcf_off[cp],
                                           uc_fcf_len[cp]));
 }
@@ -242,6 +253,7 @@ Datum pg_cp_uca_weights(PG_FUNCTION_ARGS)
     uint32_t flat_off = uc_uca_off[cp] * 3;
     uint16_t flat_len = (uint16_t) (uc_uca_len[cp] * 3);
     PG_RETURN_ARRAYTYPE_P(slice_int_array((const int32_t*) uc_uca_data,
+                                          UC_UCA_DATA_TUPLES * 3,
                                           flat_off,
                                           flat_len));
 }
@@ -378,9 +390,8 @@ Datum pg_ucd_break_properties(PG_FUNCTION_ARGS)
 
 /* build_atom_values allocates varlena payloads for hash (index 1),
  * optional name (index 27), and the two int[] payloads at indices 28
- * (decomposition_mapping) and 29 (full_case_fold). Keep ownership in the
- * calling memory context; eager pfree here has shown unstable behavior
- * in PG18 SRF paths. */
+ * (decomposition_mapping) and 29 (full_case_fold). Ownership stays in the
+ * caller's per-tuple memory context. */
 
 static void
 build_atom_values(int32_t cp, Datum* values, bool* nulls)
@@ -441,10 +452,12 @@ build_atom_values(int32_t cp, Datum* values, bool* nulls)
     values[i] = name_datum;                                              nulls[i++] = name_null;
     /* decomposition_mapping (28): non-NULL int[], possibly empty. */
     values[i] = PointerGetDatum(slice_int_array(uc_decomp_data,
+                                                UC_DECOMP_DATA_LEN,
                                                 uc_decomp_off[cp],
                                                 uc_decomp_len[cp]));     nulls[i++] = false;
     /* full_case_fold (29): non-NULL int[], possibly empty. */
     values[i] = PointerGetDatum(slice_int_array(uc_fcf_data,
+                                                UC_FCF_DATA_LEN,
                                                 uc_fcf_off[cp],
                                                 uc_fcf_len[cp]));        nulls[i++] = false;
 }

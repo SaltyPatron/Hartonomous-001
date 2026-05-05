@@ -14,7 +14,9 @@ services:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./.crash_dumps:/var/lib/postgresql/cores
+      - type: bind
+        source: ${HARTONOMOUS_CRASH_DUMP_DIR:-D:/WSL/crashes}
+        target: /var/lib/postgresql/cores
     shm_size: 8g
     # Enable core dumps so SEGV / stack-smashing inside the hartonomous
     # extension produces a usable backtrace (task #86 — find the crashing
@@ -25,7 +27,8 @@ services:
     # namespaced) and recent runc versions reject it. To capture cores on the
     # host bind mount, set core_pattern on the WSL2 VM via /etc/wsl.conf or
     # `wsl -d docker-desktop -u root -- sh -c 'echo "/var/lib/postgresql/cores/core.%e.%p.%t" > /proc/sys/kernel/core_pattern'`
-    # outside the container. Default core_pattern drops cores into the
+    # outside the container. Override HARTONOMOUS_CRASH_DUMP_DIR if D:/WSL/crashes
+    # is not the desired host location. Default core_pattern drops cores into the
     # process's CWD, which is /var/lib/postgresql/data inside the container.
     # Tuned for: 14900KS (24 logical cores), 48GB DDR5 host, NVMe RAID0 (~14 GB/s).
     # Total Postgres memory budget: ~24GB (12GB shared + 8GB work distributed + 4GB maintenance),
