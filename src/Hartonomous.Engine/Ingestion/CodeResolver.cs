@@ -14,6 +14,7 @@ internal sealed class CodeResolver
     private Dictionary<string, int>? _physicalityTypes;
     private Dictionary<string, int>? _significanceContexts;
     private Dictionary<string, int>? _provenances;
+    private Dictionary<string, double>? _provenanceMus;
     private Dictionary<string, int>? _edgeRoles;
 
     public CodeResolver(IReferenceDataReader reader)
@@ -85,6 +86,48 @@ internal sealed class CodeResolver
         }
         _edgeRoles = await _reader.LoadCodeMapAsync("substrate.edge_role", 16, ct);
         return Resolve(_edgeRoles, code, "edge_role");
+    }
+
+    /// <summary>
+    /// Returns all significance context codes (arena codes) currently in
+    /// substrate.significance_context. Cached after first load. AP-1: no
+    /// cherry-picking — returns every arena.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> AllSignificanceContextCodesAsync(CancellationToken ct)
+    {
+        _significanceContexts ??= await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct);
+        return [.. _significanceContexts.Keys];
+    }
+
+    /// <summary>
+    /// Returns the <c>initial_mu</c> trust prior for a provenance code. Used
+    /// for inline edge significance emission — each edge gets per-arena
+    /// significance rows seeded at the provenance's trust prior rather than
+    /// default Glicko-2 1500.
+    /// </summary>
+    public async Task<double> ProvenanceMuAsync(string provenanceCode, CancellationToken ct)
+    {
+        _provenanceMus ??= await _reader.LoadCodeDoubleMapAsync("substrate.provenance", "initial_mu", 16, ct);
+        if (_provenanceMus.TryGetValue(provenanceCode, out double mu))
+        {
+            return mu;
+        }
+        // Hierarchical fallback matches the same logic as ProvenanceIdAsync.
+        string current = provenanceCode;
+        while (true)
+        {
+            int lastSlash = current.LastIndexOf('/');
+            if (lastSlash <= 0)
+            {
+                break;
+            }
+            current = current[..lastSlash];
+            if (_provenanceMus.TryGetValue(current, out mu))
+            {
+                return mu;
+            }
+        }
+        return 1500.0; // Glicko-2 default if provenance code not found
     }
 
     private static int Resolve(Dictionary<string, int> map, string code, string typeName)

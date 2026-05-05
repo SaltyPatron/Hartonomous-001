@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Native;
@@ -101,6 +102,13 @@ public sealed class SubstrateTextDecomposer
         ReadOnlySpan<byte> utf8,
         TextDecomposeOptions options)
         => EmitStatic(batch, utf8, options);
+
+    public ValueTask<TextDecomposeResult> EmitAsync(
+        IRecordSink sink,
+        byte[] utf8,
+        TextDecomposeOptions options,
+        CancellationToken ct)
+        => EmitStaticAsync(sink, utf8, options, ct);
 #pragma warning restore CA1822
 
     /// <summary>
@@ -163,6 +171,79 @@ public sealed class SubstrateTextDecomposer
 
         EntityHandle rootHandle = new(rootHashBuf, options.TopEntityType);
         batch.AddEntity(rootHashBuf, options.TopEntityType);
+
+        return new TextDecomposeResult(
+            RootHandle: rootHandle,
+            RootHash: rootHashBuf,
+            EntitiesEmitted: context.EntityCount,
+            SequenceRowsEmitted: context.SequenceCount,
+            PhysicalityRowsEmitted: context.PhysicalityCount,
+            SignificanceRowsEmitted: context.SignificanceCount,
+            RootCentroid: (0, 0, 0, 0));
+    }
+
+    public static async ValueTask<TextDecomposeResult> EmitStaticAsync(
+        IRecordSink sink,
+        byte[] utf8,
+        TextDecomposeOptions options,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        ArgumentNullException.ThrowIfNull(utf8);
+        EnsureUcdLoaded();
+
+        if (utf8.Length == 0)
+        {
+            byte[] emptyHash = new byte[32];
+            EntityHandle empty = new(emptyHash, options.TopEntityType);
+            return new TextDecomposeResult(
+                RootHandle: empty, RootHash: emptyHash,
+                EntitiesEmitted: 0, SequenceRowsEmitted: 0,
+                PhysicalityRowsEmitted: 0, SignificanceRowsEmitted: 0,
+                RootCentroid: (0, 0, 0, 0));
+        }
+
+        BufferedEmitContext context = new(options);
+        TextDecomposeNative.EmitCallback cb = context.OnRecord;
+
+        byte[] rootHashBuf = new byte[32];
+        GCHandle utf8Pin = GCHandle.Alloc(utf8, GCHandleType.Pinned);
+        GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
+        int rc;
+        try
+        {
+            rc = TextDecomposeNative.TextDecompose(
+                utf8Pin.AddrOfPinnedObject(),
+                (nuint) utf8.Length,
+                NativeKindFor(options.TopEntityType),
+                options.TrustMu,
+                cb,
+                IntPtr.Zero,
+                rootPin.AddrOfPinnedObject(),
+                out _);
+        }
+        finally
+        {
+            utf8Pin.Free();
+            rootPin.Free();
+            GC.KeepAlive(cb);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException(
+                $"hartonomous_text_decompose returned {rc} (input {utf8.Length} bytes, top_kind={options.TopEntityType})");
+        }
+
+        foreach (IngestionRecord record in context.Records)
+        {
+            await sink.EmitAsync(record, ct).ConfigureAwait(false);
+        }
+
+        EntityHandle rootHandle = new(rootHashBuf, options.TopEntityType);
+        await sink.EmitAsync(
+            new EntityRecord(options.TopEntityType, rootHashBuf, options.ProvenanceCode),
+            ct).ConfigureAwait(false);
 
         return new TextDecomposeResult(
             RootHandle: rootHandle,
@@ -265,6 +346,99 @@ public sealed class SubstrateTextDecomposer
                         _                                       => "source_authority",
                     };
                     Batch.AddSignificance(eh, ctxCode, record.DoubleParam);
+                    SignificanceCount++;
+                    break;
+                }
+            }
+            return 0;
+        }
+
+        private static byte[] ReadHash(IntPtr ptr)
+        {
+            byte[] dst = new byte[32];
+            if (ptr != IntPtr.Zero)
+            {
+                Marshal.Copy(ptr, dst, 0, 32);
+            }
+            return dst;
+        }
+
+        private static byte[] ReadBytes(IntPtr ptr, int len)
+        {
+            byte[] dst = new byte[len];
+            if (ptr != IntPtr.Zero && len > 0)
+            {
+                Marshal.Copy(ptr, dst, 0, len);
+            }
+            return dst;
+        }
+    }
+
+    private sealed class BufferedEmitContext
+    {
+        public TextDecomposeOptions Options { get; }
+        public Dictionary<Hash32, string> KindByHash { get; } = new();
+        public List<IngestionRecord> Records { get; } = [];
+        public long EntityCount;
+        public long SequenceCount;
+        public long PhysicalityCount;
+        public long SignificanceCount;
+
+        public BufferedEmitContext(TextDecomposeOptions options)
+        {
+            Options = options;
+        }
+
+        public int OnRecord(IntPtr ctx, ref TextDecomposeNative.Record record)
+        {
+            switch (record.Kind)
+            {
+                case TextDecomposeNative.RecEntity:
+                {
+                    byte[] hash = ReadHash(record.HashA);
+                    string code = EntityCodeFor(record.Subkind);
+                    KindByHash[new Hash32(hash)] = code;
+                    Records.Add(new EntityRecord(code, hash, Options.ProvenanceCode));
+                    EntityCount++;
+                    break;
+                }
+                case TextDecomposeNative.RecClassification:
+                    break;
+                case TextDecomposeNative.RecPhysicality:
+                {
+                    byte[] entHash = ReadHash(record.HashA);
+                    string physCode = record.Subkind switch
+                    {
+                        TextDecomposeNative.PhysS3Position => "s3_position",
+                        TextDecomposeNative.PhysContour    => "contour",
+                        _                                   => "contour",
+                    };
+                    byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
+                    Records.Add(new PhysicalityRecord(
+                        physCode,
+                        entHash,
+                        Blake3.Hash(wkb.AsSpan()),
+                        wkb));
+                    PhysicalityCount++;
+                    break;
+                }
+                case TextDecomposeNative.RecSequence:
+                {
+                    byte[] parentHash = ReadHash(record.HashA);
+                    byte[] childHash = ReadHash(record.HashB);
+                    Records.Add(new SequenceRecord(parentHash, record.IntParam, childHash, 1));
+                    SequenceCount++;
+                    break;
+                }
+                case TextDecomposeNative.RecSignificance:
+                {
+                    byte[] entHash = ReadHash(record.HashA);
+                    string ctxCode = record.Subkind switch
+                    {
+                        TextDecomposeNative.SigSourceAuthority => "source_authority",
+                        _                                       => "source_authority",
+                    };
+                    Records.Add(new EntitySignificanceRecord(ctxCode, entHash, record.DoubleParam));
                     SignificanceCount++;
                     break;
                 }

@@ -61,6 +61,9 @@ internal abstract class BaseReferenceTableWriter
     public Task<Dictionary<string, int>> LoadPosMapAsync(CancellationToken ct) =>
         LoadCodeMapAsync("substrate.pos", 24, ct);
 
+    public Task<Dictionary<string, int>> LoadEdgeTypeMapAsync(CancellationToken ct) =>
+        LoadCodeMapAsync("substrate.edge_type", 128, ct);
+
     public Task<Dictionary<(string Key, string Value), int>> LoadMorphFeatureMapAsync(CancellationToken ct) =>
         LoadKeyValueMapAsync("substrate.morph_feature", "key", "value", 2048, ct);
 

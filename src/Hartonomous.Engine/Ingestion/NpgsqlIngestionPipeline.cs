@@ -707,6 +707,51 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         }
     }
 
+    // ── PrimeAllSignificanceAsync ──────────────────────────────────────────
+    // Insert default-mu substrate.edge_significance rows for every
+    // (edge, arena) pair not yet present. AP-1: cross-products against every
+    // arena in substrate.significance_context at call time — no filter.
+    public async Task PrimeAllSignificanceAsync(CancellationToken ct)
+    {
+        const int chunkSize = 65_536;
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+
+        List<int> arenaIds = new();
+        await using (NpgsqlCommand listCmd = new(
+            "SELECT id FROM substrate.significance_context ORDER BY id", conn))
+        await using (NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct))
+        {
+            while (await r.ReadAsync(ct))
+            {
+                arenaIds.Add(r.GetInt32(0));
+            }
+        }
+
+        long totalPrimed = 0;
+        foreach (int arenaId in arenaIds)
+        {
+            while (true)
+            {
+                await using NpgsqlCommand cmd = new(
+                    "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+                cmd.Parameters.Add(new NpgsqlParameter { Value = arenaId });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = chunkSize });
+                object? result = await cmd.ExecuteScalarAsync(ct);
+                long inserted = result is long l ? l : (result is int i ? i : 0L);
+                totalPrimed += inserted;
+                if (inserted == 0)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (totalPrimed > 0)
+        {
+            Log.SignificancePrimed(_logger, arenaIds.Count, totalPrimed);
+        }
+    }
+
     // ── ComputeEdgeHash ────────────────────────────────────────────────────
     // BLAKE3 over [edge_type_id (4 LE bytes) | hash1 (32 bytes) | hash2 ...].
     // Stable identity for a typed n-ary edge: same participants in the same
@@ -797,5 +842,8 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Edge trajectories populated: {Count} edges updated")]
         public static partial void EdgeTrajectoriesPopulated(ILogger logger, long count);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "Edge significance primed: arenas={Arenas} rows={Rows}")]
+        public static partial void SignificancePrimed(ILogger logger, int arenas, long rows);
     }
 }

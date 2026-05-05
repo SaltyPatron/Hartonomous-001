@@ -1,11 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Hartonomous.Core;
-using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
@@ -109,8 +106,12 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
+            IRecordSink sink = pipeline as IRecordSink
+                ?? throw new InvalidOperationException("Wiktionary requires a streaming IRecordSink pipeline.");
+
             Dictionary<string, int> posIdMap = await refWriter.LoadPosMapAsync(ct);
             Dictionary<string, int> langIdMap = await refWriter.LoadLanguageCodeMapAsync(ct);
+            Dictionary<string, int> edgeTypeIdMap = await refWriter.LoadEdgeTypeMapAsync(ct);
 
             int? engLangId =
                 langIdMap.TryGetValue("eng", out int e3) ? e3
@@ -120,28 +121,28 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             long entryCount = 0;
             long entityCount = 0;
             long edgeCount = 0;
-            int batchNum = 0;
+            int checkpointNum = 0;
             Dictionary<string, long> edgeCountByType = new(StringComparer.Ordinal);
-
-            IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
             using WiktionaryJsonlParser.StreamingReader reader =
                 new(_jsonlPath, LanguageFilter);
 
-            async Task FlushBatchAsync()
+            long nextProgressBytes = 128L * 1024L * 1024L;
+
+            async Task ReportProgressCheckpointAsync(bool force = false)
             {
-                if (batch.EntityCount == 0 && batch.EdgeCount == 0)
+                if (!force && reader.BytesRead < nextProgressBytes)
                 {
                     return;
                 }
-                batchNum++;
+                checkpointNum++;
                 double pct = reader.TotalBytes > 0
                     ? 100.0 * (double)reader.BytesRead / (double)reader.TotalBytes
                     : 0.0;
-                Log.Progress(Logger, pct, reader.BytesRead, reader.TotalBytes, reader.EntriesParsed, batchNum);
-                await ReportProgressAsync(pipeline, reporter, batch, entityCount, edgeCount,
-                    batchNum, "wiktionary", ct);
-                batch = pipeline.CreateBatch(ProvenanceCode);
+                Log.Progress(Logger, pct, reader.BytesRead, reader.TotalBytes, reader.EntriesParsed, checkpointNum);
+                await ReportProgressAsync(reporter, entityCount, edgeCount, checkpointNum, "wiktionary", ct)
+                    .ConfigureAwait(false);
+                nextProgressBytes = reader.BytesRead + (128L * 1024L * 1024L);
             }
 
             void BumpEdge(string code)
@@ -149,6 +150,12 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 edgeCountByType.TryGetValue(code, out long current);
                 edgeCountByType[code] = current + 1;
                 edgeCount++;
+            }
+
+            async Task EmitEdgeByCodeAsync(string edgeCode, EdgeMemberSpec[] members)
+            {
+                await EmitEdgeAsync(sink, edgeTypeIdMap, edgeCode, ProvenanceCode, members, ct).ConfigureAwait(false);
+                BumpEdge(edgeCode);
             }
 
             // Resolve a non-English language by code → id, returning null if the language
@@ -177,18 +184,18 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 }
 
                 (EntityHandle lemmaHandle, _, _) =
-                    EmitText(batch, entry.Word, _codepointProperties, "lemma", TrustPriorMu);
-                batch.AddSignificance(lemmaHandle, "source_authority", TrustPriorMu);
+                    await EmitTextAsync(sink, entry.Word, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
+                await EmitEntitySignificanceAsync(sink, lemmaHandle, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
                 entityCount++;
 
                 string? upos = WiktPosMap.ToUpos(entry.Pos);
                 if (upos is not null && posIdMap.TryGetValue(upos, out int posId))
                 {
-                    batch.AddJunction("entity_pos", lemmaHandle, posId, TrustPriorMu);
+                    await EmitJunctionAsync(sink, "entity_pos", lemmaHandle, posId, TrustPriorMu, ct).ConfigureAwait(false);
                 }
                 if (engLangId is int langId)
                 {
-                    batch.AddJunction("entity_language", lemmaHandle, langId);
+                    await EmitJunctionAsync(sink, "entity_language", lemmaHandle, langId, null, ct).ConfigureAwait(false);
                 }
 
                 // ── Forms (lemma → word_form, plus inflection_of back-edge). ──
@@ -202,28 +209,26 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         continue;
                     }
                     (EntityHandle infHandle, _, _) =
-                        EmitText(batch, form.Form, _codepointProperties, "word_form", TrustPriorMu);
-                    batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
+                        await EmitTextAsync(sink, form.Form, _codepointProperties, "word_form", TrustPriorMu, ct).ConfigureAwait(false);
+                    await EmitEntitySignificanceAsync(sink, infHandle, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
                     entityCount++;
 
                     if (engLangId is int infLang)
                     {
-                        batch.AddJunction("entity_language", infHandle, infLang);
+                        await EmitJunctionAsync(sink, "entity_language", infHandle, infLang, null, ct).ConfigureAwait(false);
                     }
 
-                    batch.AddEdge("has_form", ProvenanceCode,
+                    await EmitEdgeByCodeAsync("has_form",
                     [
                         new EdgeMemberSpec(lemmaHandle, "source", 0),
                         new EdgeMemberSpec(infHandle,   "target", 1),
-                    ]);
-                    BumpEdge("has_form");
+                    ]).ConfigureAwait(false);
 
-                    batch.AddEdge("inflection_of", ProvenanceCode,
+                    await EmitEdgeByCodeAsync("inflection_of",
                     [
                         new EdgeMemberSpec(infHandle,   "source", 0),
                         new EdgeMemberSpec(lemmaHandle, "target", 1),
-                    ]);
-                    BumpEdge("inflection_of");
+                    ]).ConfigureAwait(false);
                 }
 
                 // ── Hyphenations (lemma scope). Each hyphenation pattern is text
@@ -235,17 +240,16 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                     {
                         continue;
                     }
-                    EntityHandle hyphDoc = IngestText(batch, repr);
+                    EntityHandle hyphDoc = await IngestTextAsync(sink, repr, ct).ConfigureAwait(false);
                     // The has_hyphenation edge is declared wikt_sense → text_composition
                     // in seed; for entry-level hyphenations we use lemma as the source.
                     // The substrate.edge_member only requires a valid (entity_type_id,
                     // entity_hash) pair on each end, so this is structurally fine.
-                    batch.AddEdge("has_hyphenation", ProvenanceCode,
+                    await EmitEdgeByCodeAsync("has_hyphenation",
                     [
                         new EdgeMemberSpec(lemmaHandle, "source", 0),
                         new EdgeMemberSpec(hyphDoc,     "target", 1),
-                    ]);
-                    BumpEdge("has_hyphenation");
+                    ]).ConfigureAwait(false);
                 }
 
                 // ── Pronunciations (lemma scope). One has_pronunciation edge per
@@ -256,13 +260,12 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 {
                     foreach (string attr in EnumerateSoundAttrs(sound))
                     {
-                        EntityHandle pDoc = IngestText(batch, attr);
-                        batch.AddEdge("has_pronunciation", ProvenanceCode,
+                        EntityHandle pDoc = await IngestTextAsync(sink, attr, ct).ConfigureAwait(false);
+                        await EmitEdgeByCodeAsync("has_pronunciation",
                         [
                             new EdgeMemberSpec(lemmaHandle, "source", 0),
                             new EdgeMemberSpec(pDoc,        "target", 1),
-                        ]);
-                        BumpEdge("has_pronunciation");
+                        ]).ConfigureAwait(false);
                     }
                 }
 
@@ -270,13 +273,12 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 EntityHandle? etymologyDoc = null;
                 if (!string.IsNullOrEmpty(entry.EtymologyText))
                 {
-                    etymologyDoc = IngestText(batch, entry.EtymologyText);
-                    batch.AddEdge("has_etymology", ProvenanceCode,
+                    etymologyDoc = await IngestTextAsync(sink, entry.EtymologyText, ct).ConfigureAwait(false);
+                    await EmitEdgeByCodeAsync("has_etymology",
                     [
                         new EdgeMemberSpec(lemmaHandle,       "source", 0),
                         new EdgeMemberSpec(etymologyDoc.Value, "target", 1),
-                    ]);
-                    BumpEdge("has_etymology");
+                    ]).ConfigureAwait(false);
                 }
 
                 // ── Etymology templates: 8 distinct edge types based on Name. ──
@@ -303,33 +305,31 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         // composed of the expansion text (still semantic content).
                         if (!string.IsNullOrEmpty(t.Expansion))
                         {
-                            EntityHandle expansionDoc = IngestText(batch, t.Expansion);
-                            batch.AddEdge(edgeCode, ProvenanceCode,
+                            EntityHandle expansionDoc = await IngestTextAsync(sink, t.Expansion, ct).ConfigureAwait(false);
+                            await EmitEdgeByCodeAsync(edgeCode,
                             [
                                 new EdgeMemberSpec(lemmaHandle,   "source", 0),
                                 new EdgeMemberSpec(expansionDoc,  "target", 1),
-                            ]);
-                            BumpEdge(edgeCode);
+                            ]).ConfigureAwait(false);
                         }
                         continue;
                     }
 
                     (EntityHandle srcLemma, _, _) =
-                        EmitText(batch, srcWord, _codepointProperties, "lemma", TrustPriorMu);
-                    batch.AddSignificance(srcLemma, "source_authority", TrustPriorMu);
+                        await EmitTextAsync(sink, srcWord, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
+                    await EmitEntitySignificanceAsync(sink, srcLemma, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
                     entityCount++;
                     int? srcLangId = ResolveLangId(srcLang);
                     if (srcLangId is int sl)
                     {
-                        batch.AddJunction("entity_language", srcLemma, sl);
+                        await EmitJunctionAsync(sink, "entity_language", srcLemma, sl, null, ct).ConfigureAwait(false);
                     }
 
-                    batch.AddEdge(edgeCode, ProvenanceCode,
+                    await EmitEdgeByCodeAsync(edgeCode,
                     [
                         new EdgeMemberSpec(lemmaHandle, "source", 0),
                         new EdgeMemberSpec(srcLemma,    "target", 1),
-                    ]);
-                    BumpEdge(edgeCode);
+                    ]).ConfigureAwait(false);
                 }
 
                 // ── Translations (wikt_sense → foreign lemma; cross_lingual). ──
@@ -340,35 +340,34 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         continue;
                     }
                     (EntityHandle foreignLemma, _, _) =
-                        EmitText(batch, tr.Word, _codepointProperties, "lemma", TrustPriorMu);
-                    batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
+                        await EmitTextAsync(sink, tr.Word, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
+                    await EmitEntitySignificanceAsync(sink, foreignLemma, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
                     entityCount++;
                     int? trLangId = ResolveLangId(tr.LangCode);
                     if (trLangId is int tl)
                     {
-                        batch.AddJunction("entity_language", foreignLemma, tl);
+                        await EmitJunctionAsync(sink, "entity_language", foreignLemma, tl, null, ct).ConfigureAwait(false);
                     }
 
                     // translation_of: wikt_sense → lemma. We anchor at the source-language
                     // lemma since per-sense translation lift is out of T0 scope. T1 will
                     // anchor at the matched wikt_sense via WiktTranslation.Sense.
-                    batch.AddEdge("translation_of", ProvenanceCode,
+                    await EmitEdgeByCodeAsync("translation_of",
                     [
                         new EdgeMemberSpec(lemmaHandle,   "source", 0),
                         new EdgeMemberSpec(foreignLemma,  "target", 1),
-                    ]);
-                    BumpEdge("translation_of");
+                    ]).ConfigureAwait(false);
                 }
 
                 // ── Entry-level semantic relations (lemma → lemma). ──
-                EmitRelations(batch, lemmaHandle, entry.Synonyms,        "synonym",         BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.Antonyms,        "antonym",         BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.Hypernyms,       "hypernym",        BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.Hyponyms,        "hyponym",         BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.Meronyms,        "member_meronym",  BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.CoordinateTerms, "coordinate_term", BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.Derived,         "derived",         BumpEdge, ResolveLangId, ref entityCount);
-                EmitRelations(batch, lemmaHandle, entry.Related,         "related",         BumpEdge, ResolveLangId, ref entityCount);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
+                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Related,         "related",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
 
                 // ── wikt_sense entities + has_sense + has_gloss + has_example. ──
                 foreach (WiktSense sense in entry.Senses)
@@ -391,13 +390,12 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                     // text_composition. Provenance=wiktextract on every edge
                     // distinguishes Wiktionary's sense data from any other
                     // dictionary's.
-                    EntityHandle glossDoc = IngestText(batch, joinedGloss);
-                    batch.AddEdge("has_gloss", ProvenanceCode,
+                    EntityHandle glossDoc = await IngestTextAsync(sink, joinedGloss, ct).ConfigureAwait(false);
+                    await EmitEdgeByCodeAsync("has_gloss",
                     [
                         new EdgeMemberSpec(lemmaHandle, "source", 0),
                         new EdgeMemberSpec(glossDoc,    "target", 1),
-                    ]);
-                    BumpEdge("has_gloss");
+                    ]).ConfigureAwait(false);
 
                     foreach (WiktExample ex in sense.Examples)
                     {
@@ -405,13 +403,12 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         {
                             continue;
                         }
-                        EntityHandle exDoc = IngestText(batch, ex.Text);
-                        batch.AddEdge("has_example", ProvenanceCode,
+                        EntityHandle exDoc = await IngestTextAsync(sink, ex.Text, ct).ConfigureAwait(false);
+                        await EmitEdgeByCodeAsync("has_example",
                         [
                             new EdgeMemberSpec(lemmaHandle, "source", 0),
                             new EdgeMemberSpec(exDoc,       "target", 1),
-                        ]);
-                        BumpEdge("has_example");
+                        ]).ConfigureAwait(false);
                     }
 
                     foreach (string wd in sense.Wikidata)
@@ -420,20 +417,16 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         {
                             continue;
                         }
-                        EntityHandle wdDoc = IngestText(batch, wd);
-                        batch.AddEdge("has_wikidata", ProvenanceCode,
+                        EntityHandle wdDoc = await IngestTextAsync(sink, wd, ct).ConfigureAwait(false);
+                        await EmitEdgeByCodeAsync("has_wikidata",
                         [
                             new EdgeMemberSpec(lemmaHandle, "source", 0),
                             new EdgeMemberSpec(wdDoc,       "target", 1),
-                        ]);
-                        BumpEdge("has_wikidata");
+                        ]).ConfigureAwait(false);
                     }
                 }
 
-                if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)
-                {
-                    await FlushBatchAsync();
-                }
+                await ReportProgressCheckpointAsync().ConfigureAwait(false);
 
                 if (entryCount % 250_000 == 0)
                 {
@@ -441,7 +434,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 }
             }
 
-            await FlushBatchAsync();
+            await ReportProgressCheckpointAsync(force: true).ConfigureAwait(false);
 
             foreach (KeyValuePair<string, long> kv in edgeCountByType)
             {
@@ -456,15 +449,18 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         }
     }
 
-    private void EmitRelations(
-        IIngestionBatch batch,
+    private async Task<int> EmitRelationsAsync(
+        IRecordSink sink,
+        Dictionary<string, int> edgeTypeIdMap,
         EntityHandle source,
         IReadOnlyList<WiktRelation> relations,
         string edgeCode,
-        Action<string> bump,
         Func<string?, int?> resolveLang,
-        ref long entityCount)
+        Action<string> bumpEdge,
+        CancellationToken ct)
     {
+        int entityCount = 0;
+
         foreach (WiktRelation rel in relations)
         {
             if (string.IsNullOrEmpty(rel.Word) || rel.Word == "—")
@@ -472,8 +468,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 continue;
             }
             (EntityHandle target, _, _) =
-                EmitText(batch, rel.Word, _codepointProperties, "lemma", TrustPriorMu);
-            batch.AddSignificance(target, "source_authority", TrustPriorMu);
+                await EmitTextAsync(sink, rel.Word, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
+            await EmitEntitySignificanceAsync(sink, target, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
             entityCount++;
 
             // If WiktRelation carried a language code on a target headword,
@@ -483,13 +479,15 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             // extended.
             _ = resolveLang;
 
-            batch.AddEdge(edgeCode, ProvenanceCode,
+            await EmitEdgeAsync(sink, edgeTypeIdMap, edgeCode, ProvenanceCode,
             [
                 new EdgeMemberSpec(source, "source", 0),
                 new EdgeMemberSpec(target, "target", 1),
-            ]);
-            bump(edgeCode);
+            ], ct).ConfigureAwait(false);
+            bumpEdge(edgeCode);
         }
+
+        return entityCount;
     }
 
     /// <summary>
@@ -551,7 +549,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         public static partial void DecompositionComplete(ILogger logger, long entries, long entities, long edges);
 
         [LoggerMessage(Level = LogLevel.Information,
-            Message = "wiktionary progress: {Pct:F2}% ({BytesRead:N0}/{TotalBytes:N0} bytes), {Entries:N0} parsed, batch #{BatchNum}")]
-        public static partial void Progress(ILogger logger, double pct, long bytesRead, long totalBytes, long entries, int batchNum);
+            Message = "wiktionary progress: {Pct:F2}% ({BytesRead:N0}/{TotalBytes:N0} bytes), {Entries:N0} parsed, checkpoint #{CheckpointNum}")]
+        public static partial void Progress(ILogger logger, double pct, long bytesRead, long totalBytes, long entries, int checkpointNum);
     }
 }

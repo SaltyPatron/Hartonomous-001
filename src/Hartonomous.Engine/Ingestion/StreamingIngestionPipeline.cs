@@ -428,6 +428,18 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     sorted[j].RoleCode,
                     sorted[j].Position), ct).ConfigureAwait(false);
             }
+
+            // Inline edge significance: one row per (edge × arena). AP-1: cross-product
+            // against every arena currently in significance_context. Uses the batch
+            // provenance's initial_mu as the trust seed rather than the default 1500 that
+            // PrimeAllSignificanceAsync would insert. This means hot paths (WordNet, UD,
+            // Wiktionary) start with calibrated Glicko-2 priors rather than equal weights.
+            double edgeMu = await _codeResolver.ProvenanceMuAsync(edge.ProvenanceCode, ct).ConfigureAwait(false);
+            IReadOnlyList<string> arenas = await _codeResolver.AllSignificanceContextCodesAsync(ct).ConfigureAwait(false);
+            foreach (string arenaCode in arenas)
+            {
+                await EmitAsync(new EdgeSignificanceRecord(arenaCode, edge.EdgeTypeCode, edgeHash, edgeMu), ct).ConfigureAwait(false);
+            }
         }
 
         foreach (JunctionEntry j in b.Junctions)
@@ -752,32 +764,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 #pragma warning restore CA1873
         }
 
-        // End-of-phase post-passes (replaces the deleted background workers):
-        //   1. Backfill substrate.edge.geom for any edges whose producer
-        //      didn't attach inline LINESTRINGZM EWKB (compositions whose
-        //      participants have LINESTRINGZM physicality, cross-batch
-        //      participants, etc.).
-        //   2. Prime substrate.edge_significance with the compound-formula
-        //      μ across every arena currently in substrate.significance_context
-        //      (AP-1: cross-product, no cherry-picking).
-        // Both are idempotent (ON CONFLICT DO NOTHING / IS NULL guards) and
-        // run set-based once per phase. No long-lived background tasks.
-        try
-        {
-            await PopulateEdgeTrajectoriesAsync(ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Log.PostPassFailed(_logger, "populate_edge_trajectories", ex);
-        }
-        try
-        {
-            await PrimeAllSignificanceAsync(ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Log.PostPassFailed(_logger, "prime_significance", ex);
-        }
+        // FlushAsync drains channels only. Post-phase enrichment (edge trajectory
+        // backfill and significance priming) is the phase orchestrator's
+        // responsibility and must be called explicitly via
+        // PopulateEdgeTrajectoriesAsync and PrimeAllSignificanceAsync.
+        // Keeping them here would execute them twice — once per phase by the
+        // orchestrator and again at dispose — wasting time on already-complete
+        // work. Idempotency of the underlying functions makes the double-call
+        // safe but not free; at Wiktionary scale each redundant pass is minutes.
     }
 
     /// <summary>

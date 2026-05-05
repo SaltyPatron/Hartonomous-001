@@ -31,5 +31,15 @@ public interface IIngestionPipeline : IAsyncDisposable
     /// </summary>
     Task PopulateEdgeTrajectoriesAsync(CancellationToken ct);
 
+    /// <summary>
+    /// Prime <c>substrate.edge_significance</c> for every arena currently in
+    /// <c>substrate.significance_context</c>, inserting default-mu rows for
+    /// any edge that lacks a significance row for a given arena. AP-1
+    /// compliant: cross-products against ALL arenas present at call time —
+    /// do not filter or cherry-pick. Call once at the end of a decomposition
+    /// phase after <see cref="PopulateEdgeTrajectoriesAsync"/>.
+    /// </summary>
+    Task PrimeAllSignificanceAsync(CancellationToken ct);
+
     PipelineStats Stats { get; }
 }

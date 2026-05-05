@@ -189,6 +189,22 @@ public abstract partial class BaseDecomposer : IDecomposer
         }
     }
 
+    protected static ValueTask EmitEdgeAsync(
+        IRecordSink sink,
+        IReadOnlyDictionary<string, int> edgeTypeIdMap,
+        string edgeTypeCode,
+        string provenanceCode,
+        IReadOnlyList<EdgeMemberSpec> members,
+        CancellationToken ct)
+    {
+        if (!edgeTypeIdMap.TryGetValue(edgeTypeCode, out int edgeTypeId))
+        {
+            throw new InvalidOperationException($"Unknown edge_type code '{edgeTypeCode}'.");
+        }
+
+        return EmitEdgeAsync(sink, edgeTypeCode, provenanceCode, edgeTypeId, members, ct);
+    }
+
     /// <summary>
     /// Emit one junction row into the streaming sink. Mu is non-null only
     /// for Glicko-bearing junctions (entity_pos, entity_sense, pattern_deprel).
@@ -293,6 +309,26 @@ public abstract partial class BaseDecomposer : IDecomposer
                 CurrentBatch = batchNum,
             }, ct);
     }
+
+    protected Task ReportProgressAsync(
+        IProgressReporter reporter,
+        long entityCount,
+        long edgeCount,
+        int checkpointNum,
+        string currentFile,
+        CancellationToken ct,
+        string phase = "streaming_ingestion")
+        => reporter.ReportAsync(
+            new ProgressSnapshot
+            {
+                DecomposerCode = ProvenanceCode,
+                CurrentPhase = phase,
+                EntitiesCreated = entityCount,
+                EdgesCreated = edgeCount,
+                CurrentFile = currentFile,
+                CurrentBatch = checkpointNum,
+            },
+            ct);
 
     // EmitWordFormMerkle removed — replaced by Hartonomous.Core.Text.CanonicalTextDecomposer.Emit
     // and the BaseDecomposer.EmitText helper. See docs/specs/text-decomposer-unification.md.
@@ -469,6 +505,29 @@ public abstract partial class BaseDecomposer : IDecomposer
                     ProvenanceCode: ProvenanceCode,
                     TopEntityType: topEntityType,
                     TrustMu: trustMu));
+        return (r.RootHandle, r.RootHash, r.RootCentroid);
+    }
+
+    protected async ValueTask<(Hartonomous.Core.Ingestion.EntityHandle Handle, byte[] Hash, (double X, double Y, double Z, double M) Centroid)>
+        EmitTextAsync(
+            Hartonomous.Core.Ingestion.IRecordSink sink,
+            string text,
+            Hartonomous.Core.Text.Segmentation.ICodepointProperties codepointProperties,
+            string topEntityType,
+            double trustMu,
+            CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        byte[] utf8 = Encoding.UTF8.GetBytes(text);
+        Hartonomous.Core.Text.TextDecomposeResult r =
+            await Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStaticAsync(
+                sink,
+                utf8,
+                new Hartonomous.Core.Text.TextDecomposeOptions(
+                    ProvenanceCode: ProvenanceCode,
+                    TopEntityType: topEntityType,
+                    TrustMu: trustMu),
+                ct).ConfigureAwait(false);
         return (r.RootHandle, r.RootHash, r.RootCentroid);
     }
 

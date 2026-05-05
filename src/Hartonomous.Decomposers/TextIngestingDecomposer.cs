@@ -1,6 +1,7 @@
 using System;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text.Segmentation;
@@ -80,6 +81,25 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
                 ProvenanceCode: ProvenanceCode,
                 TopEntityType: "text_composition",
                 TrustMu: TrustPriorMu));
+        _textCache.Add(text, r.RootHash);
+        return r.RootHandle;
+    }
+
+    protected async ValueTask<EntityHandle> IngestTextAsync(IRecordSink sink, string text, CancellationToken ct)
+    {
+        if (_textCache.TryGet(text, out byte[]? cachedHash))
+        {
+            return await EmitEntityAsync(sink, cachedHash!, "text_composition", ProvenanceCode, ct).ConfigureAwait(false);
+        }
+        byte[] utf8 = Encoding.UTF8.GetBytes(text);
+        Hartonomous.Core.Text.TextDecomposeResult r = await _substrateTextDecomposer.EmitAsync(
+            sink,
+            utf8,
+            new Hartonomous.Core.Text.TextDecomposeOptions(
+                ProvenanceCode: ProvenanceCode,
+                TopEntityType: "text_composition",
+                TrustMu: TrustPriorMu),
+            ct).ConfigureAwait(false);
         _textCache.Add(text, r.RootHash);
         return r.RootHandle;
     }

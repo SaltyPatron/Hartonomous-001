@@ -180,6 +180,7 @@
 -- @include schema/functions/reference_code_map.sql
 -- @include schema/functions/reference_key_value_map.sql
 -- @include schema/functions/reference_code_text_map.sql
+-- @include schema/functions/reference_code_double_map.sql
 -- @include schema/functions/reference_int64_set.sql
 -- @include schema/functions/reference_id_by_code.sql
 -- @include schema/functions/resolve_context_id.sql

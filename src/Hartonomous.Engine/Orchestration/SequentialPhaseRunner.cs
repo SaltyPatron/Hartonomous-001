@@ -146,8 +146,16 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
                 Log.DecomposerCompleted(_logger, decomposer.DisplayName, phase);
             }
 
-            // Populate edge trajectories once per phase (not per-batch).
+            // Post-phase enrichment: single authority for these operations.
+            // Order is significant: trajectories must exist before significance
+            // priming can correctly compute costs over the edge graph.
+            //   1. Backfill substrate.edge.geom for edges whose producer
+            //      couldn't attach inline LINESTRINGZM (cross-batch participants,
+            //      LINESTRINGZM-physicality compositions, etc.).
+            //   2. Prime substrate.edge_significance for every arena in
+            //      substrate.significance_context (AP-1: cross-product, no filter).
             await _pipeline.PopulateEdgeTrajectoriesAsync(ct);
+            await _pipeline.PrimeAllSignificanceAsync(ct);
 
             _status[phase] = PhaseStatus.Completed;
             await PersistStatusAsync(phase, "completed", errorMessage: null, ct);
