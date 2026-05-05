@@ -89,7 +89,9 @@ RUN source ${ONEAPI_ROOT}/setvars.sh --force && \
 COPY ext/hartonomous_pg /src/hartonomous_pg
 WORKDIR /src/hartonomous_pg
 RUN source ${ONEAPI_ROOT}/setvars.sh --force && \
+    CC=gcc CXX=g++ AS=as \
     PG_CONFIG=/opt/pg18/bin/pg_config make && \
+    CC=gcc CXX=g++ AS=as \
     PG_CONFIG=/opt/pg18/bin/pg_config make install
 
 # ---------- runtime ----------

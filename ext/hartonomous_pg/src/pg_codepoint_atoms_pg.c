@@ -376,6 +376,21 @@ Datum pg_ucd_break_properties(PG_FUNCTION_ARGS)
  * per row when SQL needs the full row. */
 #define ATOM_COL_COUNT 28
 
+/* build_atom_values allocates temporary varlena payloads for hash (index 1)
+ * and name (index 27). heap_form_tuple copies those payloads into the tuple,
+ * so the temporaries must be released per-row to avoid unbounded growth on
+ * 1.1M-row SRF scans. */
+static inline void
+free_atom_temp_values(Datum* values, bool* nulls)
+{
+    if (!nulls[1]) {
+        pfree(DatumGetPointer(values[1]));
+    }
+    if (!nulls[27]) {
+        pfree(DatumGetPointer(values[27]));
+    }
+}
+
 static void
 build_atom_values(int32_t cp, Datum* values, bool* nulls)
 {
@@ -450,6 +465,7 @@ Datum pg_cp_atom(PG_FUNCTION_ARGS)
     bool  nulls[ATOM_COL_COUNT];
     build_atom_values(cp, values, nulls);
     HeapTuple t = heap_form_tuple(tupdesc, values, nulls);
+    free_atom_temp_values(values, nulls);
     PG_RETURN_DATUM(HeapTupleGetDatum(t));
 }
 
@@ -518,6 +534,7 @@ ucd_atom_setof(PG_FUNCTION_ARGS, UcdSrfKind kind, int32_t start, int32_t end, in
         bool  nulls[ATOM_COL_COUNT];
         build_atom_values(cp, values, nulls);
         HeapTuple t = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+        free_atom_temp_values(values, nulls);
         SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(t));
     }
 

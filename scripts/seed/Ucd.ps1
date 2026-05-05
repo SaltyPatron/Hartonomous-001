@@ -57,15 +57,56 @@ foreach ($pair in $Connection.Split(';')) {
     }
 }
 $env:PGPASSWORD = $kv['Password']
+# Force UTF8 client encoding so cp_* text values are decoded consistently across host/client platforms.
+$env:PGCLIENTENCODING = 'UTF8'
 $psql = "${env:ProgramFiles}\PostgreSQL\18\bin\psql.exe"
 if (-not (Test-Path $psql)) { $psql = 'psql' }
 
+$useDockerPsql = $false
+if (($kv['Host'] -eq 'localhost' -or $kv['Host'] -eq '127.0.0.1') -and $kv['Port'] -eq '5433') {
+    try {
+        $containerName = (& docker ps --format "{{.Names}}" 2>$null | Where-Object { $_ -eq 'hartonomous-postgres' } | Select-Object -First 1)
+        $useDockerPsql = -not [string]::IsNullOrWhiteSpace($containerName)
+    }
+    catch {
+        $useDockerPsql = $false
+    }
+}
+
 function Invoke-Psql {
     param([string]$Sql, [string]$Label)
-    $out = & $psql -h $kv['Host'] -p $kv['Port'] -U $kv['Username'] -d $kv['Database'] `
-        -v ON_ERROR_STOP=1 -t -A -c $Sql 2>&1
+
+    if ($useDockerPsql) {
+        $out = & docker exec -e "PGPASSWORD=$($kv['Password'])" hartonomous-postgres `
+            psql -U $kv['Username'] -d $kv['Database'] -v ON_ERROR_STOP=1 -t -A -c $Sql 2>&1
+    }
+    else {
+        $out = & $psql -h $kv['Host'] -p $kv['Port'] -U $kv['Username'] -d $kv['Database'] `
+            -v ON_ERROR_STOP=1 -t -A -c $Sql 2>&1
+    }
+
     if ($LASTEXITCODE -ne 0) { throw "${Label}: $out" }
     return ($out -join "`n").Trim()
+}
+
+function Invoke-ChunkedCodepointSql {
+    param(
+        [Parameter(Mandatory = $true)][string]$StepLabel,
+        [Parameter(Mandatory = $true)][string]$SqlTemplate,
+        [int]$ChunkSize = 8192
+    )
+
+    $maxCp = 1114112
+    $chunk = 0
+    for ($lo = 0; $lo -lt $maxCp; $lo += $ChunkSize) {
+        $hi = [Math]::Min($lo + $ChunkSize, $maxCp)
+        $sql = [string]::Format($SqlTemplate, $lo, $hi)
+        $null = Invoke-Psql -Sql $sql -Label "$StepLabel chunk [$lo,$hi)"
+        $chunk += 1
+        if (($chunk % 4) -eq 0 -or $hi -eq $maxCp) {
+            Write-HartInfo "  $StepLabel progress: [$lo,$hi)"
+        }
+    }
 }
 
 try {
@@ -100,14 +141,56 @@ try {
         $n = Invoke-Psql -Sql 'SELECT substrate.populate_break_properties_from_ext()' -Label 'populate_break_properties_from_ext'
         Write-HartInfo "  +$n break_property rows"
     }
-    Invoke-HartStep -Name 'substrate.populate_codepoint_property_from_ext() (1,114,112-row bulk insert)' -Action {
+    Invoke-HartStep -Name 'substrate.populate_codepoint_property_from_ext()' -Action {
+        # Uses the SQL function directly — it builds proper temp lookup tables joining
+        # on (code, category) so WB/SB/LB break-property IDs are resolved correctly
+        # regardless of serial assignment order.  Runs in 200K-row chunks internally.
         $n = Invoke-Psql -Sql 'SELECT substrate.populate_codepoint_property_from_ext()' -Label 'populate_codepoint_property_from_ext'
         Write-HartInfo "  +$n codepoint_property rows"
     }
-    Invoke-HartStep -Name "substrate.populate_codepoint_atoms('$ProvenanceCode') — tier-0 atoms" -Action {
-        $sql = "SELECT substrate.populate_codepoint_atoms('$ProvenanceCode')"
-        & $psql -h $kv['Host'] -p $kv['Port'] -U $kv['Username'] -d $kv['Database'] -v ON_ERROR_STOP=1 -c $sql
-        if ($LASTEXITCODE -ne 0) { throw "populate_codepoint_atoms failed (exit $LASTEXITCODE)" }
+
+    Invoke-HartStep -Name "Populate codepoint atoms (chunked scalar path)" -Action {
+        $entitySql = @"
+INSERT INTO substrate.entity (hash)
+SELECT substrate.cp_hash(gs.cp)
+FROM generate_series({0}, {1} - 1) AS gs(cp)
+ON CONFLICT (hash) DO NOTHING;
+"@
+        Invoke-ChunkedCodepointSql -StepLabel 'entity' -SqlTemplate $entitySql
+
+        $classificationSql = @"
+INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+SELECT substrate.cp_hash(gs.cp),
+       (SELECT id FROM substrate.entity_type WHERE code = 'codepoint'),
+       (SELECT id FROM substrate.provenance WHERE code = '$ProvenanceCode')
+FROM generate_series({0}, {1} - 1) AS gs(cp)
+ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
+"@
+        Invoke-ChunkedCodepointSql -StepLabel 'entity_classification' -SqlTemplate $classificationSql
+
+        $physicalitySql = @"
+INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+SELECT (SELECT id FROM substrate.physicality_type WHERE code = 's3_position'),
+       substrate.cp_hash(gs.cp),
+       substrate.cp_hash(gs.cp),
+       ST_MakePoint(substrate.cp_x(gs.cp), substrate.cp_y(gs.cp), substrate.cp_z(gs.cp), substrate.cp_m(gs.cp))
+FROM generate_series({0}, {1} - 1) AS gs(cp)
+ON CONFLICT DO NOTHING;
+"@
+        Invoke-ChunkedCodepointSql -StepLabel 'physicality' -SqlTemplate $physicalitySql
+
+        $sigSql = @"
+INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
+SELECT (SELECT id FROM substrate.significance_context WHERE code = 'source_authority'),
+       substrate.cp_hash(gs.cp),
+       (SELECT initial_mu FROM substrate.provenance WHERE code = '$ProvenanceCode'),
+       350.0,
+       0.06,
+       0
+FROM generate_series({0}, {1} - 1) AS gs(cp)
+ON CONFLICT DO NOTHING;
+"@
+        Invoke-ChunkedCodepointSql -StepLabel 'entity_significance' -SqlTemplate $sigSql
     }
 
     # Mark UcdUca as completed in monitor.phase_status so subsequent
@@ -116,9 +199,7 @@ try {
     # and DON'T re-run the legacy C# UcdUcaDecomposer (which would conflict
     # on substrate.codepoint_property's primary key).
     Invoke-HartStep -Name 'Mark UcdUca completed in monitor.phase_status' -Action {
-        $sql = "CALL monitor.update_phase_status('UcdUca', 'completed', NULL)"
-        & $psql -h $kv['Host'] -p $kv['Port'] -U $kv['Username'] -d $kv['Database'] -v ON_ERROR_STOP=1 -c $sql
-        if ($LASTEXITCODE -ne 0) { throw "monitor.update_phase_status failed (exit $LASTEXITCODE)" }
+        $null = Invoke-Psql -Sql "CALL monitor.update_phase_status('UcdUca', 'completed', NULL)" -Label 'monitor.update_phase_status'
         Write-HartInfo '  UcdUca = completed (substrate-side)'
     }
 

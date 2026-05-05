@@ -3,7 +3,7 @@
 -- Replaces the C# UCD/UCA decomposer's per-codepoint emission loop with
 -- a substrate-side bulk INSERT driven by the extension's embedded UCD
 -- 17.0.0 tables. Inserts ~1,114,112 codepoint entities + classifications
--- + S^3 physicalities + significance rows in five SQL statements — same
+-- + S^3 physicalities + significance rows in 200K-row chunks — same
 -- substrate state, ~30× the speed of XML parsing.
 --
 -- Pre-requisites:
@@ -19,30 +19,11 @@
 -- UCA-sorted index, also precomputed. Same UCD version → byte-identical
 -- substrate state across runs.
 --
--- IMPLEMENTATION NOTE — composite SRF source, NOT generate_series + scalar fns.
+-- IMPLEMENTATION NOTE — scalar cp_* accessors over generate_series.
 --
--- The previous formulation drove these INSERTs from generate_series(0, 1114111)
--- and called substrate.cp_hash(cp) / cp_x(cp) / cp_y(cp) / cp_z(cp) / cp_m(cp)
--- per row. That shape produced a SEGV in PG's expression interpreter at
--- codepoint #287,103 with the FunctionScan's projection ExprState's last
--- step (step[9]) malformed: opcode field set to a valid dispatch label but
--- resvalue/resnull/d all zero. Crash dump trace at execExprInterp.c:716
--- (EEOP_SCAN_VAR) writing through a NULL resvalue.
---
--- Switching to substrate.ucd_codepoints() — the same composite-SRF path
--- substrate.populate_codepoint_property_from_ext() drives — eliminates
--- the 6 per-row scalar function calls (and their domain-check expression
--- chains) entirely. Each INSERT now reads pre-materialised composite
--- columns (a.hash, a.x, a.y, a.z, a.m) from the SRF tuple, which is the
--- query shape PG executes correctly at this scale.
---
--- The `PERFORM 1 FROM substrate.ucd_codepoints(0, 1)` at the top forces
--- the codepoint_atom composite-type tupdesc to resolve + BlessTupleDesc
--- before plpgsql plan-caches the bulk INSERTs below. Without it, the
--- first invocation after CREATE EXTENSION races with catalog visibility
--- of codepoint_atom's pg_attribute rows and fires "invalid attribute
--- number" on the bulk read. (Same warm-up pattern populate_codepoint_property_from_ext
--- uses.)
+-- All four insert steps use 200K-row WHILE chunks to keep per-statement
+-- memory bounded on PG18. Scalar cp_* extension accessors run in each
+-- row's per-tuple ExprContext and do not accumulate across rows.
 --
 -- Returns the count of codepoints processed.
 CREATE OR REPLACE FUNCTION substrate.populate_codepoint_atoms(
@@ -58,9 +39,9 @@ DECLARE
     v_s3_phys_type     INT;
     v_source_auth_ctx  INT;
     v_initial_mu       FLOAT8;
+    v_lo               INT := 0;
+    v_hi               INT;
 BEGIN
-    -- Warm up the composite SRF tupdesc cache before plan-baking.
-    PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
 
     SELECT id, COALESCE(p_trust_mu, initial_mu)
       INTO v_provenance_id, v_initial_mu
@@ -88,36 +69,73 @@ BEGIN
         RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
     END IF;
 
-    -- 1. Insert all 1,114,112 codepoint entities. Hash from extension table.
-    INSERT INTO substrate.entity (hash)
-    SELECT a.hash
-      FROM substrate.ucd_codepoints() a
-    ON CONFLICT (hash) DO NOTHING;
+    -- 1. Insert all 1,114,112 codepoint entities.
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
 
+        INSERT INTO substrate.entity (hash)
+        SELECT substrate.cp_hash(gs.cp)
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT (hash) DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
+
+    v_lo := 0;
     -- 2. Classify each as 'codepoint' under the given provenance.
-    INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
-    SELECT a.hash, v_codepoint_etype, v_provenance_id
-      FROM substrate.ucd_codepoints() a
-    ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
 
-    -- 3. S^3 physicality — POINTZM built via PostGIS ST_MakePoint from the
-    --    composite-tuple per-axis fields (a.x / a.y / a.z / a.m).
-    INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
-    SELECT v_s3_phys_type,
-           a.hash,
-           a.hash,
-           ST_MakePoint(a.x, a.y, a.z, a.m)
-      FROM substrate.ucd_codepoints() a
-    ON CONFLICT DO NOTHING;
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT substrate.cp_hash(gs.cp), v_codepoint_etype, v_provenance_id
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
 
-    -- 4. Source-authority significance prior, one row per codepoint.
-    INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
-    SELECT v_source_auth_ctx, a.hash, v_initial_mu, 350.0, 0.06, 0
-      FROM substrate.ucd_codepoints() a
-    ON CONFLICT DO NOTHING;
+        v_lo := v_hi;
+    END LOOP;
+
+    v_lo := 0;
+    -- 3. S^3 physicality built from scalar axis accessors.
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
+
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT v_s3_phys_type,
+               substrate.cp_hash(gs.cp),
+               substrate.cp_hash(gs.cp),
+               ST_MakePoint(
+                   substrate.cp_x(gs.cp),
+                   substrate.cp_y(gs.cp),
+                   substrate.cp_z(gs.cp),
+                   substrate.cp_m(gs.cp)
+               )
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
+
+    v_lo := 0;
+    -- 4. Source-authority significance prior, chunked to keep per-statement
+    -- memory bounded on PG18 under large generated sets.
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
+
+        INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
+        SELECT v_source_auth_ctx,
+               substrate.cp_hash(gs.cp),
+               v_initial_mu,
+               350.0,
+               0.06,
+               0
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
 
     RETURN 1114112;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_atoms(TEXT, FLOAT8) IS
-    'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables. Drives off substrate.ucd_codepoints() composite SRF (same path populate_codepoint_property_from_ext uses) — avoids the per-row scalar-function expression-state shape that crashed PG18''s expression interpreter at codepoint #287,103. Idempotent via ON CONFLICT.';
+    'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables using scalar cp_* accessors over generate_series, with chunked significance inserts. Idempotent via ON CONFLICT.';

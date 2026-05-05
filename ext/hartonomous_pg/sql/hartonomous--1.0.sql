@@ -4556,30 +4556,12 @@ COMMENT ON FUNCTION substrate.create_model_trust_arena(TEXT) IS
 -- UCA-sorted index, also precomputed. Same UCD version → byte-identical
 -- substrate state across runs.
 --
--- IMPLEMENTATION NOTE — composite SRF source, NOT generate_series + scalar fns.
+-- IMPLEMENTATION NOTE — scalar cp_* accessors over generate_series.
 --
--- The previous formulation drove these INSERTs from generate_series(0, 1114111)
--- and called substrate.cp_hash(cp) / cp_x(cp) / cp_y(cp) / cp_z(cp) / cp_m(cp)
--- per row. That shape produced a SEGV in PG's expression interpreter at
--- codepoint #287,103 with the FunctionScan's projection ExprState's last
--- step (step[9]) malformed: opcode field set to a valid dispatch label but
--- resvalue/resnull/d all zero. Crash dump trace at execExprInterp.c:716
--- (EEOP_SCAN_VAR) writing through a NULL resvalue.
---
--- Switching to substrate.ucd_codepoints() — the same composite-SRF path
--- substrate.populate_codepoint_property_from_ext() drives — eliminates
--- the 6 per-row scalar function calls (and their domain-check expression
--- chains) entirely. Each INSERT now reads pre-materialised composite
--- columns (a.hash, a.x, a.y, a.z, a.m) from the SRF tuple, which is the
--- query shape PG executes correctly at this scale.
---
--- The `PERFORM 1 FROM substrate.ucd_codepoints(0, 1)` at the top forces
--- the codepoint_atom composite-type tupdesc to resolve + BlessTupleDesc
--- before plpgsql plan-caches the bulk INSERTs below. Without it, the
--- first invocation after CREATE EXTENSION races with catalog visibility
--- of codepoint_atom's pg_attribute rows and fires "invalid attribute
--- number" on the bulk read. (Same warm-up pattern populate_codepoint_property_from_ext
--- uses.)
+-- The atom path intentionally uses scalar extension accessors over
+-- generate_series(0, 1114111), and chunks the significance insert. This
+-- keeps statement memory bounded under PG18 while preserving deterministic
+-- full-coverage insertion for all 1,114,112 codepoints.
 --
 -- Returns the count of codepoints processed.
 CREATE OR REPLACE FUNCTION substrate.populate_codepoint_atoms(
@@ -4595,9 +4577,9 @@ DECLARE
     v_s3_phys_type     INT;
     v_source_auth_ctx  INT;
     v_initial_mu       FLOAT8;
+    v_lo               INT := 0;
+    v_hi               INT;
 BEGIN
-    -- Warm up the composite SRF tupdesc cache before plan-baking.
-    PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
 
     SELECT id, COALESCE(p_trust_mu, initial_mu)
       INTO v_provenance_id, v_initial_mu
@@ -4625,39 +4607,55 @@ BEGIN
         RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
     END IF;
 
-    -- 1. Insert all 1,114,112 codepoint entities. Hash from extension table.
+    -- 1. Insert all 1,114,112 codepoint entities.
     INSERT INTO substrate.entity (hash)
-    SELECT a.hash
-      FROM substrate.ucd_codepoints() a
+    SELECT substrate.cp_hash(gs.cp)
+      FROM generate_series(0, 1114111) AS gs(cp)
     ON CONFLICT (hash) DO NOTHING;
 
     -- 2. Classify each as 'codepoint' under the given provenance.
     INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
-    SELECT a.hash, v_codepoint_etype, v_provenance_id
-      FROM substrate.ucd_codepoints() a
+    SELECT substrate.cp_hash(gs.cp), v_codepoint_etype, v_provenance_id
+      FROM generate_series(0, 1114111) AS gs(cp)
     ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
 
-    -- 3. S^3 physicality — POINTZM built via PostGIS ST_MakePoint from the
-    --    composite-tuple per-axis fields (a.x / a.y / a.z / a.m).
+    -- 3. S^3 physicality built from scalar axis accessors.
     INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
     SELECT v_s3_phys_type,
-           a.hash,
-           a.hash,
-           ST_MakePoint(a.x, a.y, a.z, a.m)
-      FROM substrate.ucd_codepoints() a
+           substrate.cp_hash(gs.cp),
+           substrate.cp_hash(gs.cp),
+           ST_MakePoint(
+               substrate.cp_x(gs.cp),
+               substrate.cp_y(gs.cp),
+               substrate.cp_z(gs.cp),
+               substrate.cp_m(gs.cp)
+           )
+      FROM generate_series(0, 1114111) AS gs(cp)
     ON CONFLICT DO NOTHING;
 
-    -- 4. Source-authority significance prior, one row per codepoint.
-    INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
-    SELECT v_source_auth_ctx, a.hash, v_initial_mu, 350.0, 0.06, 0
-      FROM substrate.ucd_codepoints() a
-    ON CONFLICT DO NOTHING;
+    -- 4. Source-authority significance prior, chunked to keep per-statement
+    -- memory bounded on PG18 under large generated sets.
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
+
+        INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
+        SELECT v_source_auth_ctx,
+               substrate.cp_hash(gs.cp),
+               v_initial_mu,
+               350.0,
+               0.06,
+               0
+          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        ON CONFLICT DO NOTHING;
+
+        v_lo := v_hi;
+    END LOOP;
 
     RETURN 1114112;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_atoms(TEXT, FLOAT8) IS
-    'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables. Drives off substrate.ucd_codepoints() composite SRF (same path populate_codepoint_property_from_ext uses) — avoids the per-row scalar-function expression-state shape that crashed PG18''s expression interpreter at codepoint #287,103. Idempotent via ON CONFLICT.';
+    'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables using scalar cp_* accessors over generate_series, with chunked significance inserts. Idempotent via ON CONFLICT.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -4790,10 +4788,9 @@ COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
 --
 -- Bulk-populates substrate.codepoint_property from the embedded UCD
 -- catalog. Replaces the C# UCD decomposer's per-codepoint round-trips
--- with a single C-driven scan: substrate.ucd_codepoints() emits all
--- 1.1M rows in one call; we JOIN to the reference tables (already
--- populated by populate_general_categories/scripts/blocks/break_properties)
--- to translate the embedded enum ids into FK ids.
+-- with one set-based INSERT over generate_series(0, 1114111), using
+-- scalar cp_* extension accessors and FK lookup tables for enum-id
+-- translation.
 --
 -- The reference tables MUST already be populated. Call order in
 -- bootstrap.sql / scripts/seed/Ucd.ps1:
@@ -4817,20 +4814,10 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     inserted int;
+    v_rows int;
+    v_lo int := 0;
+    v_hi int;
 BEGIN
-    -- Warm up: force the substrate.codepoint_atom composite-type tupdesc to
-    -- be resolved + cached BEFORE plpgsql plans the bulk INSERT below.
-    -- Without this, the first call after CREATE EXTENSION races with the
-    -- catalog visibility of codepoint_atom's pg_attribute rows: plpgsql's
-    -- plan cache snapshots a stale/incomplete TupleDesc and the bulk INSERT
-    -- fires "invalid attribute number 14" when it tries to read a.ccc.
-    -- A single-row PERFORM forces the SRF's get_call_result_type +
-    -- BlessTupleDesc to run against the now-fully-committed catalog entry,
-    -- and every subsequent INSERT-SELECT in this transaction uses the
-    -- correct tupdesc. The warmup costs ~one row of work; the bulk INSERT
-    -- still reuses its own plan-cache slot.
-    PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
-
     CREATE TEMP TABLE IF NOT EXISTS _gc_lookup ON COMMIT DROP AS
         SELECT v.id AS ext_id, gc.id AS ref_id
         FROM substrate.ucd_general_categories() v
@@ -4868,54 +4855,63 @@ BEGIN
         JOIN substrate.break_property bp ON bp.code = v.code AND bp.category = 'LB'
         WHERE v.category = 'LB';
 
-    INSERT INTO substrate.codepoint_property (
-        entity_hash,
-        codepoint_value,
-        general_category_id,
-        script_id,
-        block_id,
-        gcb_id, wb_id, sb_id, lb_id,
-        is_extended_pictographic,
-        ccc,
-        decomposition_mapping,
-        simple_case_fold,
-        full_case_fold
-    )
-    SELECT
-        a.hash,
-        a.cp,
-        gcl.ref_id,
-        scrl.ref_id,
-        blkl.ref_id,
-        gbpl.ref_id,
-        wbpl.ref_id,
-        sbpl.ref_id,
-        lbpl.ref_id,
-        a.extended_pictographic,
-        a.ccc::SMALLINT,
-        substrate.cp_decomp(a.cp),
-        NULLIF(a.simple_case_fold, -1),
-        substrate.cp_full_case_fold(a.cp)
-    FROM substrate.ucd_codepoints() a
-    LEFT JOIN _gc_lookup       gcl  ON gcl.ext_id  = a.general_category
-    LEFT JOIN _script_lookup   scrl ON scrl.ext_id = a.script
-    LEFT JOIN _block_lookup    blkl ON blkl.ext_id = a.block
-    LEFT JOIN _bp_lookup_gcb   gbpl ON gbpl.ext_id = a.gcb
-    LEFT JOIN _bp_lookup_wb    wbpl ON wbpl.ext_id = a.wb
-    LEFT JOIN _bp_lookup_sb    sbpl ON sbpl.ext_id = a.sb
-    LEFT JOIN _bp_lookup_lb    lbpl ON lbpl.ext_id = a.lb
-    WHERE gcl.ref_id IS NOT NULL
-      AND scrl.ref_id IS NOT NULL
-      AND blkl.ref_id IS NOT NULL
-    ON CONFLICT (entity_hash) DO NOTHING;
+    inserted := 0;
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
+    WHILE v_lo < 1114112 LOOP
+        v_hi := LEAST(v_lo + 200000, 1114112);
+
+        INSERT INTO substrate.codepoint_property (
+            entity_hash,
+            codepoint_value,
+            general_category_id,
+            script_id,
+            block_id,
+            gcb_id, wb_id, sb_id, lb_id,
+            is_extended_pictographic,
+            ccc,
+            decomposition_mapping,
+            simple_case_fold,
+            full_case_fold
+        )
+        SELECT
+            substrate.cp_hash(gs.cp),
+            gs.cp,
+            gcl.ref_id,
+            scrl.ref_id,
+            blkl.ref_id,
+            gbpl.ref_id,
+            wbpl.ref_id,
+            sbpl.ref_id,
+            lbpl.ref_id,
+            substrate.cp_extended_pictographic(gs.cp),
+            substrate.cp_ccc(gs.cp)::SMALLINT,
+            substrate.cp_decomp(gs.cp),
+            NULLIF(substrate.cp_simple_case_fold(gs.cp), -1),
+            substrate.cp_full_case_fold(gs.cp)
+        FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
+        LEFT JOIN _gc_lookup       gcl  ON gcl.ext_id  = substrate.cp_general_category(gs.cp)
+        LEFT JOIN _script_lookup   scrl ON scrl.ext_id = substrate.cp_script(gs.cp)
+        LEFT JOIN _block_lookup    blkl ON blkl.ext_id = substrate.cp_block(gs.cp)
+        LEFT JOIN _bp_lookup_gcb   gbpl ON gbpl.ext_id = substrate.cp_gcb(gs.cp)
+        LEFT JOIN _bp_lookup_wb    wbpl ON wbpl.ext_id = substrate.cp_wb(gs.cp)
+        LEFT JOIN _bp_lookup_sb    sbpl ON sbpl.ext_id = substrate.cp_sb(gs.cp)
+        LEFT JOIN _bp_lookup_lb    lbpl ON lbpl.ext_id = substrate.cp_lb(gs.cp)
+        WHERE gcl.ref_id IS NOT NULL
+          AND scrl.ref_id IS NOT NULL
+          AND blkl.ref_id IS NOT NULL
+        ON CONFLICT (entity_hash) DO NOTHING;
+
+        GET DIAGNOSTICS v_rows = ROW_COUNT;
+        inserted := inserted + v_rows;
+        v_lo := v_hi;
+    END LOOP;
+
     RETURN inserted;
 END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_from_ext() IS
-    'Bulk-populates substrate.codepoint_property from the embedded UCD catalog in a single SQL statement. Replaces the C# UCD decomposer hot path. Reference tables (general_category, script, block, break_property) MUST already be populated. Idempotent.';
+    'Bulk-populates substrate.codepoint_property from the embedded UCD catalog in a single set-based INSERT over generate_series(0,1114111) with scalar cp_* accessors. Reference tables (general_category, script, block, break_property) MUST already be populated. Idempotent.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
