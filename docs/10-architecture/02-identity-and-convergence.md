@@ -115,7 +115,7 @@ For ordinal position specifically: the ordinal is encoded by vertex order in the
 
 ## What "convergence" actually means mechanically
 
-When two sources observe the same content, the substrate's identity functions return the same hash for both observations. The pipeline's `INSERT ... ON CONFLICT (entity_type_id, hash) DO NOTHING` semantics ensure exactly one row exists per unique hash. Subsequent queries see one entity, not two.
+When two sources observe the same content, the substrate's identity functions return the same hash for both observations. The pipeline's `INSERT ... ON CONFLICT (hash) DO NOTHING` semantics ensure exactly one row exists per unique hash. Subsequent queries see one entity, not two. Multiple structural classifications of the same content (e.g. `dog` as both `word_form` and `lemma`) materialize as multiple rows in `substrate.entity_classification` against the same `entity_hash`, never as duplicate entity rows.
 
 What convergence does NOT mean:
 - It does NOT mean "fuzzy matching." Different content (even slightly different) produces different hashes and different rows.
@@ -170,7 +170,7 @@ This decision is documented and the trade-off is explicit. Future refactor to Po
 Multiple decomposers ingesting in parallel can simultaneously try to insert the same entity (same hash). The substrate's correctness here relies on:
 
 1. **Pre-insert dedup.** The pipeline batches inserts and checks `entity` table for existing hashes before COPY. Most duplicates are eliminated here.
-2. **UNIQUE constraint as safety net.** `substrate.entity` has UNIQUE on `(entity_type_id, hash)`. If two pipeline processes both think a hash is missing and both try to insert, exactly one succeeds; the other gets a constraint violation that translates to a no-op via `ON CONFLICT DO NOTHING`.
+2. **UNIQUE constraint as safety net.** `substrate.entity` has PRIMARY KEY on `(hash)`. If two pipeline processes both think a hash is missing and both try to insert, exactly one succeeds; the other gets a constraint violation that translates to a no-op via `ON CONFLICT DO NOTHING`.
 3. **PostgreSQL MVCC.** Concurrent readers see consistent snapshots; the deduplication is transparent to inference workloads.
 
 The combination is correct at any concurrency. There is no race condition because identity is content-addressed and the constraint catches simultaneous duplicate attempts.

@@ -124,12 +124,12 @@ public sealed class SafetensorsRoundTripTests
         await using NpgsqlCommand edgeCmd = new(@"
             SELECT count(*)
               FROM substrate.edge_type
-             WHERE code IN ('firefly_for_token', 'has_token_id')", conn);
+             WHERE code = 'has_token_id'", conn);
         object? edgeResult = await edgeCmd.ExecuteScalarAsync();
         long edgeTypeCount = edgeResult is long l2 ? l2 : System.Convert.ToInt64(edgeResult!, System.Globalization.CultureInfo.InvariantCulture);
 
         Assert.True(edgeTypeCount >= 1,
-            "firefly_for_token (or legacy has_token_id) edge type must be registered when fireflies exist");
+            "has_token_id edge type must be registered when fireflies exist");
     }
 
     [Fact]

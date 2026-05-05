@@ -20,9 +20,6 @@
     7. populate_codepoint_atoms()               — substrate.entity +
        physicality + significance for the 1,114,112 tier-0 atoms.
 
-  -UseLegacyDecomposer falls back to the C# UcdUcaDecomposer (slow path)
-  for parity validation against the extension's output.
-
 .PARAMETER SourceRoot
   Root containing UCD/Public/UCD/latest. Default from config.psd1.
 
@@ -39,7 +36,6 @@ param(
     [switch]$SkipDeps,
     [switch]$NoBuild,
     [string]$ProvenanceCode = 'unicode_consortium',
-    [switch]$UseLegacyDecomposer,
     [string]$Connection = "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous"
 )
 
@@ -116,15 +112,6 @@ try {
         Write-HartInfo "  extension UCD version: $version"
     }
 
-    if ($UseLegacyDecomposer) {
-        # Parity-validation path: source UCD/UCA files still required.
-        Assert-HartPath -Path (Join-Path $SourceRoot $Cfg.Seed.Ucd) -Label 'UCD XML'
-        Assert-HartPath -Path (Join-Path $SourceRoot $Cfg.Seed.Uca) -Label 'UCA allkeys.txt'
-        Invoke-HartStep -Name 'Phase: UcdUca (legacy C# decomposer — for parity validation)' -Action {
-            Invoke-HartPhase -Cfg $Cfg -Phase 'UcdUca' -SourceRoot $SourceRoot -SkipDeps:$SkipDeps -NoBuild:$NoBuild
-        }
-    }
-
     Invoke-HartStep -Name 'substrate.populate_general_categories_from_ext()' -Action {
         $n = Invoke-Psql -Sql 'SELECT substrate.populate_general_categories_from_ext()' -Label 'populate_general_categories_from_ext'
         Write-HartInfo "  +$n general_category rows"
@@ -158,9 +145,7 @@ try {
 
     # Mark UcdUca as completed in monitor.phase_status so subsequent
     # phase-runner invocations (Iso639/WordNet/UD/Wiktionary/Tatoeba)
-    # see the dependency as satisfied via SequentialPhaseRunner.HydrateStatusAsync
-    # and DON'T re-run the legacy C# UcdUcaDecomposer (which would conflict
-    # on substrate.codepoint_property's primary key).
+    # see the dependency as satisfied via SequentialPhaseRunner.HydrateStatusAsync.
     Invoke-HartStep -Name 'Mark UcdUca completed in monitor.phase_status' -Action {
         $null = Invoke-Psql -Sql "CALL monitor.update_phase_status('UcdUca', 'completed', NULL)" -Label 'monitor.update_phase_status'
         Write-HartInfo '  UcdUca = completed (substrate-side)'

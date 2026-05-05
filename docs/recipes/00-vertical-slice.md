@@ -65,15 +65,15 @@ Every record is content-addressed. Every record is deterministic.
 
 ### Step 3: The ingestion pipeline batches and commits
 
-`Hartonomous.Engine.Ingestion.NpgsqlIngestionPipeline` (the ONE pipeline for all decomposers) receives batches via `SubmitBatchAsync`. It:
+`Hartonomous.Engine.Ingestion.StreamingIngestionPipeline` (the ONE pipeline for all decomposers) receives records via `IRecordSink.EmitAsync`. It:
 
-1. Resolves hash → entity_id for every record (using `EntityHandle` placeholder remapping for forward references in the same batch).
-2. Routes inserts to the correct partition by `entity_type_id` / `edge_type_id` / `physicality_type_id`.
-3. Issues set-based `INSERT ... SELECT FROM unnest(...) ON CONFLICT DO NOTHING` per partition, never per row.
-4. Wraps the batch in one transaction.
-5. Commits.
+1. Each record kind has a bounded `Channel<T>` and a long-lived drain task that COPYs into a session-scoped `pg_temp` inflight table, then `INSERT INTO substrate.X SELECT ... FROM pg_temp.X_inflight ON CONFLICT DO NOTHING` per chunk.
+2. Routes inserts to the correct partition by `edge_type_id` / `physicality_type_id` (the `substrate.entity` table itself is non-partitioned and keyed on `hash`).
+3. Producer-side dedup via per-channel `HashSet<Hash32>`; cross-session duplicates land in COPY but are discarded by `ON CONFLICT DO NOTHING`.
+4. No per-batch transaction in the producer path. Backpressure: `EmitAsync` awaits naturally when a channel is full.
+5. End-of-phase post-passes (`PopulateEdgeTrajectoriesAsync`, `PrimeAllSignificanceAsync`) are owned by `SequentialPhaseRunner` and called once per phase after all decomposers complete.
 
-The decomposer never sees the entity IDs. It never opens a connection. It produces records and waits for the next batch boundary.
+The decomposer never sees entity hashes resolved through any registry. It never opens a connection. It emits records and the channels handle the rest.
 
 ### Step 4: Substrate state exists
 

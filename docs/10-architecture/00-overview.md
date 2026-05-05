@@ -163,7 +163,7 @@ If a feature requires anything outside these three pillars, it isn't substrate-n
 
 ## Concurrency and determinism
 
-- **PostgreSQL MVCC** handles concurrent readers and writers natively. Concurrent ingest of the same content from multiple sources is safe via `ON CONFLICT (entity_type_id, hash) DO NOTHING` on the entity table.
+- **PostgreSQL MVCC** handles concurrent readers and writers natively. Concurrent ingest of the same content from multiple sources is safe via `ON CONFLICT (hash) DO NOTHING` on the entity table.
 - **Determinism.** Same input + same decomposer version + same substrate state = byte-identical substrate state after ingestion (Substrate Law #6). Exports are similarly deterministic — same substrate state + same recomposer specification = byte-identical safetensors output.
 - **Concurrent inference.** Readers see consistent MVCC snapshots. Significance updates from concurrent sessions don't conflict at the row level (different (arena, edge) pairs touch different rows).
 

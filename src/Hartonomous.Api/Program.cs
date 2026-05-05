@@ -62,7 +62,6 @@ builder.Services.AddSingleton<IRecomposer<SafetensorsFile>>(sp => new Safetensor
 
 WebApplication app = builder.Build();
 
-// Legacy convenience aliases (kept for backward compatibility).
 app.MapGet("/health", async (IHealthCheck healthCheck, CancellationToken ct) =>
 {
     SubstrateHealth health = await healthCheck.GetHealthAsync(ct);

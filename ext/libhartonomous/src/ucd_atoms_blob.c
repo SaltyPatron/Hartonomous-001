@@ -341,3 +341,40 @@ int32_t huc_cp_from_hash(const uint8_t* hash32)
 }
 
 int hartonomous_ucd_loaded(void) { return g_loaded; }
+
+/* ── Public C ABI exports for in-process consumers ─────────────────── */
+
+HARTONOMOUS_API int hartonomous_ucd_loaded_state(void) { return g_loaded; }
+
+HARTONOMOUS_API int hartonomous_ucd_cp_centroid(int32_t cp, double out[4])
+{
+    if (!out) return -1;
+    const double* c = huc_cp_centroid_at(cp);
+    if (!c) return -1;
+    memcpy(out, c, 4 * sizeof(double));
+    return 0;
+}
+
+HARTONOMOUS_API int hartonomous_ucd_cp_hash(int32_t cp, uint8_t out[32])
+{
+    if (!out) return -1;
+    const uint8_t* h = huc_cp_hash_at(cp);
+    if (!h) return -1;
+    memcpy(out, h, 32);
+    return 0;
+}
+
+HARTONOMOUS_API int hartonomous_ucd_cp_hilbert(int32_t cp, uint64_t* out)
+{
+    if (!out) return -1;
+    /* huc_cp_hilbert_at returns 0 both for "not loaded" and for the
+       genuine value 0; document that ambiguity in the header. */
+    *out = huc_cp_hilbert_at(cp);
+    return 0;
+}
+
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_from_hash(const uint8_t hash32[32])
+{
+    if (!hash32) return -1;
+    return huc_cp_from_hash(hash32);
+}

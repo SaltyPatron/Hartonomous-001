@@ -576,7 +576,7 @@ public sealed class PythonPickleParser
         if (read >= 2 && sig[0] == 0x80)
         {
             throw new NotSupportedException(
-                $"Legacy pre-1.6 pickle format detected at '{packagePath}'. " +
+                $"Pre-1.6 torch pickle format detected at '{packagePath}'. " +
                 "Resave with torch.save(..., _use_new_zipfile_serialization=True) or supply the safetensors variant.");
         }
 

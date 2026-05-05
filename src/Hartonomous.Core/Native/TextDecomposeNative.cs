@@ -77,6 +77,38 @@ public static partial class TextDecomposeNative
     public static partial void UcdUnload();
 
     /// <summary>
+    /// Returns 1 if <see cref="UcdLoad"/> has succeeded since the last unload,
+    /// 0 otherwise. Cheap probe; does not touch the blob files.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_loaded_state")]
+    public static partial int UcdLoadedState();
+
+    /// <summary>
+    /// Copies the four S^3 centroid components for <paramref name="cp"/>
+    /// into <paramref name="out4"/>. The centroid is
+    /// <c>super_fibonacci_4d(uca_index[cp], 0x110000)</c> — UCA-collation-rank
+    /// ordered, so case/accent pairs cluster on S^3.
+    /// Returns 0 on success; -1 if the codepoint is out of range, the block
+    /// file is missing, or <see cref="UcdLoad"/> was not called.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_centroid")]
+    public static unsafe partial int UcdCpCentroid(int cp, double* out4);
+
+    /// <summary>
+    /// Copies the 32-byte BLAKE3 atom hash for <paramref name="cp"/> into
+    /// <paramref name="out32"/>. Returns 0 on success; -1 on failure.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_hash")]
+    public static unsafe partial int UcdCpHash(int cp, byte* out32);
+
+    /// <summary>
+    /// Returns the codepoint mapped to <paramref name="hash32"/>, or -1
+    /// if not found. Hash bytes are taken from a 32-byte buffer.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_from_hash")]
+    public static unsafe partial int UcdCpFromHash(byte* hash32);
+
+    /// <summary>
     /// Decompose UTF-8 bytes into the substrate's text DAG. Native walks the
     /// codepoint/grapheme/word/composition DAG and fires <paramref name="emit"/>
     /// once per record. <paramref name="outRootHash"/> receives the 32-byte

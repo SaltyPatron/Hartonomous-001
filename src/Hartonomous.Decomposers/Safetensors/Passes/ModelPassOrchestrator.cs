@@ -190,9 +190,9 @@ internal sealed partial class ModelPassOrchestrator
         }
         else
         {
-            // Legacy HuggingFace cache path: each .safetensors file gets its
-            // header read directly. FilePath in each emitted SafetensorsTensorInfo
-            // is the on-disk path; OpenTensorStream uses File.OpenRead.
+            // HuggingFace cache shape: each .safetensors file gets its header
+            // read directly. FilePath in each emitted SafetensorsTensorInfo is
+            // the on-disk path; OpenTensorStream uses File.OpenRead.
             foreach (string st in model.SafetensorsFiles)
             {
                 rawTensors.AddRange(SafetensorsReader.ReadHeader(st));

@@ -144,7 +144,7 @@ The two inputs `[0x0063, 0x0061, 0x0066, 0x00E9]` (NFC `café`) and `[0x0063, 0x
 **Behavior:**
 - For each codepoint `c`:
   - Compute `hash = BLAKE3(le32(c))` via `hartonomous.atom_id(c)`.
-  - `INSERT INTO substrate.entity (entity_type_id, hash) VALUES (codepoint_type_id, hash) ON CONFLICT DO NOTHING`.
+  - `INSERT INTO substrate.entity (hash) VALUES (hash) ON CONFLICT DO NOTHING`; classification recorded separately in `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)`.
 - After UCD seed: every assigned codepoint already exists; this step exits early.
 - For unassigned codepoints (PUA, unsupported planes): atoms are still emitted but with no `junc.codepoint_property` row (UCD didn't define properties).
 
@@ -420,7 +420,7 @@ The text decomposer does NOT silently skip content. Every codepoint in the input
 
 Multiple text decomposer calls can run in parallel. Each call is logically independent. Substrate-side concurrency safety:
 
-- `INSERT ... ON CONFLICT DO NOTHING` on `substrate.entity (entity_type_id, hash)` handles concurrent identical entity insertion without conflict.
+- `INSERT ... ON CONFLICT DO NOTHING` on `substrate.entity (hash)` handles concurrent identical entity insertion without conflict.
 - `substrate.edge_member` similarly protected.
 - `substrate.physicality` similarly.
 - The pipeline batches writes via `COPY ... FROM STDIN (FORMAT binary)` to amortize transaction overhead.

@@ -8,7 +8,9 @@ namespace Hartonomous.Core.Text.Normalization;
 /// table-driven and Unicode-version-stable per .NET runtime release. The
 /// substrate's <c>text_segmentation_profile</c> records the ICU / Unicode
 /// version so a future substrate-native implementation backed by UCD data
-/// ingested by <c>UcdUcaDecomposer</c> is a drop-in replacement behind the
+/// ingested by the substrate-side UCD seed (scripts/seed/Ucd.ps1 +
+/// substrate.populate_codepoint_property_from_ext) is a drop-in replacement
+/// behind the
 /// same API. Content is never mutated — every method returns a new byte[].
 /// </summary>
 public static class UnicodeNormalize

@@ -7,7 +7,7 @@ namespace Hartonomous.Decomposers.Safetensors;
 /// placement — pins <c>model_source</c>, never the architecture content hash.
 ///
 /// Two ingestion paths coexist:
-///   1. Legacy HuggingFace cache shape — <c>SafetensorsFiles</c> populated;
+///   1. HuggingFace cache shape — <c>SafetensorsFiles</c> populated;
 ///      <c>Reader</c> null. The orchestrator reads tensor headers via
 ///      <see cref="SafetensorsReader.ReadHeader(string)"/> and per-tensor bytes
 ///      via FileStream open + seek.

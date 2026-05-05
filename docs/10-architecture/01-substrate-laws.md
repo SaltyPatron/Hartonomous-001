@@ -35,7 +35,7 @@ Each law is stated, justified, and given a falsification test. If you can't writ
 
 **Justification:** Without this enforcement, the substrate accumulates duplicate rows under load (concurrent inserts of the same content from different decomposers). Duplicate rows fragment evidence, break significance arenas, and corrupt all downstream queries.
 
-**Falsification:** Run the substrate.entity `(entity_type_id, hash)` UNIQUE constraint check; assert no duplicate rows exist. Repeat for `substrate.edge`. Concurrent-insert tests must demonstrate that simultaneous duplicate inserts produce one row, not two.
+**Falsification:** Run the substrate.entity `(hash)` UNIQUE constraint check; assert no duplicate rows exist. Repeat for `substrate.edge` against `(edge_type_id, hash)`. Concurrent-insert tests must demonstrate that simultaneous duplicate inserts produce one row, not two.
 
 **Forbidden patterns:**
 - Removing UNIQUE constraints "for performance"

@@ -70,7 +70,7 @@ SQL string literals in C# / Python / etc. are forbidden outside the migrations r
 ```csharp
 // FORBIDDEN
 var result = await connection.ExecuteAsync(@"
-    INSERT INTO substrate.entity (entity_type_id, hash) VALUES ($1, $2)
+    INSERT INTO substrate.entity (hash) VALUES ($1)
     ON CONFLICT DO NOTHING", typeId, hash);
 
 // CORRECT

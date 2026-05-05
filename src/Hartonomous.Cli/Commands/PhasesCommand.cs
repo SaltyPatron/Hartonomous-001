@@ -16,7 +16,6 @@ using Hartonomous.Decomposers.Omw;
 using Hartonomous.Decomposers.Safetensors;
 using Hartonomous.Decomposers.Tatoeba;
 using Hartonomous.Decomposers.Text;
-using Hartonomous.Decomposers.Ucd;
 using Hartonomous.Decomposers.Ud;
 using Hartonomous.Decomposers.Wiktionary;
 using Hartonomous.Decomposers.WordNet;
@@ -161,7 +160,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             : Path.IsPathRooted(p) ? p
             : Path.Combine(dataRoot, p);
 
-        DecomposerConfig ucdConfig = new() { SourceDirectory = Resolve(opts.Decomposers.Ucd.SourcePath), ConnectionString = conn };
+        // Ucd phase is owned by scripts/seed/Ucd.ps1 (substrate-side, embedded UCD blob).
         DecomposerConfig iso639Config = new() { SourceDirectory = Resolve(opts.Decomposers.Iso639.SourcePath), ConnectionString = conn };
         DecomposerConfig wordnetConfig = new() { SourceDirectory = Resolve(opts.Decomposers.WordNet.SourcePath), ConnectionString = conn };
         DecomposerConfig omwConfig = new() { SourceDirectory = Resolve(opts.Decomposers.Omw.SourcePath), ConnectionString = conn, LanguageFilter = opts.Decomposers.Omw.LanguageFilter };
@@ -207,7 +206,9 @@ internal sealed class PhasesCommand(IConfiguration configuration)
 
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
-            [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>(), refDataReader, junctionWriter, refDataWriter)],
+            // Phase.UcdUca is owned end-to-end by scripts/seed/Ucd.ps1 calling
+            // substrate.populate_*_from_ext() against the embedded UCD catalog.
+            // No C# decomposer participates in this phase.
             [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [

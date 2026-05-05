@@ -18,7 +18,7 @@ namespace Hartonomous.Integration.Tests.VerticalSlice;
 
 /// <summary>
 /// End-to-end vertical slice: write a text file, run TextDecomposer through
-/// NpgsqlIngestionPipeline, recompose the document via TextRecomposer, assert
+/// StreamingIngestionPipeline, recompose the document via TextRecomposer, assert
 /// the recomposed bytes equal the input, then re-run and assert no new
 /// entities are created (Law #6 idempotency).
 ///
@@ -42,7 +42,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
     private NpgsqlDataSource _dataSource = null!;
     private NpgsqlReferenceDataReader _refReader = null!;
     private NpgsqlEntityReader _entityReader = null!;
-    private NpgsqlIngestionPipeline _pipeline = null!;
+    private StreamingIngestionPipeline _pipeline = null!;
     private NpgsqlCodepointPropertiesCache _cpProps = null!;
     private string _tempFile = null!;
 
@@ -51,10 +51,10 @@ public sealed class TextRoundTripTests : IAsyncLifetime
         _dataSource = NpgsqlDataSource.Create(ConnectionString());
         _refReader = new NpgsqlReferenceDataReader(_dataSource);
         _entityReader = new NpgsqlEntityReader(_dataSource);
-        _pipeline = new NpgsqlIngestionPipeline(
+        _pipeline = new StreamingIngestionPipeline(
             ConnectionString(),
             _refReader,
-            NullLogger<NpgsqlIngestionPipeline>.Instance);
+            NullLogger<StreamingIngestionPipeline>.Instance);
         _cpProps = await NpgsqlCodepointPropertiesCache.LoadAsync(
             ConnectionString(),
             NullLogger<NpgsqlCodepointPropertiesCache>.Instance,

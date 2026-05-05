@@ -8,26 +8,18 @@ using Hartonomous.Core.Text.Segmentation;
 namespace Hartonomous.Core.Text;
 
 /// <summary>
-/// LEGACY canonical text decomposer (C# implementation). Post-W3B the
-/// canonical hot path is <c>substrate.text_decompose</c> in the C extension
-/// (called via <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/>).
-/// This C# implementation is retained for cold paths that still call
-/// <see cref="Emit"/> directly:
-/// <list type="bullet">
-///   <item>Iso639 / UD / OMW / Tatoeba / Text decomposers — to be migrated</item>
-///   <item>Recall / Godel CLI prompt-ingestion paths — to be migrated</item>
-///   <item>Inference-side prompt decomposition (SubstrateInferenceEngine,
-///         GodelEngine, SubQuestionDecomposer)</item>
-/// </list>
-/// When those callers move to <c>SubstrateTextDecomposer</c>, this class +
-/// <c>NpgsqlCodepointPropertiesCache</c> + the <c>Hartonomous.Core.Text.Segmentation</c>
-/// (~1330 LOC of UAX #29 in C#) can be deleted.
+/// C# canonical text decomposer (cold path). The hot path is
+/// <c>substrate.text_decompose</c> in the C extension, called via
+/// <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/>. This C#
+/// implementation handles paths that emit text into a C# batch directly
+/// (Iso639 / UD / OMW / Tatoeba decomposers and inference-side prompt
+/// decomposition in SubstrateInferenceEngine / GodelEngine /
+/// SubQuestionDecomposer).
 ///
-/// Same UTF-8 input still produces byte-identical hashes via the original
-/// algorithm: codepoint hash = BLAKE3(big-endian 4-byte rune); grapheme
-/// hash = Merkle of codepoint hashes; word_form hash = Merkle of grapheme
-/// hashes; composition hash = Merkle of child hashes. The C extension
-/// uses the same algorithm — the hashes match.
+/// Both paths produce byte-identical hashes for the same UTF-8 input:
+/// codepoint hash = BLAKE3(big-endian 4-byte rune); grapheme_cluster hash
+/// = Merkle of codepoint hashes; word_form hash = Merkle of grapheme
+/// hashes; composition hash = Merkle of child hashes.
 ///
 /// This replaces the four prior text-decomposition surfaces:
 ///   Hartonomous.Core.Text.Segmentation.TextSegmentationEmitter.EmitTextComposition

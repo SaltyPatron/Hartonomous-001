@@ -1,9 +1,11 @@
 # Text Decomposer Unification — Design Spec
 
-**Status**: Draft 0.1 · proposed  
-**Scope**: substrate-foundation refactor — schema, decomposers, inference, re-seed  
-**Risk**: high (foundation-level; replays seed data)  
-**Audience**: Hartonomous architecture; this doc must be reviewed and corrected before any code change lands
+**Status**: IMPLEMENTED (Option B / hash-only entity PK chosen and shipped pre-v1)
+**Scope**: substrate-foundation refactor — schema, decomposers, inference, re-seed
+**Risk**: realised; canonical schema in `sql/schema/` reflects the chosen design
+**Audience**: archived for the design rationale; current truth is `sql/schema/tables/core/entity.sql` (hash PK only) and `sql/schema/tables/core/entity_classification.sql` (multi-classification per content)
+
+> **What landed**: Option B. `substrate.entity` is a single non-partitioned table with `hash hash_value PRIMARY KEY`. There is no `entity_type_id` on the entity table. Structural classification of content is recorded in `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)`, allowing the same content to carry multiple classifications without fragmenting identity. All edge_member, physicality, entity_significance, and junction tables FK to `substrate.entity(hash)` via the single `entity_hash` column. Sections below are preserved for historical context; ignore any text suggesting `(entity_type_id, hash)` composite PK is current state.
 
 ---
 

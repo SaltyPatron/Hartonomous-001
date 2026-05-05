@@ -775,6 +775,36 @@ HARTONOMOUS_API int hartonomous_ucd_load(const char* dir);
 HARTONOMOUS_API void hartonomous_ucd_unload(void);
 
 /*
+ * Returns 1 if hartonomous_ucd_load has succeeded since the last unload,
+ * 0 otherwise.
+ */
+HARTONOMOUS_API int hartonomous_ucd_loaded_state(void);
+
+/*
+ * Per-codepoint atom accessors. All return -1 on failure
+ * (out-of-range or block file missing); 0 on success.
+ *
+ * hartonomous_ucd_cp_centroid: copies 4 doubles (S^3 X,Y,Z,M) into out[].
+ * hartonomous_ucd_cp_hash:     copies 32 bytes BLAKE3 into out[].
+ * hartonomous_ucd_cp_hilbert:  returns the 64-bit Hilbert code via *out (0 on miss).
+ *
+ * The centroid is computed at blob-build time as
+ * super_fibonacci_4d(uca_index[cp], 0x110000) — UCA-collation-rank ordered,
+ * NOT raw codepoint ordered. Same case/accent pairs cluster on S^3.
+ *
+ * Caller must have called hartonomous_ucd_load first.
+ */
+HARTONOMOUS_API int hartonomous_ucd_cp_centroid(int32_t cp, double out[4]);
+HARTONOMOUS_API int hartonomous_ucd_cp_hash(int32_t cp, uint8_t out[32]);
+HARTONOMOUS_API int hartonomous_ucd_cp_hilbert(int32_t cp, uint64_t* out);
+
+/*
+ * Reverse hash → codepoint over the global sorted table.
+ * Returns the codepoint, or -1 if not found.
+ */
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_from_hash(const uint8_t hash32[32]);
+
+/*
  * Decompose UTF-8 bytes into the substrate's text DAG.
  *   utf8 / utf8_len    — input document
  *   top_kind           — HARTONOMOUS_KIND_* for the root composition

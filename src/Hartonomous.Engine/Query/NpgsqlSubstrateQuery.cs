@@ -10,19 +10,21 @@ using Npgsql;
 namespace Hartonomous.Engine.Query;
 
 /// <summary>
-/// Hash-as-PK implementation of <see cref="ISubstrateQuery"/>. Composite
-/// (entity_type_id, entity_hash) and (edge_type_id, edge_hash) keys
-/// throughout — no surrogate id columns. Filter clauses compose via
-/// parameterized SQL.
+/// Hash-only implementation of <see cref="ISubstrateQuery"/>. Per Phase C
+/// unification, <c>substrate.entity</c> has hash-only PK; classification
+/// (entity_type) is metadata on <c>substrate.entity_classification</c>.
+/// <c>substrate.edge_member</c>, <c>entity_significance</c>,
+/// <c>entity_model_source</c>, and <c>tensor_tensor_role</c> all reference
+/// entities by hash only. Edge identity stays composite
+/// <c>(edge_type_id, edge_hash)</c> because edge type IS structural.
 ///
-/// The advanced-pass entity types (embedding_firefly, ffn_neuron,
-/// attention_component, svd_rank_component, etc.) and edge types
-/// (has_embedding_position, has_ffn_neuron, has_attention_component,
-/// has_rank_component, encodes_archetype, has_hidden_size) are added at
-/// decomposer runtime by SafetensorsDecomposer's analysis passes via
-/// IReferenceDataWriter. When the substrate has not been ingested with
-/// those passes, the corresponding methods return empty lists — that is
-/// the correct, substrate-faithful "no results" outcome.
+/// Type filtering and type projection both flow through
+/// <c>substrate.entity_classification</c> joined to
+/// <c>substrate.entity_type</c>. The advanced-pass entity types
+/// (embedding_firefly, ffn_neuron, attention_component, etc.) and edge
+/// types (has_embedding_position, has_ffn_neuron, etc.) are added at
+/// decomposer runtime; when the substrate has not been ingested with
+/// those passes, the corresponding methods return empty lists.
 /// </summary>
 public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
 {
@@ -36,9 +38,13 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
     public async Task<IReadOnlyList<EntityHandle>> QueryEntitiesAsync(
         SubstrateQueryFilter filter, CancellationToken ct)
     {
+        // Type code is now metadata on entity_classification (Phase C). Always
+        // join through it so callers receive (type_code, hash) handles. Multiple
+        // classifications per content => multiple handles for the same hash.
         StringBuilder sql = new();
         sql.Append("SELECT DISTINCT et.code, e.hash FROM substrate.entity e ");
-        sql.Append("JOIN substrate.entity_type et ON et.id = e.entity_type_id ");
+        sql.Append("JOIN substrate.entity_classification ec ON ec.entity_hash = e.hash ");
+        sql.Append("JOIN substrate.entity_type et ON et.id = ec.entity_type_id ");
 
         List<string> wheres = [];
         List<NpgsqlParameter> parameters = [];
@@ -50,15 +56,13 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         }
         if (filter.ModelSourceIds is { Count: > 0 })
         {
-            sql.Append("JOIN substrate.entity_model_source ems " +
-                       "ON ems.entity_type_id = e.entity_type_id AND ems.entity_hash = e.hash ");
+            sql.Append("JOIN substrate.entity_model_source ems ON ems.entity_hash = e.hash ");
             wheres.Add("ems.model_source_id = ANY($" + (parameters.Count + 1) + ")");
             parameters.Add(new NpgsqlParameter { Value = filter.ModelSourceIds });
         }
         if (filter.MinSignificanceMu is double minMu)
         {
-            sql.Append("JOIN substrate.entity_significance s " +
-                       "ON s.entity_type_id = e.entity_type_id AND s.entity_hash = e.hash ");
+            sql.Append("JOIN substrate.entity_significance s ON s.entity_hash = e.hash ");
             wheres.Add("s.mu >= $" + (parameters.Count + 1));
             parameters.Add(new NpgsqlParameter { Value = minMu });
             if (!string.IsNullOrEmpty(filter.ContextTypeCode))
@@ -96,6 +100,8 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
     public async Task<IReadOnlyList<EntityHandle>> QueryTensorsForArchitectureAsync(
         EntityHandle modelArchitecture, SubstrateQueryFilter filter, CancellationToken ct)
     {
+        // edge_member is hash-only. Type filtering on src and projection of
+        // tgt's type code go through entity_classification.
         StringBuilder sql = new();
         sql.Append(@"
             SELECT DISTINCT tgt_et.code, em_t.entity_hash
@@ -105,8 +111,10 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
               JOIN substrate.edge_role er_s ON er_s.id = em_s.edge_role_id AND er_s.code = 'source'
               JOIN substrate.edge_member em_t ON em_t.edge_type_id = e.edge_type_id AND em_t.edge_hash = e.hash
               JOIN substrate.edge_role er_t ON er_t.id = em_t.edge_role_id AND er_t.code = 'target'
-              JOIN substrate.entity_type tgt_et ON tgt_et.id = em_t.entity_type_id
-              JOIN substrate.entity_type src_et ON src_et.id = em_s.entity_type_id
+              JOIN substrate.entity_classification ec_s ON ec_s.entity_hash = em_s.entity_hash
+              JOIN substrate.entity_type src_et ON src_et.id = ec_s.entity_type_id
+              JOIN substrate.entity_classification ec_t ON ec_t.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_type tgt_et ON tgt_et.id = ec_t.entity_type_id
         ");
 
         List<string> wheres =
@@ -122,15 +130,13 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
 
         if (filter.ModelSourceIds is { Count: > 0 })
         {
-            sql.Append("JOIN substrate.entity_model_source ems " +
-                       "ON ems.entity_type_id = em_t.entity_type_id AND ems.entity_hash = em_t.entity_hash ");
+            sql.Append("JOIN substrate.entity_model_source ems ON ems.entity_hash = em_t.entity_hash ");
             wheres.Add("ems.model_source_id = ANY($" + (parameters.Count + 1) + ")");
             parameters.Add(new NpgsqlParameter { Value = filter.ModelSourceIds });
         }
         if (filter.MinSignificanceMu is double minMu)
         {
-            sql.Append("JOIN substrate.entity_significance s " +
-                       "ON s.entity_type_id = em_t.entity_type_id AND s.entity_hash = em_t.entity_hash ");
+            sql.Append("JOIN substrate.entity_significance s ON s.entity_hash = em_t.entity_hash ");
             wheres.Add("s.mu >= $" + (parameters.Count + 1));
             parameters.Add(new NpgsqlParameter { Value = minMu });
             if (!string.IsNullOrEmpty(filter.ContextTypeCode))
@@ -182,10 +188,11 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
               JOIN substrate.edge_role er_s ON er_s.id = em_s.edge_role_id AND er_s.code = 'source'
               JOIN substrate.edge_member em_t ON em_t.edge_type_id = e.edge_type_id AND em_t.edge_hash = e.hash
               JOIN substrate.edge_role er_t ON er_t.id = em_t.edge_role_id AND er_t.code = 'target'
-              JOIN substrate.entity_type tgt_et ON tgt_et.id = em_t.entity_type_id
-              JOIN substrate.entity_type src_et ON src_et.id = em_s.entity_type_id
-              JOIN substrate.entity_significance s
-                ON s.entity_type_id = em_t.entity_type_id AND s.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_classification ec_s ON ec_s.entity_hash = em_s.entity_hash
+              JOIN substrate.entity_type src_et ON src_et.id = ec_s.entity_type_id
+              JOIN substrate.entity_classification ec_t ON ec_t.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_type tgt_et ON tgt_et.id = ec_t.entity_type_id
+              JOIN substrate.entity_significance s ON s.entity_hash = em_t.entity_hash
               JOIN substrate.significance_context sc ON sc.id = s.context_type_id
              WHERE et.code = 'has_embedding_position'
                AND tgt_et.code = 'embedding_firefly'
@@ -224,16 +231,16 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
             Encoding.UTF8.GetBytes(hiddenSize.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
         const string sql = @"
-            SELECT em_t.entity_type_id, em_t.entity_hash
+            SELECT tgt_et.code, em_t.entity_hash
               FROM substrate.edge e
               JOIN substrate.edge_type et ON et.id = e.edge_type_id
               JOIN substrate.edge_member em_s ON em_s.edge_type_id = e.edge_type_id AND em_s.edge_hash = e.hash
               JOIN substrate.edge_role er_s ON er_s.id = em_s.edge_role_id AND er_s.code = 'source'
               JOIN substrate.edge_member em_t ON em_t.edge_type_id = e.edge_type_id AND em_t.edge_hash = e.hash
               JOIN substrate.edge_role er_t ON er_t.id = em_t.edge_role_id AND er_t.code = 'target'
-              JOIN substrate.entity_type tgt_et ON tgt_et.id = em_t.entity_type_id
-              JOIN substrate.entity_significance s
-                ON s.entity_type_id = em_t.entity_type_id AND s.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_classification ec_t ON ec_t.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_type tgt_et ON tgt_et.id = ec_t.entity_type_id
+              JOIN substrate.entity_significance s ON s.entity_hash = em_t.entity_hash
               JOIN substrate.significance_context sc ON sc.id = s.context_type_id
               JOIN substrate.edge size_e ON size_e.edge_type_id =
                    (SELECT id FROM substrate.edge_type WHERE code = 'has_hidden_size')
@@ -244,9 +251,8 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
              WHERE et.code = 'has_ffn_neuron'
                AND tgt_et.code = 'ffn_neuron'
                AND sc.code = $1
-               AND size_s.entity_type_id = em_s.entity_type_id
-               AND size_s.entity_hash    = em_s.entity_hash
-               AND size_t.entity_hash    = $2
+               AND size_s.entity_hash = em_s.entity_hash
+               AND size_t.entity_hash = $2
              ORDER BY s.mu DESC
              LIMIT $3";
 
@@ -255,7 +261,7 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         cmd.Parameters.AddWithValue(contextTypeCode);
         cmd.Parameters.AddWithValue(hiddenSizeHash);
         cmd.Parameters.AddWithValue(topK);
-        return await ReadHandlesAsync(cmd, useTypeId: true, ct);
+        return await ReadHandlesAsync(cmd, useTypeId: false, ct);
     }
 
     public async Task<IReadOnlyList<EntityHandle>> QueryAttentionComponentsAsync(
@@ -267,16 +273,16 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
     {
         StringBuilder sql = new();
         sql.Append(@"
-            SELECT em_t.entity_type_id, em_t.entity_hash
+            SELECT tgt_et.code, em_t.entity_hash
               FROM substrate.edge e
               JOIN substrate.edge_type et ON et.id = e.edge_type_id
               JOIN substrate.edge_member em_s ON em_s.edge_type_id = e.edge_type_id AND em_s.edge_hash = e.hash
               JOIN substrate.edge_role er_s ON er_s.id = em_s.edge_role_id AND er_s.code = 'source'
               JOIN substrate.edge_member em_t ON em_t.edge_type_id = e.edge_type_id AND em_t.edge_hash = e.hash
               JOIN substrate.edge_role er_t ON er_t.id = em_t.edge_role_id AND er_t.code = 'target'
-              JOIN substrate.entity_type tgt_et ON tgt_et.id = em_t.entity_type_id
-              JOIN substrate.entity_significance s
-                ON s.entity_type_id = em_t.entity_type_id AND s.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_classification ec_t ON ec_t.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_type tgt_et ON tgt_et.id = ec_t.entity_type_id
+              JOIN substrate.entity_significance s ON s.entity_hash = em_t.entity_hash
               JOIN substrate.significance_context sc ON sc.id = s.context_type_id
         ");
 
@@ -298,9 +304,8 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
               JOIN substrate.edge_member arch_t ON arch_t.edge_type_id = arch_e.edge_type_id AND arch_t.edge_hash = arch_e.hash
               JOIN substrate.edge_role arch_tr ON arch_tr.id = arch_t.edge_role_id AND arch_tr.code = 'target'
             ");
-            wheres.Add("arch_s.entity_type_id = em_s.entity_type_id");
-            wheres.Add("arch_s.entity_hash    = em_s.entity_hash");
-            wheres.Add("arch_t.entity_hash    = $" + (parameters.Count + 1));
+            wheres.Add("arch_s.entity_hash = em_s.entity_hash");
+            wheres.Add("arch_t.entity_hash = $" + (parameters.Count + 1));
             parameters.Add(new NpgsqlParameter { Value = aHandle.Hash });
         }
         _ = headDim; // informational; downstream verifies shape compatibility per scatter call.
@@ -308,7 +313,7 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         sql.Append(" ORDER BY s.mu DESC LIMIT $").Append(parameters.Count + 1);
         parameters.Add(new NpgsqlParameter { Value = topK });
 
-        return await ReadHandlesAsync(sql.ToString(), parameters, ct, useTypeId: true);
+        return await ReadHandlesAsync(sql.ToString(), parameters, ct, useTypeId: false);
     }
 
     public async Task<IReadOnlyList<EntityHandle>> QuerySingularDirectionsForRoleAsync(
@@ -317,15 +322,16 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         CancellationToken ct)
     {
         const string sql = @"
-            SELECT em_t.entity_type_id, em_t.entity_hash
+            SELECT tgt_et.code, em_t.entity_hash
               FROM substrate.edge e
               JOIN substrate.edge_type et ON et.id = e.edge_type_id
               JOIN substrate.edge_member em_s ON em_s.edge_type_id = e.edge_type_id AND em_s.edge_hash = e.hash
               JOIN substrate.edge_role er_s ON er_s.id = em_s.edge_role_id AND er_s.code = 'source'
               JOIN substrate.edge_member em_t ON em_t.edge_type_id = e.edge_type_id AND em_t.edge_hash = e.hash
               JOIN substrate.edge_role er_t ON er_t.id = em_t.edge_role_id AND er_t.code = 'target'
-              JOIN substrate.tensor_tensor_role ttr
-                ON ttr.entity_type_id = em_s.entity_type_id AND ttr.entity_hash = em_s.entity_hash
+              JOIN substrate.entity_classification ec_t ON ec_t.entity_hash = em_t.entity_hash
+              JOIN substrate.entity_type tgt_et ON tgt_et.id = ec_t.entity_type_id
+              JOIN substrate.tensor_tensor_role ttr ON ttr.entity_hash = em_s.entity_hash
               JOIN substrate.tensor_role tr ON tr.id = ttr.tensor_role_id
              WHERE et.code = 'has_rank_component'
                AND tr.code = $1
@@ -336,85 +342,36 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         await using NpgsqlCommand cmd = new(sql, conn);
         cmd.Parameters.AddWithValue(tensorRoleCode);
         cmd.Parameters.AddWithValue(topK);
-        return await ReadHandlesAsync(cmd, useTypeId: true, ct);
+        return await ReadHandlesAsync(cmd, useTypeId: false, ct);
     }
 
     private async Task<IReadOnlyList<EntityHandle>> ReadHandlesAsync(
         string sql, IReadOnlyList<NpgsqlParameter> parameters, CancellationToken ct,
         bool useTypeId = false)
     {
+        _ = useTypeId; // legacy parameter retained for caller signature stability; ignored.
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(sql, conn);
         foreach (NpgsqlParameter p in parameters)
         {
             cmd.Parameters.Add(p);
         }
-        return await ReadHandlesAsync(cmd, useTypeId, ct);
+        return await ReadHandlesAsync(cmd, useTypeId: false, ct);
     }
 
     private static async Task<IReadOnlyList<EntityHandle>> ReadHandlesAsync(
         NpgsqlCommand cmd, bool useTypeId, CancellationToken ct)
     {
+        _ = useTypeId; // legacy parameter retained for caller signature stability; ignored.
         List<EntityHandle> results = [];
-        if (useTypeId)
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
         {
-            // SELECT entity_type_id, entity_hash → resolve type code via in-process map.
-            Dictionary<int, string> typeIdToCode = await LoadEntityTypeCodesAsync(cmd.Connection!, ct);
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                int typeId = reader.GetInt32(0);
-                byte[] hash = (byte[])reader.GetValue(1);
-                if (typeIdToCode.TryGetValue(typeId, out string? code))
-                {
-                    results.Add(new EntityHandle(hash, code));
-                }
-            }
-        }
-        else
-        {
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                string typeCode = reader.GetString(0).Trim();
-                byte[] hash = (byte[])reader.GetValue(1);
-                results.Add(new EntityHandle(hash, typeCode));
-            }
+            string typeCode = reader.GetString(0).Trim();
+            byte[] hash = (byte[])reader.GetValue(1);
+            results.Add(new EntityHandle(hash, typeCode));
         }
         return results;
-    }
-
-    private static Dictionary<int, string> _entityTypeCodeCache = [];
-    private static readonly SemaphoreSlim _cacheLock = new(1, 1);
-
-    private static async Task<Dictionary<int, string>> LoadEntityTypeCodesAsync(NpgsqlConnection conn, CancellationToken ct)
-    {
-        if (_entityTypeCodeCache.Count > 0)
-        {
-            return _entityTypeCodeCache;
-        }
-        await _cacheLock.WaitAsync(ct);
-        try
-        {
-            if (_entityTypeCodeCache.Count > 0)
-            {
-                return _entityTypeCodeCache;
-            }
-            Dictionary<int, string> map = [];
-            await using NpgsqlCommand cmd = new(
-                "SELECT id, code FROM substrate.entity_type", conn);
-            await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                map[reader.GetInt32(0)] = reader.GetString(1).Trim();
-            }
-            _entityTypeCodeCache = map;
-            return map;
-        }
-        finally
-        {
-            _cacheLock.Release();
-        }
     }
 
     // ── CLI-surface helpers ───────────────────────────────────────────────────

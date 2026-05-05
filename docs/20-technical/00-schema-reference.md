@@ -178,15 +178,27 @@ CREATE TABLE ref.architecture_class (
 
 ```sql
 CREATE TABLE substrate.entity (
-    entity_type_id  INT NOT NULL,
-    hash            ref.hash_value NOT NULL,
-    PRIMARY KEY (entity_type_id, hash)
-) PARTITION BY LIST (entity_type_id);
+    hash            ref.hash_value PRIMARY KEY
+);
 
--- Partitions per major entity type (codepoint, grapheme_cluster, word_form, lemma, synset, ...).
--- Each partition is created on demand or as part of seed migrations.
+-- Single, non-partitioned. NO entity_type_id column.
+-- Structural classification lives in substrate.entity_classification
+-- (entity_hash, entity_type_id, provenance_id) so the same content under
+-- multiple structural classifications (e.g. dog as both word_form and
+-- lemma) is ONE row in substrate.entity with multiple classification rows.
+```
 
-CREATE INDEX entity_hash_lookup ON substrate.entity(hash);  -- per-partition
+### substrate.entity_classification
+
+```sql
+CREATE TABLE substrate.entity_classification (
+    entity_hash      ref.hash_value NOT NULL REFERENCES substrate.entity(hash),
+    entity_type_id   INT NOT NULL REFERENCES ref.entity_type(id),
+    provenance_id    INT NOT NULL REFERENCES ref.provenance(id),
+    PRIMARY KEY (entity_hash, entity_type_id, provenance_id)
+);
+
+CREATE INDEX entity_classification_by_type ON substrate.entity_classification(entity_type_id, entity_hash);
 ```
 
 ### substrate.edge
@@ -217,17 +229,16 @@ CREATE TABLE substrate.edge (
 CREATE TABLE substrate.edge_member (
     edge_type_id     INT NOT NULL,
     edge_hash        ref.hash_value NOT NULL,
-    entity_type_id   INT NOT NULL,
     entity_hash      ref.hash_value NOT NULL,
     edge_role_id     INT NOT NULL REFERENCES ref.edge_role(id),
-    position         SMALLINT NOT NULL,
-    PRIMARY KEY (edge_type_id, edge_hash, entity_type_id, entity_hash, edge_role_id, position),
+    role_position    SMALLINT NOT NULL,
+    PRIMARY KEY (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position),
     FOREIGN KEY (edge_type_id, edge_hash) REFERENCES substrate.edge(edge_type_id, hash),
-    FOREIGN KEY (entity_type_id, entity_hash) REFERENCES substrate.entity(entity_type_id, hash)
+    FOREIGN KEY (entity_hash) REFERENCES substrate.entity(hash)
 ) PARTITION BY LIST (edge_type_id);
 
--- Lookup index on (entity, edge):
-CREATE INDEX edge_member_by_entity ON substrate.edge_member(entity_type_id, entity_hash);
+-- Lookup index on entity:
+CREATE INDEX edge_member_by_entity ON substrate.edge_member(entity_hash);
 ```
 
 ### substrate.physicality
@@ -235,14 +246,13 @@ CREATE INDEX edge_member_by_entity ON substrate.edge_member(entity_type_id, enti
 ```sql
 CREATE TABLE substrate.physicality (
     physicality_type_id  INT NOT NULL REFERENCES ref.physicality_type(id),
-    entity_type_id       INT NOT NULL,
     entity_hash          ref.hash_value NOT NULL,
     geom                 geometry(GeometryZM),
     point4d              hartonomous.point4d,
     linestring4d         hartonomous.linestring4d,
     multilinestring4d    hartonomous.multilinestring4d,
-    PRIMARY KEY (physicality_type_id, entity_type_id, entity_hash),
-    FOREIGN KEY (entity_type_id, entity_hash) REFERENCES substrate.entity(entity_type_id, hash),
+    PRIMARY KEY (physicality_type_id, entity_hash),
+    FOREIGN KEY (entity_hash) REFERENCES substrate.entity(hash),
     CONSTRAINT physicality_one_value CHECK (
         (geom IS NOT NULL)::int +
         (point4d IS NOT NULL)::int +
@@ -250,9 +260,6 @@ CREATE TABLE substrate.physicality (
         (multilinestring4d IS NOT NULL)::int = 1
     )
 ) PARTITION BY LIST (physicality_type_id);
-
--- Per-partition GiST indexes on the populated geometry column.
--- Per-partition CHECK constraint enforcing the populated column matches the type's declared shape.
 ```
 
 ### substrate.entity_significance
@@ -260,15 +267,14 @@ CREATE TABLE substrate.physicality (
 ```sql
 CREATE TABLE substrate.entity_significance (
     context_type_id  INT NOT NULL REFERENCES ref.significance_context(id),
-    entity_type_id   INT NOT NULL,
     entity_hash      ref.hash_value NOT NULL,
     mu               ref.elo_rating NOT NULL DEFAULT 1500,
     sigma            ref.elo_sigma NOT NULL DEFAULT 350,
     volatility       ref.elo_volatility NOT NULL DEFAULT 0.06,
     games            INT NOT NULL DEFAULT 0,
     last_update      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (context_type_id, entity_type_id, entity_hash),
-    FOREIGN KEY (entity_type_id, entity_hash) REFERENCES substrate.entity(entity_type_id, hash)
+    PRIMARY KEY (context_type_id, entity_hash),
+    FOREIGN KEY (entity_hash) REFERENCES substrate.entity(hash)
 ) PARTITION BY LIST (context_type_id);
 ```
 
@@ -293,40 +299,36 @@ CREATE TABLE substrate.edge_significance (
 
 ```sql
 CREATE TABLE junc.entity_pos (
-    entity_type_id  INT NOT NULL,
     entity_hash     ref.hash_value NOT NULL,
     pos_id          INT NOT NULL REFERENCES ref.pos(id),
     mu              ref.elo_rating NOT NULL DEFAULT 1500,
     sigma           ref.elo_sigma NOT NULL DEFAULT 350,
     volatility      ref.elo_volatility NOT NULL DEFAULT 0.06,
     games           INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (entity_type_id, entity_hash, pos_id),
-    FOREIGN KEY (entity_type_id, entity_hash) REFERENCES substrate.entity(entity_type_id, hash)
+    PRIMARY KEY (entity_hash, pos_id),
+    FOREIGN KEY (entity_hash) REFERENCES substrate.entity(hash)
 );
 
 CREATE TABLE junc.entity_sense (
-    entity_type_id  INT NOT NULL,
     entity_hash     ref.hash_value NOT NULL,
     sense_id        INT NOT NULL REFERENCES ref.sense(id),
     mu              ref.elo_rating NOT NULL DEFAULT 1500,
     sigma           ref.elo_sigma NOT NULL DEFAULT 350,
     volatility      ref.elo_volatility NOT NULL DEFAULT 0.06,
     games           INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (entity_type_id, entity_hash, sense_id)
+    PRIMARY KEY (entity_hash, sense_id)
 );
 
 CREATE TABLE junc.entity_language (
-    entity_type_id  INT NOT NULL,
     entity_hash     ref.hash_value NOT NULL,
     language_id     INT NOT NULL REFERENCES ref.language(id),
-    PRIMARY KEY (entity_type_id, entity_hash, language_id)
+    PRIMARY KEY (entity_hash, language_id)
 );
 
 CREATE TABLE junc.entity_morph_feature (
-    entity_type_id    INT NOT NULL,
     entity_hash       ref.hash_value NOT NULL,
     morph_feature_id  INT NOT NULL REFERENCES ref.morph_feature(id),
-    PRIMARY KEY (entity_type_id, entity_hash, morph_feature_id)
+    PRIMARY KEY (entity_hash, morph_feature_id)
 );
 
 CREATE TABLE junc.codepoint_property (
@@ -344,28 +346,25 @@ CREATE TABLE junc.codepoint_property (
 );
 
 CREATE TABLE junc.tensor_tensor_role (
-    entity_type_id  INT NOT NULL,
     entity_hash     ref.hash_value NOT NULL,
     tensor_role_id  INT NOT NULL REFERENCES ref.tensor_role(id),
-    PRIMARY KEY (entity_type_id, entity_hash, tensor_role_id)
+    PRIMARY KEY (entity_hash, tensor_role_id)
 );
 
 CREATE TABLE junc.model_architecture_class (
-    entity_type_id          INT NOT NULL,
     entity_hash             ref.hash_value NOT NULL,
     architecture_class_id   INT NOT NULL REFERENCES ref.architecture_class(id),
-    PRIMARY KEY (entity_type_id, entity_hash, architecture_class_id)
+    PRIMARY KEY (entity_hash, architecture_class_id)
 );
 
 CREATE TABLE junc.pattern_deprel (
-    entity_type_id  INT NOT NULL,                       -- typically attention_pattern
-    entity_hash     ref.hash_value NOT NULL,
+    entity_hash     ref.hash_value NOT NULL,            -- typically attention_pattern
     deprel_id       INT NOT NULL REFERENCES ref.deprel(id),
     mu              ref.elo_rating NOT NULL DEFAULT 1500,
     sigma           ref.elo_sigma NOT NULL DEFAULT 350,
     volatility      ref.elo_volatility NOT NULL DEFAULT 0.06,
     games           INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (entity_type_id, entity_hash, deprel_id)
+    PRIMARY KEY (entity_hash, deprel_id)
 );
 ```
 
@@ -375,7 +374,6 @@ CREATE TABLE junc.pattern_deprel (
 -- One per record type the pipeline emits. Drained continuously to substrate.* tables.
 
 CREATE UNLOGGED TABLE staging.entity_in (
-    entity_type_id  INT NOT NULL,
     hash            ref.hash_value NOT NULL,
     provenance_id   INT
 );
@@ -430,17 +428,19 @@ The substrate's hot-path operations dictate index strategy:
 
 | Index | Purpose | Type |
 |---|---|---|
-| `substrate.entity (entity_type_id, hash)` | Identity lookup, deduplication | B-tree (PK) |
+| `substrate.entity (hash)` | Identity lookup, deduplication | B-tree (PK) |
+| `substrate.entity_classification (entity_hash, entity_type_id, provenance_id)` | Per-content classification lookup | B-tree (PK) |
+| `substrate.entity_classification (entity_type_id, entity_hash)` | All-of-type enumeration | B-tree |
 | `substrate.edge (edge_type_id, hash)` | Edge identity, deduplication | B-tree (PK) |
-| `substrate.edge_member (entity_type_id, entity_hash)` | "What edges involve this entity?" | B-tree |
-| `substrate.physicality (entity_type_id, entity_hash)` per partition | Centroid lookup by entity | B-tree |
+| `substrate.edge_member (entity_hash)` | "What edges involve this entity?" | B-tree |
+| `substrate.physicality (physicality_type_id, entity_hash)` per partition | Centroid lookup by entity | B-tree (PK) |
 | `substrate.physicality.linestring4d` per partition | 4D shape similarity | GiST `linestring4d_gist_ops` |
 | `substrate.physicality.point4d` per partition | 4D nearest-neighbor | GiST `point4d_gist_ops`, SP-GiST optional |
 | `substrate.physicality.geom` per partition | 2D/3D spatial | GiST default opclass (PostGIS) |
 | `substrate.edge_significance (context_type_id, edge_type_id, edge_hash)` | Significance lookup in arena | B-tree (PK) |
-| `junc.entity_pos`, etc. | Classification lookups | B-tree (PK) on `(entity_type_id, entity_hash, classification_id)` |
+| `junc.entity_pos`, etc. | Classification lookups | B-tree (PK) on `(entity_hash, classification_id)` |
 
-Index creation per partition during seed phases. Initial indexes are dropped before bulk-load and rebuilt after, for ingestion throughput. Partition pruning happens automatically when queries filter by partition key (entity_type_id, edge_type_id, context_type_id, physicality_type_id).
+Index creation per partition during seed phases. Initial indexes are dropped before bulk-load and rebuilt after, for ingestion throughput. Partition pruning happens automatically when queries filter by partition key (edge_type_id, context_type_id, physicality_type_id). `substrate.entity` itself is non-partitioned — the hash is its own identity — with classification recorded separately in `substrate.entity_classification`.
 
 ## Foreign key strategy
 
@@ -690,7 +690,7 @@ ALTER TABLE substrate.entity ENABLE ROW LEVEL SECURITY;
 CREATE POLICY entity_visibility ON substrate.entity
     FOR SELECT
     USING (
-        substrate.is_visible_to_current_tenant(entity_type_id, hash)
+        substrate.is_visible_to_current_tenant(hash)
     );
 ```
 
@@ -713,7 +713,7 @@ Equivalent policies exist on `substrate.edge`, `substrate.edge_member`, `substra
 
 | Table | Partition key | Rationale |
 |---|---|---|
-| `substrate.entity` | LIST (entity_type_id) | Scans by type are common; partition pruning yields massive speedup |
+| `substrate.entity` | (none) | Non-partitioned; PK is `hash` only. Classification lives in `substrate.entity_classification` |
 | `substrate.edge` | LIST (edge_type_id) | Same as entity; recipes filter by edge_type heavily |
 | `substrate.edge_member` | LIST (edge_type_id) | Co-locate with parent edge for locality |
 | `substrate.physicality` | LIST (physicality_type_id) | Geometry types differ; per-type GiST opclass requires per-partition indexing |
