@@ -7,8 +7,15 @@ namespace Hartonomous.Engine.Ingestion;
 /// hash from (edge_type_id, role-ordered participant hashes) at flush, then
 /// writes the edge row + edge_member rows in one transaction. Members carry
 /// EntityHandle directly — no surrogate-id resolve step.
+///
+/// <para><see cref="SignificanceOverrides"/> carries producer-calibrated
+/// initial Glicko-2 mu values per arena. The pipeline's edge-significance
+/// emission loop consults this map first and falls back to the provenance
+/// default for arenas not covered. Empty (the common path) means every
+/// arena uses the provenance default.</para>
 /// </summary>
 internal readonly record struct EdgeEntry(
     string EdgeTypeCode,
     string ProvenanceCode,
-    EdgeMemberSpec[] Members);
+    EdgeMemberSpec[] Members,
+    EdgeSignificanceSpec[] SignificanceOverrides);

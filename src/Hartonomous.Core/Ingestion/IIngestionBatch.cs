@@ -39,6 +39,26 @@ public interface IIngestionBatch
         ReadOnlySpan<EdgeMemberSpec> members);
 
     /// <summary>
+    /// Append an n-ary edge plus producer-calibrated initial Glicko-2 mu
+    /// values for one or more arenas. Used when the decomposer can derive
+    /// a meaningful prior from the source data — e.g. FfnEdgeDecompositionPass
+    /// scales mu by the signed weight relative to the tensor's mean magnitude
+    /// for the <c>model_trust</c> arena. Arenas not covered by
+    /// <paramref name="significance"/> receive the provenance default.
+    ///
+    /// Default implementation drops the significance specs and falls back to
+    /// the 3-arg overload — fakes and shims that don't model the prime path
+    /// remain compatible without per-test boilerplate; the real pipeline
+    /// implementation overrides this to honor the overrides.
+    /// </summary>
+    void AddEdge(
+        string edgeTypeCode,
+        string provenanceCode,
+        ReadOnlySpan<EdgeMemberSpec> members,
+        ReadOnlySpan<EdgeSignificanceSpec> significance)
+        => AddEdge(edgeTypeCode, provenanceCode, members);
+
+    /// <summary>
     /// Append a junction row (entity_pos, entity_sense, entity_language,
     /// entity_morph_feature, codepoint_property, model_architecture_class,
     /// tensor_tensor_role, pattern_deprel). Junction tables FK on

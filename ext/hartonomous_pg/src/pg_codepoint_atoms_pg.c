@@ -374,11 +374,13 @@ Datum pg_ucd_break_properties(PG_FUNCTION_ARGS)
  * properties + extended_pictographic flag + name. Built once in C, blessed
  * once, emitted via SRF — eliminates 28 IMMUTABLE function evaluations
  * per row when SQL needs the full row. */
-#define ATOM_COL_COUNT 28
+#define ATOM_COL_COUNT 30
 
-/* build_atom_values allocates varlena payloads for hash (index 1) and
- * optional name (index 27). Keep ownership in the calling memory context;
- * eager pfree here has shown unstable behavior in PG18 SRF paths. */
+/* build_atom_values allocates varlena payloads for hash (index 1),
+ * optional name (index 27), and the two int[] payloads at indices 28
+ * (decomposition_mapping) and 29 (full_case_fold). Keep ownership in the
+ * calling memory context; eager pfree here has shown unstable behavior
+ * in PG18 SRF paths. */
 
 static void
 build_atom_values(int32_t cp, Datum* values, bool* nulls)
@@ -437,6 +439,14 @@ build_atom_values(int32_t cp, Datum* values, bool* nulls)
     values[i] = Int32GetDatum((int32_t) uc_decomp_type[cp]);             nulls[i++] = false;
     values[i] = BoolGetDatum(ext_pict);                                  nulls[i++] = false;
     values[i] = name_datum;                                              nulls[i++] = name_null;
+    /* decomposition_mapping (28): non-NULL int[], possibly empty. */
+    values[i] = PointerGetDatum(slice_int_array(uc_decomp_data,
+                                                uc_decomp_off[cp],
+                                                uc_decomp_len[cp]));     nulls[i++] = false;
+    /* full_case_fold (29): non-NULL int[], possibly empty. */
+    values[i] = PointerGetDatum(slice_int_array(uc_fcf_data,
+                                                uc_fcf_off[cp],
+                                                uc_fcf_len[cp]));        nulls[i++] = false;
 }
 
 PG_FUNCTION_INFO_V1(pg_cp_atom);

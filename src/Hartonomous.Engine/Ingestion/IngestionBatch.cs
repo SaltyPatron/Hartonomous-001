@@ -47,7 +47,16 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
     {
-        _edges.Add(new EdgeEntry(edgeTypeCode, provenanceCode, members.ToArray()));
+        _edges.Add(new EdgeEntry(edgeTypeCode, provenanceCode, members.ToArray(), System.Array.Empty<EdgeSignificanceSpec>()));
+    }
+
+    public void AddEdge(
+        string edgeTypeCode,
+        string provenanceCode,
+        ReadOnlySpan<EdgeMemberSpec> members,
+        ReadOnlySpan<EdgeSignificanceSpec> significance)
+    {
+        _edges.Add(new EdgeEntry(edgeTypeCode, provenanceCode, members.ToArray(), significance.ToArray()));
     }
 
     public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null)

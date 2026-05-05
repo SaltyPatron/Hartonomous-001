@@ -434,11 +434,27 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             // provenance's initial_mu as the trust seed rather than the default 1500 that
             // PrimeAllSignificanceAsync would insert. This means hot paths (WordNet, UD,
             // Wiktionary) start with calibrated Glicko-2 priors rather than equal weights.
-            double edgeMu = await _codeResolver.ProvenanceMuAsync(edge.ProvenanceCode, ct).ConfigureAwait(false);
+            //
+            // Producer-supplied per-arena overrides (EdgeEntry.SignificanceOverrides)
+            // win for the arenas they cover. FfnEdgeDecompositionPass uses this to
+            // ship a per-edge mu derived from the signed weight scaled by the tensor's
+            // mean magnitude in the model_trust arena — so Glicko-2-rated A* traversal
+            // sees the model's learned function as cost gradients, not uniform-cost BFS.
+            double provenanceMu = await _codeResolver.ProvenanceMuAsync(edge.ProvenanceCode, ct).ConfigureAwait(false);
             IReadOnlyList<string> arenas = await _codeResolver.AllSignificanceContextCodesAsync(ct).ConfigureAwait(false);
+            EdgeSignificanceSpec[] overrides = edge.SignificanceOverrides;
             foreach (string arenaCode in arenas)
             {
-                await EmitAsync(new EdgeSignificanceRecord(arenaCode, edge.EdgeTypeCode, edgeHash, edgeMu), ct).ConfigureAwait(false);
+                double mu = provenanceMu;
+                for (int k = 0; k < overrides.Length; k++)
+                {
+                    if (string.Equals(overrides[k].ContextTypeCode, arenaCode, StringComparison.Ordinal))
+                    {
+                        mu = overrides[k].InitialMu;
+                        break;
+                    }
+                }
+                await EmitAsync(new EdgeSignificanceRecord(arenaCode, edge.EdgeTypeCode, edgeHash, mu), ct).ConfigureAwait(false);
             }
         }
 

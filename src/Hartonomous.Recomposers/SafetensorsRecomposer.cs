@@ -486,9 +486,135 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                     buffer[i] = accum[i] != 0 ? (byte)1 : (byte)0;
                 }
                 break;
-            default:
+            case "F8_E4M3":
+                for (int i = 0; i < accum.Length; i++)
+                {
+                    buffer[i] = F32ToE4M3((float)accum[i]);
+                }
                 break;
+            case "F8_E5M2":
+                for (int i = 0; i < accum.Length; i++)
+                {
+                    buffer[i] = F32ToE5M2((float)accum[i]);
+                }
+                break;
+            default:
+                throw new NotSupportedException($"PackToWire: dtype '{dtype}' not implemented.");
         }
+    }
+
+    /// <summary>
+    /// IEEE-style float32 → FP8 E4M3 (1 sign / 4 exp / 3 mantissa, bias 7).
+    /// No infinity encoding; NaN = S.1111.111; max normal = ±448 (S.1111.110).
+    /// Round-to-nearest-even. Overflow saturates to ±448.
+    /// </summary>
+    private static byte F32ToE4M3(float x)
+    {
+        if (float.IsNaN(x)) { return 0x7F; }
+        int bits = BitConverter.SingleToInt32Bits(x);
+        int sign = (bits >>> 31) & 1;
+        int rawExp = (bits >> 23) & 0xFF;
+        int mant23 = bits & 0x7FFFFF;
+        if (rawExp == 0 && mant23 == 0) { return (byte)(sign << 7); }
+        if (float.IsInfinity(x)) { return (byte)((sign << 7) | 0x7E); }
+        int unbiased = rawExp - 127;
+
+        // Subnormal range: 2^-9 .. 2^-7 (smallest subnormal = 2^-9 with mant=0b001).
+        if (unbiased < -9)
+        {
+            // Below smallest subnormal — round only if 2^-10 with rounding-up; else zero.
+            // Conservative: flush to zero.
+            return (byte)(sign << 7);
+        }
+        if (unbiased < -6)
+        {
+            int shift = -6 - unbiased;            // 1..3
+            int implicit24 = mant23 | 0x800000;   // include implicit 1
+            int dropBits = 20 + shift;            // produce 3-bit mantissa
+            int roundBit = 1 << (dropBits - 1);
+            int lowerMask = roundBit - 1;
+            int high = implicit24 >> dropBits;
+            int lower = implicit24 & lowerMask;
+            if ((implicit24 & roundBit) != 0 && (lower != 0 || (high & 1) != 0)) { high++; }
+            if (high > 0x7)
+            {
+                // Carried into normal exp=1 (smallest normal in E4M3).
+                return (byte)((sign << 7) | (1 << 3) | (high & 0x7));
+            }
+            return (byte)((sign << 7) | high);
+        }
+
+        // Normal: bias 7, 3-bit mantissa.
+        int biased = unbiased + 7;
+        int dropBits2 = 20;
+        int roundBit2 = 1 << (dropBits2 - 1);
+        int lowerMask2 = roundBit2 - 1;
+        int high2 = mant23 >> dropBits2;
+        int lower2 = mant23 & lowerMask2;
+        if ((mant23 & roundBit2) != 0 && (lower2 != 0 || (high2 & 1) != 0))
+        {
+            high2++;
+            if (high2 == 8) { high2 = 0; biased++; }
+        }
+        // Saturate at ±448 (biased=15, mant=6). 0x7F is NaN — never produce it for finite input.
+        if (biased > 15 || (biased == 15 && high2 >= 7))
+        {
+            return (byte)((sign << 7) | 0x7E);
+        }
+        return (byte)((sign << 7) | (biased << 3) | high2);
+    }
+
+    /// <summary>
+    /// IEEE-style float32 → FP8 E5M2 (1 sign / 5 exp / 2 mantissa, bias 15).
+    /// IEEE-shaped: ±inf at S.11111.00, NaN at S.11111.{nonzero}.
+    /// Round-to-nearest-even. Overflow → ±inf.
+    /// </summary>
+    private static byte F32ToE5M2(float x)
+    {
+        if (float.IsNaN(x)) { return 0x7E; }
+        int bits = BitConverter.SingleToInt32Bits(x);
+        int sign = (bits >>> 31) & 1;
+        int rawExp = (bits >> 23) & 0xFF;
+        int mant23 = bits & 0x7FFFFF;
+        if (rawExp == 0 && mant23 == 0) { return (byte)(sign << 7); }
+        if (float.IsInfinity(x)) { return (byte)((sign << 7) | 0x7C); }
+        int unbiased = rawExp - 127;
+
+        // Subnormal range for E5M2: smallest = 2^-16 (mant=01).
+        if (unbiased < -16) { return (byte)(sign << 7); }
+        if (unbiased < -14)
+        {
+            int shift = -14 - unbiased;           // 1..2
+            int implicit24 = mant23 | 0x800000;
+            int dropBits = 21 + shift;            // produce 2-bit mantissa
+            int roundBit = 1 << (dropBits - 1);
+            int lowerMask = roundBit - 1;
+            int high = implicit24 >> dropBits;
+            int lower = implicit24 & lowerMask;
+            if ((implicit24 & roundBit) != 0 && (lower != 0 || (high & 1) != 0)) { high++; }
+            if (high > 0x3)
+            {
+                return (byte)((sign << 7) | (1 << 2) | (high & 0x3));
+            }
+            return (byte)((sign << 7) | high);
+        }
+
+        int biased = unbiased + 15;
+        int dropBits2 = 21;
+        int roundBit2 = 1 << (dropBits2 - 1);
+        int lowerMask2 = roundBit2 - 1;
+        int high2 = mant23 >> dropBits2;
+        int lower2 = mant23 & lowerMask2;
+        if ((mant23 & roundBit2) != 0 && (lower2 != 0 || (high2 & 1) != 0))
+        {
+            high2++;
+            if (high2 == 4) { high2 = 0; biased++; }
+        }
+        if (biased >= 31)
+        {
+            return (byte)((sign << 7) | 0x7C); // ±inf
+        }
+        return (byte)((sign << 7) | (biased << 2) | high2);
     }
 
     private async Task<string> ResolveModelNameAsync(

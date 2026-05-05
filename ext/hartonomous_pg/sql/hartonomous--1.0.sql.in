@@ -1037,7 +1037,12 @@ COMMENT ON FUNCTION substrate.ucd_break_properties() IS
 CREATE DOMAIN substrate.codepoint AS int
     CHECK (VALUE >= 0 AND VALUE <= 1114111);
 
--- 28-column composite covering the entire per-codepoint record.
+-- 30-column composite covering the entire per-codepoint record,
+-- including variable-length payloads (decomposition_mapping,
+-- full_case_fold). Bulk consumers SELECT FROM substrate.ucd_codepoints()
+-- and read the array columns directly — never call substrate.cp_decomp /
+-- substrate.cp_full_case_fold per row, which scales as 2.2M scalar SPI
+-- C invocations and is fragile under heavy executor pressure.
 CREATE TYPE substrate.codepoint_atom AS (
     cp                    int,
     hash                  bytea,
@@ -1066,7 +1071,9 @@ CREATE TYPE substrate.codepoint_atom AS (
     num_type              int,
     decomp_type           int,
     extended_pictographic boolean,
-    name                  text
+    name                  text,
+    decomposition_mapping int[],
+    full_case_fold        int[]
 );
 
 CREATE FUNCTION substrate.cp_atom(cp int) RETURNS substrate.codepoint_atom

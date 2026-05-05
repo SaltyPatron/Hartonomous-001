@@ -118,28 +118,29 @@ internal sealed partial class FfnEdgeDecompositionPass : IModelAnalysisPass
                     // mu offset by signed weight scaled to the tensor's mean
                     // magnitude. Excitatory weights → mu > 1500; inhibitory
                     // → mu < 1500. Range clipped to [500, 2500] to stay in
-                    // the Glicko-2 sane band.
+                    // the Glicko-2 sane band. Shipped to the model_trust arena
+                    // so A* traversal cost = 1/mu reflects the model's learned
+                    // function as a cost gradient instead of uniform-cost BFS.
                     double muOffset = (w / meanAbs) * 200.0;
                     double mu = System.Math.Clamp(1500.0 + muOffset, 500.0, 2500.0);
+                    EdgeSignificanceSpec[] sigSpecs =
+                    [
+                        new EdgeSignificanceSpec("model_trust", mu),
+                    ];
 
-                    if (isDown)
-                    {
-                        session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+                    EdgeMemberSpec[] members = isDown
+                        ?
                         [
                             new EdgeMemberSpec(neuron, "source", 0),
                             new EdgeMemberSpec(direction, "target", 1),
-                        ]);
-                    }
-                    else
-                    {
-                        session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+                        ]
+                        :
                         [
                             new EdgeMemberSpec(direction, "source", 0),
                             new EdgeMemberSpec(neuron, "target", 1),
-                        ]);
-                    }
+                        ];
+                    session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode, members, sigSpecs);
                     edgesThisTensor++;
-                    _ = mu;  // mu is recorded by the pipeline's prime path; the value here is informational until the prime path reads it.
                 }
 
                 await session.MaybeFlushAsync(FlushThreshold, ct);

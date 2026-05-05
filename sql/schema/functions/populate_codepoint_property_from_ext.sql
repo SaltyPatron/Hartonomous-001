@@ -92,9 +92,9 @@ BEGIN
         lbpl.ref_id,
         a.extended_pictographic,
         a.ccc::SMALLINT,
-        substrate.cp_decomp(a.cp),
+        a.decomposition_mapping,
         NULLIF(a.simple_case_fold, -1),
-        substrate.cp_full_case_fold(a.cp)
+        a.full_case_fold
     FROM substrate.ucd_codepoints() a
     LEFT JOIN _gc_lookup       gcl  ON gcl.ext_id  = a.general_category
     LEFT JOIN _script_lookup   scrl ON scrl.ext_id = a.script
