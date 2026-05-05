@@ -225,7 +225,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 byte[][] sortedLemmaHashes = memberHashes
                     .OrderBy(h => h, ByteArraySortComparer.Instance)
                     .ToArray();
-                byte[] glossBytesHash = ComputeHash(syn.Gloss);
+                byte[] glossBytesHash = ComputeAtomicStringHash(syn.Gloss);
 
                 byte[][] synsetContent = new byte[sortedLemmaHashes.Length + 1][];
                 Array.Copy(sortedLemmaHashes, synsetContent, sortedLemmaHashes.Length);
@@ -247,7 +247,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 // TextDecomposer's full DAG (codepoints → graphemes →
                 // word_forms → sentence → document) would be wasteful and
                 // make the lookup harder to reproduce on the OMW side.
-                byte[] offsetDocHash = ComputeAtomicStringHash(offsetCode);
+                byte[] offsetDocHash = WordNetSynsetIdentity.OffsetCodeHash(offsetCode);
                 EntityHandle offsetDoc = batch.AddEntity(offsetDocHash, "text_composition");
                 batch.AddEdge("has_wordnet_offset", ProvenanceCode,
                 [

@@ -15,7 +15,14 @@ namespace Hartonomous.Core.Tests.Native;
 /// </summary>
 public sealed class Glicko2NativeTests
 {
-    private const double ParityTolerance = 1e-9;
+    // The managed mirror and the C reference both run Step 5 (volatility) via
+    // Illinois iteration with ConvergenceEpsilon = 1e-6. They terminate at
+    // points within 1e-6 of the true root and naturally disagree by O(1e-6) —
+    // observed real-world delta is ~7e-7. ParityTolerance must therefore sit
+    // above the convergence noise floor and below any meaningful drift; 1e-5
+    // is two orders above the floor and at least three orders below what a
+    // one-line algorithmic change would produce.
+    private const double ParityTolerance = 1e-5;
 
     private static (double NewMu, double NewSigma, double NewVol) RunNative(
         double mu, double sigma, double vol,

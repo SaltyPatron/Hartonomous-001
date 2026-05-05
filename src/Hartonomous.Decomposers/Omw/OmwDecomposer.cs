@@ -13,6 +13,7 @@ using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
 using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Decomposers.Iso639;
+using Hartonomous.Decomposers.WordNet;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Omw;
@@ -166,7 +167,7 @@ public sealed partial class OmwDecomposer : BaseDecomposer
                     // same hash and look up the linked synset_hash. Skip
                     // entries whose offset isn't in the substrate (e.g. OMW
                     // referencing synsets WordNet didn't include).
-                    byte[] offsetDocHash = ComputeHash(entry.SynsetCode);
+                    byte[] offsetDocHash = WordNetSynsetIdentity.OffsetCodeHash(entry.SynsetCode);
                     if (!offsetDocHashToSynsetHash.TryGetValue(offsetDocHash, out byte[]? synsetHash))
                     {
                         continue;

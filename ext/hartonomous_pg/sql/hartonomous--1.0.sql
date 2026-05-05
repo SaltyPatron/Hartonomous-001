@@ -1427,6 +1427,30 @@ CREATE INDEX idx_entity_model_source_source ON substrate.entity_model_source(mod
 COMMENT ON TABLE substrate.entity_model_source IS
     'Entity → model_source provenance. Hash-only entity reference. Same tensor in N model revisions has 1 entity row + N entity_model_source rows.';
 
+-- ── sql/schema/tables/reference/embedding_alignment_anchor.sql ───────────────────────────────────────
+-- substrate.embedding_alignment_anchor
+--
+-- Phase C2 cross-model embedding alignment via orthogonal Procrustes
+-- (EmbeddingAlignmentPass). Per-model Laplacian eigenmaps produce firefly
+-- coordinates that are arbitrary up to rotation+reflection. Without
+-- alignment, two models' fireflies for the same shared bpe_token sit in
+-- independent eigenspaces and never converge — Voronoi consensus over the
+-- shared entity is ill-defined.
+--
+-- This table tracks the canonical anchor: the first ingested model with
+-- sufficient vocab becomes the anchor; every subsequent model is rotated
+-- into the anchor's frame via Kabsch/Procrustes. First-write-wins via
+-- ON CONFLICT DO NOTHING in substrate.claim_or_get_embedding_anchor.
+
+CREATE TABLE IF NOT EXISTS substrate.embedding_alignment_anchor (
+    model_source_id INT PRIMARY KEY REFERENCES substrate.model_source(id) ON DELETE CASCADE,
+    vocab_intersection_token_count INT NOT NULL,
+    set_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE substrate.embedding_alignment_anchor IS
+    'The single canonical model whose firefly frame all other models align to via Procrustes. First-write-wins: the first model with sufficient vocab intersection becomes the anchor; every subsequent EmbeddingAlignmentPass run rotates against this anchor. Phase C2.';
+
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
 -- ── Phase 10: monitor tables ─────────────────────────────────────────
@@ -3252,69 +3276,49 @@ COMMENT ON FUNCTION substrate.get_completed_model_passes(BIGINT) IS
 
 -- Geometry / 4D operators
 
--- ── sql/schema/functions/dist_4d.sql ───────────────────────────────────────
--- substrate.dist_4d(g1, g2) — 4D distance over PostGIS GeometryZM,
--- backed by libhartonomous via the C extension's native distance_4d.
---
--- Works as a thin bridge: extracts (X,Y,Z,M) coords using PostGIS APIs,
--- builds two native point4d values via public.point4d(...), calls native
--- public.distance_4d which delegates to hartonomous_distance_4d in
--- libhartonomous (linked into the pg extension via SHLIB_LINK = -lhartonomous).
---
--- This is the bridge between the substrate's PostGIS-backed physicality
--- column and the native 4D compute primitives. Once substrate.physicality
--- migrates from geometry(GeometryZM) to point4d / linestring4d directly,
--- callers can skip this wrapper and call public.distance_4d straight.
---
--- For non-point geometries (LINESTRINGZM, etc.): uses ST_PointOnSurface
--- to project to a representative point. True linestring Fréchet should
--- use public.frechet_4d on a constructed linestring4d (separate function).
-CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry, g2 geometry)
-RETURNS DOUBLE PRECISION
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-AS $$
-    SELECT public.distance_4d(
-        public.point4d(
-            COALESCE(ST_X(p1), 0)::DOUBLE PRECISION,
-            COALESCE(ST_Y(p1), 0)::DOUBLE PRECISION,
-            COALESCE(ST_Z(p1), 0)::DOUBLE PRECISION,
-            COALESCE(ST_M(p1), 0)::DOUBLE PRECISION
-        ),
-        public.point4d(
-            COALESCE(ST_X(p2), 0)::DOUBLE PRECISION,
-            COALESCE(ST_Y(p2), 0)::DOUBLE PRECISION,
-            COALESCE(ST_Z(p2), 0)::DOUBLE PRECISION,
-            COALESCE(ST_M(p2), 0)::DOUBLE PRECISION
-        )
-    )
-    FROM (
-        SELECT
-            CASE WHEN ST_GeometryType(g1) = 'ST_Point' THEN g1
-                 ELSE ST_PointOnSurface(g1) END AS p1,
-            CASE WHEN ST_GeometryType(g2) = 'ST_Point' THEN g2
-                 ELSE ST_PointOnSurface(g2) END AS p2
-    ) sub;
-$$;
-
-COMMENT ON FUNCTION substrate.dist_4d(geometry, geometry) IS
-    'Bridge: PostGIS GeometryZM → native point4d → libhartonomous_distance_4d. Routes the heavy math to the native lib so the substrate-side wrapper does no compute itself. Once substrate.physicality migrates off PostGIS, this wrapper becomes obsolete.';
-
 -- ── sql/schema/functions/geom_bridge_4d.sql ───────────────────────────────────────
--- Bridge functions: PostGIS geometry(GeometryZM) → native libhartonomous
--- compute. Keeps GeometryZM as the general storage type — POINTZM,
--- LINESTRINGZM, MULTILINESTRINGZM (spectrograms), POLYGONZM, MULTIPOLYGONZM,
--- GEOMETRYCOLLECTIONZM all work — and dispatches to the right native
--- kernel by inspecting the geometry's vertex stream.
+-- ============================================================================
+-- Substrate 4D operator surface — subtype-aware bridge between PostGIS
+-- GeometryZM storage and libhartonomous native compute.
+-- ============================================================================
+-- Storage is universal: substrate.physicality.geom is geometry(GeometryZM),
+-- accepting the full GeometryZM subtype family (POINTZM, LINESTRINGZM,
+-- MULTILINESTRINGZM, POLYGONZM, MULTIPOLYGONZM, MULTIPOINTZM,
+-- GEOMETRYCOLLECTIONZM). Per-partition CHECK constraints declare which
+-- subtype(s) and which axis semantics each physicality_type uses.
 --
--- ST_DumpPoints walks any geometry (point, line, polygon, multi-anything,
--- collection) and yields its vertex sequence in deterministic depth-first
--- order. That sequence is exactly what a linestring4d carries — so the
--- whole zoo of ZM geometry types collapses to a single conversion path
--- and the native frechet_4d / hausdorff_4d handle everything.
+-- Compute lives in libhartonomous via the C extension. Two native primitives
+-- carry all the load:
+--   public.distance_4d(point4d, point4d) → 4D Euclidean
+--   public.frechet_4d(linestring4d, linestring4d) → discrete Fréchet
+--   public.hausdorff_4d(linestring4d, linestring4d) → symmetric Hausdorff
+-- (point4d / linestring4d are internal native compute primitives, NOT
+-- substrate-level types. They exist so the C kernels can take a flat
+-- (x,y,z,m) sequence with zero PostGIS marshalling overhead.)
 --
--- For two single-point inputs we short-circuit to native distance_4d
--- (cheaper than building a 1-vertex linestring4d twice).
+-- The substrate-side operators below dispatch on GeometryType and route to
+-- the appropriate native primitive while preserving subtype structure:
+--   * POINT-vs-POINT     → distance_4d
+--   * LINESTRING-vs-LINESTRING → frechet_4d / hausdorff_4d on the linestring
+--   * MULTILINESTRING    → minimum across pairwise component frechet
+--   * POLYGON            → exterior ring as the structural trajectory
+--   * MULTIPOLYGON       → minimum across pairwise component frechet
+--   * GEOMETRYCOLLECTION → minimum across all component pairs
+--   * MULTIPOINT         → Hausdorff (Fréchet undefined on unordered sets)
+--   * Cross-shape pairs  → representative-point or vertex-stream fallback
+--
+-- This is explicitly NOT "ST_DumpPoints flatten everything" — that approach
+-- loses subtype structural distinction (ring concatenation in polygons,
+-- branch concatenation in multilinestrings, etc.) and produces wrong answers
+-- for non-trivial subtype combinations.
 
+-- ────────────────────────────────────────────────────────────────────────────
+-- Helper: walk one geometry's vertex stream into a native linestring4d.
+-- Used by dispatch arms that genuinely DO want the flat sequence (LINESTRING
+-- treated as a single trajectory, MULTIPOINT treated as an unordered set for
+-- Hausdorff). Callers that need subtype structure preserved must dispatch
+-- on GeometryType BEFORE building the linestring4d.
+-- ────────────────────────────────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.geom_to_linestring4d(geometry);
 CREATE OR REPLACE FUNCTION substrate.geom_to_linestring4d(g geometry)
 RETURNS public.linestring4d
@@ -3331,67 +3335,227 @@ AS $$
                          (COALESCE(ST_Z(d.geom), 0)::DOUBLE PRECISION),
                          (COALESCE(ST_M(d.geom), 0)::DOUBLE PRECISION)
                  ) AS f(v)
-            ORDER BY d.path, f.v   -- vertex order; per-vertex 4 components
+            ORDER BY d.path, f.v   -- depth-first vertex order, 4 floats per vertex
         )
     );
 $$;
 
 COMMENT ON FUNCTION substrate.geom_to_linestring4d(geometry) IS
-    'Extract all vertices from any PostGIS GeometryZM (POINTZM, LINESTRINGZM, MULTILINESTRINGZM, POLYGONZM, GEOMETRYCOLLECTIONZM, …) as a flat (x,y,z,m) sequence and pack into a native linestring4d for libhartonomous compute. ST_DumpPoints walks the geometry depth-first.';
+    'Walk one geometry depth-first into a flat (x,y,z,m) sequence packed as a native linestring4d. Used by dispatch arms that legitimately want the flat sequence (LINESTRINGZM trajectory, MULTIPOINTZM scatter). Callers needing subtype structure (POLYGON rings, MULTILINESTRING branches) must dispatch BEFORE calling this — flattening loses structure.';
 
+-- ────────────────────────────────────────────────────────────────────────────
+-- Helper: extract POLYGON exterior ring as a linestring4d. The exterior ring
+-- IS the polygon's structural trajectory for Fréchet purposes. Holes (interior
+-- rings) are placement metadata, not part of the boundary shape.
+-- ────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.polygon_exterior_linestring4d(g geometry)
+RETURNS public.linestring4d
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT substrate.geom_to_linestring4d(ST_ExteriorRing(g));
+$$;
+
+COMMENT ON FUNCTION substrate.polygon_exterior_linestring4d(geometry) IS
+    'Extract a POLYGONZM''s exterior ring as a linestring4d for boundary-shape comparison. Interior rings (holes) are excluded — they are placement metadata, not boundary structure.';
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- substrate.dist_4d(g1, g2) — primary subtype-dispatching distance.
+-- Returns a meaningful number for every subtype × subtype pair. NULL only
+-- when at least one operand is empty.
+-- ────────────────────────────────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.dist_4d(geometry, geometry);
 CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry, g2 geometry)
 RETURNS DOUBLE PRECISION
-LANGUAGE sql STABLE STRICT PARALLEL SAFE
+LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT CASE
-        WHEN ST_GeometryType(g1) = 'ST_Point' AND ST_GeometryType(g2) = 'ST_Point' THEN
-            public.distance_4d(
-                public.point4d(
-                    ST_X(g1)::DOUBLE PRECISION,
-                    ST_Y(g1)::DOUBLE PRECISION,
-                    COALESCE(ST_Z(g1), 0)::DOUBLE PRECISION,
-                    COALESCE(ST_M(g1), 0)::DOUBLE PRECISION),
-                public.point4d(
-                    ST_X(g2)::DOUBLE PRECISION,
-                    ST_Y(g2)::DOUBLE PRECISION,
-                    COALESCE(ST_Z(g2), 0)::DOUBLE PRECISION,
-                    COALESCE(ST_M(g2), 0)::DOUBLE PRECISION))
-        ELSE
-            public.frechet_4d(
-                substrate.geom_to_linestring4d(g1),
-                substrate.geom_to_linestring4d(g2))
-    END;
+DECLARE
+    t1 TEXT := ST_GeometryType(g1);
+    t2 TEXT := ST_GeometryType(g2);
+BEGIN
+    -- Fast path: POINT-vs-POINT pure 4D Euclidean.
+    IF t1 = 'ST_Point' AND t2 = 'ST_Point' THEN
+        RETURN public.distance_4d(
+            public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
+            public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0)));
+    END IF;
+
+    -- Same-shape LINESTRING: discrete Fréchet on the trajectory.
+    IF t1 = 'ST_LineString' AND t2 = 'ST_LineString' THEN
+        RETURN public.frechet_4d(
+            substrate.geom_to_linestring4d(g1),
+            substrate.geom_to_linestring4d(g2));
+    END IF;
+
+    -- Same-shape POLYGON: Fréchet on the exterior rings (boundary shape).
+    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
+        RETURN public.frechet_4d(
+            substrate.polygon_exterior_linestring4d(g1),
+            substrate.polygon_exterior_linestring4d(g2));
+    END IF;
+
+    -- Same-shape MULTILINESTRING / MULTIPOLYGON: minimum component-pair
+    -- Fréchet. Each branch / ring is a separate trajectory; cross-branch
+    -- vertex concatenation would invent shape that isn't there.
+    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
+        RETURN (
+            SELECT MIN(public.frechet_4d(
+                       substrate.geom_to_linestring4d(c1.geom),
+                       substrate.geom_to_linestring4d(c2.geom)))
+              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+        );
+    END IF;
+
+    -- MULTIPOINT-vs-MULTIPOINT: Hausdorff (Fréchet is undefined on unordered
+    -- sets). Treats both inputs as scatter clouds.
+    IF t1 = 'ST_MultiPoint' AND t2 = 'ST_MultiPoint' THEN
+        RETURN public.hausdorff_4d(
+            substrate.geom_to_linestring4d(g1),
+            substrate.geom_to_linestring4d(g2));
+    END IF;
+
+    -- Cross-shape with at least one POINT: minimum 4D distance from the
+    -- point to every vertex of the other geometry. Not Fréchet — that's
+    -- not defined point-to-trajectory.
+    IF t1 = 'ST_Point' THEN
+        RETURN (
+            SELECT MIN(public.distance_4d(
+                       public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
+                       public.point4d(ST_X(d.geom), ST_Y(d.geom), COALESCE(ST_Z(d.geom), 0), COALESCE(ST_M(d.geom), 0))))
+              FROM ST_DumpPoints(g2) d
+        );
+    END IF;
+    IF t2 = 'ST_Point' THEN
+        RETURN (
+            SELECT MIN(public.distance_4d(
+                       public.point4d(ST_X(d.geom), ST_Y(d.geom), COALESCE(ST_Z(d.geom), 0), COALESCE(ST_M(d.geom), 0)),
+                       public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0))))
+              FROM ST_DumpPoints(g1) d
+        );
+    END IF;
+
+    -- GEOMETRYCOLLECTION on either side: dispatch component-by-component
+    -- and return the minimum pairwise distance.
+    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
+        RETURN (
+            SELECT MIN(substrate.dist_4d(c1.geom, c2.geom))
+              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+        );
+    END IF;
+
+    -- Fallback: vertex-stream Fréchet. Triggered for combinations like
+    -- LINESTRING-vs-POLYGON, MULTILINESTRING-vs-POLYGON, etc., where the
+    -- structural answer is "compare boundary trajectories." Caller can
+    -- dispatch differently if it needs a stricter shape semantic.
+    RETURN public.frechet_4d(
+        substrate.geom_to_linestring4d(g1),
+        substrate.geom_to_linestring4d(g2));
+END;
 $$;
 
 COMMENT ON FUNCTION substrate.dist_4d(geometry, geometry) IS
-    '4D distance over arbitrary GeometryZM. POINTZM pairs short-circuit to native distance_4d. Anything else (LINESTRINGZM / MULTI* / POLYGONZM / GEOMETRYCOLLECTIONZM) extracts vertices via ST_DumpPoints and runs native frechet_4d. Substrate-side does no compute; libhartonomous via the C extension does the math.';
+    'Subtype-dispatching 4D distance over GeometryZM. POINT/LINESTRING/POLYGON/MULTI*/COLLECTION pairs each route to the structurally appropriate native primitive (distance_4d, frechet_4d, hausdorff_4d, or component-wise minimum). Cross-shape pairs are explicitly handled. Substrate-side does no compute itself; libhartonomous via the C extension does the math.';
 
+-- ────────────────────────────────────────────────────────────────────────────
+-- substrate.frechet_4d_geom(g1, g2) — explicit Fréchet, subtype-aware.
+-- Same dispatch principles as dist_4d but always returns a Fréchet value
+-- (errors on subtype combinations where Fréchet is undefined, e.g. MULTIPOINT
+-- — caller should use hausdorff_4d_geom instead).
+-- ────────────────────────────────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.frechet_4d_geom(geometry, geometry);
 CREATE OR REPLACE FUNCTION substrate.frechet_4d_geom(g1 geometry, g2 geometry)
 RETURNS DOUBLE PRECISION
-LANGUAGE sql STABLE STRICT PARALLEL SAFE
+LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT public.frechet_4d(
+DECLARE
+    t1 TEXT := ST_GeometryType(g1);
+    t2 TEXT := ST_GeometryType(g2);
+BEGIN
+    IF t1 = 'ST_MultiPoint' OR t2 = 'ST_MultiPoint' THEN
+        RAISE EXCEPTION 'frechet_4d_geom: Fréchet is undefined on MULTIPOINTZM (unordered set). Use substrate.hausdorff_4d_geom for scatter-cloud comparison.';
+    END IF;
+
+    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
+        RETURN public.frechet_4d(
+            substrate.polygon_exterior_linestring4d(g1),
+            substrate.polygon_exterior_linestring4d(g2));
+    END IF;
+
+    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
+        RETURN (
+            SELECT MIN(public.frechet_4d(
+                       substrate.geom_to_linestring4d(c1.geom),
+                       substrate.geom_to_linestring4d(c2.geom)))
+              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+        );
+    END IF;
+
+    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
+        RETURN (
+            SELECT MIN(substrate.frechet_4d_geom(c1.geom, c2.geom))
+              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+              WHERE ST_GeometryType(c1.geom) <> 'ST_MultiPoint'
+                AND ST_GeometryType(c2.geom) <> 'ST_MultiPoint'
+        );
+    END IF;
+
+    RETURN public.frechet_4d(
         substrate.geom_to_linestring4d(g1),
         substrate.geom_to_linestring4d(g2));
+END;
 $$;
 
 COMMENT ON FUNCTION substrate.frechet_4d_geom(geometry, geometry) IS
-    'Discrete Fréchet distance over arbitrary GeometryZM via native libhartonomous compute. Vertices extracted depth-first via ST_DumpPoints — works for points, lines, polygons, multi*, collections.';
+    'Subtype-aware discrete Fréchet over GeometryZM. POLYGONZM uses exterior-ring trajectory; MULTI* uses minimum across component pairs; GEOMETRYCOLLECTIONZM dispatches per-component. Errors on MULTIPOINTZM (Fréchet undefined on unordered sets — use hausdorff_4d_geom).';
 
+-- ────────────────────────────────────────────────────────────────────────────
+-- substrate.hausdorff_4d_geom(g1, g2) — symmetric Hausdorff. Defined for all
+-- subtype combinations including MULTIPOINTZM.
+-- ────────────────────────────────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.hausdorff_4d_geom(geometry, geometry);
 CREATE OR REPLACE FUNCTION substrate.hausdorff_4d_geom(g1 geometry, g2 geometry)
 RETURNS DOUBLE PRECISION
-LANGUAGE sql STABLE STRICT PARALLEL SAFE
+LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT public.hausdorff_4d(
+DECLARE
+    t1 TEXT := ST_GeometryType(g1);
+    t2 TEXT := ST_GeometryType(g2);
+BEGIN
+    -- POLYGON: compare exterior rings.
+    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
+        RETURN public.hausdorff_4d(
+            substrate.polygon_exterior_linestring4d(g1),
+            substrate.polygon_exterior_linestring4d(g2));
+    END IF;
+
+    -- MULTI* same-shape: maximum across components (Hausdorff is a max-metric).
+    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
+        RETURN (
+            SELECT MAX(public.hausdorff_4d(
+                       substrate.geom_to_linestring4d(c1.geom),
+                       substrate.geom_to_linestring4d(c2.geom)))
+              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+        );
+    END IF;
+
+    -- GEOMETRYCOLLECTION: dispatch per-component, take the maximum.
+    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
+        RETURN (
+            SELECT MAX(substrate.hausdorff_4d_geom(c1.geom, c2.geom))
+              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+        );
+    END IF;
+
+    -- Default (POINT, LINESTRING, MULTIPOINT, cross-shape): flatten and run
+    -- native hausdorff_4d. Hausdorff tolerates flattening better than Fréchet
+    -- because it's max-distance-of-min-distance over both sets.
+    RETURN public.hausdorff_4d(
         substrate.geom_to_linestring4d(g1),
         substrate.geom_to_linestring4d(g2));
+END;
 $$;
 
 COMMENT ON FUNCTION substrate.hausdorff_4d_geom(geometry, geometry) IS
-    'Symmetric Hausdorff distance over arbitrary GeometryZM via native libhartonomous compute.';
+    'Subtype-aware symmetric Hausdorff over GeometryZM. POLYGONZM uses exterior-ring; MULTI* takes maximum across component pairs (Hausdorff is a max-metric); GEOMETRYCOLLECTIONZM dispatches per-component. Defined for all subtypes including MULTIPOINTZM scatter clouds.';
 
 -- ── sql/schema/functions/entity_centroid_4d.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.entity_centroid_4d(INT, BYTEA);
@@ -3905,112 +4069,24 @@ COMMENT ON FUNCTION substrate.prune_significance(DOUBLE PRECISION, DOUBLE PRECIS
 -- learns from every interaction — closed-loop without training, without
 -- gradient descent, without labeled data.
 --
--- Algorithm: Glickman 2012 (http://www.glicko.net/glicko/glicko2.pdf)
--- Mirrors Hartonomous.Core.Compute.Common.Glicko2.Update — same inputs
--- yield bitwise-identical outputs (Law #6). The C# version is the canonical
--- reference; this is the SQL twin for transactional in-database updates.
+-- Algorithm: Glickman 2012 (http://www.glicko.net/glicko/glicko2.pdf), tau=0.5.
+-- Implementation: ONE call to public.glicko2_bulk_update (native C —
+-- ext/libhartonomous/src/glicko_bulk.c via ext/hartonomous_pg/src/pg_glicko_bulk.c)
+-- with n=2 — row 0 is the winner-side update (player=winner, opponent=loser,
+-- score=1.0); row 1 is the loser-side update (player=loser, opponent=winner,
+-- score=0.0). Both new ratings come back in one bulk call; both rows are
+-- updated set-based via UPDATE ... FROM unnest.
+--
+-- Determinism: the formula lives in C with IEEE-754 round-to-nearest-even,
+-- fixed evaluation order, no PRNG. Same inputs → bit-identical outputs across
+-- C, SQL, and C# (Law #6). Do NOT add a plpgsql or C# reimplementation.
 --
 -- Hash-addressable: both edges are addressed by (edge_type_id, edge_hash)
 -- against substrate.edge_significance, scoped to p_arena_id (the
 -- substrate.significance_context.id resolved upstream via
 -- substrate.resolve_context_id).
---
--- Volatility update uses the Illinois algorithm on f(x) per Glickman 2012
--- step 5, with τ = 0.5, ε = 1e-6.
 
--- f(x) is inlined in both the bracket-expansion loop and the Illinois
--- iteration — plpgsql has no nested-function shorthand. Same expression in
--- both spots.
-CREATE OR REPLACE FUNCTION substrate._glicko2_volatility(
-    p_sigma DOUBLE PRECISION,
-    p_phi   DOUBLE PRECISION,
-    p_v     DOUBLE PRECISION,
-    p_delta DOUBLE PRECISION,
-    p_tau   DOUBLE PRECISION DEFAULT 0.5
-)
-RETURNS DOUBLE PRECISION
-LANGUAGE plpgsql IMMUTABLE
-AS $$
-DECLARE
-    a       DOUBLE PRECISION := ln(p_sigma * p_sigma);
-    tau_sq  DOUBLE PRECISION := p_tau * p_tau;
-    A_val   DOUBLE PRECISION;
-    B_val   DOUBLE PRECISION;
-    C_val   DOUBLE PRECISION;
-    fA      DOUBLE PRECISION;
-    fB      DOUBLE PRECISION;
-    fC      DOUBLE PRECISION;
-    ex      DOUBLE PRECISION;
-    num     DOUBLE PRECISION;
-    den     DOUBLE PRECISION;
-    fx      DOUBLE PRECISION;
-    x       DOUBLE PRECISION;
-    k_val   INT;
-    iter    INT := 0;
-    eps     CONSTANT DOUBLE PRECISION := 1e-6;
-    max_it  CONSTANT INT := 1000;
-BEGIN
-    A_val := a;
-
-    IF p_delta * p_delta > p_phi * p_phi + p_v THEN
-        B_val := ln(p_delta * p_delta - p_phi * p_phi - p_v);
-    ELSE
-        k_val := 1;
-        LOOP
-            x   := a - k_val * p_tau;
-            ex  := exp(x);
-            num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-            den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-            fx  := (num / den) - (x - a) / tau_sq;
-            EXIT WHEN fx >= 0;
-            k_val := k_val + 1;
-            IF k_val > max_it THEN
-                RAISE EXCEPTION 'Glicko-2 volatility iteration failed to bracket root';
-            END IF;
-        END LOOP;
-        B_val := a - k_val * p_tau;
-    END IF;
-
-    -- f(A_val)
-    ex  := exp(A_val);
-    num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-    den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-    fA  := (num / den) - (A_val - a) / tau_sq;
-
-    -- f(B_val)
-    ex  := exp(B_val);
-    num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-    den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-    fB  := (num / den) - (B_val - a) / tau_sq;
-
-    WHILE abs(B_val - A_val) > eps LOOP
-        C_val := A_val + (A_val - B_val) * fA / (fB - fA);
-
-        ex  := exp(C_val);
-        num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-        den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-        fC  := (num / den) - (C_val - a) / tau_sq;
-
-        IF fC * fB <= 0 THEN
-            A_val := B_val;
-            fA    := fB;
-        ELSE
-            fA := fA / 2.0;
-        END IF;
-
-        B_val := C_val;
-        fB    := fC;
-
-        iter := iter + 1;
-        EXIT WHEN iter > max_it;
-    END LOOP;
-
-    RETURN exp(A_val / 2.0);
-END $$;
-
-COMMENT ON FUNCTION substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) IS
-    'Glickman 2012 §5.4 volatility update via Illinois iteration on f(x). Helper for substrate.record_comparison.';
-
+DROP FUNCTION IF EXISTS substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION);
 
 CREATE OR REPLACE FUNCTION substrate.record_comparison(
     p_arena_id            INT,
@@ -4023,51 +4099,23 @@ RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    -- Glicko-2 spec constants
-    c_scale  CONSTANT DOUBLE PRECISION := 173.7178;
-    c_anchor CONSTANT DOUBLE PRECISION := 1500.0;
-    c_pi_sq  CONSTANT DOUBLE PRECISION := pi() * pi();
-    c_tau    CONSTANT DOUBLE PRECISION := 0.5;
+    -- Current state for both edges (public scale, 1500-anchored).
+    w_mu       DOUBLE PRECISION;
+    w_sigma    DOUBLE PRECISION;
+    w_vol      DOUBLE PRECISION;
+    w_games    INT;
+    l_mu       DOUBLE PRECISION;
+    l_sigma    DOUBLE PRECISION;
+    l_vol      DOUBLE PRECISION;
+    l_games    INT;
 
-    -- Winner state (public scale)
-    w_mu_pub  DOUBLE PRECISION;
-    w_sig_pub DOUBLE PRECISION;
-    w_vol     DOUBLE PRECISION;
-    w_games   INT;
-    -- Loser state (public scale)
-    l_mu_pub  DOUBLE PRECISION;
-    l_sig_pub DOUBLE PRECISION;
-    l_vol     DOUBLE PRECISION;
-    l_games   INT;
-
-    -- Internal-scale conversions
-    w_mu   DOUBLE PRECISION;
-    w_phi  DOUBLE PRECISION;
-    l_mu   DOUBLE PRECISION;
-    l_phi  DOUBLE PRECISION;
-
-    -- For winner update (s=1 against loser)
-    g_w        DOUBLE PRECISION;
-    e_w        DOUBLE PRECISION;
-    v_w        DOUBLE PRECISION;
-    delta_w    DOUBLE PRECISION;
-    sigma_p_w  DOUBLE PRECISION;
-    phi_star_w DOUBLE PRECISION;
-    phi_p_w    DOUBLE PRECISION;
-    mu_p_w     DOUBLE PRECISION;
-
-    -- For loser update (s=0 against winner)
-    g_l        DOUBLE PRECISION;
-    e_l        DOUBLE PRECISION;
-    v_l        DOUBLE PRECISION;
-    delta_l    DOUBLE PRECISION;
-    sigma_p_l  DOUBLE PRECISION;
-    phi_star_l DOUBLE PRECISION;
-    phi_p_l    DOUBLE PRECISION;
-    mu_p_l     DOUBLE PRECISION;
+    -- Bulk-Glicko output (n=2: row 0 = winner update, row 1 = loser update).
+    new_mu     DOUBLE PRECISION[];
+    new_sigma  DOUBLE PRECISION[];
+    new_vol    DOUBLE PRECISION[];
 BEGIN
-    -- Load both rows. Auto-create at default rating if missing — matches the
-    -- engine contract that priming may have lagged for this arena × edge.
+    -- Auto-create rows at default rating if missing (priming may have lagged
+    -- for this arena × edge). Matches the engine contract.
     INSERT INTO substrate.edge_significance
         (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
     VALUES
@@ -4076,63 +4124,46 @@ BEGIN
     ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING;
 
     SELECT mu, sigma, volatility, games
-      INTO w_mu_pub, w_sig_pub, w_vol, w_games
+      INTO w_mu, w_sigma, w_vol, w_games
       FROM substrate.edge_significance
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_winner_edge_type_id
        AND edge_hash       = p_winner_edge_hash;
 
     SELECT mu, sigma, volatility, games
-      INTO l_mu_pub, l_sig_pub, l_vol, l_games
+      INTO l_mu, l_sigma, l_vol, l_games
       FROM substrate.edge_significance
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_loser_edge_type_id
        AND edge_hash       = p_loser_edge_hash;
 
-    -- Step 1: convert to internal scale
-    w_mu  := (w_mu_pub  - c_anchor) / c_scale;
-    w_phi := w_sig_pub  / c_scale;
-    l_mu  := (l_mu_pub  - c_anchor) / c_scale;
-    l_phi := l_sig_pub  / c_scale;
+    -- One bulk-Glicko call covers both updates.
+    --   row 0: player=winner, opponent=loser, score=1.0
+    --   row 1: player=loser,  opponent=winner, score=0.0
+    SELECT g.new_mu, g.new_sigma, g.new_volatility
+      INTO new_mu, new_sigma, new_vol
+      FROM public.glicko2_bulk_update(
+          ARRAY[w_mu,    l_mu]::DOUBLE PRECISION[],
+          ARRAY[w_sigma, l_sigma]::DOUBLE PRECISION[],
+          ARRAY[w_vol,   l_vol]::DOUBLE PRECISION[],
+          ARRAY[l_mu,    w_mu]::DOUBLE PRECISION[],
+          ARRAY[l_sigma, w_sigma]::DOUBLE PRECISION[],
+          ARRAY[1.0,     0.0]::DOUBLE PRECISION[]
+      ) g;
 
-    --
-    -- Winner update (s = 1, opponent = loser)
-    --
-    g_w        := 1.0 / sqrt(1.0 + 3.0 * l_phi * l_phi / c_pi_sq);
-    e_w        := 1.0 / (1.0 + exp(-g_w * (w_mu - l_mu)));
-    v_w        := 1.0 / (g_w * g_w * e_w * (1.0 - e_w));
-    delta_w    := v_w * g_w * (1.0 - e_w);
-    sigma_p_w  := substrate._glicko2_volatility(w_vol, w_phi, v_w, delta_w, c_tau);
-    phi_star_w := sqrt(w_phi * w_phi + sigma_p_w * sigma_p_w);
-    phi_p_w    := 1.0 / sqrt(1.0 / (phi_star_w * phi_star_w) + 1.0 / v_w);
-    mu_p_w     := w_mu + phi_p_w * phi_p_w * g_w * (1.0 - e_w);
-
-    --
-    -- Loser update (s = 0, opponent = winner)
-    --
-    g_l        := 1.0 / sqrt(1.0 + 3.0 * w_phi * w_phi / c_pi_sq);
-    e_l        := 1.0 / (1.0 + exp(-g_l * (l_mu - w_mu)));
-    v_l        := 1.0 / (g_l * g_l * e_l * (1.0 - e_l));
-    delta_l    := v_l * g_l * (0.0 - e_l);
-    sigma_p_l  := substrate._glicko2_volatility(l_vol, l_phi, v_l, delta_l, c_tau);
-    phi_star_l := sqrt(l_phi * l_phi + sigma_p_l * sigma_p_l);
-    phi_p_l    := 1.0 / sqrt(1.0 / (phi_star_l * phi_star_l) + 1.0 / v_l);
-    mu_p_l     := l_mu + phi_p_l * phi_p_l * g_l * (0.0 - e_l);
-
-    -- Step 8: convert back to public scale; games += 1
     UPDATE substrate.edge_significance
-       SET mu         = mu_p_w * c_scale + c_anchor,
-           sigma      = phi_p_w * c_scale,
-           volatility = sigma_p_w,
+       SET mu         = new_mu[1],
+           sigma      = new_sigma[1],
+           volatility = new_vol[1],
            games      = w_games + 1
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_winner_edge_type_id
        AND edge_hash       = p_winner_edge_hash;
 
     UPDATE substrate.edge_significance
-       SET mu         = mu_p_l * c_scale + c_anchor,
-           sigma      = phi_p_l * c_scale,
-           volatility = sigma_p_l,
+       SET mu         = new_mu[2],
+           sigma      = new_sigma[2],
+           volatility = new_vol[2],
            games      = l_games + 1
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_loser_edge_type_id
@@ -4140,7 +4171,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA) IS
-    'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within an arena. Mirrors Hartonomous.Core.Compute.Common.Glicko2 byte-for-byte (Law #6). Auto-creates missing rows at default rating before updating. games += 1 on both rows.';
+    'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within an arena. Calls public.glicko2_bulk_update once with n=2 — the formula lives in C (ext/libhartonomous/src/glicko_bulk.c), not in plpgsql. Auto-creates missing rows at default rating before updating. games += 1 on both rows.';
 
 -- ── sql/schema/functions/record_corroboration.sql ───────────────────────────────────────
 -- substrate.record_corroboration(
@@ -5970,6 +6001,122 @@ END $$;
 
 COMMENT ON FUNCTION substrate.complete(BYTEA, INT, INT, TEXT) IS
     'Code-completion specialization of substrate.infer. Constrains traversal to the code_completion arena (falls back to semantic_relevance if the arena does not yet exist) and biases candidate targets to bpe_token/word_form entities tagged with the requested programming language via entity_language. Recomposes the best continuation via substrate.recompose_text.';
+
+-- ── sql/schema/functions/claim_or_get_embedding_anchor.sql ───────────────────────────────────────
+-- substrate.claim_or_get_embedding_anchor(p_model_source_id, p_intersection_count)
+--
+-- Atomic anchor selection for cross-model embedding alignment. Returns the
+-- existing anchor's model_source_id if any; otherwise claims the supplied
+-- model as the canonical anchor (first-write-wins via ON CONFLICT). The
+-- caller (EmbeddingAlignmentPass) compares the returned id with its own
+-- to decide whether to skip alignment (it IS the anchor) or proceed
+-- (Procrustes-fit a rotation against the anchor).
+
+CREATE OR REPLACE FUNCTION substrate.claim_or_get_embedding_anchor(
+    p_model_source_id    INT,
+    p_intersection_count INT
+) RETURNS INT
+LANGUAGE SQL
+VOLATILE
+AS $$
+    INSERT INTO substrate.embedding_alignment_anchor
+        (model_source_id, vocab_intersection_token_count)
+    VALUES
+        (p_model_source_id, p_intersection_count)
+    ON CONFLICT (model_source_id) DO NOTHING;
+
+    SELECT model_source_id
+      FROM substrate.embedding_alignment_anchor
+     ORDER BY set_at ASC
+     LIMIT 1;
+$$;
+
+COMMENT ON FUNCTION substrate.claim_or_get_embedding_anchor(INT, INT) IS
+    'Returns current canonical embedding anchor''s model_source_id (first-write-wins). Atomic via ON CONFLICT DO NOTHING. Used by EmbeddingAlignmentPass to decide anchor-vs-aligner role.';
+
+-- ── sql/schema/functions/apply_firefly_rotation.sql ───────────────────────────────────────
+-- substrate.apply_firefly_rotation(p_model_source_id, R 3x3)
+--
+-- Rotate every embedding_firefly POINTZM physicality of a given
+-- model_source by a 3×3 orthogonal matrix R, leaving the M coordinate
+-- (L2 magnitude) untouched. Run after EmbeddingFireflyPass for non-anchor
+-- models. R must be orthogonal (det = +1); the caller is responsible —
+-- Procrustes (Kabsch) returns such an R.
+--
+-- Hash-as-PK: substrate.physicality and substrate.entity_model_source
+-- both reference entities by entity_hash (no surrogate id column).
+
+CREATE OR REPLACE FUNCTION substrate.apply_firefly_rotation(
+    p_model_source_id INT,
+    p_r00 FLOAT8, p_r01 FLOAT8, p_r02 FLOAT8,
+    p_r10 FLOAT8, p_r11 FLOAT8, p_r12 FLOAT8,
+    p_r20 FLOAT8, p_r21 FLOAT8, p_r22 FLOAT8
+) RETURNS BIGINT
+LANGUAGE SQL
+VOLATILE
+AS $$
+    WITH updated AS (
+        UPDATE substrate.physicality p
+           SET geom = ST_MakePoint(
+                   p_r00 * ST_X(p.geom) + p_r01 * ST_Y(p.geom) + p_r02 * ST_Z(p.geom),
+                   p_r10 * ST_X(p.geom) + p_r11 * ST_Y(p.geom) + p_r12 * ST_Z(p.geom),
+                   p_r20 * ST_X(p.geom) + p_r21 * ST_Y(p.geom) + p_r22 * ST_Z(p.geom),
+                   ST_M(p.geom))
+          FROM substrate.entity_model_source ems,
+               substrate.physicality_type pt
+         WHERE p.entity_hash         = ems.entity_hash
+           AND ems.model_source_id   = p_model_source_id
+           AND p.physicality_type_id = pt.id
+           AND pt.code               = 'embedding_firefly'
+        RETURNING 1
+    )
+    SELECT count(*)::BIGINT FROM updated;
+$$;
+
+COMMENT ON FUNCTION substrate.apply_firefly_rotation(INT, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8) IS
+    'Rotate every embedding_firefly POINTZM physicality of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
+
+-- ── sql/schema/functions/get_firefly_coords.sql ───────────────────────────────────────
+-- substrate.get_firefly_coords(p_bpe_token_entity_hashes BYTEA[], p_model_source_id INT)
+--
+-- Return per-entity firefly POINTZM coordinates for a vocab intersection
+-- set, scoped to one model_source. Used by EmbeddingAlignmentPass to pull
+-- the (anchor, this-model) coordinate pairs into managed memory for
+-- Procrustes/Kabsch fitting.
+--
+-- Hash-as-PK: input is an array of entity_hash BYTEAs, not surrogate ids.
+-- Output rows are ordered by entity_hash ASC so two calls (anchor model,
+-- this model) for the same hash set yield aligned column orderings.
+
+CREATE OR REPLACE FUNCTION substrate.get_firefly_coords(
+    p_bpe_token_entity_hashes BYTEA[],
+    p_model_source_id         INT
+) RETURNS TABLE (
+    entity_hash BYTEA,
+    x           FLOAT8,
+    y           FLOAT8,
+    z           FLOAT8
+)
+LANGUAGE SQL
+STABLE
+AS $$
+    SELECT p.entity_hash,
+           ST_X(p.geom) AS x,
+           ST_Y(p.geom) AS y,
+           ST_Z(p.geom) AS z
+      FROM substrate.physicality p
+      JOIN substrate.entity_model_source ems
+        ON ems.entity_hash = p.entity_hash
+      JOIN substrate.physicality_type pt
+        ON pt.id = p.physicality_type_id
+     WHERE p.entity_hash = ANY(p_bpe_token_entity_hashes)
+       AND ems.model_source_id = p_model_source_id
+       AND pt.code = 'embedding_firefly'
+     ORDER BY p.entity_hash ASC;
+$$;
+
+COMMENT ON FUNCTION substrate.get_firefly_coords(BYTEA[], INT) IS
+    'Per-entity firefly XYZ coords for a vocab intersection set, scoped to one model_source. Ordered by entity_hash ASC so cross-model calls return aligned arrays. Used by EmbeddingAlignmentPass for Procrustes input.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

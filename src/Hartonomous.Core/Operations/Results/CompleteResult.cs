@@ -16,12 +16,12 @@ public sealed record CompleteResult(
     double BestTotalMu,
     int ElapsedMs) : IRecordMappable<CompleteResult>
 {
-    public static CompleteResult MapFrom(NpgsqlDataReader r) =>
+    public static CompleteResult MapFrom(NpgsqlDataReader reader) =>
         new(
-            AnswerText:      r.IsDBNull(0) ? null : r.GetString(0),
-            SeedCount:       r.IsDBNull(1) ? 0    : r.GetInt32(1),
-            DistinctTargets: r.IsDBNull(2) ? 0L   : r.GetInt64(2),
-            BestTargetHash:  r.IsDBNull(3) ? null : (byte[])r.GetValue(3),
-            BestTotalMu:     r.IsDBNull(4) ? 0.0  : r.GetDouble(4),
-            ElapsedMs:       r.IsDBNull(5) ? 0    : r.GetInt32(5));
+            AnswerText:      reader.IsDBNull(0) ? null : reader.GetString(0),
+            SeedCount:       reader.IsDBNull(1) ? 0    : reader.GetInt32(1),
+            DistinctTargets: reader.IsDBNull(2) ? 0L   : reader.GetInt64(2),
+            BestTargetHash:  reader.IsDBNull(3) ? null : (byte[])reader.GetValue(3),
+            BestTotalMu:     reader.IsDBNull(4) ? 0.0  : reader.GetDouble(4),
+            ElapsedMs:       reader.IsDBNull(5) ? 0    : reader.GetInt32(5));
 }

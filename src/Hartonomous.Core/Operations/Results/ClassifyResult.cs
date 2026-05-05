@@ -16,12 +16,12 @@ public sealed record ClassifyResult(
     int Games,
     int ElapsedMs) : IRecordMappable<ClassifyResult>
 {
-    public static ClassifyResult MapFrom(NpgsqlDataReader r) =>
+    public static ClassifyResult MapFrom(NpgsqlDataReader reader) =>
         new(
-            LabelId:   r.GetInt32(0),
-            LabelCode: r.GetString(1).Trim(),
-            Mu:        r.GetDouble(2),
-            Sigma:     r.GetDouble(3),
-            Games:     r.GetInt32(4),
-            ElapsedMs: r.IsDBNull(5) ? 0 : r.GetInt32(5));
+            LabelId:   reader.GetInt32(0),
+            LabelCode: reader.GetString(1).Trim(),
+            Mu:        reader.GetDouble(2),
+            Sigma:     reader.GetDouble(3),
+            Games:     reader.GetInt32(4),
+            ElapsedMs: reader.IsDBNull(5) ? 0 : reader.GetInt32(5));
 }

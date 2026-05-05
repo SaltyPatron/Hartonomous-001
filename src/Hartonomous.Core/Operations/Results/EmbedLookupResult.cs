@@ -14,10 +14,10 @@ public sealed record EmbedLookupResult(
     double Distance,
     int ElapsedMs) : IRecordMappable<EmbedLookupResult>
 {
-    public static EmbedLookupResult MapFrom(NpgsqlDataReader r) =>
+    public static EmbedLookupResult MapFrom(NpgsqlDataReader reader) =>
         new(
-            EntityTypeId: r.GetInt32(0),
-            EntityHash:   (byte[])r.GetValue(1),
-            Distance:     r.GetDouble(2),
-            ElapsedMs:    r.IsDBNull(3) ? 0 : r.GetInt32(3));
+            EntityTypeId: reader.GetInt32(0),
+            EntityHash:   (byte[])reader.GetValue(1),
+            Distance:     reader.GetDouble(2),
+            ElapsedMs:    reader.IsDBNull(3) ? 0 : reader.GetInt32(3));
 }

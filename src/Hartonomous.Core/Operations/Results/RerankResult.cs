@@ -16,12 +16,12 @@ public sealed record RerankResult(
     int Rank,
     int ElapsedMs) : IRecordMappable<RerankResult>
 {
-    public static RerankResult MapFrom(NpgsqlDataReader r) =>
+    public static RerankResult MapFrom(NpgsqlDataReader reader) =>
         new(
-            EntityHash: (byte[])r.GetValue(0),
-            Mu:         r.GetDouble(1),
-            Sigma:      r.GetDouble(2),
-            Games:      r.GetInt32(3),
-            Rank:       r.GetInt32(4),
-            ElapsedMs:  r.IsDBNull(5) ? 0 : r.GetInt32(5));
+            EntityHash: (byte[])reader.GetValue(0),
+            Mu:         reader.GetDouble(1),
+            Sigma:      reader.GetDouble(2),
+            Games:      reader.GetInt32(3),
+            Rank:       reader.GetInt32(4),
+            ElapsedMs:  reader.IsDBNull(5) ? 0 : reader.GetInt32(5));
 }

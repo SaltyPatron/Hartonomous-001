@@ -263,7 +263,7 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         }
         else
         {
-            sentHash = ComputeHash($"tatoeba_empty:{row.SentenceId}");
+            sentHash = ComputeAtomicStringHash($"tatoeba_empty:{row.SentenceId}");
             sentEntity = batch.AddEntity(sentHash, "text_composition");
             batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
             entityCount++;
@@ -309,7 +309,7 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         ref long entityCount,
         ref long edgeCount)
     {
-        byte[] audioHash = ComputeHash($"tatoeba_audio:{row.AudioId}");
+        byte[] audioHash = ComputeAtomicStringHash($"tatoeba_audio:{row.AudioId}");
         EntityHandle audioEntity = batch.AddEntity(audioHash, "audio_recording");
         batch.AddSignificance(audioEntity, "source_authority", TrustPriorMu);
         entityCount++;
