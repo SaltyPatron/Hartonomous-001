@@ -1,4 +1,7 @@
+using System.Globalization;
 using Hartonomous.Core.Operations;
+using Hartonomous.Core.Operations.Results;
+using Hartonomous.Engine.Data;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -8,10 +11,22 @@ public sealed partial class ClassificationOp : BaseAiOperation
 {
     private const string DefaultJunctionKind = "pos";
     private const int DefaultK = 10;
+    private const double UserSessionTrustMu = 1000.0;
 
-    public ClassificationOp(NpgsqlDataSource dataSource, ILogger<BaseAiOperation> logger)
+    private readonly ISubstrateOpsRepository _repository;
+    private readonly IPromptIngestion _promptIngestion;
+
+    public ClassificationOp(
+        NpgsqlDataSource dataSource,
+        ISubstrateOpsRepository repository,
+        IPromptIngestion promptIngestion,
+        ILogger<BaseAiOperation> logger)
         : base(dataSource, logger)
     {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentNullException.ThrowIfNull(promptIngestion);
+        _repository = repository;
+        _promptIngestion = promptIngestion;
     }
 
     public override OperationCode Code => OperationCode.Classify;
@@ -22,53 +37,37 @@ public sealed partial class ClassificationOp : BaseAiOperation
 
     protected override async Task<OperationResponse> ExecuteCoreAsync(OperationRequest request, CancellationToken ct)
     {
-        if (request.SeedHash is null || request.SeedHash.Length == 0)
-        {
-            throw new ArgumentException(
-                "ClassificationOp requires SeedHash. Prompt-decompose-and-drain wiring lands in CK-23.",
-                nameof(request));
-        }
-
+        byte[] seedHash = await ResolveSeedHashAsync(request, ct).ConfigureAwait(false);
         string junctionKind = request.ExtraOptions?.GetValueOrDefault("junction_kind") ?? DefaultJunctionKind;
         int k = request.MaxResults ?? DefaultK;
 
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT label_id, label_code, mu, sigma, games, elapsed_ms "
-            + "FROM substrate.classify($1, $2, $3)",
-            conn);
-        cmd.Parameters.AddWithValue(request.SeedHash);
-        cmd.Parameters.AddWithValue(junctionKind);
-        cmd.Parameters.AddWithValue(k);
+        IReadOnlyList<ClassifyResult> rows = await _repository
+            .ClassifyAsync(seedHash, junctionKind, k, ct)
+            .ConfigureAwait(false);
 
-        List<ProvenanceTrace> trace = [];
+        List<ProvenanceTrace> trace = new(rows.Count);
         Dictionary<string, string> labelLookup = new(StringComparer.Ordinal);
         int sqlElapsedMs = 0;
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        for (int i = 0; i < rows.Count; i++)
         {
-            int labelId = r.GetInt32(0);
-            string labelCode = r.GetString(1);
-            double? mu = r.IsDBNull(2) ? null : r.GetDouble(2);
-            sqlElapsedMs = r.GetInt32(5);
-
+            ClassifyResult row = rows[i];
+            sqlElapsedMs = row.ElapsedMs;
             trace.Add(new ProvenanceTrace(
-                EntityHash: request.SeedHash,
-                EntityTypeId: labelId,
+                EntityHash: seedHash,
+                EntityTypeId: row.LabelId,
                 EdgeHash: null,
                 EdgeTypeId: null,
-                ProvenanceCode: labelCode,
-                ContributedMu: mu,
-                OrdinalPosition: trace.Count));
-
-            labelLookup[$"label_{trace.Count}"] = labelCode;
+                ProvenanceCode: row.LabelCode,
+                ContributedMu: row.Mu,
+                OrdinalPosition: i));
+            labelLookup[$"label_{i + 1}"] = row.LabelCode;
         }
 
-        Log.ClassifyComplete(Logger, junctionKind, trace.Count, sqlElapsedMs);
+        Log.ClassifyComplete(Logger, junctionKind, rows.Count, sqlElapsedMs);
 
         Dictionary<string, string> diagnostics = new(StringComparer.Ordinal)
         {
-            ["sql_elapsed_ms"] = sqlElapsedMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["sql_elapsed_ms"] = sqlElapsedMs.ToString(CultureInfo.InvariantCulture),
             ["junction_kind"] = junctionKind,
         };
         foreach (KeyValuePair<string, string> kvp in labelLookup)
@@ -78,13 +77,29 @@ public sealed partial class ClassificationOp : BaseAiOperation
 
         return new ClassificationResponse
         {
-            OutputCompositionHash = request.SeedHash,
+            OutputCompositionHash = seedHash,
             OutputModalityCode = "text",
             AnswerText = trace.Count > 0 ? trace[0].ProvenanceCode : null,
             NodesVisited = trace.Count,
             Trace = trace,
             ExtraDiagnostics = diagnostics,
         };
+    }
+
+    private async Task<byte[]> ResolveSeedHashAsync(OperationRequest request, CancellationToken ct)
+    {
+        if (request.SeedHash is { Length: > 0 })
+        {
+            return request.SeedHash;
+        }
+        if (string.IsNullOrEmpty(request.PromptText))
+        {
+            throw new ArgumentException(
+                "ClassificationOp requires either SeedHash or PromptText.",
+                nameof(request));
+        }
+        return await _promptIngestion.IngestAsync(
+            request.PromptText, "user_session", UserSessionTrustMu, ct).ConfigureAwait(false);
     }
 
     private static partial class Log

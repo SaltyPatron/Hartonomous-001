@@ -37,7 +37,7 @@ Defined in `src/Hartonomous.Core/Orchestration/Phase.cs`. `SequentialPhaseRunner
 ## Identity hashing
 
 `ComputeHash(ReadOnlySpan<byte>)` → `Blake3.Hash(content)`. Atom identity.
-`ComputeHash(string)` → UTF-8 encode → `Blake3.Hash()`. String atom.
+`ComputeAtomicStringHash(string)` → UTF-8 encode → `Blake3.Hash()`. **Structured atomic identifiers only** (e.g. WordNet synset offsets, ISO 639 codes). Never on user-visible natural-language text — that routes through `CanonicalTextDecomposer.Emit` so all attestations of the same content collapse to one `text_composition` hash.
 `ComputeMerkleHash(byte[][])` → concat child hashes → `Merkle.Hash()`. Composition identity.
 `ComputeEdgeHash(int, byte[][])` → `[edgeTypeId | participant hashes]` → `ComputeHash()`. Edge identity.
 

@@ -99,6 +99,9 @@ internal static class Program
         Command quote = QuoteCommand.Build(DefaultConnectionString);
         root.AddCommand(quote);
 
+        Command complete = CompleteCommand.Build(DefaultConnectionString);
+        root.AddCommand(complete);
+
         return await root.InvokeAsync(args);
     }
 

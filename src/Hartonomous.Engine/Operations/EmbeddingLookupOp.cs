@@ -1,4 +1,7 @@
+using System.Globalization;
 using Hartonomous.Core.Operations;
+using Hartonomous.Core.Operations.Results;
+using Hartonomous.Engine.Data;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -8,10 +11,22 @@ public sealed partial class EmbeddingLookupOp : BaseAiOperation
 {
     private const int DefaultK = 10;
     private const string DefaultDistanceKind = "4d";
+    private const double UserSessionTrustMu = 1000.0;
 
-    public EmbeddingLookupOp(NpgsqlDataSource dataSource, ILogger<BaseAiOperation> logger)
+    private readonly ISubstrateOpsRepository _repository;
+    private readonly IPromptIngestion _promptIngestion;
+
+    public EmbeddingLookupOp(
+        NpgsqlDataSource dataSource,
+        ISubstrateOpsRepository repository,
+        IPromptIngestion promptIngestion,
+        ILogger<BaseAiOperation> logger)
         : base(dataSource, logger)
     {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentNullException.ThrowIfNull(promptIngestion);
+        _repository = repository;
+        _promptIngestion = promptIngestion;
     }
 
     public override OperationCode Code => OperationCode.EmbedLookup;
@@ -22,12 +37,7 @@ public sealed partial class EmbeddingLookupOp : BaseAiOperation
 
     protected override async Task<OperationResponse> ExecuteCoreAsync(OperationRequest request, CancellationToken ct)
     {
-        if (request.SeedHash is null || request.SeedHash.Length == 0)
-        {
-            throw new ArgumentException(
-                "EmbeddingLookupOp requires SeedHash. Prompt-decompose-and-drain wiring lands in CK-23; until then, supply a seed entity hash directly.",
-                nameof(request));
-        }
+        byte[] seedHash = await ResolveSeedHashAsync(request, ct).ConfigureAwait(false);
 
         string entityTypeCode = request.ExtraOptions?.GetValueOrDefault("entity_type")
             ?? throw new ArgumentException(
@@ -38,69 +48,67 @@ public sealed partial class EmbeddingLookupOp : BaseAiOperation
         string distanceKind = request.ExtraOptions?.GetValueOrDefault("distance_kind") ?? DefaultDistanceKind;
         double? threshold = ParseThreshold(request.ExtraOptions);
 
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT entity_type_id, entity_hash, distance, elapsed_ms "
-            + "FROM substrate.embed_lookup($1, $2, $3, $4, $5)",
-            conn);
-        cmd.Parameters.AddWithValue(request.SeedHash);
-        cmd.Parameters.AddWithValue(entityTypeCode);
-        cmd.Parameters.AddWithValue(k);
-        cmd.Parameters.AddWithValue(distanceKind);
-        if (threshold.HasValue)
-        {
-            cmd.Parameters.AddWithValue(threshold.Value);
-        }
-        else
-        {
-            cmd.Parameters.AddWithValue(DBNull.Value);
-        }
+        IReadOnlyList<EmbedLookupResult> rows = await _repository
+            .EmbedLookupAsync(seedHash, entityTypeCode, k, distanceKind, threshold, ct)
+            .ConfigureAwait(false);
 
-        List<ProvenanceTrace> trace = [];
+        List<ProvenanceTrace> trace = new(rows.Count);
         int sqlElapsedMs = 0;
         byte[]? bestHash = null;
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        for (int i = 0; i < rows.Count; i++)
         {
-            int entityTypeId = r.GetInt32(0);
-            byte[] hash = (byte[])r.GetValue(1);
-            double distance = r.GetDouble(2);
-            sqlElapsedMs = r.GetInt32(3);
-
-            bestHash ??= hash;
+            EmbedLookupResult row = rows[i];
+            sqlElapsedMs = row.ElapsedMs;
+            bestHash ??= row.EntityHash;
             trace.Add(new ProvenanceTrace(
-                EntityHash: hash,
-                EntityTypeId: entityTypeId,
+                EntityHash: row.EntityHash,
+                EntityTypeId: row.EntityTypeId,
                 EdgeHash: null,
                 EdgeTypeId: null,
                 ProvenanceCode: null,
-                ContributedMu: distance,
-                OrdinalPosition: trace.Count));
+                ContributedMu: row.Distance,
+                OrdinalPosition: i));
         }
 
-        Log.EmbedLookupComplete(Logger, trace.Count, distanceKind, sqlElapsedMs);
+        Log.EmbedLookupComplete(Logger, rows.Count, distanceKind, sqlElapsedMs);
 
         return new EmbeddingLookupResponse
         {
-            OutputCompositionHash = bestHash ?? request.SeedHash,
+            OutputCompositionHash = bestHash ?? seedHash,
             OutputModalityCode = "text",
             AnswerText = null,
-            NodesVisited = trace.Count,
+            NodesVisited = rows.Count,
             Trace = trace,
             ExtraDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["sql_elapsed_ms"] = sqlElapsedMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["sql_elapsed_ms"] = sqlElapsedMs.ToString(CultureInfo.InvariantCulture),
                 ["distance_kind"] = distanceKind,
                 ["entity_type"] = entityTypeCode,
             },
         };
     }
 
+    private async Task<byte[]> ResolveSeedHashAsync(OperationRequest request, CancellationToken ct)
+    {
+        if (request.SeedHash is { Length: > 0 })
+        {
+            return request.SeedHash;
+        }
+        if (string.IsNullOrEmpty(request.PromptText))
+        {
+            throw new ArgumentException(
+                "EmbeddingLookupOp requires either SeedHash or PromptText.",
+                nameof(request));
+        }
+        return await _promptIngestion.IngestAsync(
+            request.PromptText, "user_session", UserSessionTrustMu, ct).ConfigureAwait(false);
+    }
+
     private static double? ParseThreshold(IReadOnlyDictionary<string, string>? options)
     {
         if (options is null) { return null; }
         if (!options.TryGetValue("distance_threshold", out string? v) || string.IsNullOrEmpty(v)) { return null; }
-        return double.TryParse(v, System.Globalization.CultureInfo.InvariantCulture, out double d) ? d : null;
+        return double.TryParse(v, CultureInfo.InvariantCulture, out double d) ? d : null;
     }
 
     private static partial class Log

@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Hartonomous.Core.Operations;
+using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Operations;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -63,7 +64,12 @@ internal static class EmbedLookupCommand
                 b.SetMinimumLevel(LogLevel.Information);
             });
 
-            EmbeddingLookupOp op = new(ds, loggerFactory.CreateLogger<BaseAiOperation>());
+            SubstrateOpsRepository repo = new(ds, loggerFactory.CreateLogger<SubstrateOpsRepository>());
+            EmbeddingLookupOp op = new(
+                ds,
+                repo,
+                new InlineSeedPromptIngestion(seedHash),
+                loggerFactory.CreateLogger<BaseAiOperation>());
 
             Dictionary<string, string> extras = new(StringComparer.Ordinal)
             {

@@ -151,6 +151,7 @@
 -- @include schema/tables/models/model_source.sql
 -- @include schema/tables/models/model_pass_checkpoint.sql
 -- @include schema/tables/models/entity_model_source.sql
+-- @include schema/tables/reference/embedding_alignment_anchor.sql
 
 -- ── Phase 10: monitor tables ─────────────────────────────────────────
 -- @include schema/tables/monitor/ingestion_progress.sql
@@ -203,7 +204,6 @@
 -- @include schema/functions/upsert_model_pass_checkpoint.sql
 -- @include schema/functions/get_completed_model_passes.sql
 -- Geometry / 4D operators
--- @include schema/functions/dist_4d.sql
 -- @include schema/functions/geom_bridge_4d.sql
 -- @include schema/functions/entity_centroid_4d.sql
 -- @include schema/functions/populate_edge_trajectories_v2.sql
@@ -261,6 +261,10 @@
 -- @include schema/functions/embed_lookup.sql
 -- @include schema/functions/classify.sql
 -- @include schema/functions/rerank.sql
+-- @include schema/functions/complete.sql
+-- @include schema/functions/claim_or_get_embedding_anchor.sql
+-- @include schema/functions/apply_firefly_rotation.sql
+-- @include schema/functions/get_firefly_coords.sql
 -- Universal substrate query surface (V1)
 -- @include schema/functions/model_inventory.sql
 -- @include schema/functions/model_vocab_recovered.sql

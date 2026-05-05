@@ -13,112 +13,24 @@
 -- learns from every interaction — closed-loop without training, without
 -- gradient descent, without labeled data.
 --
--- Algorithm: Glickman 2012 (http://www.glicko.net/glicko/glicko2.pdf)
--- Mirrors Hartonomous.Core.Compute.Common.Glicko2.Update — same inputs
--- yield bitwise-identical outputs (Law #6). The C# version is the canonical
--- reference; this is the SQL twin for transactional in-database updates.
+-- Algorithm: Glickman 2012 (http://www.glicko.net/glicko/glicko2.pdf), tau=0.5.
+-- Implementation: ONE call to public.glicko2_bulk_update (native C —
+-- ext/libhartonomous/src/glicko_bulk.c via ext/hartonomous_pg/src/pg_glicko_bulk.c)
+-- with n=2 — row 0 is the winner-side update (player=winner, opponent=loser,
+-- score=1.0); row 1 is the loser-side update (player=loser, opponent=winner,
+-- score=0.0). Both new ratings come back in one bulk call; both rows are
+-- updated set-based via UPDATE ... FROM unnest.
+--
+-- Determinism: the formula lives in C with IEEE-754 round-to-nearest-even,
+-- fixed evaluation order, no PRNG. Same inputs → bit-identical outputs across
+-- C, SQL, and C# (Law #6). Do NOT add a plpgsql or C# reimplementation.
 --
 -- Hash-addressable: both edges are addressed by (edge_type_id, edge_hash)
 -- against substrate.edge_significance, scoped to p_arena_id (the
 -- substrate.significance_context.id resolved upstream via
 -- substrate.resolve_context_id).
---
--- Volatility update uses the Illinois algorithm on f(x) per Glickman 2012
--- step 5, with τ = 0.5, ε = 1e-6.
 
--- f(x) is inlined in both the bracket-expansion loop and the Illinois
--- iteration — plpgsql has no nested-function shorthand. Same expression in
--- both spots.
-CREATE OR REPLACE FUNCTION substrate._glicko2_volatility(
-    p_sigma DOUBLE PRECISION,
-    p_phi   DOUBLE PRECISION,
-    p_v     DOUBLE PRECISION,
-    p_delta DOUBLE PRECISION,
-    p_tau   DOUBLE PRECISION DEFAULT 0.5
-)
-RETURNS DOUBLE PRECISION
-LANGUAGE plpgsql IMMUTABLE
-AS $$
-DECLARE
-    a       DOUBLE PRECISION := ln(p_sigma * p_sigma);
-    tau_sq  DOUBLE PRECISION := p_tau * p_tau;
-    A_val   DOUBLE PRECISION;
-    B_val   DOUBLE PRECISION;
-    C_val   DOUBLE PRECISION;
-    fA      DOUBLE PRECISION;
-    fB      DOUBLE PRECISION;
-    fC      DOUBLE PRECISION;
-    ex      DOUBLE PRECISION;
-    num     DOUBLE PRECISION;
-    den     DOUBLE PRECISION;
-    fx      DOUBLE PRECISION;
-    x       DOUBLE PRECISION;
-    k_val   INT;
-    iter    INT := 0;
-    eps     CONSTANT DOUBLE PRECISION := 1e-6;
-    max_it  CONSTANT INT := 1000;
-BEGIN
-    A_val := a;
-
-    IF p_delta * p_delta > p_phi * p_phi + p_v THEN
-        B_val := ln(p_delta * p_delta - p_phi * p_phi - p_v);
-    ELSE
-        k_val := 1;
-        LOOP
-            x   := a - k_val * p_tau;
-            ex  := exp(x);
-            num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-            den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-            fx  := (num / den) - (x - a) / tau_sq;
-            EXIT WHEN fx >= 0;
-            k_val := k_val + 1;
-            IF k_val > max_it THEN
-                RAISE EXCEPTION 'Glicko-2 volatility iteration failed to bracket root';
-            END IF;
-        END LOOP;
-        B_val := a - k_val * p_tau;
-    END IF;
-
-    -- f(A_val)
-    ex  := exp(A_val);
-    num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-    den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-    fA  := (num / den) - (A_val - a) / tau_sq;
-
-    -- f(B_val)
-    ex  := exp(B_val);
-    num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-    den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-    fB  := (num / den) - (B_val - a) / tau_sq;
-
-    WHILE abs(B_val - A_val) > eps LOOP
-        C_val := A_val + (A_val - B_val) * fA / (fB - fA);
-
-        ex  := exp(C_val);
-        num := ex * (p_delta * p_delta - p_phi * p_phi - p_v - ex);
-        den := 2.0 * (p_phi * p_phi + p_v + ex) * (p_phi * p_phi + p_v + ex);
-        fC  := (num / den) - (C_val - a) / tau_sq;
-
-        IF fC * fB <= 0 THEN
-            A_val := B_val;
-            fA    := fB;
-        ELSE
-            fA := fA / 2.0;
-        END IF;
-
-        B_val := C_val;
-        fB    := fC;
-
-        iter := iter + 1;
-        EXIT WHEN iter > max_it;
-    END LOOP;
-
-    RETURN exp(A_val / 2.0);
-END $$;
-
-COMMENT ON FUNCTION substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) IS
-    'Glickman 2012 §5.4 volatility update via Illinois iteration on f(x). Helper for substrate.record_comparison.';
-
+DROP FUNCTION IF EXISTS substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION);
 
 CREATE OR REPLACE FUNCTION substrate.record_comparison(
     p_arena_id            INT,
@@ -131,51 +43,23 @@ RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    -- Glicko-2 spec constants
-    c_scale  CONSTANT DOUBLE PRECISION := 173.7178;
-    c_anchor CONSTANT DOUBLE PRECISION := 1500.0;
-    c_pi_sq  CONSTANT DOUBLE PRECISION := pi() * pi();
-    c_tau    CONSTANT DOUBLE PRECISION := 0.5;
+    -- Current state for both edges (public scale, 1500-anchored).
+    w_mu       DOUBLE PRECISION;
+    w_sigma    DOUBLE PRECISION;
+    w_vol      DOUBLE PRECISION;
+    w_games    INT;
+    l_mu       DOUBLE PRECISION;
+    l_sigma    DOUBLE PRECISION;
+    l_vol      DOUBLE PRECISION;
+    l_games    INT;
 
-    -- Winner state (public scale)
-    w_mu_pub  DOUBLE PRECISION;
-    w_sig_pub DOUBLE PRECISION;
-    w_vol     DOUBLE PRECISION;
-    w_games   INT;
-    -- Loser state (public scale)
-    l_mu_pub  DOUBLE PRECISION;
-    l_sig_pub DOUBLE PRECISION;
-    l_vol     DOUBLE PRECISION;
-    l_games   INT;
-
-    -- Internal-scale conversions
-    w_mu   DOUBLE PRECISION;
-    w_phi  DOUBLE PRECISION;
-    l_mu   DOUBLE PRECISION;
-    l_phi  DOUBLE PRECISION;
-
-    -- For winner update (s=1 against loser)
-    g_w        DOUBLE PRECISION;
-    e_w        DOUBLE PRECISION;
-    v_w        DOUBLE PRECISION;
-    delta_w    DOUBLE PRECISION;
-    sigma_p_w  DOUBLE PRECISION;
-    phi_star_w DOUBLE PRECISION;
-    phi_p_w    DOUBLE PRECISION;
-    mu_p_w     DOUBLE PRECISION;
-
-    -- For loser update (s=0 against winner)
-    g_l        DOUBLE PRECISION;
-    e_l        DOUBLE PRECISION;
-    v_l        DOUBLE PRECISION;
-    delta_l    DOUBLE PRECISION;
-    sigma_p_l  DOUBLE PRECISION;
-    phi_star_l DOUBLE PRECISION;
-    phi_p_l    DOUBLE PRECISION;
-    mu_p_l     DOUBLE PRECISION;
+    -- Bulk-Glicko output (n=2: row 0 = winner update, row 1 = loser update).
+    new_mu     DOUBLE PRECISION[];
+    new_sigma  DOUBLE PRECISION[];
+    new_vol    DOUBLE PRECISION[];
 BEGIN
-    -- Load both rows. Auto-create at default rating if missing — matches the
-    -- engine contract that priming may have lagged for this arena × edge.
+    -- Auto-create rows at default rating if missing (priming may have lagged
+    -- for this arena × edge). Matches the engine contract.
     INSERT INTO substrate.edge_significance
         (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
     VALUES
@@ -184,63 +68,46 @@ BEGIN
     ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING;
 
     SELECT mu, sigma, volatility, games
-      INTO w_mu_pub, w_sig_pub, w_vol, w_games
+      INTO w_mu, w_sigma, w_vol, w_games
       FROM substrate.edge_significance
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_winner_edge_type_id
        AND edge_hash       = p_winner_edge_hash;
 
     SELECT mu, sigma, volatility, games
-      INTO l_mu_pub, l_sig_pub, l_vol, l_games
+      INTO l_mu, l_sigma, l_vol, l_games
       FROM substrate.edge_significance
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_loser_edge_type_id
        AND edge_hash       = p_loser_edge_hash;
 
-    -- Step 1: convert to internal scale
-    w_mu  := (w_mu_pub  - c_anchor) / c_scale;
-    w_phi := w_sig_pub  / c_scale;
-    l_mu  := (l_mu_pub  - c_anchor) / c_scale;
-    l_phi := l_sig_pub  / c_scale;
+    -- One bulk-Glicko call covers both updates.
+    --   row 0: player=winner, opponent=loser, score=1.0
+    --   row 1: player=loser,  opponent=winner, score=0.0
+    SELECT g.new_mu, g.new_sigma, g.new_volatility
+      INTO new_mu, new_sigma, new_vol
+      FROM public.glicko2_bulk_update(
+          ARRAY[w_mu,    l_mu]::DOUBLE PRECISION[],
+          ARRAY[w_sigma, l_sigma]::DOUBLE PRECISION[],
+          ARRAY[w_vol,   l_vol]::DOUBLE PRECISION[],
+          ARRAY[l_mu,    w_mu]::DOUBLE PRECISION[],
+          ARRAY[l_sigma, w_sigma]::DOUBLE PRECISION[],
+          ARRAY[1.0,     0.0]::DOUBLE PRECISION[]
+      ) g;
 
-    --
-    -- Winner update (s = 1, opponent = loser)
-    --
-    g_w        := 1.0 / sqrt(1.0 + 3.0 * l_phi * l_phi / c_pi_sq);
-    e_w        := 1.0 / (1.0 + exp(-g_w * (w_mu - l_mu)));
-    v_w        := 1.0 / (g_w * g_w * e_w * (1.0 - e_w));
-    delta_w    := v_w * g_w * (1.0 - e_w);
-    sigma_p_w  := substrate._glicko2_volatility(w_vol, w_phi, v_w, delta_w, c_tau);
-    phi_star_w := sqrt(w_phi * w_phi + sigma_p_w * sigma_p_w);
-    phi_p_w    := 1.0 / sqrt(1.0 / (phi_star_w * phi_star_w) + 1.0 / v_w);
-    mu_p_w     := w_mu + phi_p_w * phi_p_w * g_w * (1.0 - e_w);
-
-    --
-    -- Loser update (s = 0, opponent = winner)
-    --
-    g_l        := 1.0 / sqrt(1.0 + 3.0 * w_phi * w_phi / c_pi_sq);
-    e_l        := 1.0 / (1.0 + exp(-g_l * (l_mu - w_mu)));
-    v_l        := 1.0 / (g_l * g_l * e_l * (1.0 - e_l));
-    delta_l    := v_l * g_l * (0.0 - e_l);
-    sigma_p_l  := substrate._glicko2_volatility(l_vol, l_phi, v_l, delta_l, c_tau);
-    phi_star_l := sqrt(l_phi * l_phi + sigma_p_l * sigma_p_l);
-    phi_p_l    := 1.0 / sqrt(1.0 / (phi_star_l * phi_star_l) + 1.0 / v_l);
-    mu_p_l     := l_mu + phi_p_l * phi_p_l * g_l * (0.0 - e_l);
-
-    -- Step 8: convert back to public scale; games += 1
     UPDATE substrate.edge_significance
-       SET mu         = mu_p_w * c_scale + c_anchor,
-           sigma      = phi_p_w * c_scale,
-           volatility = sigma_p_w,
+       SET mu         = new_mu[1],
+           sigma      = new_sigma[1],
+           volatility = new_vol[1],
            games      = w_games + 1
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_winner_edge_type_id
        AND edge_hash       = p_winner_edge_hash;
 
     UPDATE substrate.edge_significance
-       SET mu         = mu_p_l * c_scale + c_anchor,
-           sigma      = phi_p_l * c_scale,
-           volatility = sigma_p_l,
+       SET mu         = new_mu[2],
+           sigma      = new_sigma[2],
+           volatility = new_vol[2],
            games      = l_games + 1
      WHERE context_type_id = p_arena_id
        AND edge_type_id    = p_loser_edge_type_id
@@ -248,4 +115,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA) IS
-    'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within an arena. Mirrors Hartonomous.Core.Compute.Common.Glicko2 byte-for-byte (Law #6). Auto-creates missing rows at default rating before updating. games += 1 on both rows.';
+    'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within an arena. Calls public.glicko2_bulk_update once with n=2 — the formula lives in C (ext/libhartonomous/src/glicko_bulk.c), not in plpgsql. Auto-creates missing rows at default rating before updating. games += 1 on both rows.';

@@ -59,8 +59,29 @@ public abstract partial class BaseDecomposer : IDecomposer
 
     public static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
 
-    public static byte[] ComputeHash(string content)
-        => Blake3.Hash(Encoding.UTF8.GetBytes(content).AsSpan());
+    /// <summary>
+    /// Hash an atomic identifier string — a structured, non-natural-language
+    /// token whose UTF-8 bytes ARE the canonical content (e.g. a WordNet
+    /// synset offset like "02084071-n", an ISO 639-3 code like "eng", a
+    /// language registry code). The token's bytes are the entity's identity;
+    /// there is no compositional decomposition to perform.
+    ///
+    /// **Do NOT call this on user-visible natural-language text.** Sentences,
+    /// paragraphs, glosses, captions, transcripts, model config JSON values,
+    /// and any other natural-language string MUST be routed through
+    /// <see cref="Hartonomous.Core.Text.CanonicalTextDecomposer"/>. That
+    /// produces the canonical text-AST hash so the same content from any
+    /// source (Tatoeba, WordNet examples, Wiktionary citations, user
+    /// prompts, model outputs) collapses to ONE <c>text_composition</c>
+    /// entity. Bypassing the text decomposer with this method on natural
+    /// language produces phantom duplicate entities and breaks
+    /// seed-uses-core (AP-9).
+    ///
+    /// If you are unsure whether your string is an atomic identifier or
+    /// user-visible content, route it through CanonicalTextDecomposer.
+    /// </summary>
+    public static byte[] ComputeAtomicStringHash(string atomicIdentifier)
+        => Blake3.Hash(Encoding.UTF8.GetBytes(atomicIdentifier).AsSpan());
 
     public static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes)
     {

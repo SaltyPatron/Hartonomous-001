@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Hartonomous.Core.Operations;
+using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Operations;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -59,7 +60,8 @@ internal static class RerankCommand
                 b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; });
                 b.SetMinimumLevel(LogLevel.Information);
             });
-            RerankingOp op = new(ds, lf.CreateLogger<BaseAiOperation>());
+            SubstrateOpsRepository repo = new(ds, lf.CreateLogger<SubstrateOpsRepository>());
+            RerankingOp op = new(ds, repo, lf.CreateLogger<BaseAiOperation>());
 
             RerankingRequest req = new()
             {

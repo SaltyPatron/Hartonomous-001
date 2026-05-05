@@ -4,18 +4,29 @@ using System.Collections.Generic;
 namespace Hartonomous.Core.Compute.Common;
 
 /// <summary>
-/// Glicko-2 rating update primitive (Glickman 2012). Determined-by-spec,
-/// bitwise-reproducible — no PRNG, all double arithmetic in IEEE 754
-/// round-to-nearest-even.
+/// Glicko-2 rating update — managed reference for tests and the
+/// multi-opponent aggregation case (Glickman 2012's general "Update with N
+/// opponents in one rating period"). Determined-by-spec, bitwise-reproducible
+/// — no PRNG, all double arithmetic in IEEE 754 round-to-nearest-even.
 ///
-/// The substrate uses Glicko-2 to rate trustworthiness of entities and
-/// edges within an arena (`substrate.significance`, four junctions
-/// (`entity_pos`, `entity_sense`, `pattern_deprel`)). The SQL functions
-/// in migration 0053 (`substrate.record_corroboration`,
-/// `substrate.glicko2_update`) implement the same algorithm server-side
-/// for high-throughput ingest paths; this managed mirror is the canonical
-/// reference for unit tests and any C# callers that need a per-comparison
-/// update outside a SQL transaction.
+/// **Production paths do NOT use this class.** The canonical Glicko-2 formula
+/// lives in C at <c>ext/libhartonomous/src/glicko_bulk.c</c>. SQL routes
+/// through the PG extension wrapper (<c>public.glicko2_bulk_update</c> →
+/// <c>hartonomous_glicko2_bulk_update</c>) — see
+/// <c>sql/schema/functions/record_comparison.sql</c>,
+/// <c>record_corroboration.sql</c> (algebraic specialization),
+/// <c>record_outcome.sql</c>. C# routes through the P/Invoke surface in
+/// <see cref="Hartonomous.Core.Native.Glicko2Native"/>.
+///
+/// This managed reference is retained for two reasons:
+/// 1. The C bulk function is single-game-per-row (player vs ONE opponent).
+///    The Glicko-2 paper's <em>general</em> update with N opponents
+///    aggregates v and Δ across all opponents before one volatility step;
+///    that aggregation lives here in C# because it is not a primitive in C.
+///    For 1:1 (winner vs loser) updates, prefer the native bulk path.
+/// 2. Cross-language byte-equality regression: a C# vs native parity test
+///    on single-opponent inputs guards against drift between the managed
+///    mirror and the canonical C.
 ///
 /// Spec: Glickman, M. E. (2012). "Example of the Glicko-2 system."
 /// http://www.glicko.net/glicko/glicko2.pdf

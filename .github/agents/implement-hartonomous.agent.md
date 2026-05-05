@@ -21,13 +21,13 @@ handoffs:
 ## Hashing
 
 ```csharp
-protected static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
-protected static byte[] ComputeHash(string content) => Blake3.Hash(Encoding.UTF8.GetBytes(content).AsSpan());
-protected static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes) // concat → Merkle.Hash()
+public static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
+public static byte[] ComputeAtomicStringHash(string atomicIdentifier) => Blake3.Hash(Encoding.UTF8.GetBytes(atomicIdentifier).AsSpan()); // structured tokens only (synset offsets, ISO 639 codes); never user-visible text
+public static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes) // concat → Merkle.Hash()
 protected static byte[] ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<byte[]> participantHashes) // [4B type | hashes] → ComputeHash()
 ```
 
-Content only. Position/ordinal/filename/tensor name → `sequence`, edges, `provenance`.
+Content only. Position/ordinal/filename/tensor name → `sequence`, edges, `provenance`. Natural-language text MUST go through `CanonicalTextDecomposer.Emit` — `ComputeAtomicStringHash` is for structured atomic identifiers only.
 
 ## Compute facade
 

@@ -1,7 +1,9 @@
+using System.Globalization;
 using Hartonomous.Core.Operations;
+using Hartonomous.Core.Operations.Results;
+using Hartonomous.Engine.Data;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using NpgsqlTypes;
 
 namespace Hartonomous.Engine.Operations;
 
@@ -9,9 +11,16 @@ public sealed partial class RerankingOp : BaseAiOperation
 {
     private const int DefaultK = 25;
 
-    public RerankingOp(NpgsqlDataSource dataSource, ILogger<BaseAiOperation> logger)
+    private readonly ISubstrateOpsRepository _repository;
+
+    public RerankingOp(
+        NpgsqlDataSource dataSource,
+        ISubstrateOpsRepository repository,
+        ILogger<BaseAiOperation> logger)
         : base(dataSource, logger)
     {
+        ArgumentNullException.ThrowIfNull(repository);
+        _repository = repository;
     }
 
     public override OperationCode Code => OperationCode.Rerank;
@@ -38,38 +47,29 @@ public sealed partial class RerankingOp : BaseAiOperation
         }
 
         int k = request.MaxResults ?? DefaultK;
+        byte[][] candidates = rr.Candidates is byte[][] arr ? arr : [.. rr.Candidates];
 
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT entity_hash, mu, sigma, games, rank, elapsed_ms "
-            + "FROM substrate.rerank($1, $2, $3)",
-            conn);
-        NpgsqlParameter candParam = new() { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = rr.Candidates.ToArray() };
-        cmd.Parameters.Add(candParam);
-        cmd.Parameters.AddWithValue(rr.ArenaCode);
-        cmd.Parameters.AddWithValue(k);
+        IReadOnlyList<RerankResult> rows = await _repository
+            .RerankAsync(candidates, rr.ArenaCode, k, ct)
+            .ConfigureAwait(false);
 
-        List<ProvenanceTrace> trace = [];
+        List<ProvenanceTrace> trace = new(rows.Count);
         int sqlElapsedMs = 0;
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        for (int i = 0; i < rows.Count; i++)
         {
-            byte[] hash = (byte[])r.GetValue(0);
-            double mu = r.GetDouble(1);
-            int rank = r.GetInt32(4);
-            sqlElapsedMs = r.GetInt32(5);
-
+            RerankResult row = rows[i];
+            sqlElapsedMs = row.ElapsedMs;
             trace.Add(new ProvenanceTrace(
-                EntityHash: hash,
+                EntityHash: row.EntityHash,
                 EntityTypeId: null,
                 EdgeHash: null,
                 EdgeTypeId: null,
                 ProvenanceCode: rr.ArenaCode,
-                ContributedMu: mu,
-                OrdinalPosition: rank));
+                ContributedMu: row.Mu,
+                OrdinalPosition: row.Rank));
         }
 
-        Log.RerankComplete(Logger, rr.ArenaCode, rr.Candidates.Count, trace.Count, sqlElapsedMs);
+        Log.RerankComplete(Logger, rr.ArenaCode, rr.Candidates.Count, rows.Count, sqlElapsedMs);
 
         byte[] best = trace.Count > 0 ? trace[0].EntityHash : rr.Candidates[0];
         return new RerankingResponse
@@ -77,13 +77,13 @@ public sealed partial class RerankingOp : BaseAiOperation
             OutputCompositionHash = best,
             OutputModalityCode = "text",
             AnswerText = null,
-            NodesVisited = trace.Count,
+            NodesVisited = rows.Count,
             Trace = trace,
             ExtraDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["sql_elapsed_ms"] = sqlElapsedMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["sql_elapsed_ms"] = sqlElapsedMs.ToString(CultureInfo.InvariantCulture),
                 ["arena"] = rr.ArenaCode,
-                ["candidate_count"] = rr.Candidates.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["candidate_count"] = rr.Candidates.Count.ToString(CultureInfo.InvariantCulture),
             },
         };
     }

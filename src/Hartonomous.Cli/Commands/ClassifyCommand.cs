@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Hartonomous.Core.Operations;
+using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Operations;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -55,7 +56,12 @@ internal static class ClassifyCommand
                 b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; });
                 b.SetMinimumLevel(LogLevel.Information);
             });
-            ClassificationOp op = new(ds, loggerFactory.CreateLogger<BaseAiOperation>());
+            SubstrateOpsRepository repo = new(ds, loggerFactory.CreateLogger<SubstrateOpsRepository>());
+            ClassificationOp op = new(
+                ds,
+                repo,
+                new InlineSeedPromptIngestion(seedHash),
+                loggerFactory.CreateLogger<BaseAiOperation>());
 
             ClassifyRequest req = new()
             {

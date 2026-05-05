@@ -241,13 +241,13 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 // External-id bridge edge for OMW + cross-lexicon resolution.
                 // The offset string ("00001740-n") is a structured identifier,
                 // not a natural-language sentence. Hash directly via
-                // ComputeHash(utf8_bytes) — OMW computes the same hash to
+                // ComputeAtomicStringHash — OMW computes the same hash to
                 // resolve synset_hash by querying has_wordnet_offset's target
                 // entity. Routing this synthetic identifier through
                 // TextDecomposer's full DAG (codepoints → graphemes →
                 // word_forms → sentence → document) would be wasteful and
                 // make the lookup harder to reproduce on the OMW side.
-                byte[] offsetDocHash = ComputeHash(offsetCode);
+                byte[] offsetDocHash = ComputeAtomicStringHash(offsetCode);
                 EntityHandle offsetDoc = batch.AddEntity(offsetDocHash, "text_composition");
                 batch.AddEdge("has_wordnet_offset", ProvenanceCode,
                 [

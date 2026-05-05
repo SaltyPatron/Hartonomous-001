@@ -1,12 +1,16 @@
 # Ingestion Pipeline
 
-**Status**: ✅ Streaming pipeline (record-flow + persistent staging + background drain) operational. The legacy per-batch `NpgsqlIngestionPipeline` is retained as a deprecated shim while decomposer migrations land (tasks E1–E9).
+> **⚠️ STALE — full rewrite pending.** The architecture below describes the pre-`0ce4e5e` design (persistent `substrate.staging_*` tables + `StagingFlushWorker` + `BackgroundSignificancePrimer` + `populate_edge_trajectories` post-pass). Commit `0ce4e5e` (2026-05-03) **deleted all of those**. The current architecture lives in `src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs` doc-comment (lines 17-56) and is summarized in `.claude/rules/00-hartonomous-core.md` § "Ingestion pipeline." Until this doc is rewritten, **the rule file is canonical**; this doc is historical reference only.
+>
+> Concretely, the new architecture: 10 bounded `Channel<TRecord>`, 10 per-kind drain tasks each with a long-lived `NpgsqlConnection`, per-chunk `TRUNCATE pg_temp.X_inflight` → `COPY pg_temp.X_inflight FROM STDIN BINARY` (≤4096 rows) → `INSERT INTO substrate.X SELECT … FROM pg_temp.X_inflight ON CONFLICT DO NOTHING` within the same connection. Significance emitted inline. Edge LINESTRINGZM built inline in C# from participant centroids. No persistent staging schema; temp tables auto-drop with the connection.
+
+**Status (HISTORICAL)**: ✅ Streaming pipeline (record-flow + persistent staging + background drain) operational. The legacy per-batch `NpgsqlIngestionPipeline` is retained as a deprecated shim while decomposer migrations land (tasks E1–E9).
 
 The bridge between every decomposer (modality or seed) and the substrate. One centralized streaming pipeline owns:
 - per-kind bounded channels for backpressure-controlled flow
-- long-lived `NpgsqlBinaryImporter` COPY streams into persistent staging tables
-- background drain of `substrate.staging_*` → `substrate.*` via `substrate.drain_staging_*_chunk` SQL functions
-- background priming of `substrate.edge_significance` via `substrate.prime_unprimed_edges_chunk`
+- long-lived `NpgsqlBinaryImporter` COPY streams into persistent staging tables (REMOVED — see banner above)
+- background drain of `substrate.staging_*` → `substrate.*` via `substrate.drain_staging_*_chunk` SQL functions (REMOVED)
+- background priming of `substrate.edge_significance` via `substrate.prime_unprimed_edges_chunk` (REMOVED — significance now emitted inline)
 
 Every decomposer is a pure record producer. There is no per-batch transaction, no per-batch staging-and-flush dance, no synchronous significance prime call inside the producer path.
 

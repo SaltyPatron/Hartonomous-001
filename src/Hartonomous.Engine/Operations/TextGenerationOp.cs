@@ -1,4 +1,7 @@
+using System.Globalization;
 using Hartonomous.Core.Operations;
+using Hartonomous.Core.Operations.Results;
+using Hartonomous.Engine.Data;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -10,15 +13,19 @@ public sealed partial class TextGenerationOp : BaseAiOperation
     private const int DefaultMaxDepth = 3;
     private const int DefaultMaxResults = 25;
 
+    private readonly ISubstrateOpsRepository _repository;
     private readonly IPromptIngestion _promptIngestion;
 
     public TextGenerationOp(
         NpgsqlDataSource dataSource,
+        ISubstrateOpsRepository repository,
         IPromptIngestion promptIngestion,
         ILogger<BaseAiOperation> logger)
         : base(dataSource, logger)
     {
+        ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(promptIngestion);
+        _repository = repository;
         _promptIngestion = promptIngestion;
     }
 
@@ -34,56 +41,43 @@ public sealed partial class TextGenerationOp : BaseAiOperation
         int maxDepth = request.MaxDepth ?? DefaultMaxDepth;
         int maxResults = request.MaxResults ?? DefaultMaxResults;
 
-        await using NpgsqlConnection conn = await DataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT answer_text, seed_count, distinct_targets, "
-            + "       best_target_hash, best_total_mu, elapsed_ms "
-            + "FROM substrate.infer($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(seedHash);
-        cmd.Parameters.AddWithValue(maxDepth);
-        cmd.Parameters.AddWithValue(maxResults);
-        cmd.CommandTimeout = 300;
+        InferResult? result = await _repository
+            .InferAsync(seedHash, maxDepth, maxResults, ct)
+            .ConfigureAwait(false);
 
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        if (!await r.ReadAsync(ct).ConfigureAwait(false))
+        if (result is null)
         {
             return EmptyResponse(seedHash);
         }
-        string? answer = r.IsDBNull(0) ? null : r.GetString(0);
-        int seedCount = r.IsDBNull(1) ? 0 : r.GetInt32(1);
-        long distinctTargets = r.IsDBNull(2) ? 0L : r.GetInt64(2);
-        byte[]? bestHash = r.IsDBNull(3) ? null : (byte[])r.GetValue(3);
-        double bestMu = r.IsDBNull(4) ? 0.0 : r.GetDouble(4);
-        int sqlElapsedMs = r.IsDBNull(5) ? 0 : r.GetInt32(5);
 
-        Log.InferComplete(Logger, seedCount, distinctTargets, sqlElapsedMs);
+        Log.InferComplete(Logger, result.SeedCount, result.DistinctTargets, result.ElapsedMs);
 
         List<ProvenanceTrace> trace = [];
-        if (bestHash is not null)
+        if (result.BestTargetHash is not null)
         {
             trace.Add(new ProvenanceTrace(
-                EntityHash: bestHash,
+                EntityHash: result.BestTargetHash,
                 EntityTypeId: null,
                 EdgeHash: null,
                 EdgeTypeId: null,
                 ProvenanceCode: null,
-                ContributedMu: bestMu,
+                ContributedMu: result.BestTotalMu,
                 OrdinalPosition: 0));
         }
 
         return new TextGenerationResponse
         {
-            OutputCompositionHash = bestHash ?? seedHash,
+            OutputCompositionHash = result.BestTargetHash ?? seedHash,
             OutputModalityCode = "text",
-            AnswerText = answer ?? string.Empty,
-            NodesVisited = (int)Math.Min(int.MaxValue, distinctTargets),
+            AnswerText = result.AnswerText ?? string.Empty,
+            NodesVisited = (int)Math.Min(int.MaxValue, result.DistinctTargets),
             Trace = trace,
             ExtraDiagnostics = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["sql_elapsed_ms"] = sqlElapsedMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["seed_count"] = seedCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["max_depth"] = maxDepth.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["max_results"] = maxResults.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["sql_elapsed_ms"] = result.ElapsedMs.ToString(CultureInfo.InvariantCulture),
+                ["seed_count"] = result.SeedCount.ToString(CultureInfo.InvariantCulture),
+                ["max_depth"] = maxDepth.ToString(CultureInfo.InvariantCulture),
+                ["max_results"] = maxResults.ToString(CultureInfo.InvariantCulture),
             },
         };
     }

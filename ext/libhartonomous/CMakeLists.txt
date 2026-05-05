@@ -43,11 +43,19 @@ find_package(MKL CONFIG REQUIRED)
 # Use MSVC's LLVM-based OpenMP runtime — OpenMP 4.5+ supports int64_t loop
 # counters (classic /openmp is stuck at 2.0 and rejects signed long long).
 # We bypass find_package(OpenMP) because its probe emits plain /openmp.
+#
+# On Linux the Docker pgext build mixes compilers: CC=icx (Intel oneAPI)
+# for C and CXX=g++ for C++ (icpx 2025.3.2 has a SIGSEGV in
+# hir-ssa-deconstruction on laplacian_eigenmap.cpp). icx's OpenMP flag is
+# `-fiopenmp`; g++'s is `-fopenmp`. We MUST NOT apply OpenMP_C_FLAGS to
+# C++ files — instead, link the per-language OpenMP::OpenMP_C and
+# OpenMP::OpenMP_CXX INTERFACE targets, which carry language-scoped
+# compile options via generator expressions internally.
 if(MSVC)
     set(HARTONOMOUS_OPENMP_FLAGS "/openmp:llvm")
 else()
     find_package(OpenMP REQUIRED)
-    set(HARTONOMOUS_OPENMP_FLAGS "${OpenMP_C_FLAGS}")
+    set(HARTONOMOUS_OPENMP_FLAGS "")
 endif()
 
 include(FetchContent)
@@ -210,7 +218,11 @@ target_link_libraries(hartonomous
         MKL::MKL
 )
 if(NOT MSVC)
-    target_link_libraries(hartonomous PRIVATE OpenMP::OpenMP_C)
+    # Both targets needed: OpenMP::OpenMP_C carries `-fiopenmp` for icx-compiled
+    # *.c files; OpenMP::OpenMP_CXX carries `-fopenmp` for g++-compiled *.cpp
+    # files (laplacian_eigenmap.cpp, delaunay_4d.cpp). Without the CXX target
+    # the C++ compile fails with "unrecognized command-line option '-fiopenmp'".
+    target_link_libraries(hartonomous PRIVATE OpenMP::OpenMP_C OpenMP::OpenMP_CXX)
 endif()
 
 target_compile_definitions(hartonomous PRIVATE HARTONOMOUS_BUILD)

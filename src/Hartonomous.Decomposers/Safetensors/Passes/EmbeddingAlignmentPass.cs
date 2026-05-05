@@ -1,7 +1,9 @@
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Core.Ingestion;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace Hartonomous.Decomposers.Safetensors.Passes;
 
@@ -51,14 +53,14 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
             return;
         }
 
-        // Step 1: get the bpe_token entity ids that have fireflies for THIS
+        // Step 1: get the bpe_token entity hashes that have fireflies for THIS
         // model. Same query used twice — once here, once for the anchor —
         // because the intersection is what Procrustes fits over.
-        long[] thisFireflyEntityIds = await GetFireflyBpeTokenIdsAsync(
+        byte[][] thisFireflyEntityHashes = await GetFireflyBpeTokenHashesAsync(
             context.Source.ModelSourceId, ct);
-        if (thisFireflyEntityIds.Length < MinIntersectionTokens)
+        if (thisFireflyEntityHashes.Length < MinIntersectionTokens)
         {
-            Log.InsufficientFireflies(_logger, context.Source.ModelId, thisFireflyEntityIds.Length, MinIntersectionTokens);
+            Log.InsufficientFireflies(_logger, context.Source.ModelId, thisFireflyEntityHashes.Length, MinIntersectionTokens);
             return;
         }
 
@@ -66,23 +68,28 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
         // The function returns whichever model_source is currently the
         // anchor — could be us (we just claimed) or a prior ingestion.
         long anchorModelSourceId = await ClaimOrGetAnchorAsync(
-            context.Source.ModelSourceId, thisFireflyEntityIds.Length, ct);
+            context.Source.ModelSourceId, thisFireflyEntityHashes.Length, ct);
 
         if (anchorModelSourceId == context.Source.ModelSourceId)
         {
-            Log.AnchorClaimed(_logger, context.Source.ModelId, thisFireflyEntityIds.Length);
+            Log.AnchorClaimed(_logger, context.Source.ModelId, thisFireflyEntityHashes.Length);
             return;
         }
 
         // Step 3: fetch the intersection — bpe_token entities that have
-        // fireflies in BOTH the anchor and this model. SQL IN clause via
-        // ANY($1) is the smallest cross-model query.
-        long[] anchorFireflyIds = await GetFireflyBpeTokenIdsAsync(anchorModelSourceId, ct);
-        HashSet<long> anchorSet = new(anchorFireflyIds);
-        List<long> shared = new(thisFireflyEntityIds.Length);
-        foreach (long id in thisFireflyEntityIds)
+        // fireflies in BOTH the anchor and this model. Hash32 wraps the
+        // 32-byte BLAKE3 digest with O(1) equality / hashing for set
+        // membership testing without per-comparison byte[] allocation.
+        byte[][] anchorFireflyHashes = await GetFireflyBpeTokenHashesAsync(anchorModelSourceId, ct);
+        HashSet<Hash32> anchorSet = new(anchorFireflyHashes.Length);
+        foreach (byte[] h in anchorFireflyHashes)
         {
-            if (anchorSet.Contains(id)) { shared.Add(id); }
+            anchorSet.Add(new Hash32(h));
+        }
+        List<byte[]> shared = new(thisFireflyEntityHashes.Length);
+        foreach (byte[] h in thisFireflyEntityHashes)
+        {
+            if (anchorSet.Contains(new Hash32(h))) { shared.Add(h); }
         }
         if (shared.Count < MinIntersectionTokens)
         {
@@ -90,9 +97,9 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
             return;
         }
 
-        // Step 4: pull (entity_id, x, y, z) for both models on the shared
-        // vocab. Both are ordered by entity_id ASC so columns line up.
-        long[] sharedArr = [.. shared];
+        // Step 4: pull (entity_hash, x, y, z) for both models on the shared
+        // vocab. Both are ordered by entity_hash ASC so columns line up.
+        byte[][] sharedArr = [.. shared];
         Coords anchor = await GetCoordsAsync(sharedArr, anchorModelSourceId, ct);
         Coords self = await GetCoordsAsync(sharedArr, context.Source.ModelSourceId, ct);
         if (anchor.N != self.N || anchor.N < MinIntersectionTokens)
@@ -127,24 +134,26 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
         Log.RotationApplied(_logger, context.Source.ModelId, updated);
     }
 
-    private async Task<long[]> GetFireflyBpeTokenIdsAsync(long modelSourceId, CancellationToken ct)
+    private async Task<byte[][]> GetFireflyBpeTokenHashesAsync(long modelSourceId, CancellationToken ct)
     {
+        // Hash-as-PK: substrate.physicality and substrate.entity_model_source
+        // both reference entities by entity_hash (no surrogate id column).
         const string sql = @"
-            SELECT DISTINCT p.entity_id
+            SELECT DISTINCT p.entity_hash
               FROM substrate.physicality p
-              JOIN substrate.entity_model_source ems ON ems.entity_id = p.entity_id
+              JOIN substrate.entity_model_source ems ON ems.entity_hash = p.entity_hash
               JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
              WHERE ems.model_source_id = $1
                AND pt.code = 'embedding_firefly'
-             ORDER BY p.entity_id ASC";
+             ORDER BY p.entity_hash ASC";
 
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = modelSourceId });
-        List<long> ids = [];
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (int)modelSourceId });
+        List<byte[]> hashes = [];
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct)) { ids.Add(r.GetInt64(0)); }
-        return [.. ids];
+        while (await r.ReadAsync(ct)) { hashes.Add((byte[])r.GetValue(0)); }
+        return [.. hashes];
     }
 
     private async Task<long> ClaimOrGetAnchorAsync(long modelSourceId, int intersectionCount, CancellationToken ct)
@@ -152,30 +161,31 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
         const string sql = "SELECT substrate.claim_or_get_embedding_anchor($1, $2)";
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = modelSourceId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (int)modelSourceId });
         cmd.Parameters.Add(new NpgsqlParameter { Value = intersectionCount });
         object? result = await cmd.ExecuteScalarAsync(ct);
-        return result is long l ? l : modelSourceId;
+        return result is int i ? i : (result is long l ? l : modelSourceId);
     }
 
-    private async Task<Coords> GetCoordsAsync(long[] sharedIds, long modelSourceId, CancellationToken ct)
+    private async Task<Coords> GetCoordsAsync(byte[][] sharedHashes, long modelSourceId, CancellationToken ct)
     {
-        const string sql = "SELECT entity_id, x, y, z FROM substrate.get_firefly_coords($1, $2)";
+        const string sql = "SELECT entity_hash, x, y, z FROM substrate.get_firefly_coords($1, $2)";
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = sharedIds });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = modelSourceId });
-        List<long> ids = [];
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = sharedHashes });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (int)modelSourceId });
         List<double> xs = [], ys = [], zs = [];
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
-            ids.Add(r.GetInt64(0));
+            // entity_hash at position 0 is consumed only by ORDER BY on the
+            // SQL side; we don't need it in C# because the rows arrive in
+            // hash-sorted order matching anchor-side rows pulled the same way.
             xs.Add(r.GetDouble(1));
             ys.Add(r.GetDouble(2));
             zs.Add(r.GetDouble(3));
         }
-        return new Coords(ids.Count, [.. xs], [.. ys], [.. zs]);
+        return new Coords(xs.Count, [.. xs], [.. ys], [.. zs]);
     }
 
     private async Task<long> ApplyRotationAsync(long modelSourceId, double[] r, CancellationToken ct)
