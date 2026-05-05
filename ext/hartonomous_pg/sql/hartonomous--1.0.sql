@@ -4774,6 +4774,19 @@ AS $$
 DECLARE
     inserted int;
 BEGIN
+    -- Warm up: force the substrate.codepoint_atom composite-type tupdesc to
+    -- be resolved + cached BEFORE plpgsql plans the bulk INSERT below.
+    -- Without this, the first call after CREATE EXTENSION races with the
+    -- catalog visibility of codepoint_atom's pg_attribute rows: plpgsql's
+    -- plan cache snapshots a stale/incomplete TupleDesc and the bulk INSERT
+    -- fires "invalid attribute number 14" when it tries to read a.ccc.
+    -- A single-row PERFORM forces the SRF's get_call_result_type +
+    -- BlessTupleDesc to run against the now-fully-committed catalog entry,
+    -- and every subsequent INSERT-SELECT in this transaction uses the
+    -- correct tupdesc. The warmup costs ~one row of work; the bulk INSERT
+    -- still reuses its own plan-cache slot.
+    PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
+
     CREATE TEMP TABLE IF NOT EXISTS _gc_lookup ON COMMIT DROP AS
         SELECT v.id AS ext_id, gc.id AS ref_id
         FROM substrate.ucd_general_categories() v
