@@ -159,30 +159,3 @@ public sealed record RecompositionOptions
     /// <summary>Defaults for callers that don't supply a recipe.</summary>
     public static RecompositionOptions Default { get; } = new();
 }
-
-public enum RecompositionMode
-{
-    Refinement,
-    Origination,
-}
-
-public enum RefinementPolicy
-{
-    SourceOnly,
-    Consensus,
-    CherryPicked,
-}
-
-public enum QuantizationPolicy
-{
-    Preserve,
-    DequantizeToBf16,
-    RequantizeTo,
-}
-
-public enum LoraPolicy
-{
-    None,
-    Merged,
-    Separate,
-}

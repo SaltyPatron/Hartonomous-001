@@ -7,7 +7,9 @@ using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text.Segmentation;
+using Hartonomous.Engine.Text;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Hartonomous.Engine.Inference;
@@ -40,20 +42,17 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
 
     private readonly NpgsqlDataSource _dataSource;
     private readonly IIngestionPipeline _pipeline;
-    private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader _referenceData;
     private readonly ILogger<SubstrateInferenceEngine> _logger;
 
     public SubstrateInferenceEngine(
         NpgsqlDataSource dataSource,
         IIngestionPipeline pipeline,
-        ICodepointProperties codepointProperties,
         IReferenceDataReader referenceData,
         ILogger<SubstrateInferenceEngine> logger)
     {
         _dataSource = dataSource;
         _pipeline = pipeline;
-        _codepointProperties = codepointProperties;
         _referenceData = referenceData;
         _logger = logger;
     }
@@ -73,6 +72,20 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         // channels → staging → substrate machinery. Deduplication is
         // automatic: a prompt's "the" word_form collapses to the same
         // BLAKE3-keyed entity as the WordNet seed's "the".
+
+        // AP-7: load only the codepoints present in this prompt, not all 303k.
+        HashSet<int> promptCodepoints = new();
+        foreach (System.Text.Rune r in query.Text.EnumerateRunes())
+        {
+            promptCodepoints.Add(r.Value);
+        }
+        NpgsqlCodepointPropertiesCache codepointProperties =
+            await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
+                _dataSource.ConnectionString,
+                promptCodepoints,
+                NullLogger<NpgsqlCodepointPropertiesCache>.Instance,
+                ct).ConfigureAwait(false);
+
         IIngestionBatch batch = _pipeline.CreateBatch();
         // Canonical text decomposer — same path WordNet / Wiktionary / Tatoeba
         // use. Cross-decomposer dedup is automatic: the prompt's "dog" IS the
@@ -80,7 +93,7 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(query.Text);
         Hartonomous.Core.Text.TextDecomposeResult ingest =
             Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                batch, utf8, _codepointProperties,
+                batch, utf8, codepointProperties,
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: "user_session",
                     TopEntityType: "text_composition",
@@ -177,11 +190,11 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
             return new SubstrateInferOutput(null, 0, 0, null, 0.0, 0);
         }
         string? answer = r.IsDBNull(0) ? null : r.GetString(0);
-        int seeds   = r.IsDBNull(1) ? 0    : r.GetInt32(1);
-        long tgts   = r.IsDBNull(2) ? 0    : r.GetInt64(2);
-        byte[]? bH  = r.IsDBNull(3) ? null : (byte[])r.GetValue(3);
-        double bMu  = r.IsDBNull(4) ? 0    : r.GetDouble(4);
-        int elapsed = r.IsDBNull(5) ? 0    : r.GetInt32(5);
+        int seeds = r.IsDBNull(1) ? 0 : r.GetInt32(1);
+        long tgts = r.IsDBNull(2) ? 0 : r.GetInt64(2);
+        byte[]? bH = r.IsDBNull(3) ? null : (byte[])r.GetValue(3);
+        double bMu = r.IsDBNull(4) ? 0 : r.GetDouble(4);
+        int elapsed = r.IsDBNull(5) ? 0 : r.GetInt32(5);
         LogSubstrateInfer(_logger, seeds, tgts, bH is null ? "(none)" : Convert.ToHexString(bH).Substring(0, 16), bMu, elapsed);
         return new SubstrateInferOutput(answer, seeds, tgts, bH, bMu, elapsed);
     }

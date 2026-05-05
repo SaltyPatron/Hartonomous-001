@@ -33,36 +33,36 @@ public sealed class ArenaWeightingProfile
     {
         PromptIntent.Definition => new ArenaWeightingProfile(new Dictionary<string, double>
         {
-            ["lexical_disambiguation"]  = 1.5,
-            ["semantic_relevance"]      = 1.5,
-            ["corroboration_strength"]  = 1.3,
-            ["source_authority"]        = 1.2,
-            ["frequency_significance"]  = 1.0,
+            ["lexical_disambiguation"] = 1.5,
+            ["semantic_relevance"] = 1.5,
+            ["corroboration_strength"] = 1.3,
+            ["source_authority"] = 1.2,
+            ["frequency_significance"] = 1.0,
         }),
         PromptIntent.Translation => new ArenaWeightingProfile(new Dictionary<string, double>
         {
-            ["translation_quality"]     = 2.0,
-            ["lexical_disambiguation"]  = 1.2,
-            ["source_authority"]        = 1.1,
+            ["translation_quality"] = 2.0,
+            ["lexical_disambiguation"] = 1.2,
+            ["source_authority"] = 1.1,
         }),
         PromptIntent.HowTo => new ArenaWeightingProfile(new Dictionary<string, double>
         {
-            ["semantic_relevance"]      = 1.5,
-            ["corroboration_strength"]  = 1.3,
-            ["source_authority"]        = 1.3,
-            ["syntactic_role_fitness"]  = 1.2,
+            ["semantic_relevance"] = 1.5,
+            ["corroboration_strength"] = 1.3,
+            ["source_authority"] = 1.3,
+            ["syntactic_role_fitness"] = 1.2,
         }),
         PromptIntent.YesNo => new ArenaWeightingProfile(new Dictionary<string, double>
         {
-            ["corroboration_strength"]  = 1.5,
-            ["source_authority"]        = 1.4,
-            ["semantic_relevance"]      = 1.2,
+            ["corroboration_strength"] = 1.5,
+            ["source_authority"] = 1.4,
+            ["semantic_relevance"] = 1.2,
         }),
         PromptIntent.Enumeration => new ArenaWeightingProfile(new Dictionary<string, double>
         {
-            ["semantic_relevance"]      = 1.4,
-            ["frequency_significance"]  = 1.3,
-            ["lexical_disambiguation"]  = 1.2,
+            ["semantic_relevance"] = 1.4,
+            ["frequency_significance"] = 1.3,
+            ["lexical_disambiguation"] = 1.2,
         }),
         PromptIntent.Lookup => Uniform,
         _ => Uniform,

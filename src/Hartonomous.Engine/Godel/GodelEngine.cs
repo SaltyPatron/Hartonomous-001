@@ -8,7 +8,9 @@ using System.Threading.Tasks;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
 using Hartonomous.Core.Text.Segmentation;
+using Hartonomous.Engine.Text;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Hartonomous.Engine.Godel;
@@ -46,18 +48,15 @@ public sealed class GodelEngine
 
     private readonly NpgsqlDataSource _dataSource;
     private readonly IIngestionPipeline _pipeline;
-    private readonly ICodepointProperties _codepointProperties;
     private readonly ILogger<GodelEngine> _logger;
 
     public GodelEngine(
         NpgsqlDataSource dataSource,
         IIngestionPipeline pipeline,
-        ICodepointProperties codepointProperties,
         ILogger<GodelEngine> logger)
     {
         _dataSource = dataSource;
         _pipeline = pipeline;
-        _codepointProperties = codepointProperties;
         _logger = logger;
     }
 
@@ -80,9 +79,22 @@ public sealed class GodelEngine
             };
         }
 
+        // AP-7: load only the codepoints present in this prompt, not all 303k.
+        HashSet<int> promptCodepoints = new();
+        foreach (System.Text.Rune r in prompt.EnumerateRunes())
+        {
+            promptCodepoints.Add(r.Value);
+        }
+        NpgsqlCodepointPropertiesCache codepointProperties =
+            await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
+                _dataSource.ConnectionString,
+                promptCodepoints,
+                NullLogger<NpgsqlCodepointPropertiesCache>.Instance,
+                ct).ConfigureAwait(false);
+
         // ── OBSERVE ──────────────────────────────────────────────────────
         IReadOnlyList<SubQuestion> subQuestions =
-            SubQuestionDecomposer.Decompose(prompt, _codepointProperties);
+            SubQuestionDecomposer.Decompose(prompt, codepointProperties);
         trace.AppendLine(Inv, $"OBSERVE: prompt decomposed into {subQuestions.Count} sub-question(s).");
         for (int i = 0; i < subQuestions.Count; i++)
         {
@@ -93,7 +105,7 @@ public sealed class GodelEngine
         List<SubQuestionResult> results = new(subQuestions.Count);
         foreach (SubQuestion sq in subQuestions)
         {
-            SubQuestionResult r = await ResolveSubQuestionAsync(sq, trace, ct).ConfigureAwait(false);
+            SubQuestionResult r = await ResolveSubQuestionAsync(sq, codepointProperties, trace, ct).ConfigureAwait(false);
             results.Add(r);
         }
 
@@ -140,7 +152,7 @@ public sealed class GodelEngine
     }
 
     private async Task<SubQuestionResult> ResolveSubQuestionAsync(
-        SubQuestion sq, StringBuilder trace, CancellationToken ct)
+        SubQuestion sq, NpgsqlCodepointPropertiesCache codepointProperties, StringBuilder trace, CancellationToken ct)
     {
         // ORIENT: classify intent, choose arena profile.
         PromptIntent intent = PromptIntentClassifier.Classify(sq.Text);
@@ -152,7 +164,7 @@ public sealed class GodelEngine
         IIngestionBatch batch = _pipeline.CreateBatch();
         byte[] utf8 = Encoding.UTF8.GetBytes(sq.Text);
         TextDecomposeResult ingest = CanonicalTextDecomposer.Emit(
-            batch, utf8, _codepointProperties,
+            batch, utf8, codepointProperties,
             new TextDecomposeOptions(
                 ProvenanceCode: "user_session",
                 TopEntityType: "text_composition",

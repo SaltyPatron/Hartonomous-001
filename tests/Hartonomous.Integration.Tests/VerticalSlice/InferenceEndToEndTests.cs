@@ -32,7 +32,6 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
     private NpgsqlReferenceDataReader _refReader = null!;
     private NpgsqlEntityReader _entityReader = null!;
     private NpgsqlTraversal _traversal = null!;
-    private NpgsqlCodepointPropertiesCache _codepointProperties = null!;
     private StreamingIngestionPipeline _pipeline = null!;
     private SubstrateInferenceEngine _engine = null!;
 
@@ -42,10 +41,6 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
         _refReader = new NpgsqlReferenceDataReader(_dataSource);
         _entityReader = new NpgsqlEntityReader(_dataSource);
         _traversal = new NpgsqlTraversal(_dataSource);
-        _codepointProperties = await NpgsqlCodepointPropertiesCache.LoadAsync(
-            ConnectionString(),
-            NullLogger<NpgsqlCodepointPropertiesCache>.Instance,
-            CancellationToken.None);
         _pipeline = new StreamingIngestionPipeline(
             ConnectionString(),
             _refReader,
@@ -53,7 +48,6 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
         _engine = new SubstrateInferenceEngine(
             _dataSource,
             _pipeline,
-            _codepointProperties,
             _refReader,
             NullLogger<SubstrateInferenceEngine>.Instance);
     }

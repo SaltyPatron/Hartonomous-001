@@ -1,8 +1,8 @@
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Engine;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using Hartonomous.Core.Engine;
 
 namespace Hartonomous.Engine.Significance;
 

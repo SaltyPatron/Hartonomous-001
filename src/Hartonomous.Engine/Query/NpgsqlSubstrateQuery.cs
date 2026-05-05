@@ -416,4 +416,96 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
             _cacheLock.Release();
         }
     }
+
+    // ── CLI-surface helpers ───────────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<(string Code, long Value, string? Detail)>> GetModelInventoryAsync(
+        byte[] archHash, CancellationToken ct)
+    {
+        List<(string, long, string?)> results = [];
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new(
+            "SELECT metric_code, metric_value, metric_detail FROM substrate.model_inventory($1) ORDER BY metric_code", conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = archHash });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            results.Add((r.GetString(0), r.GetInt64(1), r.IsDBNull(2) ? null : r.GetString(2)));
+        }
+        return results;
+    }
+
+    public async Task<long> GetModelVocabRecoveredAsync(byte[] archHash, CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new("SELECT substrate.model_vocab_recovered($1)", conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = archHash });
+        object? result = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    public async Task<IReadOnlyList<(string EdgeType, double SrcOnly, double Consensus, double Delta, bool Above)>> GetRefinementSummaryAsync(
+        byte[] archHash, string arenaCode, int limit, CancellationToken ct)
+    {
+        List<(string, double, double, double, bool)> results = [];
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new(
+            "SELECT edge_type_code, source_only_mu, consensus_mu, delta_mu, above_threshold " +
+            "FROM substrate.refinement_summary($1, $2) " +
+            "ORDER BY delta_mu DESC NULLS LAST LIMIT $3", conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = archHash });
+        cmd.Parameters.AddWithValue(arenaCode);
+        cmd.Parameters.AddWithValue(limit);
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            results.Add((r.GetString(0), r.IsDBNull(1) ? 0 : r.GetDouble(1), r.IsDBNull(2) ? 0 : r.GetDouble(2),
+                r.IsDBNull(3) ? 0 : r.GetDouble(3), !r.IsDBNull(4) && r.GetBoolean(4)));
+        }
+        return results;
+    }
+
+    public async Task<IReadOnlyList<(int Idx, string TensorHashHex, double Claimed, double Actual, bool Verified, string Detail)>> AuditWalkAsync(
+        string chainJson, CancellationToken ct)
+    {
+        List<(int, string, double, double, bool, string)> results = [];
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new(
+            "SELECT chain_index, encode(tensor_hash, 'hex'), claimed_mu, actual_mu, verified, detail " +
+            "FROM substrate.recompose_audit_walk($1::jsonb)", conn);
+        cmd.Parameters.AddWithValue(chainJson);
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            results.Add((r.GetInt32(0), r.GetString(1), r.IsDBNull(2) ? 0 : r.GetDouble(2),
+                r.IsDBNull(3) ? double.NaN : r.GetDouble(3), r.GetBoolean(4), r.IsDBNull(5) ? "" : r.GetString(5)));
+        }
+        return results;
+    }
+
+    public async Task<(string? Answer, byte[]? TargetHash, double Confidence, int SeedCount, long TargetCount, int ElapsedMs)?> SubstrateRecallAsync(
+        byte[] promptHash, int maxSeeds, int maxTargets, double minConfidence, CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = new(
+            "SELECT answer, target_hash, confidence, seed_count, target_count, elapsed_ms " +
+            "FROM substrate.recall($1, $2, $3, $4)", conn);
+        cmd.Parameters.AddWithValue(promptHash);
+        cmd.Parameters.AddWithValue(maxSeeds);
+        cmd.Parameters.AddWithValue(maxTargets);
+        cmd.Parameters.AddWithValue(minConfidence);
+        cmd.CommandTimeout = 300;
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct))
+        {
+            return null;
+        }
+        return (
+            r.IsDBNull(0) ? null : r.GetString(0),
+            r.IsDBNull(1) ? null : (byte[])r.GetValue(1),
+            r.IsDBNull(2) ? 0.0 : r.GetDouble(2),
+            r.IsDBNull(3) ? 0 : r.GetInt32(3),
+            r.IsDBNull(4) ? 0 : r.GetInt64(4),
+            r.IsDBNull(5) ? 0 : r.GetInt32(5));
+    }
 }

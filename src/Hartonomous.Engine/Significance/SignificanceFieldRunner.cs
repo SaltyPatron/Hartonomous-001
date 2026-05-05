@@ -133,7 +133,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
                 EntitiesCreated = 0,
                 EdgesCreated = 0,
                 CurrentFile = $"primed_edge_significance",
-                CurrentBatch = (int) Math.Min(rowsInserted, int.MaxValue),
+                CurrentBatch = (int)Math.Min(rowsInserted, int.MaxValue),
             },
             ct);
     }

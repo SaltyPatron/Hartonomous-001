@@ -4,12 +4,12 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Engine.Orchestration;
 
@@ -72,9 +72,9 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             _status[phase] = entry.Value switch
             {
                 "completed" => PhaseStatus.Completed,
-                "running"   => PhaseStatus.InProgress,
-                "failed"    => PhaseStatus.Failed,
-                _           => PhaseStatus.NotStarted,
+                "running" => PhaseStatus.InProgress,
+                "failed" => PhaseStatus.Failed,
+                _ => PhaseStatus.NotStarted,
             };
         }
     }

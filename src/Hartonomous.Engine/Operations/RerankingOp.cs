@@ -95,10 +95,3 @@ public sealed partial class RerankingOp : BaseAiOperation
         public static partial void RerankComplete(ILogger logger, string arena, int candidateCount, int returnedCount, int sqlElapsedMs);
     }
 }
-
-public sealed record RerankingRequest : OperationRequest
-{
-    public required IReadOnlyList<byte[]> Candidates { get; init; }
-}
-
-public sealed record RerankingResponse : OperationResponse;

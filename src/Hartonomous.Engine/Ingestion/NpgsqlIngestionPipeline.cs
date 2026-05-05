@@ -4,12 +4,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Npgsql;
-using NpgsqlTypes;
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
+using Microsoft.Extensions.Logging;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace Hartonomous.Engine.Ingestion;
 
@@ -59,15 +59,15 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
     public PipelineStats Stats => new()
     {
-        EntitiesSubmitted        = _entitiesSubmitted,
-        EdgesSubmitted           = _edgesSubmitted,
-        JunctionsSubmitted       = _junctionsSubmitted,
-        PhysicalitiesSubmitted   = _physicalitiesSubmitted,
-        SignificanceInitialized  = _significanceInitialized,
+        EntitiesSubmitted = _entitiesSubmitted,
+        EdgesSubmitted = _edgesSubmitted,
+        JunctionsSubmitted = _junctionsSubmitted,
+        PhysicalitiesSubmitted = _physicalitiesSubmitted,
+        SignificanceInitialized = _significanceInitialized,
         EntityModelSourcesLinked = _entityModelSourcesLinked,
-        BatchesCommitted         = _batchesCommitted,
-        BatchesFailed            = _batchesFailed,
-        TotalCommitTime          = _totalCommitTime,
+        BatchesCommitted = _batchesCommitted,
+        BatchesFailed = _batchesFailed,
+        TotalCommitTime = _totalCommitTime,
     };
 
     public IIngestionBatch CreateBatch(string provenanceCode) => new IngestionBatch(provenanceCode);
@@ -129,11 +129,11 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             await tx.CommitAsync(ct);
             Log.PhaseCompleted(_logger, batchId, lastPhase, 0, commitSw.Elapsed);
 
-            Interlocked.Add(ref _entitiesSubmitted,        b.EntityCount);
-            Interlocked.Add(ref _edgesSubmitted,           b.EdgeCount);
-            Interlocked.Add(ref _junctionsSubmitted,       b.Junctions.Count);
-            Interlocked.Add(ref _physicalitiesSubmitted,   b.Physicalities.Count);
-            Interlocked.Add(ref _significanceInitialized,  b.Significances.Count);
+            Interlocked.Add(ref _entitiesSubmitted, b.EntityCount);
+            Interlocked.Add(ref _edgesSubmitted, b.EdgeCount);
+            Interlocked.Add(ref _junctionsSubmitted, b.Junctions.Count);
+            Interlocked.Add(ref _physicalitiesSubmitted, b.Physicalities.Count);
+            Interlocked.Add(ref _significanceInitialized, b.Significances.Count);
             Interlocked.Add(ref _entityModelSourcesLinked, b.EntityModelSources.Count);
             Interlocked.Increment(ref _batchesCommitted);
 
@@ -314,7 +314,7 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
         for (int i = 0; i < batch.Edges.Count; i++)
         {
             EdgeEntry edge = batch.Edges[i];
-            edgeTypeIds[i]   = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
+            edgeTypeIds[i] = await _codeResolver.EdgeTypeIdAsync(edge.EdgeTypeCode, ct);
             provenanceIds[i] = await _codeResolver.ProvenanceIdAsync(edge.ProvenanceCode, ct);
 
             // Sort members by Position so edge hash is deterministic regardless
@@ -346,8 +346,8 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
                 for (int i = 0; i < batch.Edges.Count; i++)
                 {
                     await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(edgeTypeIds[i],   NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(edgeHashes[i],    NpgsqlDbType.Bytea,   ct);
+                    await writer.WriteAsync(edgeTypeIds[i], NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(edgeHashes[i], NpgsqlDbType.Bytea, ct);
                     await writer.WriteAsync(provenanceIds[i], NpgsqlDbType.Integer, ct);
                 }
             },
@@ -388,11 +388,11 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
                     {
                         int entityTypeId = await _codeResolver.EntityTypeIdAsync(sorted[j].Entity.EntityTypeCode, ct);
                         await writer.StartRowAsync(ct);
-                        await writer.WriteAsync(edgeTypeIds[i],     NpgsqlDbType.Integer, ct);
-                        await writer.WriteAsync(edgeHashes[i],      NpgsqlDbType.Bytea,   ct);
-                        await writer.WriteAsync(entityTypeId,       NpgsqlDbType.Integer, ct);
+                        await writer.WriteAsync(edgeTypeIds[i], NpgsqlDbType.Integer, ct);
+                        await writer.WriteAsync(edgeHashes[i], NpgsqlDbType.Bytea, ct);
+                        await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct);
                         await writer.WriteAsync(sorted[j].Entity.Hash, NpgsqlDbType.Bytea, ct);
-                        await writer.WriteAsync(roleIds[j],         NpgsqlDbType.Integer, ct);
+                        await writer.WriteAsync(roleIds[j], NpgsqlDbType.Integer, ct);
                     }
                 }
             },
@@ -468,9 +468,9 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
                     {
                         int entityTypeId = await _codeResolver.EntityTypeIdAsync(e.Entity.EntityTypeCode, ct);
                         await writer.StartRowAsync(ct);
-                        await writer.WriteAsync(entityTypeId,   NpgsqlDbType.Integer, ct);
-                        await writer.WriteAsync(e.Entity.Hash,  NpgsqlDbType.Bytea,   ct);
-                        await writer.WriteAsync(e.ReferenceId,  NpgsqlDbType.Integer, ct);
+                        await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct);
+                        await writer.WriteAsync(e.Entity.Hash, NpgsqlDbType.Bytea, ct);
+                        await writer.WriteAsync(e.ReferenceId, NpgsqlDbType.Integer, ct);
                         if (hasMu)
                         {
                             if (e.Mu.HasValue)
@@ -522,16 +522,16 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             {
                 foreach (PhysicalityEntry phys in batch.Physicalities)
                 {
-                    int physTypeId    = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
-                    int entityTypeId  = await _codeResolver.EntityTypeIdAsync(phys.Entity.EntityTypeCode, ct);
+                    int physTypeId = await _codeResolver.PhysicalityTypeIdAsync(phys.PhysicalityTypeCode, ct);
+                    int entityTypeId = await _codeResolver.EntityTypeIdAsync(phys.Entity.EntityTypeCode, ct);
                     byte[] contentHash = Blake3.Hash(phys.Wkb);
 
                     await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(physTypeId,        NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(entityTypeId,      NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(phys.Entity.Hash,  NpgsqlDbType.Bytea,   ct);
-                    await writer.WriteAsync(contentHash,       NpgsqlDbType.Bytea,   ct);
-                    await writer.WriteAsync(phys.Wkb,          NpgsqlDbType.Bytea,   ct);
+                    await writer.WriteAsync(physTypeId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(phys.Entity.Hash, NpgsqlDbType.Bytea, ct);
+                    await writer.WriteAsync(contentHash, NpgsqlDbType.Bytea, ct);
+                    await writer.WriteAsync(phys.Wkb, NpgsqlDbType.Bytea, ct);
                 }
             },
             ct);
@@ -569,15 +569,15 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
                 foreach (SequenceEntry s in batch.Sequences)
                 {
                     int parentTypeId = await _codeResolver.EntityTypeIdAsync(s.Parent.EntityTypeCode, ct);
-                    int childTypeId  = await _codeResolver.EntityTypeIdAsync(s.Child.EntityTypeCode, ct);
+                    int childTypeId = await _codeResolver.EntityTypeIdAsync(s.Child.EntityTypeCode, ct);
 
                     await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(parentTypeId,    NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(s.Parent.Hash,   NpgsqlDbType.Bytea,   ct);
-                    await writer.WriteAsync(s.Ordinal,       NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(childTypeId,     NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(s.Child.Hash,    NpgsqlDbType.Bytea,   ct);
-                    await writer.WriteAsync(s.RleCount,      NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(parentTypeId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(s.Parent.Hash, NpgsqlDbType.Bytea, ct);
+                    await writer.WriteAsync(s.Ordinal, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(childTypeId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(s.Child.Hash, NpgsqlDbType.Bytea, ct);
+                    await writer.WriteAsync(s.RleCount, NpgsqlDbType.Integer, ct);
                 }
             },
             ct);
@@ -611,14 +611,14 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
             {
                 foreach (SignificanceEntry sig in batch.Significances)
                 {
-                    int contextId    = await _codeResolver.SignificanceContextIdAsync(sig.ContextTypeCode, ct);
+                    int contextId = await _codeResolver.SignificanceContextIdAsync(sig.ContextTypeCode, ct);
                     int entityTypeId = await _codeResolver.EntityTypeIdAsync(sig.Entity.EntityTypeCode, ct);
 
                     await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(contextId,        NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(entityTypeId,     NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(sig.Entity.Hash,  NpgsqlDbType.Bytea,   ct);
-                    await writer.WriteAsync(sig.InitialMu,    NpgsqlDbType.Double,  ct);
+                    await writer.WriteAsync(contextId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(sig.Entity.Hash, NpgsqlDbType.Bytea, ct);
+                    await writer.WriteAsync(sig.InitialMu, NpgsqlDbType.Double, ct);
                 }
             },
             ct);
@@ -651,8 +651,8 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
                 {
                     int entityTypeId = await _codeResolver.EntityTypeIdAsync(e.Entity.EntityTypeCode, ct);
                     await writer.StartRowAsync(ct);
-                    await writer.WriteAsync(entityTypeId,       NpgsqlDbType.Integer, ct);
-                    await writer.WriteAsync(e.Entity.Hash,      NpgsqlDbType.Bytea,   ct);
+                    await writer.WriteAsync(entityTypeId, NpgsqlDbType.Integer, ct);
+                    await writer.WriteAsync(e.Entity.Hash, NpgsqlDbType.Bytea, ct);
                     await writer.WriteAsync((int)e.ModelSourceId, NpgsqlDbType.Integer, ct);
                 }
             },
@@ -787,13 +787,13 @@ public sealed partial class NpgsqlIngestionPipeline : IIngestionPipeline
 
     private static string GetJunctionRefColumn(string table) => table switch
     {
-        "entity_pos"               => "pos_id",
-        "entity_lexname"           => "lexname_id",
-        "entity_language"          => "language_id",
-        "entity_morph_feature"     => "morph_feature_id",
+        "entity_pos" => "pos_id",
+        "entity_lexname" => "lexname_id",
+        "entity_language" => "language_id",
+        "entity_morph_feature" => "morph_feature_id",
         "model_architecture_class" => "architecture_class_id",
-        "tensor_tensor_role"       => "tensor_role_id",
-        "pattern_deprel"           => "deprel_id",
+        "tensor_tensor_role" => "tensor_role_id",
+        "pattern_deprel" => "deprel_id",
         _ => throw new ArgumentException($"Unknown junction table: '{table}'", nameof(table)),
     };
 

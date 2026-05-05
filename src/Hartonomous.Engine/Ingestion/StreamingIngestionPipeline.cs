@@ -138,31 +138,31 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private static class KindIndex
     {
-        public const int Entity              = 0;
+        public const int Entity = 0;
         public const int EntityClassification = 1;
-        public const int Edge                = 2;
-        public const int EdgeMember          = 3;
-        public const int Junction            = 4;
-        public const int Physicality         = 5;
-        public const int Sequence            = 6;
-        public const int EntitySignificance  = 7;
-        public const int EdgeSignificance    = 8;
-        public const int EntityModelSource   = 9;
-        public const int Count               = 10;
+        public const int Edge = 2;
+        public const int EdgeMember = 3;
+        public const int Junction = 4;
+        public const int Physicality = 5;
+        public const int Sequence = 6;
+        public const int EntitySignificance = 7;
+        public const int EdgeSignificance = 8;
+        public const int EntityModelSource = 9;
+        public const int Count = 10;
 
         public static string Name(int idx) => idx switch
         {
-            Entity              => "entity",
+            Entity => "entity",
             EntityClassification => "entity_classification",
-            Edge                => "edge",
-            EdgeMember          => "edge_member",
-            Junction            => "junction",
-            Physicality         => "physicality",
-            Sequence            => "sequence",
-            EntitySignificance  => "entity_significance",
-            EdgeSignificance    => "edge_significance",
-            EntityModelSource   => "entity_model_source",
-            _                   => $"kind_{idx}",
+            Edge => "edge",
+            EdgeMember => "edge_member",
+            Junction => "junction",
+            Physicality => "physicality",
+            Sequence => "sequence",
+            EntitySignificance => "entity_significance",
+            EdgeSignificance => "edge_significance",
+            EntityModelSource => "entity_model_source",
+            _ => $"kind_{idx}",
         };
     }
 
@@ -222,16 +222,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             SingleWriter = false,
         };
 
-        _entities              = Channel.CreateBounded<EntityRecord>(opts);
+        _entities = Channel.CreateBounded<EntityRecord>(opts);
         _entityClassifications = Channel.CreateBounded<EntityClassificationRecord>(opts);
-        _edges                 = Channel.CreateBounded<EdgeRecord>(opts);
-        _edgeMembers           = Channel.CreateBounded<EdgeMemberRecord>(opts);
-        _junctions             = Channel.CreateBounded<JunctionRecord>(opts);
-        _physicalities         = Channel.CreateBounded<PhysicalityRecord>(opts);
-        _sequences             = Channel.CreateBounded<SequenceRecord>(opts);
-        _entitySignificances   = Channel.CreateBounded<EntitySignificanceRecord>(opts);
-        _edgeSignificances     = Channel.CreateBounded<EdgeSignificanceRecord>(opts);
-        _entityModelSources    = Channel.CreateBounded<EntityModelSourceRecord>(opts);
+        _edges = Channel.CreateBounded<EdgeRecord>(opts);
+        _edgeMembers = Channel.CreateBounded<EdgeMemberRecord>(opts);
+        _junctions = Channel.CreateBounded<JunctionRecord>(opts);
+        _physicalities = Channel.CreateBounded<PhysicalityRecord>(opts);
+        _sequences = Channel.CreateBounded<SequenceRecord>(opts);
+        _entitySignificances = Channel.CreateBounded<EntitySignificanceRecord>(opts);
+        _edgeSignificances = Channel.CreateBounded<EdgeSignificanceRecord>(opts);
+        _entityModelSources = Channel.CreateBounded<EntityModelSourceRecord>(opts);
 
         _drainTasks = new[]
         {
@@ -288,7 +288,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                         continue;
                     }
                     TimeSpan drainElapsed = TimeSpan.FromSeconds((double)drainTicks / Stopwatch.Frequency);
-                    TimeSpan waitElapsed  = TimeSpan.FromSeconds((double)waitTicks  / Stopwatch.Frequency);
+                    TimeSpan waitElapsed = TimeSpan.FromSeconds((double)waitTicks / Stopwatch.Frequency);
                     double rowsPerSec = drainElapsed.TotalSeconds > 0
                         ? rows / drainElapsed.TotalSeconds : 0.0;
                     Log.LiveSnapshot(_logger, phaseElapsed, KindIndex.Name(i), rows,
@@ -306,18 +306,18 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     public StreamingPipelineStats Stats => new()
     {
-        EntitiesEmitted               = _entitiesEmitted,
-        EntityClassificationsEmitted  = _entityClassificationsEmitted,
-        EdgesEmitted                  = _edgesEmitted,
-        EdgeMembersEmitted            = _edgeMembersEmitted,
-        JunctionsEmitted              = _junctionsEmitted,
-        PhysicalitiesEmitted          = _physicalitiesEmitted,
-        SequencesEmitted              = _sequencesEmitted,
-        EntitySignificancesEmitted    = _entitySignificancesEmitted,
-        EdgeSignificancesEmitted      = _edgeSignificancesEmitted,
-        EntityModelSourcesEmitted     = _entityModelSourcesEmitted,
-        CopyCommits                   = _copyCommits,
-        CopyErrors                    = _copyErrors,
+        EntitiesEmitted = _entitiesEmitted,
+        EntityClassificationsEmitted = _entityClassificationsEmitted,
+        EdgesEmitted = _edgesEmitted,
+        EdgeMembersEmitted = _edgeMembersEmitted,
+        JunctionsEmitted = _junctionsEmitted,
+        PhysicalitiesEmitted = _physicalitiesEmitted,
+        SequencesEmitted = _sequencesEmitted,
+        EntitySignificancesEmitted = _entitySignificancesEmitted,
+        EdgeSignificancesEmitted = _edgeSignificancesEmitted,
+        EntityModelSourcesEmitted = _entityModelSourcesEmitted,
+        CopyCommits = _copyCommits,
+        CopyErrors = _copyErrors,
     };
 
     // ── IIngestionPipeline compatibility shim ───────────────────────────
@@ -512,15 +512,15 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     PipelineStats IIngestionPipeline.Stats => new()
     {
-        EntitiesSubmitted        = _entitiesEmitted,
-        EdgesSubmitted           = _edgesEmitted,
-        JunctionsSubmitted       = _junctionsEmitted,
-        PhysicalitiesSubmitted   = _physicalitiesEmitted,
-        SignificanceInitialized  = _entitySignificancesEmitted,
+        EntitiesSubmitted = _entitiesEmitted,
+        EdgesSubmitted = _edgesEmitted,
+        JunctionsSubmitted = _junctionsEmitted,
+        PhysicalitiesSubmitted = _physicalitiesEmitted,
+        SignificanceInitialized = _entitySignificancesEmitted,
         EntityModelSourcesLinked = _entityModelSourcesEmitted,
-        BatchesCommitted         = _copyCommits,
-        BatchesFailed            = _copyErrors,
-        TotalCommitTime          = TimeSpan.Zero,
+        BatchesCommitted = _copyCommits,
+        BatchesFailed = _copyErrors,
+        TotalCommitTime = TimeSpan.Zero,
     };
 
     private static byte[] ComputeEdgeHash(int edgeTypeId, byte[][] orderedMemberHashes)
@@ -545,16 +545,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         return record switch
         {
-            EntityRecord r              => EmitEntityWithClassificationAsync(r, ct),
+            EntityRecord r => EmitEntityWithClassificationAsync(r, ct),
             EntityClassificationRecord r => WriteTrackedAsync(_entityClassifications.Writer, r, KindIndex.EntityClassification, ct),
-            EdgeRecord r                => EmitEdgeAsync(r, ct),
-            EdgeMemberRecord r          => WriteTrackedAsync(_edgeMembers.Writer, r, KindIndex.EdgeMember, ct),
-            JunctionRecord r            => WriteTrackedAsync(_junctions.Writer, r, KindIndex.Junction, ct),
-            PhysicalityRecord r         => EmitPhysicalityAsync(r, ct),
-            SequenceRecord r            => EmitSequenceAsync(r, ct),
-            EntitySignificanceRecord r  => EmitEntitySignificanceAsync(r, ct),
-            EdgeSignificanceRecord r    => EmitEdgeSignificanceAsync(r, ct),
-            EntityModelSourceRecord r   => WriteTrackedAsync(_entityModelSources.Writer, r, KindIndex.EntityModelSource, ct),
+            EdgeRecord r => EmitEdgeAsync(r, ct),
+            EdgeMemberRecord r => WriteTrackedAsync(_edgeMembers.Writer, r, KindIndex.EdgeMember, ct),
+            JunctionRecord r => WriteTrackedAsync(_junctions.Writer, r, KindIndex.Junction, ct),
+            PhysicalityRecord r => EmitPhysicalityAsync(r, ct),
+            SequenceRecord r => EmitSequenceAsync(r, ct),
+            EntitySignificanceRecord r => EmitEntitySignificanceAsync(r, ct),
+            EdgeSignificanceRecord r => EmitEdgeSignificanceAsync(r, ct),
+            EntityModelSourceRecord r => WriteTrackedAsync(_entityModelSources.Writer, r, KindIndex.EntityModelSource, ct),
             _ => throw new ArgumentException(
                 $"Unknown IngestionRecord subtype: {record.GetType().Name}", nameof(record)),
         };
@@ -745,22 +745,22 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         if (_logger.IsEnabled(LogLevel.Information))
         {
 #pragma warning disable CA1873 // IsEnabled is checked above; analyzer can't see across the loop.
-        for (int i = 0; i < KindIndex.Count; i++)
-        {
-            long rows = Interlocked.Read(ref _drainRowsCommitted[i]);
-            long drainTicks = Interlocked.Read(ref _drainElapsedTicks[i]);
-            long waitTicks = Interlocked.Read(ref _producerWaitTicks[i]);
-            if (rows == 0 && drainTicks == 0 && waitTicks == 0)
+            for (int i = 0; i < KindIndex.Count; i++)
             {
-                continue; // skip silent kinds for terseness
+                long rows = Interlocked.Read(ref _drainRowsCommitted[i]);
+                long drainTicks = Interlocked.Read(ref _drainElapsedTicks[i]);
+                long waitTicks = Interlocked.Read(ref _producerWaitTicks[i]);
+                if (rows == 0 && drainTicks == 0 && waitTicks == 0)
+                {
+                    continue; // skip silent kinds for terseness
+                }
+                TimeSpan drainElapsed = TimeSpan.FromSeconds((double)drainTicks / Stopwatch.Frequency);
+                TimeSpan waitElapsed = TimeSpan.FromSeconds((double)waitTicks / Stopwatch.Frequency);
+                double rowsPerSec = drainElapsed.TotalSeconds > 0
+                    ? rows / drainElapsed.TotalSeconds : 0.0;
+                Log.KindSummary(_logger, KindIndex.Name(i), rows,
+                    drainElapsed, waitElapsed, rowsPerSec);
             }
-            TimeSpan drainElapsed = TimeSpan.FromSeconds((double)drainTicks / Stopwatch.Frequency);
-            TimeSpan waitElapsed  = TimeSpan.FromSeconds((double)waitTicks  / Stopwatch.Frequency);
-            double rowsPerSec = drainElapsed.TotalSeconds > 0
-                ? rows / drainElapsed.TotalSeconds : 0.0;
-            Log.KindSummary(_logger, KindIndex.Name(i), rows,
-                drainElapsed, waitElapsed, rowsPerSec);
-        }
 #pragma warning restore CA1873
         }
 

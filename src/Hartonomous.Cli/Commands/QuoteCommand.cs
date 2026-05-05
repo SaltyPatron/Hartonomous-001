@@ -120,7 +120,7 @@ internal static class QuoteCommand
         cmd.Parameters.AddWithValue(targetSpecJson);
         cmd.Parameters.AddWithValue(recipeJson);
 
-        Console.WriteLine($"{ "tensor_role",-32} { "qualifying_edges",16} { "nonzero",10} { "sparsity",10} { "bytes",16}");
+        Console.WriteLine($"{"tensor_role",-32} {"qualifying_edges",16} {"nonzero",10} {"sparsity",10} {"bytes",16}");
         Console.WriteLine(new string('-', 90));
 
         long totalQualifying = 0;
@@ -155,7 +155,7 @@ internal static class QuoteCommand
         cmd.Parameters.AddWithValue(archHash);
         cmd.Parameters.AddWithValue(arena);
 
-        Console.WriteLine($"{ "tensor_hash (8)",-18} { "edge_type",-32} { "source_mu",10} { "consensus_mu",14} { "delta",10} { "above"}");
+        Console.WriteLine($"{"tensor_hash (8)",-18} {"edge_type",-32} {"source_mu",10} {"consensus_mu",14} {"delta",10} {"above"}");
         Console.WriteLine(new string('-', 95));
 
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);

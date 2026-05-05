@@ -8,11 +8,6 @@ using Npgsql;
 
 namespace Hartonomous.Engine.Operations;
 
-public interface IPromptIngestion
-{
-    Task<byte[]> IngestAsync(string promptText, string provenanceCode, double trustMu, CancellationToken ct);
-}
-
 public sealed partial class PromptIngestion : IPromptIngestion
 {
     private const int MaxAttempts = 6000;

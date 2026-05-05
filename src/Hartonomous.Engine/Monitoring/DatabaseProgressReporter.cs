@@ -1,8 +1,8 @@
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Monitoring;
+using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Engine.Monitoring;
 

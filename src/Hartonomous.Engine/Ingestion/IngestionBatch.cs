@@ -31,13 +31,13 @@ internal sealed class IngestionBatch : IIngestionBatch
     public int EntityCount => _entities.Count;
     public int EdgeCount => _edges.Count;
 
-    public IReadOnlyList<EntityEntry>            Entities            => _entities;
-    public IReadOnlyList<EdgeEntry>              Edges               => _edges;
-    public IReadOnlyList<JunctionEntry>          Junctions           => _junctions;
-    public IReadOnlyList<PhysicalityEntry>       Physicalities       => _physicalities;
-    public IReadOnlyList<SequenceEntry>          Sequences           => _sequences;
-    public IReadOnlyList<SignificanceEntry>      Significances       => _significances;
-    public IReadOnlyList<EntityModelSourceEntry> EntityModelSources  => _entityModelSources;
+    public IReadOnlyList<EntityEntry> Entities => _entities;
+    public IReadOnlyList<EdgeEntry> Edges => _edges;
+    public IReadOnlyList<JunctionEntry> Junctions => _junctions;
+    public IReadOnlyList<PhysicalityEntry> Physicalities => _physicalities;
+    public IReadOnlyList<SequenceEntry> Sequences => _sequences;
+    public IReadOnlyList<SignificanceEntry> Significances => _significances;
+    public IReadOnlyList<EntityModelSourceEntry> EntityModelSources => _entityModelSources;
 
     public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
     {

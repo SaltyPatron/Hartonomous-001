@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Npgsql;
 using Hartonomous.Core.Monitoring;
+using Npgsql;
 
 namespace Hartonomous.Engine.Monitoring;
 

@@ -161,6 +161,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

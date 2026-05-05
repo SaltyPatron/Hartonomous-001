@@ -46,7 +46,6 @@ builder.Services.AddSingleton<ITextRecompositionReader>(sp => sp.GetRequiredServ
 builder.Services.AddSingleton<IInferenceEngine>(sp => new SubstrateInferenceEngine(
     sp.GetRequiredService<NpgsqlDataSource>(),
     sp.GetRequiredService<IIngestionPipeline>(),
-    sp.GetRequiredService<ICodepointProperties>(),
     sp.GetRequiredService<IReferenceDataReader>(),
     sp.GetRequiredService<ILogger<SubstrateInferenceEngine>>()));
 builder.Services.AddSingleton<IRecomposer<string>>(sp => new TextRecomposer(
