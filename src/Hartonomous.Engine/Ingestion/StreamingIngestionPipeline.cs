@@ -498,6 +498,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             await using NpgsqlCommand cmd = new(
                 "SELECT substrate.populate_edge_trajectories($1)", conn);
+            cmd.CommandTimeout = 0; // end-of-phase post-pass; let it run to completion
             cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
             object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
             long updated = result is long l ? l : (long?)result ?? 0L;
@@ -792,8 +793,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         List<int> arenaIds = new();
         await using (NpgsqlCommand listCmd = new(
             "SELECT id FROM substrate.significance_context ORDER BY id", conn))
-        await using (NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
+            listCmd.CommandTimeout = 0;
+            await using NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await r.ReadAsync(ct).ConfigureAwait(false))
             {
                 arenaIds.Add(r.GetInt32(0));
@@ -807,6 +809,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             {
                 await using NpgsqlCommand cmd = new(
                     "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+                cmd.CommandTimeout = 0; // end-of-phase post-pass
                 cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
                 cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
                 object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
