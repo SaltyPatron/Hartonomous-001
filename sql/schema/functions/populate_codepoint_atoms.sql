@@ -3,8 +3,8 @@
 -- Replaces the C# UCD/UCA decomposer's per-codepoint emission loop with
 -- a substrate-side bulk INSERT driven by the extension's embedded UCD
 -- 17.0.0 tables. Inserts ~1,114,112 codepoint entities + classifications
--- + S^3 physicalities + significance rows in 200K-row chunks — same
--- substrate state, ~30× the speed of XML parsing.
+-- + S^3 physicalities + significance rows — same substrate state,
+-- ~30× the speed of XML parsing.
 --
 -- Pre-requisites:
 --   * substrate.entity, substrate.entity_classification, substrate.physicality,
@@ -21,9 +21,9 @@
 --
 -- IMPLEMENTATION NOTE — scalar cp_* accessors over generate_series.
 --
--- All four insert steps use 200K-row WHILE chunks to keep per-statement
--- memory bounded on PG18. Scalar cp_* extension accessors run in each
--- row's per-tuple ExprContext and do not accumulate across rows.
+-- This function intentionally uses set-based INSERT...SELECT statements and
+-- avoids row loops/chunk loops in plpgsql. The extension scalar accessors run
+-- in per-tuple ExprContext and preserve deterministic values for all rows.
 --
 -- Returns the count of codepoints processed.
 CREATE OR REPLACE FUNCTION substrate.populate_codepoint_atoms(
@@ -39,8 +39,6 @@ DECLARE
     v_s3_phys_type     INT;
     v_source_auth_ctx  INT;
     v_initial_mu       FLOAT8;
-    v_lo               INT := 0;
-    v_hi               INT;
 BEGIN
 
     SELECT id, COALESCE(p_trust_mu, initial_mu)
@@ -70,72 +68,44 @@ BEGIN
     END IF;
 
     -- 1. Insert all 1,114,112 codepoint entities.
-    WHILE v_lo < 1114112 LOOP
-        v_hi := LEAST(v_lo + 200000, 1114112);
+    INSERT INTO substrate.entity (hash)
+    SELECT substrate.cp_hash(gs.cp)
+      FROM generate_series(0, 1114111) AS gs(cp)
+    ON CONFLICT (hash) DO NOTHING;
 
-        INSERT INTO substrate.entity (hash)
-        SELECT substrate.cp_hash(gs.cp)
-          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
-        ON CONFLICT (hash) DO NOTHING;
-
-        v_lo := v_hi;
-    END LOOP;
-
-    v_lo := 0;
     -- 2. Classify each as 'codepoint' under the given provenance.
-    WHILE v_lo < 1114112 LOOP
-        v_hi := LEAST(v_lo + 200000, 1114112);
+    INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+    SELECT substrate.cp_hash(gs.cp), v_codepoint_etype, v_provenance_id
+      FROM generate_series(0, 1114111) AS gs(cp)
+    ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
 
-        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
-        SELECT substrate.cp_hash(gs.cp), v_codepoint_etype, v_provenance_id
-          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
-        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
-
-        v_lo := v_hi;
-    END LOOP;
-
-    v_lo := 0;
     -- 3. S^3 physicality built from scalar axis accessors.
-    WHILE v_lo < 1114112 LOOP
-        v_hi := LEAST(v_lo + 200000, 1114112);
+    INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+    SELECT v_s3_phys_type,
+           substrate.cp_hash(gs.cp),
+           substrate.cp_hash(gs.cp),
+           ST_MakePoint(
+               substrate.cp_x(gs.cp),
+               substrate.cp_y(gs.cp),
+               substrate.cp_z(gs.cp),
+               substrate.cp_m(gs.cp)
+           )
+      FROM generate_series(0, 1114111) AS gs(cp)
+    ON CONFLICT DO NOTHING;
 
-        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
-        SELECT v_s3_phys_type,
-               substrate.cp_hash(gs.cp),
-               substrate.cp_hash(gs.cp),
-               ST_MakePoint(
-                   substrate.cp_x(gs.cp),
-                   substrate.cp_y(gs.cp),
-                   substrate.cp_z(gs.cp),
-                   substrate.cp_m(gs.cp)
-               )
-          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
-        ON CONFLICT DO NOTHING;
-
-        v_lo := v_hi;
-    END LOOP;
-
-    v_lo := 0;
-    -- 4. Source-authority significance prior, chunked to keep per-statement
-    -- memory bounded on PG18 under large generated sets.
-    WHILE v_lo < 1114112 LOOP
-        v_hi := LEAST(v_lo + 200000, 1114112);
-
-        INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
-        SELECT v_source_auth_ctx,
-               substrate.cp_hash(gs.cp),
-               v_initial_mu,
-               350.0,
-               0.06,
-               0
-          FROM generate_series(v_lo, v_hi - 1) AS gs(cp)
-        ON CONFLICT DO NOTHING;
-
-        v_lo := v_hi;
-    END LOOP;
+    -- 4. Source-authority significance prior.
+    INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
+    SELECT v_source_auth_ctx,
+           substrate.cp_hash(gs.cp),
+           v_initial_mu,
+           350.0,
+           0.06,
+           0
+      FROM generate_series(0, 1114111) AS gs(cp)
+    ON CONFLICT DO NOTHING;
 
     RETURN 1114112;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_atoms(TEXT, FLOAT8) IS
-    'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables using scalar cp_* accessors over generate_series, with chunked significance inserts. Idempotent via ON CONFLICT.';
+  'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables using set-based INSERT...SELECT over generate_series. Idempotent via ON CONFLICT.';

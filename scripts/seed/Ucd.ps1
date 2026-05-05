@@ -144,15 +144,14 @@ try {
     Invoke-HartStep -Name 'substrate.populate_codepoint_property_from_ext()' -Action {
         # Uses the SQL function directly — it builds proper temp lookup tables joining
         # on (code, category) so WB/SB/LB break-property IDs are resolved correctly
-        # regardless of serial assignment order.  Runs in 200K-row chunks internally.
+        # regardless of serial assignment order.
         $n = Invoke-Psql -Sql 'SELECT substrate.populate_codepoint_property_from_ext()' -Label 'populate_codepoint_property_from_ext'
         Write-HartInfo "  +$n codepoint_property rows"
     }
 
         Invoke-HartStep -Name "substrate.populate_codepoint_atoms('$ProvenanceCode')" -Action {
-        # Server-side function is already crash-safe: it performs all four atom
-        # inserts in bounded 200K-row chunks inside one SQL call. This avoids
-        # thousands of client-side chunk round-trips and is much faster.
+        # Server-side function performs all four atom inserts in one SQL call
+        # using set-based INSERT...SELECT operations.
         $n = Invoke-Psql -Sql "SELECT substrate.populate_codepoint_atoms('$ProvenanceCode')" -Label 'populate_codepoint_atoms'
         Write-HartInfo "  +$n codepoint atoms processed"
         }

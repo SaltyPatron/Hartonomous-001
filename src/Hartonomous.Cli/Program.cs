@@ -17,6 +17,12 @@ internal static class Program
         PrepareNativeLoadPath();
 
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
+        // Ensure CLI settings are loaded from the executable directory where
+        // appsettings.json is copied, regardless of the caller's working dir.
+        string baseDir = AppContext.BaseDirectory;
+        builder.Configuration
+            .AddJsonFile(Path.Combine(baseDir, "appsettings.json"), optional: true, reloadOnChange: false)
+            .AddJsonFile(Path.Combine(baseDir, "appsettings.Development.json"), optional: true, reloadOnChange: false);
         builder.Configuration.AddEnvironmentVariables(prefix: "HARTONOMOUS__");
 
         string connStr = builder.Configuration["Hartonomous:ConnectionString"]

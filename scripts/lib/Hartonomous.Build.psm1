@@ -58,6 +58,9 @@ function Invoke-HartDotnetBuild {
     Assert-HartPath -Path $solution -Label 'solution'
 
     $argv = @('build', $solution, '-c', $Configuration, "--verbosity:$($Cfg.Dotnet.Verbosity)")
+    # Keep CI/local runs stable on Windows where MSBuild child-node crashes
+    # (MSB4166) can occur under multi-proc + node reuse.
+    $argv += @('/m:1', '/nr:false')
     if ($Cfg.Dotnet.NoLogo) { $argv += '--nologo' }
     if ($NoRestore)         { $argv += '--no-restore' }
 
