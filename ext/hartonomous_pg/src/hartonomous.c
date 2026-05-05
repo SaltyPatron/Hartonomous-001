@@ -17,6 +17,8 @@
   #include <ucontext.h>
   #include <sys/ucontext.h>
   #include <fcntl.h>
+  #include <unwind.h>
+  #include <stdio.h>
 #endif
 
 #include "hartonomous.h"
@@ -33,6 +35,165 @@ static int hartonomous_resolved_cbwr_branch = -1;
 void _PG_init(void);
 
 #ifndef _WIN32
+
+/*
+ * libgcc DWARF-based stack unwinder. Used by the crash handler instead of
+ * the rbp chain walk so corrupted frame pointers don't truncate the trace
+ * to a single frame. Walks .eh_frame CFI which lives in each shared library
+ * and isn't affected by runtime stack corruption.
+ *
+ * Async-signal-safe: only write() and snprintf-on-stack-buffer. No malloc.
+ *
+ * Output format per frame:
+ *   ===   frame[N] ip=<hex>   [<library>+<offset>]
+ * Resolve to file:line via:
+ *   addr2line -fCe <library> <offset>
+ */
+typedef struct HtnsUnwindCtx
+{
+    int depth;
+    int max_depth;
+} HtnsUnwindCtx;
+
+static _Unwind_Reason_Code
+hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
+{
+    HtnsUnwindCtx *uc = (HtnsUnwindCtx *) arg;
+    if (uc->depth >= uc->max_depth) { return _URC_END_OF_STACK; }
+
+    uintptr_t ip = _Unwind_GetIP(ctx);
+
+    /* Walk /proc/self/maps to find which library this ip falls in. We do
+     * this per-frame, scanning the file linearly. The maps file is small
+     * enough that this is async-signal-safe and fast in absolute terms. */
+    char libname[256];
+    uintptr_t lib_base = 0;
+    bool found_lib = false;
+    int mfd = open("/proc/self/maps", O_RDONLY);
+    if (mfd >= 0)
+    {
+        char mbuf[8192];
+        ssize_t n;
+        char accum[16384];
+        size_t alen = 0;
+        while ((n = read(mfd, mbuf, sizeof(mbuf))) > 0 &&
+               alen + (size_t) n < sizeof(accum))
+        {
+            memcpy(accum + alen, mbuf, (size_t) n);
+            alen += (size_t) n;
+        }
+        close(mfd);
+
+        /* Linear scan of accum for a line whose [start,end) range contains ip.
+         * Format: "STARTHEX-ENDHEX PERMS OFFSET DEV INODE  PATH\n". */
+        size_t i = 0;
+        while (i < alen)
+        {
+            size_t line_start = i;
+            while (i < alen && accum[i] != '\n') { i++; }
+            size_t line_end = i;
+            if (i < alen) { i++; }
+
+            uintptr_t lo = 0, hi = 0;
+            size_t p = line_start;
+            while (p < line_end && accum[p] != '-')
+            {
+                char c = accum[p];
+                int v = (c >= '0' && c <= '9') ? c - '0'
+                      : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                      : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+                if (v < 0) break;
+                lo = (lo << 4) | (uintptr_t) v;
+                p++;
+            }
+            if (p >= line_end || accum[p] != '-') { continue; }
+            p++;
+            while (p < line_end && accum[p] != ' ')
+            {
+                char c = accum[p];
+                int v = (c >= '0' && c <= '9') ? c - '0'
+                      : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                      : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+                if (v < 0) break;
+                hi = (hi << 4) | (uintptr_t) v;
+                p++;
+            }
+
+            if (ip < lo || ip >= hi) { continue; }
+
+            /* Find the path: 5 space-separated fields after the start, then a path. */
+            int spaces = 0;
+            while (p < line_end && spaces < 4)
+            {
+                if (accum[p] == ' ') { spaces++; while (p < line_end && accum[p] == ' ') p++; }
+                else { p++; }
+            }
+            /* Skip leading spaces of the path. */
+            while (p < line_end && accum[p] == ' ') p++;
+
+            size_t path_len = (line_end > p) ? (line_end - p) : 0;
+            if (path_len == 0)
+            {
+                /* anonymous mapping (heap, stack, anon mmap). Note it. */
+                snprintf(libname, sizeof(libname), "[anon]");
+            }
+            else
+            {
+                size_t copy = path_len < sizeof(libname) - 1 ? path_len : sizeof(libname) - 1;
+                memcpy(libname, accum + p, copy);
+                libname[copy] = '\0';
+            }
+            lib_base = lo;
+            found_lib = true;
+            break;
+        }
+    }
+    if (!found_lib)
+    {
+        snprintf(libname, sizeof(libname), "?");
+        lib_base = 0;
+    }
+
+    char fbuf[512];
+    int flen;
+    if (lib_base != 0)
+    {
+        flen = snprintf(fbuf, sizeof(fbuf),
+                        "===   frame[%d] ip=%p   [%s+0x%lx]\n"
+                        "===     addr2line -fCe %s 0x%lx\n",
+                        uc->depth, (void *) ip, libname,
+                        (unsigned long) (ip - lib_base),
+                        libname,
+                        (unsigned long) (ip - lib_base));
+    }
+    else
+    {
+        flen = snprintf(fbuf, sizeof(fbuf),
+                        "===   frame[%d] ip=%p   [%s]\n",
+                        uc->depth, (void *) ip, libname);
+    }
+    if (flen > 0) { (void) write(STDERR_FILENO, fbuf, (size_t) flen); }
+
+    uc->depth++;
+    return _URC_NO_REASON;
+}
+
+static void
+hartonomous_unwind_backtrace(void *fault_rip)
+{
+    (void) fault_rip;  /* already printed in the crash header */
+    HtnsUnwindCtx uc;
+    uc.depth = 0;
+    uc.max_depth = 32;
+    _Unwind_Backtrace(hartonomous_unwind_callback, &uc);
+
+    char tail[128];
+    int tlen = snprintf(tail, sizeof(tail),
+                        "=== End hartonomous stack unwind (%d frames) ===\n",
+                        uc.depth);
+    if (tlen > 0) { (void) write(STDERR_FILENO, tail, (size_t) tlen); }
+}
+
 /*
  * Crash backtrace handler. Installed in _PG_init for SIGSEGV, SIGABRT,
  * SIGBUS, SIGFPE, SIGILL. When a backend dies hard inside C code, the
@@ -103,51 +264,39 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
     }
 
     /*
-     * Stack frame walk via RBP chain. Each saved RBP slot contains the
-     * caller's frame pointer; [RBP+8] is the caller's return address (which
-     * IS an instruction address inside the caller's code segment). We can
-     * therefore recover the call stack by chasing RBP. Stops on:
-     *   - NULL frame pointer
-     *   - frame pointer not within stack region (defensive against junk)
-     *   - frame pointer not strictly increasing (loop detection)
-     *   - max depth (20)
+     * Stack walk via libgcc's _Unwind_Backtrace. Uses DWARF .eh_frame tables
+     * (emitted by every modern compiler regardless of -fomit-frame-pointer),
+     * NOT the rbp chain. This survives corrupted rbp — exactly the failure
+     * mode that produced single-frame traces under the previous rbp walk.
      *
-     * Async-signal-safe: only register reads, snprintf into a stack buffer,
-     * and write() — no malloc, no locks.
+     * _Unwind_Backtrace is documented async-signal-safe by libgcc as long as
+     * we don't call malloc inside the trace callback. We don't — the
+     * callback only does write()/snprintf-on-stack-buffer.
      *
-     * The caller's return address is the FIRST address that's actually in
-     * a mapped code segment. RIP itself was the indirect-call target which
-     * was junk (0x7d…01); the saved return address is what we need to
-     * identify the C function that issued the bad call.
+     * On stack overflow / return-address smash, the FIRST frame may still be
+     * garbage (RIP). Subsequent frames are recovered from .eh_frame CFI which
+     * lives in each shared library's read-only data and isn't affected by
+     * runtime stack corruption — so we get back to the C function that
+     * issued the bad call even when rbp is trashed.
      */
     {
-        char        sbuf[2048];
-        int         slen;
-        const char *fhdr = "=== hartonomous: frame chain (rbp walk; addresses are caller return PCs) ===\n";
+        const char *fhdr = "=== hartonomous: stack unwind (libgcc _Unwind_Backtrace, DWARF .eh_frame) ===\n";
         ssize_t w = write(STDERR_FILENO, fhdr, strlen(fhdr));
         (void) w;
 
-        slen = snprintf(sbuf, sizeof(sbuf), "===   frame[0] rip=%p\n", rip);
-        if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
-
         if (rsp != NULL)
         {
-            /*
-             * Top of stack: 64 bytes around rsp. Useful when rip is in junk
-             * memory because the saved-return-address slot of the failed
-             * indirect call is at [rsp] (the CALL instruction pushed it).
-             */
-            slen = snprintf(sbuf, sizeof(sbuf), "===   stack at rsp:");
+            char sbuf[256];
+            int slen = snprintf(sbuf, sizeof(sbuf), "===   stack at rsp:");
             if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
             for (int k = 0; k < 8; k++)
             {
-                uintptr_t  *slot = (uintptr_t *) ((char *) rsp + k * 8);
+                uintptr_t *slot = (uintptr_t *) ((char *) rsp + k * 8);
                 slen = snprintf(sbuf, sizeof(sbuf), " %p", (void *) *slot);
                 if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
             }
             (void) write(STDERR_FILENO, "\n", 1);
 
-            /* The CALL pushed the return PC at [rsp]. That's frame[0]'s caller. */
             uintptr_t saved_ret_at_rsp = *((uintptr_t *) rsp);
             slen = snprintf(sbuf, sizeof(sbuf),
                             "===   *(rsp) = caller return PC = %p\n",
@@ -155,36 +304,7 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
             if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
         }
 
-        if (rbp != NULL)
-        {
-            uintptr_t *frame = (uintptr_t *) rbp;
-            uintptr_t prev = 0;
-            for (int depth = 1; depth < 20; depth++)
-            {
-                /* Frame layout (System V x86-64): [frame+0]=parent rbp; [frame+8]=caller rip. */
-                if ((uintptr_t) frame < (uintptr_t) rsp ||
-                    (uintptr_t) frame > (uintptr_t) rsp + (1U << 24)) /* 16MB sanity cap */
-                {
-                    break;
-                }
-                if ((uintptr_t) frame <= prev) /* not strictly increasing */
-                {
-                    break;
-                }
-                uintptr_t parent_rbp  = frame[0];
-                uintptr_t caller_rip  = frame[1];
-                slen = snprintf(sbuf, sizeof(sbuf),
-                                "===   frame[%d] caller_rip=%p (rbp=%p)\n",
-                                depth, (void *) caller_rip, (void *) frame);
-                if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
-                if (parent_rbp == 0)
-                {
-                    break;
-                }
-                prev = (uintptr_t) frame;
-                frame = (uintptr_t *) parent_rbp;
-            }
-        }
+        hartonomous_unwind_backtrace(rip);
     }
 
     /*

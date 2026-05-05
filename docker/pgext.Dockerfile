@@ -66,10 +66,19 @@ COPY ext/libhartonomous /src/libhartonomous
 # add_library() call sees the source files.
 COPY ext/hartonomous_pg/src/generated /src/hartonomous_pg/src/generated
 WORKDIR /src/libhartonomous/build
+# RelWithDebInfo + frame pointers + non-stripped DWARF: when a SIGSEGV in the
+# numerical kernels unwinds back through libhartonomous, addr2line against the
+# .so file needs the .debug_info / .debug_line sections to resolve offsets
+# to file:line. Plain Release ships stripped binaries and any backtrace lands
+# at "??:0". -fno-omit-frame-pointer is belt-and-suspenders for any unwinder
+# that does fall back to rbp walking (most do _Unwind_Backtrace via .eh_frame
+# which is independent of frame pointers, but some libc/glibc paths probe rbp).
 RUN source ${ONEAPI_ROOT}/setvars.sh --force && \
     CC=icx CXX=g++ \
     cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -g3 -DNDEBUG -fno-omit-frame-pointer" \
+        -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g3 -DNDEBUG -fno-omit-frame-pointer" \
         -DHARTONOMOUS_BUILD_TESTS=OFF \
         -DHARTONOMOUS_BUILD_SHARED=ON && \
     cmake --build . -j"$(nproc)" && \
