@@ -121,6 +121,33 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
             _textCache.HitRatio);
     }
 
+    /// <summary>
+    /// Override BaseDecomposer's hook to share the same TextIngestionCache
+    /// between IngestTextAsync (long-form glosses/etymologies) and
+    /// EmitTextAsync (lemmas/forms/relation targets/translation targets).
+    /// Critical for Wiktionary throughput: the same English vocabulary words
+    /// ("the", "of", "be", common form bases) appear thousands of times as
+    /// translation/relation/etymology targets. Without this cache they would
+    /// re-walk the full codepoint→grapheme→word_form→composition AST and
+    /// re-emit hundreds of substrate records per occurrence. With the cache
+    /// they short-circuit to a single EntityRecord registration.
+    /// </summary>
+    protected override bool TryGetCachedTextHash(string text, out byte[]? hash)
+    {
+        if (_textCache.TryGet(text, out byte[]? cached))
+        {
+            hash = cached;
+            return true;
+        }
+        hash = null;
+        return false;
+    }
+
+    protected override void CacheTextHash(string text, byte[] hash)
+    {
+        _textCache.Add(text, hash);
+    }
+
     private static partial class TextCacheLog
     {
         [LoggerMessage(

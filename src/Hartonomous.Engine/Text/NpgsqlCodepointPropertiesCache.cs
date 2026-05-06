@@ -249,7 +249,11 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         {
             return GraphemeBreak.Other;
         }
-        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code)
+        if (codes is null)
+        {
+            return GraphemeBreak.Other;
+        }
+        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code) && code is not null
             ? MapGcb(code)
             : GraphemeBreak.Other;
     }
@@ -261,7 +265,11 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         {
             return WordBreak.Other;
         }
-        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code)
+        if (codes is null)
+        {
+            return WordBreak.Other;
+        }
+        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code) && code is not null
             ? MapWb(code)
             : WordBreak.Other;
     }
@@ -273,7 +281,11 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         {
             return SentenceBreak.Other;
         }
-        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code)
+        if (codes is null)
+        {
+            return SentenceBreak.Other;
+        }
+        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code) && code is not null
             ? MapSb(code)
             : SentenceBreak.Other;
     }
@@ -285,7 +297,11 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         {
             return LineBreak.XX;
         }
-        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code)
+        if (codes is null)
+        {
+            return LineBreak.XX;
+        }
+        return codes.TryGetValue(reader.GetInt32(ordinal), out string? code) && code is not null
             ? MapLb(code)
             : LineBreak.XX;
     }

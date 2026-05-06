@@ -518,6 +518,26 @@ public abstract partial class BaseDecomposer : IDecomposer
             CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(text);
+        // Cache fast-path: short-circuit the full text-AST decompose for
+        // strings the subclass has already emitted in this process. The
+        // entity, all its codepoint/grapheme/word_form/composition
+        // descendants, plus their physicalities/sequences/significance,
+        // are already in (or in flight to) the substrate — we only need
+        // to register the root EntityRecord on the sink so downstream
+        // edges in this batch can FK to it. ON CONFLICT DO NOTHING in
+        // each drain's INSERT-SELECT makes re-emission of the root row
+        // harmless and free-of-cost on the DB side. Centroid is returned
+        // as default; every current caller discards it (every EmitText[Async]
+        // call site uses `(handle, _, _) =`). Override TryGetCachedTextHash
+        // / CacheTextHash on subclasses (see TextIngestingDecomposer) to
+        // turn the cache on — BaseDecomposer's defaults are no-ops so
+        // decomposers without a cache pay nothing.
+        if (TryGetCachedTextHash(text, out byte[]? cachedHash))
+        {
+            Hartonomous.Core.Ingestion.EntityHandle cachedHandle =
+                await EmitEntityAsync(sink, cachedHash!, topEntityType, ProvenanceCode, ct).ConfigureAwait(false);
+            return (cachedHandle, cachedHash!, default);
+        }
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         Hartonomous.Core.Text.TextDecomposeResult r =
             await Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStaticAsync(
@@ -528,8 +548,27 @@ public abstract partial class BaseDecomposer : IDecomposer
                     TopEntityType: topEntityType,
                     TrustMu: trustMu),
                 ct).ConfigureAwait(false);
+        CacheTextHash(text, r.RootHash);
         return (r.RootHandle, r.RootHash, r.RootCentroid);
     }
+
+    /// <summary>
+    /// Subclass hook: return a previously-emitted root hash for <paramref name="text"/>
+    /// to short-circuit the full decompose. Default no-op; <see cref="TextIngestingDecomposer"/>
+    /// overrides with its <c>TextIngestionCache</c>.
+    /// </summary>
+    protected virtual bool TryGetCachedTextHash(string text, out byte[]? hash)
+    {
+        hash = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Subclass hook: record the root hash for <paramref name="text"/> for
+    /// future cache hits. Default no-op; <see cref="TextIngestingDecomposer"/>
+    /// overrides.
+    /// </summary>
+    protected virtual void CacheTextHash(string text, byte[] hash) { }
 
     /// <summary>
     /// Per-decomposer ISO 639-3 allowlist resolved from <see cref="DecomposerConfig.LanguageFilter"/>.

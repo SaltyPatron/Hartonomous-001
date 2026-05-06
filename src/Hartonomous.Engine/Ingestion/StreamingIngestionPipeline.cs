@@ -259,6 +259,26 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly Task _periodicSnapshotTask;
     private readonly Stopwatch _phaseClock = Stopwatch.StartNew();
 
+    /// <summary>
+    /// Complete every channel writer with the supplied exception. Called once
+    /// from the first drain task that crashes so producer EmitAsync calls fail
+    /// fast instead of blocking on a dead consumer. Idempotent: TryComplete is
+    /// a no-op once a writer is already completed.
+    /// </summary>
+    private void FailAllWriters(Exception ex)
+    {
+        _entities.Writer.TryComplete(ex);
+        _entityClassifications.Writer.TryComplete(ex);
+        _edges.Writer.TryComplete(ex);
+        _edgeMembers.Writer.TryComplete(ex);
+        _junctions.Writer.TryComplete(ex);
+        _physicalities.Writer.TryComplete(ex);
+        _sequences.Writer.TryComplete(ex);
+        _entitySignificances.Writer.TryComplete(ex);
+        _edgeSignificances.Writer.TryComplete(ex);
+        _entityModelSources.Writer.TryComplete(ex);
+    }
+
     private async Task PeriodicSnapshotAsync(CancellationToken ct)
     {
         try
@@ -502,23 +522,64 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
     {
         // Backfill geom on edges where the producer didn't (or couldn't)
-        // attach an inline LINESTRINGZM EWKB. The substrate function is
-        // set-based: one UPDATE walks substrate.edge WHERE geom IS NULL,
-        // joins substrate.edge_member, calls substrate.entity_centroid_4d
-        // per participant, and ST_MakeLine ORDER BY edge_role_id assembles
-        // the trajectory preserving Z and M dimensions.
-        const int chunkSize = 65_536;
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        // attach an inline LINESTRINGZM EWKB. Per-chunk connection so a PG
+        // restart between chunks doesn't poison the whole post-pass; small
+        // chunk + parallel-disabled session so the per-call working set fits
+        // comfortably under work_mem and never spawns parallel workers each
+        // grabbing their own work_mem (the historical OOM-kill path on a
+        // 7M-edge backfill against the 64GB-host WSL2 PG container).
+        const int chunkSize = 4_096;
+        const int maxRetries = 5;
         long totalUpdated = 0;
+        int chunksProcessed = 0;
         while (true)
         {
-            await using NpgsqlCommand cmd = new(
-                "SELECT substrate.populate_edge_trajectories($1)", conn);
-            cmd.CommandTimeout = 0; // end-of-phase post-pass; let it run to completion
-            cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
-            object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-            long updated = result is long l ? l : (long?)result ?? 0L;
+            ct.ThrowIfCancellationRequested();
+            long updated = 0;
+            Exception? lastEx = null;
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    await using NpgsqlConnection conn =
+                        await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+                    await using (NpgsqlCommand setCmd = new(
+                        "SET max_parallel_workers_per_gather = 0; SET work_mem = '128MB'", conn))
+                    {
+                        await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                    }
+                    await using NpgsqlCommand cmd = new(
+                        "SELECT substrate.populate_edge_trajectories($1)", conn);
+                    cmd.CommandTimeout = 0;
+                    cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
+                    object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                    updated = result is long l ? l : (long?)result ?? 0L;
+                    lastEx = null;
+                    break;
+                }
+                catch (Exception ex) when (
+                    ex is NpgsqlException ||
+                    ex is System.IO.IOException ||
+                    ex is System.Net.Sockets.SocketException ||
+                    (ex.InnerException is System.Net.Sockets.SocketException))
+                {
+                    lastEx = ex;
+                    int delayMs = 1000 * (1 << attempt);
+                    Log.PostPassRetry(_logger, "populate_edge_trajectories", attempt + 1, delayMs, ex);
+                    await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                }
+            }
+            if (lastEx is not null)
+            {
+                Log.PostPassGivingUp(_logger, "populate_edge_trajectories", maxRetries, totalUpdated, lastEx);
+                break;
+            }
             totalUpdated += updated;
+            chunksProcessed++;
+            if (chunksProcessed % 50 == 0 || updated == 0)
+            {
+                Log.PostPassProgress(_logger, "populate_edge_trajectories", chunksProcessed, totalUpdated);
+            }
             if (updated == 0)
             {
                 break;
@@ -801,36 +862,90 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     /// </summary>
     public async Task PrimeAllSignificanceAsync(CancellationToken ct)
     {
-        const int chunkSize = 65_536;
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        const int chunkSize = 16_384;
+        const int maxRetries = 5;
 
-        // Snapshot the arena list at call time. AP-1: cross-product against
-        // every arena that exists right now. Don't filter, don't cherry-pick.
+        // Snapshot arena list under its own (resilient) connection.
         List<int> arenaIds = new();
-        await using (NpgsqlCommand listCmd = new(
-            "SELECT id FROM substrate.significance_context ORDER BY id", conn))
+        for (int attempt = 0; attempt < maxRetries; attempt++)
         {
-            listCmd.CommandTimeout = 0;
-            await using NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            while (await r.ReadAsync(ct).ConfigureAwait(false))
+            try
             {
-                arenaIds.Add(r.GetInt32(0));
+                await using NpgsqlConnection listConn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+                await using NpgsqlCommand listCmd = new(
+                    "SELECT id FROM substrate.significance_context ORDER BY id", listConn);
+                listCmd.CommandTimeout = 0;
+                await using NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                arenaIds.Clear();
+                while (await r.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    arenaIds.Add(r.GetInt32(0));
+                }
+                break;
+            }
+            catch (Exception ex) when (
+                ex is NpgsqlException || ex is System.IO.IOException ||
+                ex is System.Net.Sockets.SocketException ||
+                (ex.InnerException is System.Net.Sockets.SocketException))
+            {
+                int delayMs = 1000 * (1 << attempt);
+                Log.PostPassRetry(_logger, "significance_context_list", attempt + 1, delayMs, ex);
+                await Task.Delay(delayMs, ct).ConfigureAwait(false);
             }
         }
 
         long totalPrimed = 0;
         foreach (int arenaId in arenaIds)
         {
+            string label = $"prime_significance(arena={arenaId})";
+            int chunksProcessed = 0;
             while (true)
             {
-                await using NpgsqlCommand cmd = new(
-                    "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
-                cmd.CommandTimeout = 0; // end-of-phase post-pass
-                cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
-                cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
-                object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-                long inserted = result is long l ? l : (long?)result ?? 0L;
+                ct.ThrowIfCancellationRequested();
+                long inserted = 0;
+                Exception? lastEx = null;
+                for (int attempt = 0; attempt < maxRetries; attempt++)
+                {
+                    try
+                    {
+                        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+                        await using (NpgsqlCommand setCmd = new(
+                            "SET max_parallel_workers_per_gather = 0; SET work_mem = '128MB'", conn))
+                        {
+                            await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                        }
+                        await using NpgsqlCommand cmd = new(
+                            "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+                        cmd.CommandTimeout = 0;
+                        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
+                        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
+                        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                        inserted = result is long l ? l : (long?)result ?? 0L;
+                        lastEx = null;
+                        break;
+                    }
+                    catch (Exception ex) when (
+                        ex is NpgsqlException || ex is System.IO.IOException ||
+                        ex is System.Net.Sockets.SocketException ||
+                        (ex.InnerException is System.Net.Sockets.SocketException))
+                    {
+                        lastEx = ex;
+                        int delayMs = 1000 * (1 << attempt);
+                        Log.PostPassRetry(_logger, label, attempt + 1, delayMs, ex);
+                        await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                    }
+                }
+                if (lastEx is not null)
+                {
+                    Log.PostPassGivingUp(_logger, label, maxRetries, totalPrimed, lastEx);
+                    break;
+                }
                 totalPrimed += inserted;
+                chunksProcessed++;
+                if (chunksProcessed % 50 == 0 || inserted == 0)
+                {
+                    Log.PostPassProgress(_logger, label, chunksProcessed, totalPrimed);
+                }
                 if (inserted == 0)
                 {
                     break;
@@ -1319,6 +1434,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
 
+            // Per-connection temp_buffers bump. Default 8MB is far too small for
+            // 32k-row PostGIS GeometryZM chunks (each LINESTRINGZM vertex is 32B
+            // plus WKB overhead; a single physicality chunk can exceed 8MB and
+            // trip PG 53000 'no empty local buffer available' which kills the
+            // drain task and silently deadlocks the producer. Set per-session
+            // before any temp pages are touched.
+            await using (NpgsqlCommand tbufCmd = new("SET temp_buffers = '256MB'", conn))
+            {
+                await tbufCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
             // One-time temp table create. Persists for the connection's
             // lifetime; auto-drops on close. No ON COMMIT clause — we don't
             // wrap chunks in explicit transactions.
@@ -1426,6 +1552,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         catch (Exception ex)
         {
             Log.DrainTaskCrashed(_logger, kindName, ex);
+            // Fail-fast: a dead drain leaves its channel writer with no consumer.
+            // The producer's WriteAsync would block forever (this exact bug caused
+            // a 1h+ silent stall when physicality drain hit PG 53000). Complete
+            // every writer with the exception and trip the shutdown token so all
+            // EmitAsync calls and sibling drains unwind immediately.
+            FailAllWriters(ex);
+            try { _shutdown.Cancel(); } catch { /* already disposed */ }
             throw;
         }
     }
@@ -1485,5 +1618,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         [LoggerMessage(Level = LogLevel.Error,
             Message = "Pipeline post-pass FAILED: pass={Pass}")]
         public static partial void PostPassFailed(ILogger logger, string pass, Exception ex);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Post-pass {Pass} transient failure (attempt {Attempt}); retrying in {DelayMs}ms")]
+        public static partial void PostPassRetry(ILogger logger, string pass, int attempt, int delayMs, Exception ex);
+
+        [LoggerMessage(Level = LogLevel.Error,
+            Message = "Post-pass {Pass} gave up after {MaxRetries} retries; processed_so_far={ProcessedSoFar} (continuing chain)")]
+        public static partial void PostPassGivingUp(ILogger logger, string pass, int maxRetries, long processedSoFar, Exception ex);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Post-pass {Pass} progress: chunks={Chunks} processed={Processed}")]
+        public static partial void PostPassProgress(ILogger logger, string pass, int chunks, long processed);
     }
 }
