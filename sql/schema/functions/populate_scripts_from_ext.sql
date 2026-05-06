@@ -5,7 +5,8 @@
 -- extension_id + 1 so high-volume codepoint_property loading can project FK
 -- IDs directly without per-row reference joins.
 --
--- Idempotent — ON CONFLICT (code) DO NOTHING.
+-- Idempotent on the deterministic ID. A conflicting code at another ID is a
+-- data-corruption signal, not something to silently merge.
 
 CREATE OR REPLACE FUNCTION substrate.populate_scripts_from_ext()
 RETURNS int

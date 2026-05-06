@@ -4,20 +4,21 @@
   Run the UcdUca seed phase entirely from the embedded extension catalog.
 
 .DESCRIPTION
-  Pure substrate-function pipeline — no C# UCD decomposer in the hot path.
-  All five steps below resolve to one C call apiece into the embedded UCD
-  17.0.0 tables baked into hartonomous.dll at build time.
+    Pure substrate-function pipeline — no C# UCD decomposer in the hot path.
+    The database is still seeded. The embedded UCD/UCA static data is the source
+    for fast deterministic loads into substrate tables; the runtime embedded
+    cache is a complementary lookup surface, not a replacement for DB state.
 
     1. Verify substrate.ucd_version() — confirms extension is loaded with
        the expected UCD version stamp.
     2. populate_general_categories_from_ext()  — reference table.
-    3. populate_scripts_from_ext()              — reference table.
-    4. populate_blocks_from_ext()               — reference table; ranges
-       derived via aggregation over the 1.1M-row bulk SRF.
+     3. populate_scripts_from_ext()              — reference table.
+     4. populate_blocks_from_ext()               — reference table; ranges
+         emitted directly by the generated inventory.
     5. populate_break_properties_from_ext()     — reference table.
      6. populate_codepoint_property_range_from_ext() in client-side chunks —
-         junction; replaces the per-codepoint round-trip from the prior C#
-         decomposer without a monolithic server-side load.
+         junction; full DB seed from generated static UCD/UCA arrays without
+         a monolithic server-side statement.
     7. populate_codepoint_atoms()               — substrate.entity +
        physicality + significance for the 1,114,112 tier-0 atoms.
 
@@ -90,7 +91,7 @@ function Invoke-ChunkedCodepointSql {
     param(
         [Parameter(Mandatory = $true)][string]$StepLabel,
         [Parameter(Mandatory = $true)][string]$SqlTemplate,
-        [int]$ChunkSize = 8192
+        [int]$ChunkSize = 32768
     )
 
     $maxCp = 1114112
@@ -104,9 +105,7 @@ function Invoke-ChunkedCodepointSql {
             $total += [int64]$result
         }
         $chunk += 1
-        if (($chunk % 4) -eq 0 -or $hi -eq $maxCp) {
-            Write-HartInfo "  $StepLabel progress: [$lo,$hi)"
-        }
+        Write-HartInfo "  $StepLabel progress: [$lo,$hi)"
     }
     return $total
 }
@@ -135,22 +134,22 @@ try {
         Write-HartInfo "  +$n break_property rows"
     }
     Invoke-HartStep -Name 'substrate.populate_codepoint_property_range_from_ext() chunks' -Action {
-        # Use client-side chunks so each bounded set-based insert has its own
-        # statement/transaction boundary. The range function keeps FK checks on
-        # and resolves WB/SB/LB break-property IDs by (code, category).
+        # Full database seed from generated static UCD/UCA arrays. Client-side
+        # chunks keep real statement boundaries while the range function uses
+        # set-based INSERT...SELECT and leaves normal FK checks active.
         $n = Invoke-ChunkedCodepointSql `
             -StepLabel 'codepoint_property' `
             -SqlTemplate 'SELECT substrate.populate_codepoint_property_range_from_ext({0}, {1} - {0})' `
-            -ChunkSize 8192
+            -ChunkSize 32768
         Write-HartInfo "  +$n codepoint_property rows"
     }
 
-        Invoke-HartStep -Name "substrate.populate_codepoint_atoms('$ProvenanceCode')" -Action {
+    Invoke-HartStep -Name "substrate.populate_codepoint_atoms('$ProvenanceCode')" -Action {
         # Server-side function performs all four atom inserts in one SQL call
         # using set-based INSERT...SELECT operations.
         $n = Invoke-Psql -Sql "SELECT substrate.populate_codepoint_atoms('$ProvenanceCode')" -Label 'populate_codepoint_atoms'
         Write-HartInfo "  +$n codepoint atoms processed"
-        }
+    }
 
     # Mark UcdUca as completed in monitor.phase_status so subsequent
     # phase-runner invocations (Iso639/WordNet/UD/Wiktionary/Tatoeba)
