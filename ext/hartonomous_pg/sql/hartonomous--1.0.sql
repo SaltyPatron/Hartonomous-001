@@ -7066,6 +7066,18 @@ $$;
 COMMENT ON FUNCTION substrate.recompose_audit_walk(jsonb) IS
     'Verify every (tensor, provenance, arena, μ) entry in a recomposed model''s __metadata__ provenance chain. Flat SELECT — jsonb_array_elements WITH ORDINALITY + jsonb_to_record (native C) + LATERAL LIMIT 1 (native executor). No CTE, no plpgsql.';
 
+-- ── sql/schema/functions/significance_context_ids.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.significance_context_ids()
+RETURNS TABLE (id INT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT sc.id
+      FROM substrate.significance_context sc
+     ORDER BY sc.id;
+$f$;
+
+COMMENT ON FUNCTION substrate.significance_context_ids() IS
+    'Return all significance_context ids in deterministic order. The arena vocabulary is open-ended.';
+
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
 -- Monitor write functions
@@ -7567,6 +7579,32 @@ $f$;
 
 COMMENT ON FUNCTION monitor.entity_type_count_rows() IS
     'Return classification-aware entity and incident-edge counts by structural entity type.';
+
+-- ── sql/schema/functions/monitor_ingestion_status_rows.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.ingestion_status_rows()
+RETURNS TABLE (
+    decomposer_code VARCHAR(64),
+    entities_created BIGINT,
+    edges_created BIGINT,
+    entities_per_second DOUBLE PRECISION,
+    is_stuck BOOLEAN,
+    last_report TIMESTAMPTZ
+)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT
+        ip.provenance_code AS decomposer_code,
+        COALESCE(max(ip.entities_total), 0)::BIGINT AS entities_created,
+        COALESCE(max(ip.edges_total), 0)::BIGINT AS edges_created,
+        COALESCE(max(ip.entities_total), 0)::DOUBLE PRECISION
+            / GREATEST(EXTRACT(EPOCH FROM (max(ip.recorded_at) - min(ip.recorded_at))), 1.0) AS entities_per_second,
+        max(ip.recorded_at) < now() - interval '5 minutes' AS is_stuck,
+        max(ip.recorded_at) AS last_report
+      FROM monitor.ingestion_progress ip
+     GROUP BY ip.provenance_code;
+$f$;
+
+COMMENT ON FUNCTION monitor.ingestion_status_rows() IS
+    'Return current ingestion status rows derived from monitor.ingestion_progress.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

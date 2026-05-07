@@ -327,6 +327,7 @@
 -- @include schema/functions/refinement_summary.sql
 -- @include schema/functions/tensor_provenance_chain.sql
 -- @include schema/functions/recompose_audit_walk.sql
+-- @include schema/functions/significance_context_ids.sql
 -- Monitor write functions
 -- @include schema/functions/monitor_create_session.sql
 -- @include schema/functions/monitor_close_session.sql
@@ -359,6 +360,7 @@
 -- @include schema/functions/monitor_substrate_totals.sql
 -- @include schema/functions/monitor_active_session_rows.sql
 -- @include schema/functions/monitor_entity_type_count_rows.sql
+-- @include schema/functions/monitor_ingestion_status_rows.sql
 
 -- (No Phase 16 hartonomous CREATE EXTENSION. The hartonomous-pg/sql/
 --  hartonomous--1.0.sql.in template — containing all C-binding type

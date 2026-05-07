@@ -10,6 +10,7 @@ public static class MonitorRoutineNames
     public const string CloseSession = "monitor.close_session";
     public const string CreateSession = "monitor.create_session";
     public const string EntityTypeCountRows = "monitor.entity_type_count_rows";
+    public const string IngestionStatusRows = "monitor.ingestion_status_rows";
     public const string ListSessions = "monitor.list_sessions";
     public const string PhaseStatusMap = "monitor.phase_status_map";
     public const string PhaseStatusOverviewRows = "monitor.phase_status_overview_rows";
@@ -27,6 +28,7 @@ public static class MonitorRoutineNames
         CloseSession,
         CreateSession,
         EntityTypeCountRows,
+        IngestionStatusRows,
         ListSessions,
         PhaseStatusMap,
         PhaseStatusOverviewRows,

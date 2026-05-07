@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Data;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
@@ -59,13 +60,14 @@ public sealed partial class OutcomeRecorder
 
         // Load arenas — open-vocabulary, no hardcoded list.
         List<int> arenaIds = new();
-        await using (NpgsqlCommand cmd = new(
-            "SELECT id FROM substrate.significance_context ORDER BY id", conn))
-        await using (NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        await using (NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.SignificanceContextIds))
+        await using (NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
-            while (await r.ReadAsync(ct).ConfigureAwait(false))
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                arenaIds.Add(r.GetInt32(0));
+                arenaIds.Add(reader.GetInt32(0));
             }
         }
 
@@ -95,15 +97,15 @@ public sealed partial class OutcomeRecorder
 
             foreach (int arenaId in arenaIds)
             {
-                await using NpgsqlCommand cmd = new(
-                    "SELECT substrate.record_outcome($1, $2, $3)", conn);
-                cmd.Parameters.AddWithValue(arenaId);
-                cmd.Parameters.AddWithValue(winner);
-                cmd.Parameters.Add(new NpgsqlParameter
-                {
-                    Value = losersArr,
-                    NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea,
-                });
+                await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                    conn,
+                    SubstrateFunctionNames.RecordOutcome,
+                    new NpgsqlParameter[]
+                    {
+                        new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = arenaId },
+                        new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Bytea, Value = winner },
+                        new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = losersArr },
+                    });
                 object? raw = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
                 int events = raw is int i ? i : 0;
                 totalEvents += events;

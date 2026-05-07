@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Monitoring;
 using Npgsql;
 
@@ -20,7 +21,7 @@ public sealed class SqlHealthCheck : IHealthCheck
     public async Task<SubstrateHealth> GetHealthAsync(CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT substrate.health_summary()", conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(conn, SubstrateFunctionNames.HealthSummary);
         object? result = await cmd.ExecuteScalarAsync(ct);
 
         if (result is not string json)
@@ -62,10 +63,7 @@ public sealed class SqlHealthCheck : IHealthCheck
     {
         List<IngestionStatus> results = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT decomposer_code, entities_created, edges_created, " +
-            "entities_per_second, is_stuck, last_report " +
-            "FROM substrate.ingestion_summary()", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.IngestionStatusRows);
 
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))

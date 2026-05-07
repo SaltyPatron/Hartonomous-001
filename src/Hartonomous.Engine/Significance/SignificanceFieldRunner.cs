@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -85,8 +86,9 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
 
         // Snapshot arena list once (open-vocabulary at start of run).
         List<int> arenas = [];
-        await using (NpgsqlCommand arenaCmd = new(
-                         "SELECT id FROM substrate.significance_context ORDER BY id", conn))
+        await using (NpgsqlCommand arenaCmd = NpgsqlSubstrateCommand.CreateFunction(
+                 conn,
+                 SubstrateFunctionNames.SignificanceContextIds))
         await using (NpgsqlDataReader reader = await arenaCmd.ExecuteReaderAsync(ct))
         {
             while (await reader.ReadAsync(ct))
@@ -100,10 +102,10 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
             ct.ThrowIfCancellationRequested();
             while (true)
             {
-                await using NpgsqlCommand primeCmd = new(
-                    "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
-                primeCmd.Parameters.Add(new NpgsqlParameter { Value = arenaId });
-                primeCmd.Parameters.Add(new NpgsqlParameter { Value = ChunkSize });
+                await using NpgsqlCommand primeCmd = NpgsqlSubstrateCommand.CreateFunction(
+                    conn,
+                    SubstrateFunctionNames.PrimeUnprimedEdgesChunk,
+                    new object?[] { arenaId, ChunkSize });
                 primeCmd.CommandTimeout = 600;
 
                 object? raw = await primeCmd.ExecuteScalarAsync(ct);
