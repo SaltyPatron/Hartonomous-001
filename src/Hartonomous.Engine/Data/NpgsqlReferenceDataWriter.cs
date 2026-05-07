@@ -31,12 +31,13 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_reference_edge_type($1, $2, $3, $4)", conn);
-        cmd.Parameters.AddWithValue(code);
-        cmd.Parameters.AddWithValue(category);
-        cmd.Parameters.AddWithValue(sourceEntityType);
-        cmd.Parameters.AddWithValue(targetEntityType);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.UpsertReferenceEdgeType,
+            code,
+            category,
+            sourceEntityType,
+            targetEntityType);
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -73,10 +74,11 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
                 values[j] = arr[offset + j].Value;
             }
 
-            await using NpgsqlCommand cmd = new(
-                "SELECT substrate.populate_morph_features($1, $2)", conn);
-            cmd.Parameters.AddWithValue(keys);
-            cmd.Parameters.AddWithValue(values);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.PopulateMorphFeatures,
+                keys,
+                values);
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }
@@ -105,9 +107,10 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             string[] chunk = new string[count];
             Array.Copy(codes, offset, chunk, 0, count);
 
-            await using NpgsqlCommand cmd = new(
-                "SELECT substrate.populate_deprels($1)", conn);
-            cmd.Parameters.AddWithValue(chunk);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.PopulateDeprels,
+                chunk);
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }
@@ -149,15 +152,19 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             part2ts[i] = records[i].Part2T;
         }
 
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.populate_languages($1, $2, $3, $4, $5, $6, $7)", conn);
-        cmd.Parameters.AddWithValue(codes);
-        cmd.Parameters.AddWithValue(names);
-        cmd.Parameters.AddWithValue(scopes);
-        cmd.Parameters.AddWithValue(types);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Array | NpgsqlDbType.Char, part1s);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Array | NpgsqlDbType.Char, part2bs);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Array | NpgsqlDbType.Char, part2ts);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.PopulateLanguages,
+            new[]
+            {
+                new NpgsqlParameter { Value = codes },
+                new NpgsqlParameter { Value = names },
+                new NpgsqlParameter { Value = scopes },
+                new NpgsqlParameter { Value = types },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text, Value = part1s },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text, Value = part2bs },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text, Value = part2ts },
+            });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -180,9 +187,13 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_architecture_class($1)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, code);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.UpsertArchitectureClass,
+            new[]
+            {
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Varchar, Value = code },
+            });
         return (int)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
@@ -192,10 +203,14 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_registry($1, $2)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, code);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, displayName);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.UpsertModelRegistry,
+            new[]
+            {
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Varchar, Value = code },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Varchar, Value = displayName },
+            });
         return (int)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
@@ -206,11 +221,15 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_publisher($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, registryId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, slug);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Varchar, (object?)displayName ?? DBNull.Value);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.UpsertModelPublisher,
+            new[]
+            {
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = registryId },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Varchar, Value = slug },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Varchar, Value = (object?)displayName ?? DBNull.Value },
+            });
         return (int)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
@@ -222,12 +241,16 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_source($1, $2, $3, $4)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, registryId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, publisherId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, modelSlug);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Bytea, revision);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.UpsertModelSource,
+            new[]
+            {
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = registryId },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = publisherId },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = modelSlug },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Bytea, Value = revision },
+            });
         return (long)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
@@ -253,11 +276,12 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         }
 
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.populate_general_categories($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(codes);
-        cmd.Parameters.AddWithValue(groupCodes);
-        cmd.Parameters.AddWithValue(descriptions);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.PopulateGeneralCategories,
+            codes,
+            groupCodes,
+            descriptions);
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -272,9 +296,10 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
 
         string[] codeArray = [.. codes];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.populate_scripts($1)", conn);
-        cmd.Parameters.AddWithValue(codeArray);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.PopulateScripts,
+            codeArray);
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -298,11 +323,12 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         }
 
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.populate_blocks($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(codes);
-        cmd.Parameters.AddWithValue(starts);
-        cmd.Parameters.AddWithValue(ends);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.PopulateBlocks,
+            codes,
+            starts,
+            ends);
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -326,10 +352,11 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         }
 
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.populate_break_properties($1, $2)", conn);
-        cmd.Parameters.AddWithValue(codes);
-        cmd.Parameters.AddWithValue(categories);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.PopulateBreakProperties,
+            codes,
+            categories);
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -440,11 +467,12 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
                 chunk[i] = sortedCodes[offset + i];
             }
 
-            await using NpgsqlCommand cmd = new(
-                "SELECT substrate.upsert_homogeneous_edge_types($1, $2, $3)", conn);
-            cmd.Parameters.AddWithValue(chunk);
-            cmd.Parameters.AddWithValue(category);
-            cmd.Parameters.AddWithValue(entityTypeCode);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.UpsertHomogeneousEdgeTypes,
+                chunk,
+                category,
+                entityTypeCode);
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }
@@ -472,12 +500,13 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
                 (codes[i], glosses[i], lexnameIds[i], posIds[i]) = senses[offset + i];
             }
 
-            await using NpgsqlCommand cmd = new(
-                "SELECT substrate.populate_senses($1, $2, $3, $4)", conn);
-            cmd.Parameters.AddWithValue(codes);
-            cmd.Parameters.AddWithValue(glosses);
-            cmd.Parameters.AddWithValue(lexnameIds);
-            cmd.Parameters.AddWithValue(posIds);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.PopulateSenses,
+                codes,
+                glosses,
+                lexnameIds,
+                posIds);
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }

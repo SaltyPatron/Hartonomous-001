@@ -26,9 +26,13 @@ public sealed class NpgsqlCheckpointStore : IModelPassCheckpointStore
     {
         HashSet<string> completed = new(StringComparer.Ordinal);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT pass_id FROM substrate.get_completed_model_passes($1)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, modelSourceId);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.GetCompletedModelPasses,
+            new[]
+            {
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Bigint, Value = modelSourceId },
+            });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -57,18 +61,22 @@ public sealed class NpgsqlCheckpointStore : IModelPassCheckpointStore
         //     p_error_message TEXT,
         //     p_extra JSONB)           -- entity_count / edge_count breakdown
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.upsert_model_pass_checkpoint($1, $2, $3, $4, $5, $6::jsonb)", conn);
         string status = completed
             ? "completed"
             : (lastError is not null ? "failed" : "in_flight");
         string extraJson = $$"""{"entity_count":{{entityCount}},"edge_count":{{edgeCount}}}""";
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, (int)modelSourceId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, passId);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, status);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, entityCount + edgeCount);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)lastError ?? DBNull.Value);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, extraJson);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.UpsertModelPassCheckpoint,
+            new[]
+            {
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = (int)modelSourceId },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = passId },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = status },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Bigint, Value = entityCount + edgeCount },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)lastError ?? DBNull.Value },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb, Value = extraJson },
+            });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 }

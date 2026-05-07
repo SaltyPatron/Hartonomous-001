@@ -251,6 +251,8 @@
 -- @include schema/functions/entity_centroid_4d.sql
 -- @include schema/functions/geom_to_pointzm.sql
 -- @include schema/functions/populate_edge_trajectories.sql
+-- @include schema/functions/physicality_linestring4d.sql
+-- @include schema/functions/physicality_point4d.sql
 -- Read helpers
 -- @include schema/functions/health_summary.sql
 -- @include schema/functions/entity_outbound_edges.sql

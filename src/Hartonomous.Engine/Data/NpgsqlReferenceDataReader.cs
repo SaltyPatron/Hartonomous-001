@@ -27,9 +27,10 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
     {
         Dictionary<string, int> map = new(initialCapacity, StringComparer.Ordinal);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT id, code FROM substrate.reference_code_map($1)", conn);
-        cmd.Parameters.AddWithValue(tableName);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceCodeMap,
+            tableName);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -44,11 +45,12 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
     {
         Dictionary<(string, string), int> map = new(initialCapacity);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT id, key_text, value_text FROM substrate.reference_key_value_map($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(tableName);
-        cmd.Parameters.AddWithValue(keyColumn);
-        cmd.Parameters.AddWithValue(valueColumn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceKeyValueMap,
+            tableName,
+            keyColumn,
+            valueColumn);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -62,10 +64,11 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
     {
         Dictionary<string, string> map = new(initialCapacity, StringComparer.Ordinal);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT code, value_text FROM substrate.reference_code_text_map($1, $2)", conn);
-        cmd.Parameters.AddWithValue(tableName);
-        cmd.Parameters.AddWithValue(valueColumn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceCodeTextMap,
+            tableName,
+            valueColumn);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -79,10 +82,11 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
     {
         HashSet<long> values = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT value FROM substrate.reference_int64_set($1, $2)", conn);
-        cmd.Parameters.AddWithValue(tableName);
-        cmd.Parameters.AddWithValue(columnName);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceInt64Set,
+            tableName,
+            columnName);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -95,10 +99,11 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         string tableName, string code, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.reference_id_by_code($1, $2)", conn);
-        cmd.Parameters.AddWithValue(tableName);
-        cmd.Parameters.AddWithValue(code);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceIdByCode,
+            tableName,
+            code);
 
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is not null
@@ -112,10 +117,11 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
     {
         Dictionary<string, double> map = new(initialCapacity, StringComparer.Ordinal);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT code, value_float FROM substrate.reference_code_double_map($1, $2)", conn);
-        cmd.Parameters.AddWithValue(tableName);
-        cmd.Parameters.AddWithValue(valueColumn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceCodeDoubleMap,
+            tableName,
+            valueColumn);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -129,9 +135,9 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
     {
         Dictionary<byte[], byte[]> map = new(120_000, ByteArrayEqualityComparer.Instance);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT offset_doc_hash, synset_hash FROM substrate.load_wordnet_offset_synset_map()",
-            conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.LoadWordNetOffsetSynsetMap);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {

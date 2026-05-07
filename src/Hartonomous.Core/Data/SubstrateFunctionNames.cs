@@ -26,6 +26,32 @@ public static class SubstrateFunctionNames
     public const string ApiEntitySignificance = "substrate.api_entity_significance";
     public const string ApiListEntities = "substrate.api_list_entities";
 
+    public const string GetCompletedModelPasses = "substrate.get_completed_model_passes";
+    public const string LoadWordNetOffsetSynsetMap = "substrate.load_wordnet_offset_synset_map";
+    public const string PhysicalityLineString4d = "substrate.physicality_linestring4d";
+    public const string PhysicalityPoint4d = "substrate.physicality_point4d";
+    public const string PopulateBlocks = "substrate.populate_blocks";
+    public const string PopulateBreakProperties = "substrate.populate_break_properties";
+    public const string PopulateDeprels = "substrate.populate_deprels";
+    public const string PopulateGeneralCategories = "substrate.populate_general_categories";
+    public const string PopulateLanguages = "substrate.populate_languages";
+    public const string PopulateMorphFeatures = "substrate.populate_morph_features";
+    public const string PopulateScripts = "substrate.populate_scripts";
+    public const string PopulateSenses = "substrate.populate_senses";
+    public const string ReferenceCodeDoubleMap = "substrate.reference_code_double_map";
+    public const string ReferenceCodeMap = "substrate.reference_code_map";
+    public const string ReferenceCodeTextMap = "substrate.reference_code_text_map";
+    public const string ReferenceIdByCode = "substrate.reference_id_by_code";
+    public const string ReferenceInt64Set = "substrate.reference_int64_set";
+    public const string ReferenceKeyValueMap = "substrate.reference_key_value_map";
+    public const string UpsertArchitectureClass = "substrate.upsert_architecture_class";
+    public const string UpsertHomogeneousEdgeTypes = "substrate.upsert_homogeneous_edge_types";
+    public const string UpsertModelPassCheckpoint = "substrate.upsert_model_pass_checkpoint";
+    public const string UpsertModelPublisher = "substrate.upsert_model_publisher";
+    public const string UpsertModelRegistry = "substrate.upsert_model_registry";
+    public const string UpsertModelSource = "substrate.upsert_model_source";
+    public const string UpsertReferenceEdgeType = "substrate.upsert_reference_edge_type";
+
     public static readonly IReadOnlySet<string> Allowlist = new HashSet<string>(System.StringComparer.Ordinal)
     {
         Complete,
@@ -40,6 +66,31 @@ public static class SubstrateFunctionNames
         ApiEntityNeighbors,
         ApiEntitySignificance,
         ApiListEntities,
+        GetCompletedModelPasses,
+        LoadWordNetOffsetSynsetMap,
+        PhysicalityLineString4d,
+        PhysicalityPoint4d,
+        PopulateBlocks,
+        PopulateBreakProperties,
+        PopulateDeprels,
+        PopulateGeneralCategories,
+        PopulateLanguages,
+        PopulateMorphFeatures,
+        PopulateScripts,
+        PopulateSenses,
+        ReferenceCodeDoubleMap,
+        ReferenceCodeMap,
+        ReferenceCodeTextMap,
+        ReferenceIdByCode,
+        ReferenceInt64Set,
+        ReferenceKeyValueMap,
+        UpsertArchitectureClass,
+        UpsertHomogeneousEdgeTypes,
+        UpsertModelPassCheckpoint,
+        UpsertModelPublisher,
+        UpsertModelRegistry,
+        UpsertModelSource,
+        UpsertReferenceEdgeType,
     };
 
     public static void AssertAllowlisted(string functionName)
