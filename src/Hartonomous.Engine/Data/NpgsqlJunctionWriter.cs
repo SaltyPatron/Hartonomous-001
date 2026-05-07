@@ -36,13 +36,6 @@ public sealed class NpgsqlJunctionWriter : IJunctionWriter
             return;
         }
 
-        AssertSafeIdentifier(tableName);
-        AssertSafeIdentifier(refColumn);
-        string sql =
-            $"INSERT INTO {tableName} (entity_hash, {refColumn}, mu, sigma) " +
-            $"SELECT * FROM unnest($1::bytea[], $2::int[], $3::float8[], $4::float8[]) " +
-            $"ON CONFLICT (entity_hash, {refColumn}) DO NOTHING";
-
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         for (int offset = 0; offset < entries.Count; offset += ChunkSize)
         {
@@ -51,19 +44,25 @@ public sealed class NpgsqlJunctionWriter : IJunctionWriter
             int[] refIds = new int[count];
             double[] mus = new double[count];
             double[] sigmas = new double[count];
-            for (int i = 0; i < count; i++)
+            for (int entryIndex = 0; entryIndex < count; entryIndex++)
             {
-                hashes[i] = entries[offset + i].EntityHash;
-                refIds[i] = entries[offset + i].RefId;
-                mus[i] = mu;
-                sigmas[i] = sigma;
+                hashes[entryIndex] = entries[offset + entryIndex].EntityHash;
+                refIds[entryIndex] = entries[offset + entryIndex].RefId;
+                mus[entryIndex] = mu;
+                sigmas[entryIndex] = sigma;
             }
 
-            await using NpgsqlCommand cmd = new(sql, conn);
-            cmd.Parameters.Add(new NpgsqlParameter { Value = hashes, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-            cmd.Parameters.AddWithValue(refIds);
-            cmd.Parameters.AddWithValue(mus);
-            cmd.Parameters.AddWithValue(sigmas);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateProcedure(
+                conn,
+                SubstrateProcedureNames.WriteGlickoJunction,
+                [
+                    CreateParameter(NpgsqlDbType.Text, tableName),
+                    CreateParameter(NpgsqlDbType.Text, refColumn),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Bytea, hashes),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Integer, refIds),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Double, mus),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Double, sigmas),
+                ]);
             await cmd.ExecuteNonQueryAsync(ct);
         }
     }
@@ -78,13 +77,6 @@ public sealed class NpgsqlJunctionWriter : IJunctionWriter
             return;
         }
 
-        AssertSafeIdentifier(tableName);
-        AssertSafeIdentifier(refColumn);
-        string sql =
-            $"INSERT INTO {tableName} (entity_hash, {refColumn}, mu, sigma) " +
-            $"SELECT * FROM unnest($1::bytea[], $2::int[], $3::float8[], $4::float8[]) " +
-            $"ON CONFLICT (entity_hash, {refColumn}) DO NOTHING";
-
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         for (int offset = 0; offset < entries.Count; offset += ChunkSize)
         {
@@ -93,19 +85,25 @@ public sealed class NpgsqlJunctionWriter : IJunctionWriter
             int[] refIds = new int[count];
             double[] mus = new double[count];
             double[] sigmas = new double[count];
-            for (int i = 0; i < count; i++)
+            for (int entryIndex = 0; entryIndex < count; entryIndex++)
             {
-                hashes[i] = entries[offset + i].EntityHash;
-                refIds[i] = entries[offset + i].RefId;
-                mus[i] = entries[offset + i].Mu;
-                sigmas[i] = AuthoritativeSigma;
+                hashes[entryIndex] = entries[offset + entryIndex].EntityHash;
+                refIds[entryIndex] = entries[offset + entryIndex].RefId;
+                mus[entryIndex] = entries[offset + entryIndex].Mu;
+                sigmas[entryIndex] = AuthoritativeSigma;
             }
 
-            await using NpgsqlCommand cmd = new(sql, conn);
-            cmd.Parameters.Add(new NpgsqlParameter { Value = hashes, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-            cmd.Parameters.AddWithValue(refIds);
-            cmd.Parameters.AddWithValue(mus);
-            cmd.Parameters.AddWithValue(sigmas);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateProcedure(
+                conn,
+                SubstrateProcedureNames.WriteGlickoJunction,
+                [
+                    CreateParameter(NpgsqlDbType.Text, tableName),
+                    CreateParameter(NpgsqlDbType.Text, refColumn),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Bytea, hashes),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Integer, refIds),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Double, mus),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Double, sigmas),
+                ]);
             await cmd.ExecuteNonQueryAsync(ct);
         }
     }
@@ -120,45 +118,31 @@ public sealed class NpgsqlJunctionWriter : IJunctionWriter
             return;
         }
 
-        AssertSafeIdentifier(tableName);
-        AssertSafeIdentifier(refColumn);
-        string sql =
-            $"INSERT INTO {tableName} (entity_hash, {refColumn}) " +
-            $"SELECT * FROM unnest($1::bytea[], $2::int[]) " +
-            $"ON CONFLICT (entity_hash, {refColumn}) DO NOTHING";
-
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
         for (int offset = 0; offset < entries.Count; offset += ChunkSize)
         {
             int count = Math.Min(ChunkSize, entries.Count - offset);
             byte[][] hashes = new byte[count][];
             int[] refIds = new int[count];
-            for (int i = 0; i < count; i++)
+            for (int entryIndex = 0; entryIndex < count; entryIndex++)
             {
-                hashes[i] = entries[offset + i].EntityHash;
-                refIds[i] = entries[offset + i].RefId;
+                hashes[entryIndex] = entries[offset + entryIndex].EntityHash;
+                refIds[entryIndex] = entries[offset + entryIndex].RefId;
             }
 
-            await using NpgsqlCommand cmd = new(sql, conn);
-            cmd.Parameters.Add(new NpgsqlParameter { Value = hashes, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-            cmd.Parameters.AddWithValue(refIds);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateProcedure(
+                conn,
+                SubstrateProcedureNames.WritePlainJunction,
+                [
+                    CreateParameter(NpgsqlDbType.Text, tableName),
+                    CreateParameter(NpgsqlDbType.Text, refColumn),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Bytea, hashes),
+                    CreateParameter(NpgsqlDbType.Array | NpgsqlDbType.Integer, refIds),
+                ]);
             await cmd.ExecuteNonQueryAsync(ct);
         }
     }
 
-    private static void AssertSafeIdentifier(string identifier)
-    {
-        if (string.IsNullOrEmpty(identifier))
-        {
-            throw new ArgumentException("Identifier cannot be empty.", nameof(identifier));
-        }
-        foreach (char c in identifier)
-        {
-            if (!(char.IsLetterOrDigit(c) || c == '_' || c == '.'))
-            {
-                throw new ArgumentException(
-                    $"Unsafe SQL identifier: '{identifier}'", nameof(identifier));
-            }
-        }
-    }
+    private static NpgsqlParameter CreateParameter(NpgsqlDbType type, object value)
+        => new() { NpgsqlDbType = type, Value = value };
 }

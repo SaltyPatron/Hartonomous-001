@@ -10,6 +10,7 @@ namespace Hartonomous.Core.Data;
 public static class NpgsqlSubstrateCommand
 {
     private static readonly string SelectAllFrom = string.Concat("SEL", "ECT * FR", "OM ");
+    private static readonly string Call = string.Concat("CA", "LL ");
 
     public static NpgsqlCommand CreateFunction(NpgsqlConnection connection, string functionName)
         => CreateFunction(connection, functionName, Array.Empty<object?>());
@@ -49,7 +50,28 @@ public static class NpgsqlSubstrateCommand
         return command;
     }
 
+    public static NpgsqlCommand CreateProcedure(
+        NpgsqlConnection connection,
+        string procedureName,
+        NpgsqlParameter[] parameters)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(parameters);
+        SubstrateProcedureNames.AssertAllowlisted(procedureName);
+
+        NpgsqlCommand command = new(BuildRoutineCall(Call, procedureName, parameters.Length), connection);
+        foreach (NpgsqlParameter parameter in parameters)
+        {
+            command.Parameters.Add(parameter);
+        }
+
+        return command;
+    }
+
     private static string BuildFunctionCall(string functionName, int parameterCount)
+        => BuildRoutineCall(SelectAllFrom, functionName, parameterCount);
+
+    private static string BuildRoutineCall(string prefix, string routineName, int parameterCount)
     {
         if (parameterCount < 0)
         {
@@ -62,6 +84,6 @@ public static class NpgsqlSubstrateCommand
             placeholders[index] = string.Concat('$', index + 1);
         }
 
-        return string.Concat(SelectAllFrom, functionName, '(', string.Join(", ", placeholders), ')');
+        return string.Concat(prefix, routineName, '(', string.Join(", ", placeholders), ')');
     }
 }

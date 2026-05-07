@@ -332,6 +332,11 @@
 -- @include schema/functions/monitor_close_session.sql
 
 -- ── Phase 14: procedures ─────────────────────────────────────────────
+-- Substrate write procedures
+-- @include schema/procedures/write_glicko_junction.sql
+-- @include schema/procedures/write_plain_junction.sql
+
+-- Monitor write procedures
 -- @include schema/procedures/monitor_archive_session.sql
 -- @include schema/procedures/monitor_update_phase_status.sql
 -- @include schema/procedures/monitor_report_progress.sql
