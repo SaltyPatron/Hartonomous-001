@@ -101,6 +101,7 @@ and every value is overridable via environment variable.
 | Script | Purpose |
 |---|---|
 | `AgentScaffolding.ps1` | Scan AI-facing scaffolding and standards docs for migration-era schema drift (`pwsh -File scripts/verify/AgentScaffolding.ps1`). |
+| `NoInlineSql.ps1` | Scan C# and normal ops scripts for inline SQL command bodies (`pwsh -File scripts/verify/NoInlineSql.ps1`). |
 | `compare_safetensors.py` | Compare exported safetensors files. |
 
 ### `ops/`

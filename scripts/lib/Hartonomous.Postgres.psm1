@@ -104,25 +104,6 @@ function Test-HartHartonomousExtensionInstalled {
     return ($out -eq '1')
 }
 
-function Get-HartMigrationStatus {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] $Cfg)
-    $sql = "SELECT version, name, applied_at::text FROM substrate.schema_version ORDER BY version"
-    try {
-        $rows = Invoke-HartPsql -Cfg $Cfg -Sql $sql
-    } catch {
-        return @()
-    }
-    return $rows | ForEach-Object {
-        $parts = $_ -split '\|'
-        [pscustomobject]@{
-            Version   = $parts[0]
-            Name      = $parts[1]
-            AppliedAt = $parts[2]
-        }
-    }
-}
-
 function Get-HartSubstrateCounts {
     [CmdletBinding()]
     param(
@@ -167,4 +148,4 @@ WHERE t.code = '{0}'
 Export-ModuleMember -Function `
     Invoke-HartPsql, Invoke-HartPsqlScalar, Invoke-HartPsqlFile, `
     Test-HartDatabaseExists, Test-HartPostgisEnabled, Test-HartHartonomousExtensionInstalled, `
-    Get-HartMigrationStatus, Get-HartSubstrateCounts
+    Get-HartSubstrateCounts

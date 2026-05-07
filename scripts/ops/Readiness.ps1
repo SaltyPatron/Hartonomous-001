@@ -21,6 +21,7 @@ param(
 Import-Module "$PSScriptRoot\..\lib\Hartonomous.Common.psm1"   -Force
 Import-Module "$PSScriptRoot\..\lib\Hartonomous.Docker.psm1"   -Force
 Import-Module "$PSScriptRoot\..\lib\Hartonomous.Postgres.psm1" -Force
+Import-Module "$PSScriptRoot\..\lib\Hartonomous.Verify.psm1"   -Force
 
 $Cfg = Get-HartonomousConfig
 Start-HartonomousLog -ScriptName 'ops.Readiness' -Cfg $Cfg
@@ -51,22 +52,6 @@ function Write-ResultTable {
     foreach ($result in $script:results) {
         '{0,-30} {1,-5} {2}' -f $result.Area, $result.Status, $result.Detail | Write-Host
     }
-}
-
-function Get-CSharpInlineSqlFindings {
-    $srcRoot = Join-Path $Cfg.Repo.Root 'src'
-    if (-not (Test-Path $srcRoot)) { return @() }
-
-    $pattern = '(new\s+NpgsqlCommand\s*\(\s*(?:@?\$?"|"""))|((?:@?\$?"|""")\s*(SELECT|CALL|INSERT|UPDATE|DELETE|WITH|COPY|TRUNCATE)\b)|(CommandText\s*=\s*(?:@?\$?"|"""))'
-    Get-ChildItem -Path $srcRoot -Recurse -File -Filter '*.cs' |
-        Select-String -Pattern $pattern -CaseSensitive |
-        ForEach-Object {
-            [pscustomobject]@{
-                Path = Resolve-Path -Relative $_.Path
-                Line = $_.LineNumber
-                Text = $_.Line.Trim()
-            }
-        }
 }
 
 try {
@@ -110,7 +95,7 @@ try {
     $functionCount = Get-ScalarOrNull "SELECT count(DISTINCT p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'substrate' AND p.proname IN ($functionList)"
     Add-Result 'Core query functions' ($(if ([int]$functionCount -eq $requiredFunctions.Count) { 'PASS' } else { 'WARN' })) "$functionCount/$($requiredFunctions.Count) expected functions present"
 
-    $inlineSqlFindings = @(Get-CSharpInlineSqlFindings)
+    $inlineSqlFindings = @(Get-HartInlineSqlFindings -Cfg $Cfg -Scope CSharp)
     Add-Result 'C# inline SQL' ($(if ($inlineSqlFindings.Count -eq 0) { 'PASS' } else { 'FAIL' })) "$($inlineSqlFindings.Count) candidate SQL literal(s) under src/"
 
     $dist4d = Get-ScalarOrNull "SELECT substrate.dist_4d(ST_MakePoint(0,0,0,0)::geometry, ST_MakePoint(1,1,1,1)::geometry)"

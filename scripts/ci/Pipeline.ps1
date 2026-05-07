@@ -40,6 +40,7 @@ function Invoke-Sub { param([string]$Rel, [string[]]$Argv)
 
 try {
     Invoke-HartStep -Name 'Verify AI scaffolding' -Action { Invoke-Sub 'verify/AgentScaffolding.ps1' @() }
+  Invoke-HartStep -Name 'Verify no inline SQL'  -Action { Invoke-Sub 'verify/NoInlineSql.ps1' @() }
     Invoke-HartStep -Name 'Preflight'             -Action { Invoke-Sub 'ci/Preflight.ps1'   @() }
     Invoke-HartStep -Name 'Build native'          -Action { Invoke-Sub 'build/Native.ps1'   @('-Configuration', $NativeConfiguration) }
     Invoke-HartStep -Name 'Build extension SQL'   -Action { Invoke-Sub 'build/ExtensionSql.ps1' @() }
