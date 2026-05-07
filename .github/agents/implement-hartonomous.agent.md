@@ -10,6 +10,8 @@ handoffs:
 
 ## C# conventions
 
+Before implementing, build a context map: current file, relevant path instructions, canonical schema files for any database shape, existing tests, and the semantic regression cases if the change touches text, identity, inference, or infrastructure-versus-substrate boundaries. Keep a short issue ledger while working so a single compiler error does not hide adjacent failures.
+
 - One type per file. File name = type name. `I`+PascalCase interfaces. `Base`+PascalCase abstract.
 - All I/O: `async Task` + `CancellationToken`. Pure compute: synchronous.
 - `Microsoft.Extensions.Logging` only. Structured: `{EntityCount}`. Trace (per-entity), Debug (per-batch), Information (phase start/end).
@@ -54,12 +56,14 @@ public interface IDecomposer : IAsyncDisposable {
 
 | Table | Key columns | Partitioned by |
 |-------|------------|----------------|
-| `substrate.entity` | id, hash, entity_type_id | entity_type_id (25 types) |
-| `substrate.edge` | id, hash, edge_type_id, geom, provenance_id | edge_type_id (33 types) |
-| `substrate.edge_member` | edge_id, entity_id, edge_role_id | unpartitioned |
-| `substrate.physicality` | id, entity_id, physicality_type_id, geom | physicality_type_id (13 types) |
-| `substrate.significance` | id, entity_id\|edge_id, context_type_id, mu, sigma, volatility, games | context_type_id (10 arenas) |
-| `substrate.sequence` | id, parent_id, child_id, ordinal_position, rle_count | unpartitioned |
+| `substrate.entity` | hash | not partitioned |
+| `substrate.entity_classification` | entity_hash, entity_type_id, provenance_id | not partitioned |
+| `substrate.edge` | edge_type_id, hash, geom, provenance_id | edge_type_id |
+| `substrate.edge_member` | edge_type_id, edge_hash, entity_hash, edge_role_id, role_position | edge_type_id |
+| `substrate.physicality` | physicality_type_id, entity_hash, content_hash, geom | physicality_type_id |
+| `substrate.entity_significance` | context_type_id, entity_hash, mu, sigma, volatility, games | context_type_id |
+| `substrate.edge_significance` | context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games | context_type_id |
+| `substrate.sequence` | parent_hash, ordinal, child_hash, rle_count | not partitioned |
 
 ## Source locations
 
@@ -71,4 +75,8 @@ public interface IDecomposer : IAsyncDisposable {
 | Phases | `src/Hartonomous.Core/Orchestration/Phase.cs` |
 | Decomposers | `src/Hartonomous.Decomposers/` (Ucd/, Iso639/, WordNet/, Omw/, Ud/, Safetensors/, Wiktionary/, Tatoeba/) |
 | Engine | `src/Hartonomous.Engine/Orchestration/SequentialPhaseRunner.cs` |
-| Migrations | `sql/migrations/` (0001–0035, next = 0036) |
+| Canonical schema | `sql/schema/bootstrap.sql` include manifest plus source files under `sql/schema/`; runtime install uses generated extension SQL |
+
+## Completion bar
+
+Do not stop at the first fixed error. Check the adjacent path, update stale docs or agent scaffolding touched by the same assumption, run the narrowest meaningful test/build gate, and report residual risk explicitly.

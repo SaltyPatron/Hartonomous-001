@@ -207,7 +207,7 @@ public abstract partial class BaseDecomposer : IDecomposer
 
     /// <summary>
     /// Emit one junction row into the streaming sink. Mu is non-null only
-    /// for Glicko-bearing junctions (entity_pos, entity_sense, pattern_deprel).
+    /// for Glicko-bearing junctions (entity_pos and pattern_deprel).
     /// </summary>
     protected static ValueTask EmitJunctionAsync(
         IRecordSink sink,

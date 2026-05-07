@@ -4,21 +4,21 @@ description: SQL and migration rules for Hartonomous schema and ingestion work.
 applyTo: 'sql/**/*.sql'
 ---
 
-## Migration conventions
+## Canonical schema conventions
 
-- Migrations live in `sql/migrations/` as numbered pairs: `NNNN_description.up.sql` / `NNNN_description.down.sql`.
-- Current range: `0001`–`0035` (35 pairs). The next migration is `0036`.
-- Each migration is idempotent — use `IF NOT EXISTS`, `CREATE OR REPLACE`, or guard clauses.
-- Down scripts reverse exactly what the up script creates.
+- Pre-v1 is bootstrap-only. Canonical schema lives under `sql/schema/`; `sql/schema/bootstrap.sql` declares build-time include order and `scripts/build/ExtensionSql.ps1` emits the generated extension SQL installed by `CREATE EXTENSION hartonomous`.
+- `sql/migrations.archive/` is historical audit material, not the source of truth for current table shape.
+- When adding schema, update the appropriate canonical file under `sql/schema/domains/`, `types/`, `tables/`, `functions/`, `procedures/`, `views/`, or `seed/`.
+- If a count or inventory matters, compute it from `sql/schema/`, not from memory or archived migration numbers.
 
 ## Schema separation
 
-| Schema | Purpose | Key migrations |
+| Schema | Purpose | Canonical location |
 |--------|---------|----------------|
-| `substrate` | Core tables: `entity`, `edge`, `edge_member`, `physicality`, `significance`, `sequence` | `0006` |
-| `substrate` | Reference tables: `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. | `0004` |
-| `substrate` | Junction tables: `entity_pos`, `entity_sense`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc. | `0007` |
-| `monitor` | Operational monitoring and metrics | `0012`–`0014` |
+| `substrate` | Core tables: `entity`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `sequence` | `sql/schema/tables/core/` |
+| `substrate` | Reference tables: `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. | `sql/schema/tables/reference/`, `sql/schema/seed/` |
+| `substrate` | Junction tables: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc. | `sql/schema/tables/junctions/` |
+| `monitor` | Operational monitoring and metrics | `sql/schema/tables/monitor/` |
 
 ## Batch SQL patterns
 
@@ -26,16 +26,20 @@ Never write row-by-row SQL inside loops. Required patterns:
 
 ```sql
 -- Bulk insert via array unnest
-INSERT INTO substrate.entity (hash, entity_type_id)
-SELECT * FROM unnest($1::bytea[], $2::int[])
+INSERT INTO substrate.entity (hash)
+SELECT * FROM unnest($1::bytea[])
 ON CONFLICT (hash) DO NOTHING;
 
+INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+SELECT * FROM unnest($1::bytea[], $2::int[], $3::int[])
+ON CONFLICT DO NOTHING;
+
 -- Bulk lookup via ANY
-SELECT id, hash FROM substrate.entity
+SELECT hash FROM substrate.entity
 WHERE hash = ANY($1::bytea[]);
 
 -- Seed-phase bulk load
-COPY substrate.entity (hash, entity_type_id) FROM STDIN (FORMAT binary);
+COPY pg_temp.entity_inflight (hash) FROM STDIN (FORMAT binary);
 ```
 
 ## Transaction scope
@@ -48,8 +52,12 @@ Junction table names are validated against an allowlist (e.g., `AssertSafeIdenti
 
 ## Reference tables versus content tables
 
-- **Reference tables** (migration `0004`): classification vocabularies — `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. Small, indexed, rarely changed.
-- **Junction tables** (migration `0007`): evidence mappings with Glicko-2 significance (`mu`, `sigma`) — `entity_pos`, `entity_sense`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc.
-- **Content tables** (migration `0006`): the substrate itself — `entity`, `edge`, `edge_member`, `physicality`, `significance`, `sequence`.
+- **Reference tables**: classification vocabularies — `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. Small, indexed, rarely changed.
+- **Junction tables**: evidence and classification mappings — `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc.
+- **Content tables**: the substrate itself — `entity`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `sequence`.
 
 Do not push classification rows into `substrate.entity` or `substrate.edge`. Classifications are infrastructure.
+
+## Geometry rules
+
+Substrate physicality uses `geometry(GeometryZM)`. Do not call raw PostGIS `ST_Distance`, `ST_Centroid`, `ST_FrechetDistance`, or `ST_HausdorffDistance` on substrate physicality; use substrate 4D/S3 functions instead.

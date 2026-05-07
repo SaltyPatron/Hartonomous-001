@@ -1,7 +1,7 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Dev inner-loop: up the container, apply migrations, build everything.
+  Dev inner-loop: up the container, bootstrap the extension, build everything.
   Does NOT reseed and does NOT run tests — use this when you've made code
   changes and just want a fresh binary/schema state to iterate against.
 
@@ -33,6 +33,7 @@ function Invoke-Sub { param([string]$Rel, [string[]]$Argv)
 }
 
 try {
+    Invoke-HartStep -Name 'Extension SQL'     -Action { Invoke-Sub 'build/ExtensionSql.ps1' @() }
     Invoke-HartStep -Name 'Docker Desktop'    -Action { Invoke-Sub 'docker/Start-Desktop.ps1' @() }
     $upArgs = @()
     if ($Rebuild) { $upArgs += '-Rebuild' }
@@ -43,8 +44,8 @@ try {
     Invoke-HartStep -Name "Build native ($nativeCfg)"  -Action { Invoke-Sub 'build/Native.ps1' $nativeArgs }
     Invoke-HartStep -Name "Build managed ($dotnetCfg)" -Action { Invoke-Sub 'build/Dotnet.ps1' @('-Configuration', $dotnetCfg) }
 
-    Invoke-HartStep -Name 'Ensure DB'  -Action { Invoke-Sub 'db/Create.ps1' @() }
-    Invoke-HartStep -Name 'Migrate up' -Action { Invoke-Sub 'db/Migrate.ps1' @('-Action','up','-NoBuild') }
+    Invoke-HartStep -Name 'Ensure DB'           -Action { Invoke-Sub 'db/Create.ps1' @() }
+    Invoke-HartStep -Name 'Bootstrap extension' -Action { Invoke-Sub 'db/Bootstrap.ps1' @() }
 
     Exit-Hartonomous -Code $Cfg.ExitCodes.Ok -Message 'Dev loop ready.'
 }

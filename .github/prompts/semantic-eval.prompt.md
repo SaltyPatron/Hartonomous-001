@@ -13,7 +13,7 @@ Read the Hartonomous semantic regression pack:
 
 Also consult:
 - `docs/architecture.md` § "What This Is NOT" for the anti-pattern list
-- `sql/migrations/0006_core_tables.up.sql` for entity/edge/physicality schema
+- `sql/schema/bootstrap.sql` plus included files under `sql/schema/tables/`, `sql/schema/functions/`, and `sql/schema/seed/` for canonical schema
 - `src/Hartonomous.Core/Decomposition/BaseDecomposer.cs` for identity hashing methods
 
 Evaluate this input:
@@ -26,4 +26,5 @@ Return:
 2. **Required invariants**: name the substrate law (1–13) or schema constraint
 3. **Likely failure mode**: which conventional-AI trap applies (graph flattening, embedding talk, RAG confusion, classification-as-entity, placement in hash, inference-creates-edges)
 4. **Enforcement artifacts**: specific files, methods, migrations, or test projects that enforce correct handling
-5. **Verdict**: pass/fail with exact conditions or blockers
+5. **Context gaps**: any repo areas that must be read before implementation or review can be trusted
+6. **Verdict**: pass/fail with exact conditions or blockers

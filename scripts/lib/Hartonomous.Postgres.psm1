@@ -125,10 +125,13 @@ function Get-HartMigrationStatus {
 
 function Get-HartSubstrateCounts {
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Cfg)
+    param(
+        [Parameter(Mandatory)] $Cfg,
+        [switch]$IncludeHeavy
+    )
     $byType = @"
-SELECT COUNT(*) FROM substrate.entity e
-JOIN substrate.entity_type t ON t.id = e.entity_type_id
+SELECT COUNT(DISTINCT ec.entity_hash) FROM substrate.entity_classification ec
+JOIN substrate.entity_type t ON t.id = ec.entity_type_id
 WHERE t.code = '{0}'
 "@
     $queries = [ordered]@{
@@ -142,7 +145,16 @@ WHERE t.code = '{0}'
         'entity (lemmas)'             = $byType -f 'lemma'
         'entity (codepoints)'         = $byType -f 'codepoint'
         'entity (total)'              = 'SELECT COUNT(*) FROM substrate.entity'
+        'entity_classification'       = 'SELECT COUNT(*) FROM substrate.entity_classification'
         'edge (total)'                = 'SELECT COUNT(*) FROM substrate.edge'
+        'edge_member (total)'         = 'SELECT COUNT(*) FROM substrate.edge_member'
+        'edge (geom null)'            = 'SELECT COUNT(*) FROM substrate.edge WHERE geom IS NULL'
+        'physicality (total)'         = 'SELECT COUNT(*) FROM substrate.physicality'
+    }
+    if ($IncludeHeavy) {
+        $queries['sequence (total)'] = 'SELECT COUNT(*) FROM substrate.sequence'
+        $queries['entity_significance'] = 'SELECT COUNT(*) FROM substrate.entity_significance'
+        $queries['edge_significance'] = 'SELECT COUNT(*) FROM substrate.edge_significance'
     }
     $result = [ordered]@{}
     foreach ($kv in $queries.GetEnumerator()) {

@@ -9,8 +9,8 @@ namespace Hartonomous.Decomposers.WordNet;
 /// WordNet-specific reference-table writer. Inherits POS/language maps and
 /// junction writers from <see cref="BaseReferenceTableWriter"/>; adds lexname
 /// loader and English-language-id lookup. The earlier sense-reference-table
-/// methods (LoadSenseMapAsync / PopulateSensesAsync / WriteEntitySenseJunctionsAsync)
-/// were removed when substrate.sense + substrate.entity_sense were eliminated:
+/// methods (LoadSenseMapAsync / PopulateSensesAsync / the old sense junction writer)
+/// were removed when direct sense junction writes were eliminated:
 /// WordNet senses are first-class has_sense edges (lemma → synset) with
 /// per-arena Glicko ratings on substrate.edge_significance.
 /// </summary>

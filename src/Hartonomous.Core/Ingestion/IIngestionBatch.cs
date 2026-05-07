@@ -23,8 +23,9 @@ public interface IIngestionBatch
     /// <summary>
     /// Append an entity. Returns a handle that carries the hash + type code;
     /// downstream Add* calls reference this handle to express FKs. Same
-    /// (hash, type_code) added twice is idempotent at flush via
-    /// ON CONFLICT DO NOTHING on substrate.entity's composite PK.
+    /// hash added twice is idempotent at flush via ON CONFLICT DO NOTHING
+    /// on substrate.entity's hash-only PK; type code is emitted separately
+    /// as entity_classification evidence.
     /// </summary>
     EntityHandle AddEntity(byte[] hash, string entityTypeCode);
 
@@ -59,10 +60,10 @@ public interface IIngestionBatch
         => AddEdge(edgeTypeCode, provenanceCode, members);
 
     /// <summary>
-    /// Append a junction row (entity_pos, entity_sense, entity_language,
+    /// Append a junction row (entity_pos, entity_language,
     /// entity_morph_feature, codepoint_property, model_architecture_class,
-    /// tensor_tensor_role, pattern_deprel). Junction tables FK on
-    /// (entity_type_id, entity_hash) directly.
+    /// entity_lexname, tensor_tensor_role, pattern_deprel). Junction tables
+    /// FK to substrate.entity(hash) through entity_hash.
     /// </summary>
     void AddJunction(
         string junctionTable,
@@ -71,11 +72,10 @@ public interface IIngestionBatch
         double? mu = null);
 
     /// <summary>
-    /// Append a physicality row with raw PostGIS WKB. Used for 2D/3D
-    /// audio physicality types whose vertex layout doesn't fit POINTZM /
-    /// LINESTRINGZM (waveform, FFT, STFT, MFCC, chromagram, formant
-    /// trajectory, etc.). The pipeline routes the WKB into the geom column
-    /// via ST_GeomFromWKB.
+    /// Append a physicality row with raw PostGIS WKB. Used for GeometryZM
+    /// subtypes whose vertex layout should be passed through directly
+    /// (POINTZM, LINESTRINGZM, MULTILINESTRINGZM, POLYGONZM, etc.). The
+    /// pipeline routes the WKB into the geom column via ST_GeomFromWKB.
     /// </summary>
     void AddPhysicality(
         EntityHandle entity,

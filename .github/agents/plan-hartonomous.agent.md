@@ -10,10 +10,14 @@ handoffs:
 
 ## Substrate pillars
 
-1. `substrate.entity` — atoms and compositions. PK `(id, entity_type_id)`. BLAKE3 hash of content only. 25 entity types, LIST-partitioned (migration `0006`).
-2. `substrate.edge` + `substrate.edge_member` — n-ary typed relations with role-ordered participants. Trajectory geometry. 33 edge types: structural (1–13), cross_lingual (14–16), cross_modal (17–18), unicode (19–21), model_derived (22–33). 7 roles.
-3. `substrate.physicality` — universal geometry, dual-surface. 13 physicality types. PostGIS `geometry` surface (2D/3D) for natively 2D/3D modalities; substrate-native `point4d`/`linestring4d` surface (4D) for codepoint S³ positions, embedding fireflies, 4D trajectories. Both GiST-indexed. `ST_FrechetDistance` for 2D/3D, 4D Fréchet over `linestring4d` for 4D (`specs/native/4d-type-and-index.md`).
-4. Reference tables (migration `0004`) + junction tables (migration `0007`) — classification vocabularies and evidence junctions. Three junctions carry Glicko-2: `entity_pos`, `entity_sense`, `pattern_deprel`.
+Start with a context pass before proposing a plan. For schema or counts, read canonical `sql/schema/bootstrap.sql` and its included files under `sql/schema/`; do not reason from archived migrations or cached counts. For architecture, consult `docs/architecture.md`, `docs/specs/sql/infrastructure-vs-substrate.md`, and `docs/specs/engine/inference.md`. Return the invariants, impacted files, verification gate, and unknowns before narrowing to implementation steps.
+
+1. `substrate.entity` — atoms and compositions only. Single column: `hash substrate.hash_value PRIMARY KEY`. No surrogate `id`, no `entity_type_id`, no type partitioning.
+2. `substrate.entity_classification` — structural classification metadata: `(entity_hash, entity_type_id, provenance_id)`. Same content can be both `word_form` and `lemma` without duplicating the entity.
+3. `substrate.edge` + `substrate.edge_member` — separate n-ary typed relations. Edge PK `(edge_type_id, hash)`. Members carry `edge_role_id`, `role_position`, and `entity_hash`.
+4. `substrate.physicality` — universal `geometry(GeometryZM)` table for all modalities. Use substrate 4D/S3 functions, not raw 2D PostGIS distance or centroid functions.
+5. Reference tables + junction tables — classification vocabularies and evidence infrastructure. POS, sense, language, deprel, tensor role, etc. are not entities.
+6. `substrate.entity_significance` and `substrate.edge_significance` — Glicko-2 ratings per open-vocabulary arena. New arenas must prime against all relevant existing content.
 
 ## Phase enum
 
@@ -23,16 +27,7 @@ Defined in `src/Hartonomous.Core/Orchestration/Phase.cs`. `SequentialPhaseRunner
 
 ## Decomposer contracts
 
-| Decomposer | Provenance | Phase | Entities (type IDs) | Edges (type IDs) | Junctions |
-|------------|-----------|-------|---------------------|-------------------|-----------|
-| UCD/UCA | `unicode_consortium` (μ=2000) | `UcdUca` | codepoint (1), collation_element (17) | maps_to_lowercase (19), case_folds_to (20), has_collation_weight (21) | codepoint_property |
-| ISO 639 | `sil_international` (μ=2000) | `Iso639` | language_name (18) | — | entity_language |
-| WordNet | `princeton_wordnet` (μ=1800) | `WordNetOmw` | lemma (5), synset (13), word_sense (14) | has_sense (1), has_gloss (5), has_example (6) | entity_pos, entity_sense |
-| OMW | `omwn_consortium` (μ=1600) | `WordNetOmw` | lemma (5) | aligned_to_synset (14) | entity_language |
-| UD | `universaldependencies` (μ=1600) | `UniversalDeps` | ud_sentence (6), ud_token (7), word_form (3), lemma (5) | has_lemma (3) | entity_pos, entity_morph_feature |
-| Safetensors | `huggingface_model` (μ=1500) | `ModelDecomp` | tensor (23), model_architecture (24), bpe_token (12), attention_pattern (25) | in_model (22)–in_vocabulary (32) | tensor_tensor_role, model_architecture_class |
-| Wiktionary | `wiktextract` (μ=1400) | `Wiktionary` | wikt_sense (15), inflected_form (16), word_form (3) | has_etymology (10)–has_wikidata (13), translation_of (15), inflection_of (9), has_form (2) | entity_pos, entity_sense |
-| Tatoeba | `tatoeba` (μ=1200) | `Tatoeba` | tatoeba_sentence (8), audio_recording (20) | has_text (8), translation_link (16), recording_of (17), has_contributor (18) | entity_language |
+Do not plan from a cached decomposer contract table. Derive exact surfaces from current code in `src/Hartonomous.Decomposers/`, `src/Hartonomous.Core/Text/CanonicalTextDecomposer.cs`, and the matching `docs/specs/decomposers/*.md` file. Seed decomposers that contain user-visible text must route that text through the core text decomposer and then attach metadata edges or junction rows.
 
 ## Identity hashing
 
@@ -42,6 +37,10 @@ Defined in `src/Hartonomous.Core/Orchestration/Phase.cs`. `SequentialPhaseRunner
 `ComputeEdgeHash(int, byte[][])` → `[edgeTypeId | participant hashes]` → `ComputeHash()`. Edge identity.
 
 Content only. Position, ordinal, filename, tensor name → `sequence`, edges, `provenance`.
+
+## Planning stance
+
+When the user reports one error, plan for the failure surface around it: producer path, pipeline drain path, SQL function/procedure, schema shape, test coverage, and semantic regression. The plan is incomplete if it fixes only the visible stack trace while leaving adjacent stale assumptions in docs, prompts, or agent instructions.
 
 ## Ingestion vs inference
 

@@ -32,6 +32,8 @@ The artifacts below exist to make those failures less likely across both Claude 
 
 ## Non-Negotiable Agent Behavior
 
+- Start non-trivial work with a context-completeness pass. Read the current file, relevant path instructions, canonical schema for database work, architecture specs for invention claims, and semantic regression cases for text/identity/inference work.
+- Maintain a small issue ledger while debugging: visible symptom, likely root cause, adjacent surfaces, verification gate, and residual risk. Do not collapse the task to the first error message.
 - Finish feasible work end-to-end. Do not stop at plan-only or explanation-only output when repo edits or validation can be completed in the current session.
 - Compute measurable facts exactly when the repo or tools can provide the answer.
 - Treat terse lexical examples as live semantic regression cases.
@@ -44,6 +46,24 @@ The artifacts below exist to make those failures less likely across both Claude 
   - inference as traversal and significance update, not edge creation
 - Prefer repo entrypoints in `scripts/` for operational work.
 - Keep documentation truthful. If a standards document is added or removed, update `docs/index.md` and `docs/standards/README.md` in the same change.
+
+## Context Completeness Protocol
+
+Before an agent narrows to implementation or review, it must be able to answer these questions from repo artifacts, not memory:
+
+1. Which canonical files define the schema, API, or workflow being changed?
+2. Which invariants are at risk if the obvious fix is wrong?
+3. What neighboring files encode the same assumption, including docs, prompts, and agent instructions?
+4. What semantic regression case or SQL/state query proves the change is correct?
+5. What remains unverified after the available build or test command runs?
+
+If those questions cannot be answered yet, the next step is research, not code.
+
+## Mechanical Drift Guard
+
+Run `pwsh -File scripts/verify/AgentScaffolding.ps1` after changing `.github/`, `CLAUDE.md`, `docs/standards/`, or high-level script documentation. The verifier scans AI-facing scaffolding for retired migration-era phrases such as old entity counts, the old sense junction, the old unified significance table, active migration paths, and old `substrate.entity` shapes.
+
+For local Claude scaffolding, run `pwsh -File scripts/verify/AgentScaffolding.ps1 -IncludeIgnoredClaude`. The `.claude/` tree is ignored by git in this workspace, so CI checks the tracked surface and the explicit local flag checks the ignored companion surface.
 
 ## Mandatory Semantic Regression Pack
 

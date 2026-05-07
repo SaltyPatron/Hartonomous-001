@@ -6,6 +6,15 @@ on:
   pull_request:
 
 jobs:
+  scaffolding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify AI scaffolding
+        shell: pwsh
+        run: pwsh -File scripts/verify/AgentScaffolding.ps1
+
   native:
     strategy:
       fail-fast: false
@@ -58,48 +67,15 @@ jobs:
       - name: Test
         run: dotnet test -c Release --no-build --verbosity normal
 
-  migrations:
+  schema:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgis/postgis:17-3.5
-        env:
-          POSTGRES_USER: hartonomous
-          POSTGRES_PASSWORD: hartonomous
-          POSTGRES_DB: hartonomous
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U hartonomous -d hartonomous"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '9.0.x'
+      - name: Assemble extension SQL
+        shell: pwsh
+        run: pwsh -File scripts/build/ExtensionSql.ps1
 
-      - name: Enable PostGIS
-        env:
-          PGPASSWORD: hartonomous
-        run: |
-          psql -h localhost -p 5433 -U hartonomous -d hartonomous -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-
-      - name: migrate up
-        env:
-          HARTONOMOUS_DB: "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous"
-        run: dotnet run --project src/Hartonomous.Cli -c Release -- migrate up
-
-      - name: migrate status
-        env:
-          HARTONOMOUS_DB: "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous"
-        run: dotnet run --project src/Hartonomous.Cli -c Release -- migrate status
-
-      - name: migrate down + up (idempotency)
-        env:
-          HARTONOMOUS_DB: "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous"
-        run: |
-          dotnet run --project src/Hartonomous.Cli -c Release -- migrate down 14
-          dotnet run --project src/Hartonomous.Cli -c Release -- migrate up
+      - name: Verify generated extension SQL
+        shell: pwsh
+        run: pwsh -File scripts/build/ExtensionSql.ps1 -Check

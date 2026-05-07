@@ -9,7 +9,7 @@
   -Recreate to force a DB reset, -Rebuild to force image/native rebuild.
 
 .PARAMETER Recreate
-  Drop & recreate the database before migrating (destroys substrate data).
+  Drop & recreate the database before bootstrapping (destroys substrate data).
 
 .PARAMETER Rebuild
   Rebuild the Postgres image and the native library from scratch.
@@ -51,6 +51,8 @@ function Invoke-Sub { param([string]$Rel, [string[]]$Argv)
 try {
     Invoke-HartStep -Name 'Preflight' -Action { Invoke-Sub 'ci/Preflight.ps1' @() }
 
+    Invoke-HartStep -Name 'Extension SQL' -Action { Invoke-Sub 'build/ExtensionSql.ps1' @() }
+
     Invoke-HartStep -Name 'Docker Desktop' -Action { Invoke-Sub 'docker/Start-Desktop.ps1' @() }
 
     $upArgs = @()
@@ -71,7 +73,7 @@ try {
         Invoke-HartStep -Name 'DB reset' -Action { Invoke-Sub 'db/Reset.ps1' @('-Force') }
     } else {
         Invoke-HartStep -Name 'DB create (idempotent)' -Action { Invoke-Sub 'db/Create.ps1' @() }
-        Invoke-HartStep -Name 'Migrate up'             -Action { Invoke-Sub 'db/Migrate.ps1' @('-Action','up','-NoBuild') }
+        Invoke-HartStep -Name 'Bootstrap extension'    -Action { Invoke-Sub 'db/Bootstrap.ps1' @() }
     }
 
     Invoke-HartStep -Name 'Seed UcdUca'         -Action { Invoke-Sub 'seed/Ucd.ps1'        @('-NoBuild') }

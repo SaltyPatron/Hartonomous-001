@@ -32,7 +32,7 @@ applyTo: 'docs/**/*.md'
 ## Truthfulness rules
 
 - Keep documentation aligned with actual repo state. Do not claim completeness or counts without checking them.
-- If a count, total, inventory, or status depends on the repo, compute it exactly (e.g., `Get-ChildItem sql/migrations -Name | Measure-Object`).
+- If a count, total, inventory, or status depends on the repo, compute it exactly (e.g., count `INSERT` tuples in `sql/schema/seed/entity_type.sql` or enumerate files under `sql/schema/tables/junctions/`).
 - Preserve invention-specific distinctions. Do not translate Hartonomous concepts into generic AI terminology (knowledge graph, vector database, RAG, semantic search, embedding).
 - The "What This Is NOT" section in `docs/architecture.md` enumerates the specific anti-patterns that documentation must never adopt.
 

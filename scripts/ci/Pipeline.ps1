@@ -1,7 +1,7 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  The canonical CI pipeline: preflight → build → test → up → migrate → smoke.
+  The canonical CI pipeline: preflight → build → test → up → bootstrap → smoke.
 
 .DESCRIPTION
   Same ordering as .github/workflows/ci.yml so a local run catches the same
@@ -39,13 +39,15 @@ function Invoke-Sub { param([string]$Rel, [string[]]$Argv)
 }
 
 try {
-    Invoke-HartStep -Name 'Preflight'         -Action { Invoke-Sub 'ci/Preflight.ps1'   @() }
-    Invoke-HartStep -Name 'Build native'      -Action { Invoke-Sub 'build/Native.ps1'   @('-Configuration', $NativeConfiguration) }
-    Invoke-HartStep -Name 'Build managed'     -Action { Invoke-Sub 'build/Dotnet.ps1'   @('-Configuration', $DotnetConfiguration) }
-    Invoke-HartStep -Name 'Test native'       -Action { Invoke-Sub 'test/Native.ps1'    @('-Configuration', $NativeConfiguration) }
-    Invoke-HartStep -Name 'Test managed'      -Action { Invoke-Sub 'test/Dotnet.ps1'    @('-Configuration', $DotnetConfiguration, '-NoBuild') }
-    Invoke-HartStep -Name 'Docker up'         -Action { Invoke-Sub 'docker/Up.ps1'      @() }
-    Invoke-HartStep -Name 'Migrate up'        -Action { Invoke-Sub 'db/Migrate.ps1'     @('-Action', 'up', '-NoBuild') }
+    Invoke-HartStep -Name 'Verify AI scaffolding' -Action { Invoke-Sub 'verify/AgentScaffolding.ps1' @() }
+    Invoke-HartStep -Name 'Preflight'             -Action { Invoke-Sub 'ci/Preflight.ps1'   @() }
+    Invoke-HartStep -Name 'Build native'          -Action { Invoke-Sub 'build/Native.ps1'   @('-Configuration', $NativeConfiguration) }
+    Invoke-HartStep -Name 'Build extension SQL'   -Action { Invoke-Sub 'build/ExtensionSql.ps1' @() }
+    Invoke-HartStep -Name 'Build managed'         -Action { Invoke-Sub 'build/Dotnet.ps1'   @('-Configuration', $DotnetConfiguration) }
+    Invoke-HartStep -Name 'Test native'           -Action { Invoke-Sub 'test/Native.ps1'    @('-Configuration', $NativeConfiguration) }
+    Invoke-HartStep -Name 'Test managed'          -Action { Invoke-Sub 'test/Dotnet.ps1'    @('-Configuration', $DotnetConfiguration, '-NoBuild') }
+    Invoke-HartStep -Name 'Docker up'             -Action { Invoke-Sub 'docker/Up.ps1'      @() }
+    Invoke-HartStep -Name 'Bootstrap extension'   -Action { Invoke-Sub 'db/Bootstrap.ps1'   @() }
     if (-not $SkipSeed) {
         Invoke-HartStep -Name 'Seed UcdUca'   -Action { Invoke-Sub 'seed/Ucd.ps1'       @('-NoBuild') }
         Invoke-HartStep -Name 'Seed Iso639'   -Action { Invoke-Sub 'seed/Iso639.ps1'    @('-NoBuild') }

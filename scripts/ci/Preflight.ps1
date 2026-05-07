@@ -65,8 +65,8 @@ Check 'solution present' {
     Assert-HartPath -Path (Join-Path $Cfg.Repo.Root $Cfg.Paths.Solution) -Label 'solution'
 }
 
-Check 'migrations dir' {
-    Assert-HartPath -Path (Join-Path $Cfg.Repo.Root $Cfg.Paths.MigrationsDir) -Label 'migrations dir'
+Check 'canonical schema manifest' {
+    Assert-HartPath -Path (Join-Path $Cfg.Repo.Root $Cfg.Paths.SchemaBootstrap) -Label 'sql/schema/bootstrap.sql'
 }
 
 Check 'native src' {

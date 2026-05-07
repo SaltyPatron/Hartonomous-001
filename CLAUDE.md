@@ -6,8 +6,14 @@ This file governs all AI-assisted development in this repository. Follow these r
 
 - **Solution**: `Hartonomous.slnx` — 7 src + 6 test projects targeting `net9.0`
 - **Native extension**: `ext/libhartonomous/` (C/C++, CMake, BLAKE3 + S3 geometry)
-- **SQL**: `sql/migrations/` (numbered up/down pairs), `sql/init/` (Docker bootstrap)
+- **SQL**: canonical source files under `sql/schema/`; build-time extension SQL emitted to `ext/hartonomous_pg/sql/hartonomous--1.0.sql`; historical migrations live under `sql/migrations.archive/` for audit only
 - **Shared build config**: `Directory.Build.props` (solution-wide), `native-dll.targets` (native DLL copy rules)
+
+## Schema Source of Truth
+
+Pre-v1 Hartonomous is bootstrap-only. The canonical schema is the `sql/schema/bootstrap.sql` include manifest plus the files it includes under `sql/schema/`. Runtime database setup installs the generated PostgreSQL extension with `CREATE EXTENSION hartonomous`; `scripts/build/ExtensionSql.ps1` concatenates the canonical schema files and the C-binding template into the extension script.
+
+Do not create or edit an active migrations directory for current work. The archived migrations are historical evidence, not the active apply path. When schema facts matter, inspect `sql/schema/` directly and recompute counts from the seed files.
 
 ## C# Conventions
 

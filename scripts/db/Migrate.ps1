@@ -10,10 +10,12 @@
 
       pwsh scripts/db/Bootstrap.ps1
 
-  …which runs sql/schema/bootstrap.sql through MigrationFileLoader and
-  applies the canonical schema/ tree in one transaction. Pre-v1 means
-  drop + create + bootstrap is the workflow; edit canonical files in
-  place; reseed re-applies them.
+  …which installs the generated hartonomous PostgreSQL extension. The
+  canonical source still lives under sql/schema/; build/ExtensionSql.ps1
+  expands sql/schema/bootstrap.sql into ext/hartonomous_pg/sql/
+  hartonomous--1.0.sql before the extension is built or staged. Pre-v1
+  means drop + create + bootstrap is the workflow; edit canonical files
+  in place; rebuild the extension SQL; reseed re-applies them.
 
   The legacy migrations directory was retired to
   sql/migrations.archive/_v2_pre_bootstrap/.

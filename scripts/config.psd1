@@ -23,7 +23,7 @@
         PgExtensionSrc   = 'ext\hartonomous_pg'
         LibHartonomousSrc= 'ext\libhartonomous'
         Solution         = 'Hartonomous.slnx'
-        MigrationsDir    = 'sql\migrations'
+        SchemaBootstrap  = 'sql\schema\bootstrap.sql'
     }
 
     Dotnet = @{

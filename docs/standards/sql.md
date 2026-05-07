@@ -5,40 +5,35 @@
 Zero SQL strings in C# code. All database interaction goes through stored procedures and functions. The C# layer knows procedure names and parameter types. It does not know table structures, column names, or JOIN logic.
 
 ```csharp
-// YES — calls a stored procedure by name
-await using var cmd = new NpgsqlCommand("CALL substrate.upsert_entity(@hash, @type_id)", conn);
-cmd.Parameters.AddWithValue("hash", hash);
-cmd.Parameters.AddWithValue("type_id", entityTypeId);
+// YES — calls a named database contract through the data-access surface.
+// The caller does not know SQL text, table names, joins, or column names.
+var contextId = await substrateCatalog.ResolveContextIdAsync(contextCode, ct);
 
-// NO — inline SQL that knows table structure
-await using var cmd = new NpgsqlCommand(
-    "INSERT INTO entity (hash, entity_type_id) VALUES (@h, @t) ON CONFLICT (hash) DO NOTHING RETURNING id",
-    conn);
+// NO — inline SQL in C#.
+await using var cmd = new NpgsqlCommand("SELECT substrate.resolve_context_id(@code)", conn);
 ```
 
 ## Naming Conventions (SQL Objects)
 
-| Object | Convention | Example |
-|--------|-----------|---------|
-| Table | `snake_case`, singular | `entity`, `edge_member`, `entity_pos` |
-| Column | `snake_case` | `entity_type_id`, `created_at` |
-| Function | `snake_case`, verb-noun | `get_entity_by_hash`, `compute_tier` |
-| Procedure | `snake_case`, verb-noun | `upsert_entity`, `record_comparison_event` |
-| View | `v_` prefix + `snake_case` | `v_ingestion_summary`, `v_substrate_health` |
-| Domain | `snake_case` | `hash_value`, `significance_mu` |
-| Index | `ix_table_columns` | `ix_entity_hash`, `ix_edge_member_entity_edge` |
-| Constraint | `ck_table_description` | `ck_significance_one_target` |
-| Schema | `snake_case` | `monitor` |
+- Tables: `snake_case`, singular, such as `entity`, `edge_member`, `entity_pos`.
+- Columns: `snake_case`, such as `entity_type_id`, `created_at`.
+- Functions: `snake_case`, verb-noun, such as `get_entity_by_hash`, `compute_tier`.
+- Procedures: `snake_case`, verb-noun, such as `upsert_entity`, `record_comparison_event`.
+- Views: `v_` prefix plus `snake_case`, such as `v_ingestion_summary`, `v_substrate_health`.
+- Domains: `snake_case`, such as `hash_value`, `significance_mu`.
+- Indexes: `ix_table_columns`, such as `ix_entity_hash`, `ix_edge_member_entity_edge`.
+- Constraints: `ck_table_description`, such as `ck_significance_one_target`.
+- Schemas: `snake_case`, such as `monitor`.
 
 ## Schema Ownership
 
-| Schema | Purpose |
-|--------|---------|
-| `substrate` | All data tables, functions, procedures, views, types, domains. The AI model. |
-| `monitor` | Monitoring tables, views, alerting. Operational observability. |
+- `substrate`: all substrate tables, functions, procedures, views, reference vocabularies, types, and domains. The AI model.
+- `monitor`: monitoring tables, views, alerting. Operational observability.
 
-The `public` schema is empty. No objects in `public`.
+The `public` schema is reserved for extension-level native helper primitives when PostgreSQL requires them. Substrate content does not live in `public`.
 
-## Idempotent Migrations
+## Canonical Schema and Extension Bootstrap
 
-Every migration script is re-runnable. `CREATE TABLE IF NOT EXISTS`. `CREATE OR REPLACE FUNCTION`. `DO $$ ... IF NOT EXISTS ... $$`. A migration that fails halfway can be re-run safely.
+Pre-v1 schema work lands in `sql/schema/`. The include order is declared in `sql/schema/bootstrap.sql`; `scripts/build/ExtensionSql.ps1` expands that manifest and the C-binding template into `ext/hartonomous_pg/sql/hartonomous--1.0.sql`, which PostgreSQL executes when `CREATE EXTENSION hartonomous` runs.
+
+Do not add active migration files for pre-v1 schema changes. Historical migration files under `sql/migrations.archive/` are audit material only.

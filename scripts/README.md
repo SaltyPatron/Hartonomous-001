@@ -14,7 +14,7 @@ and every value is overridable via environment variable.
 | Goal | Command |
 |---|---|
 | First-time setup, cold machine → seeded substrate | `pwsh scripts/bootstrap/Cold.ps1` |
-| Dev loop: up + migrate + build, no seed, no tests | `pwsh scripts/bootstrap/Dev.ps1` |
+| Dev loop: up + bootstrap + build, no seed, no tests | `pwsh scripts/bootstrap/Dev.ps1` |
 | Force full rebuild & reseed | `pwsh scripts/bootstrap/Cold.ps1 -Recreate -Rebuild` |
 | Local CI pipeline (same order as GitHub Actions) | `pwsh scripts/ci/Pipeline.ps1` |
 | Substrate dashboard | `pwsh scripts/ops/Status.ps1` |
@@ -27,8 +27,8 @@ and every value is overridable via environment variable.
 
 | Script | Purpose |
 |---|---|
-| `Cold.ps1`  | Full cold-start orchestrator: preflight → docker → build → test → migrate → seed. |
-| `Dev.ps1`   | Inner-loop: docker + build + migrate (no seed, no tests). |
+| `Cold.ps1`  | Full cold-start orchestrator: preflight → extension SQL → docker → build → test → bootstrap → seed. |
+| `Dev.ps1`   | Inner-loop: extension SQL + docker + build + bootstrap (no seed, no tests). |
 
 ### `ci/`
 
@@ -57,6 +57,7 @@ and every value is overridable via environment variable.
 |---|---|
 | `Dotnet.ps1`      | Build `Hartonomous.slnx`. `-Configuration Debug\|Release`. |
 | `Native.ps1`      | CMake configure + build `libhartonomous`. `-Clean`, `-NoTests`. |
+| `ExtensionSql.ps1`| Expand `sql/schema/bootstrap.sql` + C-binding template into generated extension SQL. |
 | `PgExtension.ps1` | Build+install `hartonomous_pg` inside the running container (PGXS). |
 | `All.ps1`         | All three in the CI-canonical order. |
 | `Clean.ps1`       | Remove `bin/`, `obj/`, `ext/*/build/`. `-Managed` for `dotnet clean`. |
@@ -77,8 +78,9 @@ and every value is overridable via environment variable.
 |---|---|
 | `Create.ps1`          | `CREATE DATABASE` + ensure PostGIS (idempotent). |
 | `Drop.ps1`            | `DROP DATABASE` with backend termination + `-Force`. |
-| `Reset.ps1`           | Drop + Create + migrate up. |
-| `Migrate.ps1`         | Wrap `Hartonomous.Cli migrate up\|down\|status`. |
+| `Reset.ps1`           | Drop + Create + Bootstrap. |
+| `Bootstrap.ps1`       | Install the generated `hartonomous` PostgreSQL extension with `CREATE EXTENSION`. |
+| `Migrate.ps1`         | Deprecated redirect to `Bootstrap.ps1`; retained for old command muscle memory only. |
 | `InstallExtension.ps1`| `CREATE EXTENSION hartonomous`. `-Drop` to reinstall. |
 | `Backup.ps1`          | `pg_dump` → `artifacts/backups/<ts>.dump` (custom/plain/tar). |
 | `Restore.ps1`         | `pg_restore`/`psql -f` + optional drop/recreate. |
@@ -94,11 +96,19 @@ and every value is overridable via environment variable.
 | `All.ps1`        | Every phase in FK order. `-WithModel` to include Safetensors. |
 | `Validate.ps1`   | Print substrate row-count dashboard. |
 
+### `verify/`
+
+| Script | Purpose |
+|---|---|
+| `AgentScaffolding.ps1` | Scan AI-facing scaffolding and standards docs for migration-era schema drift (`pwsh -File scripts/verify/AgentScaffolding.ps1`). |
+| `compare_safetensors.py` | Compare exported safetensors files. |
+
 ### `ops/`
 
 | Script | Purpose |
 |---|---|
-| `Status.ps1`  | Full substrate dashboard (daemon, container, DB, extension, HEAD, counts). |
+| `Status.ps1`  | Full substrate dashboard (daemon, container, DB, extension bootstrap, phase status, counts). |
+| `Readiness.ps1` | Exact live readiness report: data counts, phase rows, significance coverage, geometry gaps, and query/function probes. Exits non-zero on any warning or failure. |
 | `Phases.ps1`  | Wrap `phases list\|status\|run`. |
 | `Session.ps1` | Wrap `session open\|close\|status`. |
 
@@ -110,7 +120,7 @@ and every value is overridable via environment variable.
 | `Hartonomous.Docker.psm1`   | Daemon + compose + container helpers. |
 | `Hartonomous.Postgres.psm1` | psql wrappers + health checks + row-count queries. |
 | `Hartonomous.Build.psm1`    | dotnet/cmake discovery + invocation. |
-| `Hartonomous.Phases.psm1`   | CLI wrappers for migrate/phases/session. |
+| `Hartonomous.Phases.psm1`   | CLI wrappers for legacy migrate, phases, and session commands. |
 
 ---
 

@@ -1,8 +1,8 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Full substrate dashboard: daemon, container, DB, extension, migration HEAD,
-  phase status, and row counts.
+    Full substrate dashboard: daemon, container, DB, extension bootstrap,
+    phase status, and row counts.
 
 .EXAMPLE
   pwsh scripts/ops/Status.ps1
@@ -33,14 +33,30 @@ try {
         "{0,-22} {1}" -f 'Database exists:', $dbOk | Write-Host
         if ($dbOk) {
             "{0,-22} {1}" -f 'PostGIS:',   (Test-HartPostgisEnabled -Cfg $Cfg)                | Write-Host
-            "{0,-22} {1}" -f 'hartonomous ext:', (Test-HartHartonomousExtensionInstalled -Cfg $Cfg) | Write-Host
+            $hartExt = Test-HartHartonomousExtensionInstalled -Cfg $Cfg
+            "{0,-22} {1}" -f 'hartonomous ext:', $hartExt | Write-Host
+            if ($hartExt) {
+                $extVersion = Invoke-HartPsqlScalar -Cfg $Cfg -Sql "SELECT extversion FROM pg_extension WHERE extname='hartonomous'"
+                "{0,-22} {1}" -f 'Extension version:', $extVersion | Write-Host
+            }
 
-            # Migration HEAD
+            # Bootstrap path
+            "{0,-22} {1}" -f 'Schema apply path:', 'CREATE EXTENSION hartonomous' | Write-Host
+
+            # Phase status
             try {
-                $head = Invoke-HartPsqlScalar -Cfg $Cfg -Sql 'SELECT version FROM substrate.schema_version ORDER BY version DESC LIMIT 1'
-                "{0,-22} {1}" -f 'Migration HEAD:', $head | Write-Host
+                Write-HartBanner 'Phase status'
+                $rows = Invoke-HartPsql -Cfg $Cfg -Sql "SELECT phase_code, status, coalesce(completed_at::text, '') FROM monitor.phase_status ORDER BY phase_code"
+                if ($rows.Count -eq 0) {
+                    '(no phase status rows)' | Write-Host
+                } else {
+                    foreach ($row in $rows) {
+                        $parts = $row -split '\|'
+                        '{0,-22} {1,-14} {2}' -f $parts[0], $parts[1], $parts[2] | Write-Host
+                    }
+                }
             } catch {
-                "{0,-22} {1}" -f 'Migration HEAD:', '(substrate.schema_version missing)' | Write-Host
+                "{0,-22} {1}" -f 'Phase status:', '(monitor.phase_status unavailable)' | Write-Host
             }
 
             # Row counts summary
