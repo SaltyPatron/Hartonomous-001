@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Npgsql;
 
 namespace Hartonomous.Core.Data;
@@ -10,15 +11,18 @@ public static class NpgsqlSubstrateCommand
 {
     private static readonly string SelectAllFrom = string.Concat("SEL", "ECT * FR", "OM ");
 
+    public static NpgsqlCommand CreateFunction(NpgsqlConnection connection, string functionName)
+        => CreateFunction(connection, functionName, Array.Empty<object?>());
+
     public static NpgsqlCommand CreateFunction(
         NpgsqlConnection connection,
         string functionName,
-        params object?[] parameterValues)
+        IReadOnlyList<object?> parameterValues)
     {
         ArgumentNullException.ThrowIfNull(connection);
         SubstrateFunctionNames.AssertAllowlisted(functionName);
 
-        NpgsqlCommand command = new(BuildFunctionCall(functionName, parameterValues.Length), connection);
+        NpgsqlCommand command = new(BuildFunctionCall(functionName, parameterValues.Count), connection);
         foreach (object? value in parameterValues)
         {
             command.Parameters.AddWithValue(value ?? DBNull.Value);

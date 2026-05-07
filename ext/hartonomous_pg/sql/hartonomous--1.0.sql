@@ -3039,10 +3039,17 @@ COMMENT ON FUNCTION substrate.resolve_context_id(TEXT) IS
 DROP FUNCTION IF EXISTS substrate.resolve_entity_handles(BYTEA[], TEXT[]);
 DROP FUNCTION IF EXISTS substrate.resolve_entity_handles(BYTEA[]);
 CREATE OR REPLACE FUNCTION substrate.resolve_entity_handles(
-    p_hashes BYTEA[]
-) RETURNS TABLE (entity_hash BYTEA)
+    p_hashes BYTEA[], p_type_codes TEXT[]
+) RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT e.hash FROM unnest(p_hashes) AS in_(h) JOIN substrate.entity e ON e.hash = in_.h;
+    SELECT et.code, e.hash
+      FROM unnest(p_hashes) AS in_(h)
+      JOIN substrate.entity e ON e.hash = in_.h
+      JOIN substrate.entity_classification ec ON ec.entity_hash = e.hash
+      JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+      JOIN unnest(p_type_codes) AS requested(code) ON requested.code = et.code
+     GROUP BY et.code, e.hash
+     ORDER BY et.code, e.hash;
 $f$;
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
@@ -3828,37 +3835,106 @@ $f$;
 DROP FUNCTION IF EXISTS substrate.get_entity_info_by_handles(INT[], BYTEA[]);
 DROP FUNCTION IF EXISTS substrate.get_entity_info_by_handles(BYTEA[]);
 CREATE OR REPLACE FUNCTION substrate.get_entity_info_by_handles(
-    p_hashes BYTEA[]
-) RETURNS TABLE (entity_hash BYTEA)
+    p_type_codes TEXT[], p_hashes BYTEA[]
+) RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT e.hash FROM unnest(p_hashes) AS in_(h) JOIN substrate.entity e ON e.hash = in_.h;
+    SELECT requested.type_code, e.hash
+      FROM unnest(p_type_codes, p_hashes) AS requested(type_code, h)
+      JOIN substrate.entity e ON e.hash = requested.h
+      JOIN substrate.entity_type et ON et.code = requested.type_code
+      JOIN substrate.entity_classification ec
+        ON ec.entity_hash = e.hash
+       AND ec.entity_type_id = et.id
+     GROUP BY requested.type_code, e.hash
+     ORDER BY requested.type_code, e.hash;
 $f$;
 
 -- ── sql/schema/functions/get_edge_info_by_handles.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.get_edge_info_by_handles(INT[], BYTEA[]);
 CREATE OR REPLACE FUNCTION substrate.get_edge_info_by_handles(
-    p_type_ids INT[], p_hashes BYTEA[]
-) RETURNS TABLE (edge_type_id INT, edge_hash BYTEA, provenance_id INT)
+        p_edge_type_codes TEXT[], p_hashes BYTEA[]
+) RETURNS TABLE (
+        edge_type_code TEXT,
+        edge_hash BYTEA,
+        source_type_code TEXT,
+        source_hash BYTEA,
+        target_type_code TEXT,
+        target_hash BYTEA
+)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT e.edge_type_id, e.hash, e.provenance_id
-      FROM unnest(p_type_ids, p_hashes) AS in_(t, h)
-      JOIN substrate.edge e ON e.edge_type_id = in_.t AND e.hash = in_.h;
+        SELECT
+                et.code,
+                e.hash,
+                COALESCE(src_decl.code, src_cls.code),
+                src.entity_hash,
+                COALESCE(tgt_decl.code, tgt_cls.code),
+                tgt.entity_hash
+            FROM unnest(p_edge_type_codes, p_hashes) AS requested(type_code, h)
+            JOIN substrate.edge_type et ON et.code = requested.type_code
+            JOIN substrate.edge e ON e.edge_type_id = et.id AND e.hash = requested.h
+            LEFT JOIN substrate.entity_type src_decl ON src_decl.id = et.source_type_id
+            LEFT JOIN substrate.entity_type tgt_decl ON tgt_decl.id = et.target_type_id
+            LEFT JOIN LATERAL (
+                    SELECT em.entity_hash
+                        FROM substrate.edge_member em
+                        JOIN substrate.edge_role er ON er.id = em.edge_role_id
+                     WHERE em.edge_type_id = e.edge_type_id
+                         AND em.edge_hash = e.hash
+                         AND er.code = 'source'
+                     ORDER BY em.role_position, em.entity_hash
+                     LIMIT 1
+            ) src ON true
+            LEFT JOIN LATERAL (
+                    SELECT em.entity_hash
+                        FROM substrate.edge_member em
+                        JOIN substrate.edge_role er ON er.id = em.edge_role_id
+                     WHERE em.edge_type_id = e.edge_type_id
+                         AND em.edge_hash = e.hash
+                         AND er.code = 'target'
+                     ORDER BY em.role_position, em.entity_hash
+                     LIMIT 1
+            ) tgt ON true
+            LEFT JOIN LATERAL (
+                    SELECT child_et.code
+                        FROM substrate.entity_classification ec
+                        JOIN substrate.entity_type child_et ON child_et.id = ec.entity_type_id
+                     WHERE ec.entity_hash = src.entity_hash
+                     ORDER BY child_et.code
+                     LIMIT 1
+            ) src_cls ON true
+            LEFT JOIN LATERAL (
+                    SELECT child_et.code
+                        FROM substrate.entity_classification ec
+                        JOIN substrate.entity_type child_et ON child_et.id = ec.entity_type_id
+                     WHERE ec.entity_hash = tgt.entity_hash
+                     ORDER BY child_et.code
+                     LIMIT 1
+            ) tgt_cls ON true;
 $f$;
 
 -- ── sql/schema/functions/get_outbound_edge_targets.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.get_outbound_edge_targets(INT, BYTEA, TEXT);
 CREATE OR REPLACE FUNCTION substrate.get_outbound_edge_targets(
     p_src_hash BYTEA, p_edge_type_code TEXT
-) RETURNS TABLE (target_hash BYTEA)
+) RETURNS TABLE (target_type_code TEXT, target_hash BYTEA)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT em_t.entity_hash
+    SELECT COALESCE(tgt_decl.code, tgt_cls.code), em_t.entity_hash
       FROM substrate.edge_type et
+      LEFT JOIN substrate.entity_type tgt_decl ON tgt_decl.id = et.target_type_id
       JOIN substrate.edge_member em_s
         ON em_s.edge_type_id = et.id AND em_s.entity_hash = p_src_hash
       JOIN substrate.edge_role er_s ON er_s.id = em_s.edge_role_id AND er_s.code = 'source'
       JOIN substrate.edge_member em_t
         ON em_t.edge_type_id = em_s.edge_type_id AND em_t.edge_hash = em_s.edge_hash
       JOIN substrate.edge_role er_t ON er_t.id = em_t.edge_role_id AND er_t.code = 'target'
+       LEFT JOIN LATERAL (
+        SELECT child_et.code
+          FROM substrate.entity_classification ec
+          JOIN substrate.entity_type child_et ON child_et.id = ec.entity_type_id
+         WHERE ec.entity_hash = em_t.entity_hash
+         ORDER BY child_et.code
+         LIMIT 1
+       ) tgt_cls ON true
      WHERE et.code = p_edge_type_code;
 $f$;
 
@@ -4094,14 +4170,26 @@ $f$;
 DROP FUNCTION IF EXISTS substrate.composition_range(INT, BYTEA, INT, INT);
 CREATE OR REPLACE FUNCTION substrate.composition_range(
     p_parent_hash BYTEA, p_start INT, p_end INT
-) RETURNS TABLE (ordinal INT, child_hash BYTEA, rle_count INT)
+) RETURNS TABLE (child_type_code TEXT, child_hash BYTEA, ordinal INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT s.ordinal, s.child_hash, s.rle_count
+    SELECT child_cls.code, s.child_hash, expanded.ordinal
       FROM substrate.sequence s
+      CROSS JOIN LATERAL generate_series(
+          GREATEST(s.ordinal, p_start),
+          LEAST(s.ordinal + s.rle_count - 1, p_end)
+      ) AS expanded(ordinal)
+      CROSS JOIN LATERAL (
+          SELECT et.code
+            FROM substrate.entity_classification ec
+            JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+           WHERE ec.entity_hash = s.child_hash
+           ORDER BY et.code
+           LIMIT 1
+      ) child_cls
      WHERE s.parent_hash = p_parent_hash
        AND s.ordinal + s.rle_count > p_start
        AND s.ordinal <= p_end
-     ORDER BY s.ordinal;
+     ORDER BY expanded.ordinal;
 $f$;
 
 -- ── sql/schema/functions/composition_subtrajectory.sql ───────────────────────────────────────

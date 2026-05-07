@@ -26,6 +26,10 @@ public static class SubstrateFunctionNames
     public const string ApiEntitySignificance = "substrate.api_entity_significance";
     public const string ApiListEntities = "substrate.api_list_entities";
 
+    public const string CompositionRange = "substrate.composition_range";
+    public const string GetEdgeInfoByHandles = "substrate.get_edge_info_by_handles";
+    public const string GetEntityInfoByHandles = "substrate.get_entity_info_by_handles";
+    public const string GetOutboundEdgeTargets = "substrate.get_outbound_edge_targets";
     public const string GetCompletedModelPasses = "substrate.get_completed_model_passes";
     public const string LoadWordNetOffsetSynsetMap = "substrate.load_wordnet_offset_synset_map";
     public const string PhysicalityLineString4d = "substrate.physicality_linestring4d";
@@ -44,6 +48,8 @@ public static class SubstrateFunctionNames
     public const string ReferenceIdByCode = "substrate.reference_id_by_code";
     public const string ReferenceInt64Set = "substrate.reference_int64_set";
     public const string ReferenceKeyValueMap = "substrate.reference_key_value_map";
+    public const string RecomposeText = "substrate.recompose_text";
+    public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string UpsertArchitectureClass = "substrate.upsert_architecture_class";
     public const string UpsertHomogeneousEdgeTypes = "substrate.upsert_homogeneous_edge_types";
     public const string UpsertModelPassCheckpoint = "substrate.upsert_model_pass_checkpoint";
@@ -66,6 +72,10 @@ public static class SubstrateFunctionNames
         ApiEntityNeighbors,
         ApiEntitySignificance,
         ApiListEntities,
+        CompositionRange,
+        GetEdgeInfoByHandles,
+        GetEntityInfoByHandles,
+        GetOutboundEdgeTargets,
         GetCompletedModelPasses,
         LoadWordNetOffsetSynsetMap,
         PhysicalityLineString4d,
@@ -84,6 +94,8 @@ public static class SubstrateFunctionNames
         ReferenceIdByCode,
         ReferenceInt64Set,
         ReferenceKeyValueMap,
+        RecomposeText,
+        ResolveEntityHandles,
         UpsertArchitectureClass,
         UpsertHomogeneousEdgeTypes,
         UpsertModelPassCheckpoint,

@@ -25,8 +25,7 @@ internal static class EdgeEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiEdgeByHash,
-            edgeTypeCode,
-            hashBytes!);
+            new object?[] { edgeTypeCode, hashBytes! });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {

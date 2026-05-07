@@ -34,10 +34,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.UpsertReferenceEdgeType,
-            code,
-            category,
-            sourceEntityType,
-            targetEntityType);
+            new object?[] { code, category, sourceEntityType, targetEntityType });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -77,8 +74,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
                 conn,
                 SubstrateFunctionNames.PopulateMorphFeatures,
-                keys,
-                values);
+                new object?[] { keys, values });
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }
@@ -110,7 +106,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
                 conn,
                 SubstrateFunctionNames.PopulateDeprels,
-                chunk);
+                new object?[] { chunk });
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }
@@ -279,9 +275,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.PopulateGeneralCategories,
-            codes,
-            groupCodes,
-            descriptions);
+            new object?[] { codes, groupCodes, descriptions });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -299,7 +293,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.PopulateScripts,
-            codeArray);
+            new object?[] { codeArray });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -326,9 +320,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.PopulateBlocks,
-            codes,
-            starts,
-            ends);
+            new object?[] { codes, starts, ends });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -355,8 +347,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.PopulateBreakProperties,
-            codes,
-            categories);
+            new object?[] { codes, categories });
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
@@ -470,9 +461,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
                 conn,
                 SubstrateFunctionNames.UpsertHomogeneousEdgeTypes,
-                chunk,
-                category,
-                entityTypeCode);
+                new object?[] { chunk, category, entityTypeCode });
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }
@@ -503,10 +492,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
                 conn,
                 SubstrateFunctionNames.PopulateSenses,
-                codes,
-                glosses,
-                lexnameIds,
-                posIds);
+                new object?[] { codes, glosses, lexnameIds, posIds });
             _ = await cmd.ExecuteScalarAsync(ct);
         }
     }

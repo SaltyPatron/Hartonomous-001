@@ -28,7 +28,7 @@ internal static class EntityEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiEntityByHash,
-            hashBytes!);
+            new object?[] { hashBytes! });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {
@@ -60,9 +60,7 @@ internal static class EntityEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiListEntities,
-            typeCode,
-            cursorHash,
-            pageSize + 1);
+            new object?[] { typeCode, cursorHash, pageSize + 1 });
 
         List<object> items = [];
         List<string> hashes = [];
@@ -105,7 +103,7 @@ internal static class EntityEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiEntityClassifications,
-            hashBytes!);
+            new object?[] { hashBytes! });
 
         object? result = await cmd.ExecuteScalarAsync(ct);
         return Results.Ok(new
@@ -134,10 +132,7 @@ internal static class EntityEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiEntityEdges,
-            hashBytes!,
-            dir,
-            edgeTypeCode,
-            pageSize);
+            new object?[] { hashBytes!, dir, edgeTypeCode, pageSize });
 
         List<object> items = [];
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);

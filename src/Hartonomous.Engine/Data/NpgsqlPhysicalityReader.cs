@@ -33,9 +33,7 @@ public sealed class NpgsqlPhysicalityReader : IPhysicalityReader
                 await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
                         conn,
                         SubstrateFunctionNames.PhysicalityLineString4d,
-                        entity.Hash,
-                        entity.EntityTypeCode,
-                        physicalityTypeCode);
+                    new object?[] { entity.Hash, entity.EntityTypeCode, physicalityTypeCode });
         object? raw = await cmd.ExecuteScalarAsync(ct);
         if (raw is not double[] coords || coords.Length < 4 || (coords.Length % 4) != 0)
         {
@@ -51,9 +49,7 @@ public sealed class NpgsqlPhysicalityReader : IPhysicalityReader
                 await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
                         conn,
                         SubstrateFunctionNames.PhysicalityPoint4d,
-                        entity.Hash,
-                        entity.EntityTypeCode,
-                        physicalityTypeCode);
+                    new object?[] { entity.Hash, entity.EntityTypeCode, physicalityTypeCode });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {

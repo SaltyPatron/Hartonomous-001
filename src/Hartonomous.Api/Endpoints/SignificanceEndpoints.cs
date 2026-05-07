@@ -27,8 +27,7 @@ internal static class SignificanceEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiEntitySignificance,
-            hashBytes!,
-            arena);
+            new object?[] { hashBytes!, arena });
 
         List<object> items = [];
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
@@ -65,9 +64,7 @@ internal static class SignificanceEndpoints
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ApiEntityNeighbors,
-            hashBytes!,
-            arena,
-            pageSize);
+            new object?[] { hashBytes!, arena, pageSize });
 
         List<object> neighbors = [];
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);

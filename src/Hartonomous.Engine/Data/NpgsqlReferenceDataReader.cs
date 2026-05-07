@@ -30,7 +30,7 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ReferenceCodeMap,
-            tableName);
+            new object?[] { tableName });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -48,9 +48,7 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ReferenceKeyValueMap,
-            tableName,
-            keyColumn,
-            valueColumn);
+            new object?[] { tableName, keyColumn, valueColumn });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -67,8 +65,7 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ReferenceCodeTextMap,
-            tableName,
-            valueColumn);
+            new object?[] { tableName, valueColumn });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -85,8 +82,7 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ReferenceInt64Set,
-            tableName,
-            columnName);
+            new object?[] { tableName, columnName });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -102,8 +98,7 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ReferenceIdByCode,
-            tableName,
-            code);
+            new object?[] { tableName, code });
 
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is not null
@@ -120,8 +115,7 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
             conn,
             SubstrateFunctionNames.ReferenceCodeDoubleMap,
-            tableName,
-            valueColumn);
+            new object?[] { tableName, valueColumn });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
