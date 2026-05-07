@@ -5475,6 +5475,18 @@ END $$;
 COMMENT ON FUNCTION substrate.infer_topk(BYTEA, INT, INT, INT) IS
     'Top-K targets from a forward pass over the prompt. Hash-only. Returns rank, target_hash, total_mu, path_count, recomposed_text. The Gödel Engine consumes this for Self-Consistency voting, ToT branch selection, and honest-abstention thresholds.';
 
+-- ── sql/schema/functions/prompt_document_ready.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.prompt_document_ready(p_hash BYTEA)
+RETURNS TABLE (entity_count BIGINT, sequence_count BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT
+        (SELECT count(*) FROM substrate.entity e WHERE e.hash = p_hash)::BIGINT AS entity_count,
+        (SELECT count(*) FROM substrate.sequence s WHERE s.parent_hash = p_hash)::BIGINT AS sequence_count;
+$f$;
+
+COMMENT ON FUNCTION substrate.prompt_document_ready(BYTEA) IS
+    'Return prompt document drain-barrier counts for entity and sequence rows.';
+
 -- ── sql/schema/functions/recall.sql ───────────────────────────────────────
 -- substrate.recall(p_prompt_hash) — the brain's primary direct operation,
 -- now structured around hub-intersection rather than max-pool best-target.

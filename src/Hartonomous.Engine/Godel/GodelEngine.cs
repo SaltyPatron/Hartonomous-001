@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
 using Hartonomous.Core.Text.Segmentation;
@@ -243,30 +244,26 @@ public sealed class GodelEngine
 
         int seedCount = 0;
         long distinctTargets = 0;
-        await using (NpgsqlCommand probe = new(
-            "SELECT seed_count, distinct_targets FROM substrate.infer($1, $2, $3)", conn))
+        await using (NpgsqlCommand probe = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.Infer,
+            new object?[] { docHash, maxDepth, maxResults }))
         {
-            probe.Parameters.AddWithValue(docHash);
-            probe.Parameters.AddWithValue(maxDepth);
-            probe.Parameters.AddWithValue(maxResults);
             probe.CommandTimeout = 300;
             await using NpgsqlDataReader r = await probe.ExecuteReaderAsync(ct).ConfigureAwait(false);
             if (await r.ReadAsync(ct).ConfigureAwait(false))
             {
-                seedCount = r.IsDBNull(0) ? 0 : r.GetInt32(0);
-                distinctTargets = r.IsDBNull(1) ? 0 : r.GetInt64(1);
+                seedCount = r.IsDBNull(1) ? 0 : r.GetInt32(1);
+                distinctTargets = r.IsDBNull(2) ? 0 : r.GetInt64(2);
             }
         }
 
         List<GodelCandidate> candidates = new(topK);
-        await using (NpgsqlCommand cmd = new(
-            "SELECT rank, target_hash, total_mu, path_count, recomposed_text " +
-            "FROM substrate.infer_topk($1, $2, $3, $4)", conn))
+        await using (NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.InferTopK,
+            new object?[] { docHash, maxDepth, maxResults, topK }))
         {
-            cmd.Parameters.AddWithValue(docHash);
-            cmd.Parameters.AddWithValue(maxDepth);
-            cmd.Parameters.AddWithValue(maxResults);
-            cmd.Parameters.AddWithValue(topK);
             cmd.CommandTimeout = 300;
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await r.ReadAsync(ct).ConfigureAwait(false))
@@ -289,11 +286,10 @@ public sealed class GodelEngine
         {
             ct.ThrowIfCancellationRequested();
             await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-            await using NpgsqlCommand cmd = new(
-                @"WITH e AS (SELECT 1 FROM substrate.entity WHERE hash = $1 LIMIT 1),
-                       s AS (SELECT 1 FROM substrate.sequence WHERE parent_hash = $1 LIMIT 1)
-                  SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM s)", conn);
-            cmd.Parameters.AddWithValue(hash);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.PromptDocumentReady,
+                new object?[] { hash });
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             if (await r.ReadAsync(ct).ConfigureAwait(false))
             {

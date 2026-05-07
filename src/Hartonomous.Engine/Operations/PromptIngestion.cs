@@ -70,11 +70,10 @@ public sealed partial class PromptIngestion : IPromptIngestion
         {
             ct.ThrowIfCancellationRequested();
             await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-            await using NpgsqlCommand cmd = new(
-                "WITH e AS (SELECT 1 FROM substrate.entity WHERE hash = $1 LIMIT 1), "
-                + "     s AS (SELECT 1 FROM substrate.sequence WHERE parent_hash = $1 LIMIT 1) "
-                + "SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM s)", conn);
-            cmd.Parameters.AddWithValue(hash);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.PromptDocumentReady,
+                new object?[] { hash });
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             if (await r.ReadAsync(ct).ConfigureAwait(false))
             {

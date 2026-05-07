@@ -150,11 +150,10 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         {
             ct.ThrowIfCancellationRequested();
             await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-            await using NpgsqlCommand cmd = new(
-                @"WITH e AS (SELECT 1 FROM substrate.entity WHERE hash = $1 LIMIT 1),
-                       s AS (SELECT 1 FROM substrate.sequence WHERE parent_hash = $1 LIMIT 1)
-                  SELECT (SELECT count(*) FROM e), (SELECT count(*) FROM s)", conn);
-            cmd.Parameters.AddWithValue(hash);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.PromptDocumentReady,
+                new object?[] { hash });
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             if (await r.ReadAsync(ct).ConfigureAwait(false))
             {
@@ -178,11 +177,10 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         // p_max_depth=3, p_max_results=25 — tighter than substrate.infer's
         // defaults (5/50). Cross-arena A* expansion is heavy; this keeps
         // a small prompt under a few seconds.
-        await using NpgsqlCommand cmd = new(
-            "SELECT answer_text, seed_count, distinct_targets, " +
-            "       best_target_hash, best_total_mu, elapsed_ms " +
-            "FROM substrate.infer($1, 3, 25)", conn);
-        cmd.Parameters.AddWithValue(docHash);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.Infer,
+            new object?[] { docHash, 3, 25 });
         cmd.CommandTimeout = 300;
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await r.ReadAsync(ct).ConfigureAwait(false))

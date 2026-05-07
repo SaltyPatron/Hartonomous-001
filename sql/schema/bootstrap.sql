@@ -306,6 +306,7 @@
 -- Inference / recall
 -- @include schema/functions/infer.sql
 -- @include schema/functions/infer_topk.sql
+-- @include schema/functions/prompt_document_ready.sql
 -- @include schema/functions/recall.sql
 -- @include schema/functions/intersect.sql
 -- @include schema/functions/neighborhood.sql

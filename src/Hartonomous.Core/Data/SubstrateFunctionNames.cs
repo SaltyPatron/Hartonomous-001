@@ -14,6 +14,7 @@ public static class SubstrateFunctionNames
 {
     public const string Complete    = "substrate.complete";
     public const string Infer       = "substrate.infer";
+    public const string InferTopK   = "substrate.infer_topk";
     public const string Classify    = "substrate.classify";
     public const string Rerank      = "substrate.rerank";
     public const string EmbedLookup = "substrate.embed_lookup";
@@ -43,6 +44,7 @@ public static class SubstrateFunctionNames
     public const string PopulateGeneralCategories = "substrate.populate_general_categories";
     public const string PopulateLanguages = "substrate.populate_languages";
     public const string PopulateMorphFeatures = "substrate.populate_morph_features";
+    public const string PromptDocumentReady = "substrate.prompt_document_ready";
     public const string PopulateScripts = "substrate.populate_scripts";
     public const string PopulateSenses = "substrate.populate_senses";
     public const string ReferenceCodeDoubleMap = "substrate.reference_code_double_map";
@@ -68,6 +70,7 @@ public static class SubstrateFunctionNames
     {
         Complete,
         Infer,
+        InferTopK,
         Classify,
         Rerank,
         EmbedLookup,
@@ -95,6 +98,7 @@ public static class SubstrateFunctionNames
         PopulateGeneralCategories,
         PopulateLanguages,
         PopulateMorphFeatures,
+        PromptDocumentReady,
         PopulateScripts,
         PopulateSenses,
         ReferenceCodeDoubleMap,
