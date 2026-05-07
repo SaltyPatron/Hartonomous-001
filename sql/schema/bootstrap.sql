@@ -260,6 +260,13 @@
 -- @include schema/functions/get_edge_info_by_handles.sql
 -- @include schema/functions/get_outbound_edge_targets.sql
 -- @include schema/functions/get_composition_children.sql
+-- @include schema/functions/api_entity_classifications.sql
+-- @include schema/functions/api_entity_by_hash.sql
+-- @include schema/functions/api_list_entities.sql
+-- @include schema/functions/api_entity_edges.sql
+-- @include schema/functions/api_edge_by_hash.sql
+-- @include schema/functions/api_entity_significance.sql
+-- @include schema/functions/api_entity_neighbors.sql
 -- Composition / sequence
 -- @include schema/functions/composition_at.sql
 -- @include schema/functions/composition_before.sql
