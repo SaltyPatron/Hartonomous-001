@@ -8,8 +8,8 @@ namespace Hartonomous.Integration.Tests.Fixtures;
 
 /// <summary>
 /// Provides a connection-managed substrate snapshot for V1 round-trip tests.
-/// The fixture expects an already-migrated, already-seeded substrate (the
-/// user's pipeline runs scripts/db/Migrate + scripts/seed/All before tests
+/// The fixture expects an already-bootstrapped, already-seeded substrate (the
+/// user's pipeline runs scripts/db/Bootstrap + scripts/seed/All before tests
 /// fire). Per the V1 plan's Phase 0 baseline.
 ///
 /// Real ingested-model snapshots are loaded by the test from D:\Models\... if

@@ -3,7 +3,7 @@ using System.CommandLine;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Hartonomous.Cli.Migrations;
+using Hartonomous.Cli.Bootstrap;
 using Npgsql;
 
 namespace Hartonomous.Cli.Commands;
@@ -25,7 +25,7 @@ internal sealed class BootstrapCommand
         Option<string> manifestOpt = new(
             ManifestAliases,
             getDefaultValue: () => Path.Combine("sql", "schema", "bootstrap.sql"),
-            description: "Path to the bootstrap manifest. Default: sql/schema/bootstrap.sql. The file's @include directives are recursively resolved via MigrationFileLoader.LoadResolved before execution.");
+            description: "Path to the bootstrap manifest. Default: sql/schema/bootstrap.sql. The file's @include directives are recursively resolved before execution.");
 
         Command cmd = new("bootstrap",
             "Apply the canonical substrate schema from sql/schema/ to a fresh database. "
@@ -48,7 +48,7 @@ internal sealed class BootstrapCommand
             }
 
             Console.WriteLine($"==== Bootstrap: resolving {fullPath} ====");
-            string sql = MigrationFileLoader.LoadResolved(fullPath);
+            string sql = BootstrapSqlLoader.LoadResolved(fullPath);
 
             await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
             await using NpgsqlConnection c = await ds.OpenConnectionAsync(CancellationToken.None);

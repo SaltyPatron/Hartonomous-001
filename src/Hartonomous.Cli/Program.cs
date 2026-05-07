@@ -43,7 +43,6 @@ internal static class Program
         IServiceProvider sp = host.Services;
 
         RootCommand root = new("Hartonomous CLI");
-        root.AddCommand(MigrateCommand.Build());
         root.AddCommand(sp.GetRequiredService<PhasesCommand>().Build());
         root.AddCommand(sp.GetRequiredService<SessionCommand>().Build());
         root.AddCommand(sp.GetRequiredService<StatusCommand>().Build());

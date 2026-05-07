@@ -2,26 +2,22 @@ using System;
 using System.IO;
 using System.Text.RegularExpressions;
 
-namespace Hartonomous.Cli.Migrations;
+namespace Hartonomous.Cli.Bootstrap;
 
 /// <summary>
-/// Resolves <c>-- @include path/relative/to/sql/root.sql</c> directives inside
-/// migration .up.sql / .down.sql files. Lets a migration stage file act as a
-/// thin manifest that pulls together one-object-per-file schema sources from
-/// <c>sql/schema/...</c>, while keeping schema/* as the single source of truth.
-/// Includes are resolved recursively so a migration can include a "table-set"
-/// file that itself includes individual table files.
+/// Resolves canonical schema <c>-- @include</c> directives from
+/// <c>sql/schema/bootstrap.sql</c>.
 /// </summary>
-internal static class MigrationFileLoader
+internal static class BootstrapSqlLoader
 {
     private static readonly Regex IncludeDirective = new(
         @"^\s*--\s*@include\s+(?<path>\S+)\s*$",
         RegexOptions.Compiled | RegexOptions.Multiline);
 
-    public static string LoadResolved(string filePath)
+    public static string LoadResolved(string manifestPath)
     {
-        string sqlRoot = FindSqlRoot(filePath);
-        return ExpandIncludes(filePath, sqlRoot);
+        string sqlRoot = FindSqlRoot(manifestPath);
+        return ExpandIncludes(manifestPath, sqlRoot);
     }
 
     private static string FindSqlRoot(string anyFilePath)
@@ -31,11 +27,13 @@ internal static class MigrationFileLoader
         {
             dir = dir.Parent;
         }
+
         if (dir is null)
         {
             throw new InvalidOperationException(
                 $"Could not find 'sql' root directory walking up from {anyFilePath}");
         }
+
         return dir.FullName;
     }
 
@@ -52,6 +50,7 @@ internal static class MigrationFileLoader
                 throw new FileNotFoundException(
                     $"@include not found: '{includePath}' (resolved to '{fullPath}') referenced from '{filePath}'");
             }
+
             return ExpandIncludes(fullPath, sqlRoot);
         });
     }
