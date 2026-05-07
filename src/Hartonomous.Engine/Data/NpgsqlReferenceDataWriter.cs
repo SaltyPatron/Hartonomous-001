@@ -1,5 +1,7 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -375,57 +377,16 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
             return;
         }
 
-        // Idempotent staged COPY. The SQL bulk-fill substrate.populate_codepoint_property_range_from_ext()
-        // and this C# decomposer path BOTH target substrate.codepoint_property with the SAME
-        // (entity_hash) primary key. A direct COPY into the substrate table cannot coexist with
-        // a prior population (duplicate-key on row 1). Mirror the StreamingIngestionPipeline's
-        // pattern: stage into a session-scoped temp table, then INSERT-SELECT-ON-CONFLICT.
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-
-        await using (NpgsqlCommand setupCmd = new(
-            "CREATE TEMP TABLE IF NOT EXISTS _codepoint_property_inflight " +
-            "AS SELECT * FROM substrate.codepoint_property WITH NO DATA; " +
-            "TRUNCATE _codepoint_property_inflight;", conn))
+        for (int offset = 0; offset < rows.Count; offset += ChunkSize)
         {
-            await setupCmd.ExecuteNonQueryAsync(ct);
-        }
-
-        await using (NpgsqlBinaryImporter writer = await conn.BeginBinaryImportAsync(
-            "COPY _codepoint_property_inflight (" +
-            "entity_hash, codepoint_value, general_category_id, " +
-            "script_id, block_id, gcb_id, wb_id, sb_id, lb_id, " +
-            "is_extended_pictographic, ccc, decomposition_type, " +
-            "decomposition_mapping, simple_case_fold, full_case_fold) " +
-            "FROM STDIN (FORMAT binary)", ct))
-        {
-            foreach (var row in rows)
-            {
-                await writer.StartRowAsync(ct);
-                await writer.WriteAsync(row.EntityHash, NpgsqlDbType.Bytea, ct);
-                await writer.WriteAsync(row.CodepointValue, NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(row.GeneralCategoryId, NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(row.ScriptId, NpgsqlDbType.Integer, ct);
-                await writer.WriteAsync(row.BlockId, NpgsqlDbType.Integer, ct);
-                if (row.GcbId.HasValue) { await writer.WriteAsync(row.GcbId.Value, NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-                if (row.WbId.HasValue) { await writer.WriteAsync(row.WbId.Value, NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-                if (row.SbId.HasValue) { await writer.WriteAsync(row.SbId.Value, NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-                if (row.LbId.HasValue) { await writer.WriteAsync(row.LbId.Value, NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-                await writer.WriteAsync(row.IsExtendedPictographic, NpgsqlDbType.Boolean, ct);
-                await writer.WriteAsync(row.Ccc, NpgsqlDbType.Smallint, ct);
-                if (row.DecompositionType is not null) { await writer.WriteAsync(row.DecompositionType, NpgsqlDbType.Varchar, ct); } else { await writer.WriteNullAsync(ct); }
-                if (row.DecompositionMapping is not null) { await writer.WriteAsync(row.DecompositionMapping, NpgsqlDbType.Array | NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-                if (row.SimpleCaseFold.HasValue) { await writer.WriteAsync(row.SimpleCaseFold.Value, NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-                if (row.FullCaseFold is not null) { await writer.WriteAsync(row.FullCaseFold, NpgsqlDbType.Array | NpgsqlDbType.Integer, ct); } else { await writer.WriteNullAsync(ct); }
-            }
-            await writer.CompleteAsync(ct);
-        }
-
-        await using (NpgsqlCommand insertCmd = new(
-            "INSERT INTO substrate.codepoint_property " +
-            "SELECT * FROM _codepoint_property_inflight " +
-            "ON CONFLICT (entity_hash) DO NOTHING;", conn))
-        {
-            await insertCmd.ExecuteNonQueryAsync(ct);
+            int count = Math.Min(ChunkSize, rows.Count - offset);
+            string payload = SerializeCodepointPropertyPayload(rows, offset, count);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateProcedure(
+                conn,
+                SubstrateProcedureNames.WriteCodepointProperties,
+                [new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb, Value = payload }]);
+            await cmd.ExecuteNonQueryAsync(ct);
         }
     }
 
@@ -495,5 +456,95 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
                 new object?[] { codes, glosses, lexnameIds, posIds });
             _ = await cmd.ExecuteScalarAsync(ct);
         }
+    }
+
+    private static string SerializeCodepointPropertyPayload(
+        IReadOnlyList<(
+            byte[] EntityHash,
+            int CodepointValue,
+            int GeneralCategoryId,
+            int ScriptId,
+            int BlockId,
+            int? GcbId,
+            int? WbId,
+            int? SbId,
+            int? LbId,
+            bool IsExtendedPictographic,
+            short Ccc,
+            string? DecompositionType,
+            int[]? DecompositionMapping,
+            int? SimpleCaseFold,
+            int[]? FullCaseFold)> rows,
+        int offset,
+        int count)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        using Utf8JsonWriter writer = new(buffer);
+
+        writer.WriteStartArray();
+        for (int rowIndex = offset; rowIndex < offset + count; rowIndex++)
+        {
+            var row = rows[rowIndex];
+            writer.WriteStartObject();
+            writer.WriteString("entity_hash_hex", Convert.ToHexString(row.EntityHash));
+            writer.WriteNumber("codepoint_value", row.CodepointValue);
+            writer.WriteNumber("general_category_id", row.GeneralCategoryId);
+            writer.WriteNumber("script_id", row.ScriptId);
+            writer.WriteNumber("block_id", row.BlockId);
+            WriteNullableNumber(writer, "gcb_id", row.GcbId);
+            WriteNullableNumber(writer, "wb_id", row.WbId);
+            WriteNullableNumber(writer, "sb_id", row.SbId);
+            WriteNullableNumber(writer, "lb_id", row.LbId);
+            writer.WriteBoolean("is_extended_pictographic", row.IsExtendedPictographic);
+            writer.WriteNumber("ccc", row.Ccc);
+            WriteNullableString(writer, "decomposition_type", row.DecompositionType);
+            WriteNullableNumberArray(writer, "decomposition_mapping", row.DecompositionMapping);
+            WriteNullableNumber(writer, "simple_case_fold", row.SimpleCaseFold);
+            WriteNullableNumberArray(writer, "full_case_fold", row.FullCaseFold);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+        writer.Flush();
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    private static void WriteNullableNumber(Utf8JsonWriter writer, string propertyName, int? value)
+    {
+        if (value.HasValue)
+        {
+            writer.WriteNumber(propertyName, value.Value);
+            return;
+        }
+
+        writer.WriteNull(propertyName);
+    }
+
+    private static void WriteNullableString(Utf8JsonWriter writer, string propertyName, string? value)
+    {
+        if (value is not null)
+        {
+            writer.WriteString(propertyName, value);
+            return;
+        }
+
+        writer.WriteNull(propertyName);
+    }
+
+    private static void WriteNullableNumberArray(Utf8JsonWriter writer, string propertyName, int[]? values)
+    {
+        if (values is null)
+        {
+            writer.WriteNull(propertyName);
+            return;
+        }
+
+        writer.WriteStartArray(propertyName);
+        foreach (int value in values)
+        {
+            writer.WriteNumberValue(value);
+        }
+
+        writer.WriteEndArray();
     }
 }

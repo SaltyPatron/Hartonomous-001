@@ -333,6 +333,7 @@
 
 -- ── Phase 14: procedures ─────────────────────────────────────────────
 -- Substrate write procedures
+-- @include schema/procedures/write_codepoint_properties.sql
 -- @include schema/procedures/write_glicko_junction.sql
 -- @include schema/procedures/write_plain_junction.sql
 
