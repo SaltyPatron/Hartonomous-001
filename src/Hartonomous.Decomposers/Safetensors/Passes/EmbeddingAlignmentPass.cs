@@ -1,5 +1,6 @@
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Compute.Ingestion;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -136,20 +137,11 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
 
     private async Task<byte[][]> GetFireflyBpeTokenHashesAsync(long modelSourceId, CancellationToken ct)
     {
-        // Hash-as-PK: substrate.physicality and substrate.entity_model_source
-        // both reference entities by entity_hash (no surrogate id column).
-        const string sql = @"
-            SELECT DISTINCT p.entity_hash
-              FROM substrate.physicality p
-              JOIN substrate.entity_model_source ems ON ems.entity_hash = p.entity_hash
-              JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
-             WHERE ems.model_source_id = $1
-               AND pt.code = 'embedding_firefly'
-             ORDER BY p.entity_hash ASC";
-
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = (int)modelSourceId });
+                await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                        conn,
+                        SubstrateFunctionNames.EmbeddingFireflyTokenHashes,
+                        [(int)modelSourceId]);
         List<byte[]> hashes = [];
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) { hashes.Add((byte[])r.GetValue(0)); }
@@ -158,22 +150,25 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
 
     private async Task<long> ClaimOrGetAnchorAsync(long modelSourceId, int intersectionCount, CancellationToken ct)
     {
-        const string sql = "SELECT substrate.claim_or_get_embedding_anchor($1, $2)";
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = (int)modelSourceId });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = intersectionCount });
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ClaimOrGetEmbeddingAnchor,
+            [(int)modelSourceId, intersectionCount]);
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is int i ? i : (result is long l ? l : modelSourceId);
     }
 
     private async Task<Coords> GetCoordsAsync(byte[][] sharedHashes, long modelSourceId, CancellationToken ct)
     {
-        const string sql = "SELECT entity_hash, x, y, z FROM substrate.get_firefly_coords($1, $2)";
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = sharedHashes });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = (int)modelSourceId });
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.GetFireflyCoords,
+            [
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = sharedHashes },
+                new NpgsqlParameter { Value = (int)modelSourceId }
+            ]);
         List<double> xs = [], ys = [], zs = [];
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -190,16 +185,18 @@ internal sealed partial class EmbeddingAlignmentPass : IModelAnalysisPass
 
     private async Task<long> ApplyRotationAsync(long modelSourceId, double[] r, CancellationToken ct)
     {
-        const string sql = @"
-            SELECT substrate.apply_firefly_rotation(
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = modelSourceId });
-        for (int i = 0; i < 9; i++)
+        object?[] parameterValues = new object?[10];
+        parameterValues[0] = (int)modelSourceId;
+        for (int index = 0; index < 9; index++)
         {
-            cmd.Parameters.Add(new NpgsqlParameter { Value = r[i] });
+            parameterValues[index + 1] = r[index];
         }
+
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ApplyFireflyRotation,
+            parameterValues);
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is long l ? l : 0;
     }

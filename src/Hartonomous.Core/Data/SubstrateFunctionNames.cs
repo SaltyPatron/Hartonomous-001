@@ -27,9 +27,15 @@ public static class SubstrateFunctionNames
     public const string ApiEntitySignificance = "substrate.api_entity_significance";
     public const string ApiListEntities = "substrate.api_list_entities";
 
+    public const string ApplyFireflyRotation = "substrate.apply_firefly_rotation";
+    public const string BindBpeTokensToSeedMorph = "substrate.bind_bpe_tokens_to_seed_morph";
+    public const string BindBpeTokensToSeedPos = "substrate.bind_bpe_tokens_to_seed_pos";
     public const string BreakPropertyCodeMap = "substrate.break_property_code_map";
+    public const string ClaimOrGetEmbeddingAnchor = "substrate.claim_or_get_embedding_anchor";
     public const string CodepointPropertyRows = "substrate.codepoint_property_rows";
     public const string CompositionRange = "substrate.composition_range";
+    public const string EmbeddingFireflyTokenHashes = "substrate.embedding_firefly_token_hashes";
+    public const string GetFireflyCoords = "substrate.get_firefly_coords";
     public const string GetEdgeInfoByHandles = "substrate.get_edge_info_by_handles";
     public const string GetEntityInfoByHandles = "substrate.get_entity_info_by_handles";
     public const string GetOutboundEdgeTargets = "substrate.get_outbound_edge_targets";
@@ -81,9 +87,15 @@ public static class SubstrateFunctionNames
         ApiEntityNeighbors,
         ApiEntitySignificance,
         ApiListEntities,
+        ApplyFireflyRotation,
+        BindBpeTokensToSeedMorph,
+        BindBpeTokensToSeedPos,
         BreakPropertyCodeMap,
+        ClaimOrGetEmbeddingAnchor,
         CodepointPropertyRows,
         CompositionRange,
+        EmbeddingFireflyTokenHashes,
+        GetFireflyCoords,
         GetEdgeInfoByHandles,
         GetEntityInfoByHandles,
         GetOutboundEdgeTargets,

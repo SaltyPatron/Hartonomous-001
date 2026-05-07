@@ -1,3 +1,4 @@
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -46,22 +47,20 @@ internal sealed partial class GrammarExtractionPass : IModelAnalysisPass
             return;
         }
 
-        long posBindings = await CallBindAsync(
-            "SELECT substrate.bind_bpe_tokens_to_seed_pos($1)",
-            context.Source.ModelSourceId, ct);
+        long posBindings = await CallBindAsync(SubstrateFunctionNames.BindBpeTokensToSeedPos, context.Source.ModelSourceId, ct);
 
-        long morphBindings = await CallBindAsync(
-            "SELECT substrate.bind_bpe_tokens_to_seed_morph($1)",
-            context.Source.ModelSourceId, ct);
+        long morphBindings = await CallBindAsync(SubstrateFunctionNames.BindBpeTokensToSeedMorph, context.Source.ModelSourceId, ct);
 
         Log.PassComplete(_logger, context.Source.ModelId, posBindings, morphBindings);
     }
 
-    private async Task<long> CallBindAsync(string sql, long modelSourceId, CancellationToken ct)
+    private async Task<long> CallBindAsync(string functionName, long modelSourceId, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource!.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = modelSourceId });
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            functionName,
+            [(int)modelSourceId]);
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is long l ? l : 0;
     }

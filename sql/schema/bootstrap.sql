@@ -316,7 +316,10 @@
 -- @include schema/functions/classify.sql
 -- @include schema/functions/rerank.sql
 -- @include schema/functions/complete.sql
+-- @include schema/functions/bind_bpe_tokens_to_seed_pos.sql
+-- @include schema/functions/bind_bpe_tokens_to_seed_morph.sql
 -- @include schema/functions/claim_or_get_embedding_anchor.sql
+-- @include schema/functions/embedding_firefly_token_hashes.sql
 -- @include schema/functions/apply_firefly_rotation.sql
 -- @include schema/functions/get_firefly_coords.sql
 -- Universal substrate query surface (V1)
