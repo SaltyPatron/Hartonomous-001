@@ -53,6 +53,7 @@ public static class SubstrateFunctionNames
     public const string PromptDocumentReady = "substrate.prompt_document_ready";
     public const string PopulateScripts = "substrate.populate_scripts";
     public const string PopulateSenses = "substrate.populate_senses";
+    public const string PreviewTargetArch = "substrate.preview_target_arch";
     public const string ReferenceCodeDoubleMap = "substrate.reference_code_double_map";
     public const string ReferenceCodeMap = "substrate.reference_code_map";
     public const string ReferenceCodeTextMap = "substrate.reference_code_text_map";
@@ -61,6 +62,8 @@ public static class SubstrateFunctionNames
     public const string ReferenceKeyValueMap = "substrate.reference_key_value_map";
     public const string RecomposeText = "substrate.recompose_text";
     public const string RecordOutcome = "substrate.record_outcome";
+    public const string RefinementSummary = "substrate.refinement_summary";
+    public const string RefinementSummaryTop = "substrate.refinement_summary_top";
     public const string PrimeUnprimedEdgesChunk = "substrate.prime_unprimed_edges_chunk";
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
@@ -113,6 +116,7 @@ public static class SubstrateFunctionNames
         PromptDocumentReady,
         PopulateScripts,
         PopulateSenses,
+        PreviewTargetArch,
         ReferenceCodeDoubleMap,
         ReferenceCodeMap,
         ReferenceCodeTextMap,
@@ -121,6 +125,8 @@ public static class SubstrateFunctionNames
         ReferenceKeyValueMap,
         RecomposeText,
         RecordOutcome,
+        RefinementSummary,
+        RefinementSummaryTop,
         PrimeUnprimedEdgesChunk,
         ResolveEntityHandles,
         SignificanceContextIds,

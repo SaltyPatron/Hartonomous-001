@@ -1,8 +1,8 @@
 using System.CommandLine;
-using System.Globalization;
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
+using Hartonomous.Core.Data;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace Hartonomous.Cli.Commands;
 
@@ -113,12 +113,13 @@ internal static class QuoteCommand
         NpgsqlDataSource ds, string targetSpecJson, string recipeJson, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await ds.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT tensor_role, qualifying_edges, estimated_nonzero_count, sparsity_ratio, estimated_bytes "
-            + "FROM substrate.preview_target_arch($1::jsonb, $2::jsonb)",
-            conn);
-        cmd.Parameters.AddWithValue(targetSpecJson);
-        cmd.Parameters.AddWithValue(recipeJson);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.PreviewTargetArch,
+            [
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb, Value = targetSpecJson },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb, Value = recipeJson }
+            ]);
 
         Console.WriteLine($"{"tensor_role",-32} {"qualifying_edges",16} {"nonzero",10} {"sparsity",10} {"bytes",16}");
         Console.WriteLine(new string('-', 90));
@@ -147,13 +148,10 @@ internal static class QuoteCommand
     private static async Task PrintRefinementAsync(NpgsqlDataSource ds, byte[] archHash, string arena, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await ds.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT tensor_hash, edge_type_code, source_only_mu, consensus_mu, delta_mu, above_threshold "
-            + "FROM substrate.refinement_summary($1, $2) "
-            + "ORDER BY delta_mu DESC NULLS LAST LIMIT 25",
-            conn);
-        cmd.Parameters.AddWithValue(archHash);
-        cmd.Parameters.AddWithValue(arena);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.RefinementSummaryTop,
+            [archHash, arena, 25]);
 
         Console.WriteLine($"{"tensor_hash (8)",-18} {"edge_type",-32} {"source_mu",10} {"consensus_mu",14} {"delta",10} {"above"}");
         Console.WriteLine(new string('-', 95));

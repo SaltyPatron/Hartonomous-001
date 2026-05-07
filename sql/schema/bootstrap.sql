@@ -331,6 +331,7 @@
 -- @include schema/functions/break_property_code_map.sql
 -- @include schema/functions/preview_target_arch.sql
 -- @include schema/functions/refinement_summary.sql
+-- @include schema/functions/refinement_summary_top.sql
 -- @include schema/functions/tensor_provenance_chain.sql
 -- @include schema/functions/recompose_audit_walk.sql
 -- @include schema/functions/significance_context_ids.sql
