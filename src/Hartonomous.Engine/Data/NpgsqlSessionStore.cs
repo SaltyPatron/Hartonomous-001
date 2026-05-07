@@ -29,9 +29,14 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task<Guid> CreateSessionAsync(string label, string? notes, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT monitor.create_session($1, $2)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, label);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)notes ?? DBNull.Value);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(
+            conn,
+            MonitorRoutineNames.CreateSession,
+            new NpgsqlParameter[]
+            {
+                CreateParameter(NpgsqlDbType.Text, label),
+                CreateParameter(NpgsqlDbType.Text, notes),
+            });
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is Guid id ? id : Guid.Parse(Convert.ToString(result, System.Globalization.CultureInfo.InvariantCulture)!);
     }
@@ -39,7 +44,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task<bool> CloseSessionAsync(CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT monitor.close_session()", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.CloseSession);
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is bool closed && closed;
     }
@@ -48,9 +53,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     {
         List<SessionSummary> results = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT session_id, user_label, started_at, ended_at, comparison_count " +
-            "FROM monitor.session_summaries ORDER BY started_at DESC", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.ListSessions);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -67,10 +70,10 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task<SessionDetail?> GetSessionDetailAsync(Guid sessionId, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT session_id, user_label, notes, started_at, ended_at, comparison_count " +
-            "FROM monitor.session_details WHERE session_id = $1", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Uuid, sessionId);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(
+            conn,
+            MonitorRoutineNames.SessionDetail,
+            new NpgsqlParameter[] { CreateParameter(NpgsqlDbType.Uuid, sessionId) });
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {
@@ -89,8 +92,10 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task ArchiveSessionAsync(Guid sessionId, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("CALL monitor.archive_session($1)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Uuid, sessionId);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateProcedure(
+            conn,
+            MonitorRoutineNames.ArchiveSession,
+            [CreateParameter(NpgsqlDbType.Uuid, sessionId)]);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -100,8 +105,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     {
         Dictionary<string, string> map = new(StringComparer.OrdinalIgnoreCase);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT phase_code, status FROM monitor.phase_status", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.PhaseStatusMap);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -114,11 +118,14 @@ public sealed class NpgsqlSessionStore : ISessionStore
         string phaseCode, string status, string? errorMessage, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "CALL monitor.update_phase_status($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, phaseCode);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, status);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)errorMessage ?? DBNull.Value);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateProcedure(
+            conn,
+            MonitorRoutineNames.UpdatePhaseStatus,
+            [
+                CreateParameter(NpgsqlDbType.Text, phaseCode),
+                CreateParameter(NpgsqlDbType.Text, status),
+                CreateParameter(NpgsqlDbType.Text, errorMessage),
+            ]);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -127,18 +134,20 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task ReportProgressAsync(ProgressSnapshot snapshot, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "CALL monitor.report_progress($1, $2, $3, $4, $5, $6, $7, $8, $9)", conn);
-
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, snapshot.DecomposerCode);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, snapshot.CurrentPhase);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, snapshot.CurrentBatch ?? 0);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, snapshot.EntitiesCreated);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Bigint, snapshot.EdgesCreated);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)snapshot.CurrentFile ?? DBNull.Value);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, DBNull.Value);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, DBNull.Value);
-        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, DBNull.Value);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateProcedure(
+            conn,
+            MonitorRoutineNames.ReportProgress,
+            [
+                CreateParameter(NpgsqlDbType.Text, snapshot.DecomposerCode),
+                CreateParameter(NpgsqlDbType.Text, snapshot.CurrentPhase),
+                CreateParameter(NpgsqlDbType.Integer, snapshot.CurrentBatch ?? 0),
+                CreateParameter(NpgsqlDbType.Bigint, snapshot.EntitiesCreated),
+                CreateParameter(NpgsqlDbType.Bigint, snapshot.EdgesCreated),
+                CreateParameter(NpgsqlDbType.Text, snapshot.CurrentFile),
+                CreateParameter(NpgsqlDbType.Text, null),
+                CreateParameter(NpgsqlDbType.Text, null),
+                CreateParameter(NpgsqlDbType.Text, null),
+            ]);
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -149,9 +158,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     {
         List<PhaseStatusRow> results = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT phase_code, status, entity_count, edge_count, duration_seconds " +
-            "FROM monitor.phase_status_overview", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.PhaseStatusOverviewRows);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -168,9 +175,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task<SubstrateTotals?> GetSubstrateTotalsAsync(CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT total_entities, total_edges, total_physicalities, total_significance_records " +
-            "FROM monitor.substrate_dashboard", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.SubstrateTotals);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {
@@ -187,9 +192,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     {
         List<ActiveSessionRow> results = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT session_id, user_label, started_at, comparison_count " +
-            "FROM monitor.active_sessions", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.ActiveSessionRows);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -205,7 +208,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task SnapshotHealthAsync(CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("CALL monitor.snapshot_health()", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateProcedure(conn, MonitorRoutineNames.SnapshotHealth, []);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -214,7 +217,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task<string?> GetHealthSummaryJsonAsync(CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new("SELECT substrate.health_summary()", conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(conn, SubstrateFunctionNames.HealthSummary);
         object? result = await cmd.ExecuteScalarAsync(ct);
         return result is null or DBNull ? null : result.ToString();
     }
@@ -222,23 +225,18 @@ public sealed class NpgsqlSessionStore : ISessionStore
     public async Task ResetPhaseCheckpointAsync(string phaseStr, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using (NpgsqlCommand del = new("DELETE FROM monitor.phase_status WHERE phase_code = $1", conn))
-        {
-            del.Parameters.AddWithValue(phaseStr);
-            await del.ExecuteNonQueryAsync(ct);
-        }
-        await using NpgsqlCommand trunc = new("TRUNCATE TABLE substrate.model_pass_checkpoint", conn);
-        await trunc.ExecuteNonQueryAsync(ct);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateProcedure(
+            conn,
+            MonitorRoutineNames.ResetPhaseCheckpoint,
+            [CreateParameter(NpgsqlDbType.Text, phaseStr)]);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<IReadOnlyList<(string EntityType, long EntityCount, long EdgeCount)>> GetSubstrateCountsAsync(CancellationToken ct)
     {
         List<(string, long, long)> rows = [];
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT entity_type, entity_count, edge_count " +
-            "FROM monitor.entity_type_counts " +
-            "ORDER BY entity_count DESC, entity_type", conn);
+        await using NpgsqlCommand cmd = NpgsqlMonitorCommand.CreateFunction(conn, MonitorRoutineNames.EntityTypeCountRows);
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -246,4 +244,7 @@ public sealed class NpgsqlSessionStore : ISessionStore
         }
         return rows;
     }
+
+    private static NpgsqlParameter CreateParameter(NpgsqlDbType type, object? value)
+        => new() { NpgsqlDbType = type, Value = value ?? DBNull.Value };
 }

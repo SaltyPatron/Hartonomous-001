@@ -7193,6 +7193,18 @@ END $$;
 COMMENT ON PROCEDURE monitor.snapshot_health() IS
     'Capture coarse substrate-state metrics (entity count, edge count) into monitor.substrate_health.';
 
+-- ── sql/schema/procedures/monitor_reset_phase_checkpoint.sql ───────────────────────────────────────
+CREATE OR REPLACE PROCEDURE monitor.reset_phase_checkpoint(p_phase_code TEXT)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    DELETE FROM monitor.phase_status WHERE phase_code = p_phase_code;
+    TRUNCATE TABLE substrate.model_pass_checkpoint;
+END $$;
+
+COMMENT ON PROCEDURE monitor.reset_phase_checkpoint(TEXT) IS
+    'Reset a phase status row and clear model pass checkpoints for CLI phase reruns.';
+
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
 -- ── Phase 15: views ──────────────────────────────────────────────────
@@ -7285,6 +7297,90 @@ ORDER BY ps.started_at NULLS LAST;
 
 COMMENT ON VIEW monitor.phase_status_overview IS
     'Phase status rows enriched with ingestion-progress totals and duration for status surfaces.';
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- Monitor read functions that wrap the views above.
+
+-- ── sql/schema/functions/monitor_list_sessions.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.list_sessions()
+RETURNS TABLE (session_id UUID, user_label VARCHAR(256), started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, comparison_count BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT s.session_id, s.user_label, s.started_at, s.ended_at, s.comparison_count
+      FROM monitor.session_summaries s
+     ORDER BY s.started_at DESC;
+$f$;
+
+COMMENT ON FUNCTION monitor.list_sessions() IS
+    'Return session summary rows for CLI/API session listings.';
+
+-- ── sql/schema/functions/monitor_session_detail.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.session_detail(p_session_id UUID)
+RETURNS TABLE (session_id UUID, user_label VARCHAR(256), notes TEXT, started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, comparison_count BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT d.session_id, d.user_label, d.notes, d.started_at, d.ended_at, d.comparison_count
+      FROM monitor.session_details d
+     WHERE d.session_id = p_session_id;
+$f$;
+
+COMMENT ON FUNCTION monitor.session_detail(UUID) IS
+    'Return one monitor session detail row by UUID.';
+
+-- ── sql/schema/functions/monitor_phase_status_map.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.phase_status_map()
+RETURNS TABLE (phase_code VARCHAR(64), status VARCHAR(32))
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT ps.phase_code, ps.status
+      FROM monitor.phase_status ps;
+$f$;
+
+COMMENT ON FUNCTION monitor.phase_status_map() IS
+    'Return phase_code/status pairs for phase orchestration resume checks.';
+
+-- ── sql/schema/functions/monitor_phase_status_overview_rows.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.phase_status_overview_rows()
+RETURNS TABLE (phase_code VARCHAR(64), status VARCHAR(32), entity_count BIGINT, edge_count BIGINT, duration_seconds INT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT p.phase_code, p.status, p.entity_count, p.edge_count, p.duration_seconds
+      FROM monitor.phase_status_overview p;
+$f$;
+
+COMMENT ON FUNCTION monitor.phase_status_overview_rows() IS
+    'Return monitor.phase_status_overview rows for status surfaces.';
+
+-- ── sql/schema/functions/monitor_substrate_totals.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.substrate_totals()
+RETURNS TABLE (total_entities BIGINT, total_edges BIGINT, total_physicalities BIGINT, total_significance_records BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT d.total_entities, d.total_edges, d.total_physicalities, d.total_significance_records
+      FROM monitor.substrate_dashboard d;
+$f$;
+
+COMMENT ON FUNCTION monitor.substrate_totals() IS
+    'Return the single-row substrate dashboard totals used by status surfaces.';
+
+-- ── sql/schema/functions/monitor_active_session_rows.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.active_session_rows()
+RETURNS TABLE (session_id UUID, user_label VARCHAR(256), started_at TIMESTAMPTZ, comparison_count BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT a.session_id, a.user_label, a.started_at, a.comparison_count
+      FROM monitor.active_sessions a;
+$f$;
+
+COMMENT ON FUNCTION monitor.active_session_rows() IS
+    'Return currently open monitor sessions.';
+
+-- ── sql/schema/functions/monitor_entity_type_count_rows.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION monitor.entity_type_count_rows()
+RETURNS TABLE (entity_type TEXT, entity_count BIGINT, edge_count BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT c.entity_type, c.entity_count, c.edge_count
+      FROM monitor.entity_type_counts c
+     ORDER BY c.entity_count DESC, c.entity_type;
+$f$;
+
+COMMENT ON FUNCTION monitor.entity_type_count_rows() IS
+    'Return classification-aware entity and incident-edge counts by structural entity type.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

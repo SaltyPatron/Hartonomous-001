@@ -336,6 +336,7 @@
 -- @include schema/procedures/monitor_update_phase_status.sql
 -- @include schema/procedures/monitor_report_progress.sql
 -- @include schema/procedures/monitor_snapshot_health.sql
+-- @include schema/procedures/monitor_reset_phase_checkpoint.sql
 
 -- ── Phase 15: views ──────────────────────────────────────────────────
 -- @include schema/views/substrate_dashboard.sql
@@ -344,6 +345,14 @@
 -- @include schema/views/session_details.sql
 -- @include schema/views/active_sessions.sql
 -- @include schema/views/phase_status_overview.sql
+-- Monitor read functions that wrap the views above.
+-- @include schema/functions/monitor_list_sessions.sql
+-- @include schema/functions/monitor_session_detail.sql
+-- @include schema/functions/monitor_phase_status_map.sql
+-- @include schema/functions/monitor_phase_status_overview_rows.sql
+-- @include schema/functions/monitor_substrate_totals.sql
+-- @include schema/functions/monitor_active_session_rows.sql
+-- @include schema/functions/monitor_entity_type_count_rows.sql
 
 -- (No Phase 16 hartonomous CREATE EXTENSION. The hartonomous-pg/sql/
 --  hartonomous--1.0.sql.in template — containing all C-binding type
