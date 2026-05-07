@@ -11,10 +11,5 @@ CREATE TABLE IF NOT EXISTS substrate.entity_classification (
     PRIMARY KEY (entity_hash, entity_type_id, provenance_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_entity_classification_type
-    ON substrate.entity_classification(entity_type_id, entity_hash);
-CREATE INDEX IF NOT EXISTS idx_entity_classification_provenance
-    ON substrate.entity_classification(provenance_id);
-
 COMMENT ON TABLE substrate.entity_classification IS
     'Per-entity classification metadata. Content (entity_hash) is identity; classification (entity_type_id) is metadata. Multiple decomposers can independently assert classifications on the same content; provenance distinguishes them.';

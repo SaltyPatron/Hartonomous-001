@@ -11,7 +11,6 @@ CREATE TABLE substrate.model_source (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (model_id, source_path, revision_label)
 );
-CREATE INDEX idx_model_source_model     ON substrate.model_source(model_id);
-CREATE INDEX idx_model_source_publisher ON substrate.model_source(publisher_id);
+
 COMMENT ON TABLE substrate.model_source IS
     'Specific ingestion sources: model + publisher + revision. Multiple revisions of one model produce multiple model_source rows.';

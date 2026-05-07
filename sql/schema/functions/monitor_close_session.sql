@@ -8,5 +8,6 @@ BEGIN
      WHERE ended_at IS NULL
        AND started_at = (SELECT MAX(started_at) FROM monitor.session WHERE ended_at IS NULL);
 END $$;
+
 COMMENT ON FUNCTION monitor.close_session() IS
     'Close the most recent open session.';

@@ -8,7 +8,7 @@ applyTo: 'sql/**/*.sql'
 
 - Pre-v1 is bootstrap-only. Canonical schema lives under `sql/schema/`; `sql/schema/bootstrap.sql` declares build-time include order and `scripts/build/ExtensionSql.ps1` emits the generated extension SQL installed by `CREATE EXTENSION hartonomous`.
 - `sql/migrations.archive/` is historical audit material, not the source of truth for current table shape.
-- When adding schema, update the appropriate canonical file under `sql/schema/domains/`, `types/`, `tables/`, `functions/`, `procedures/`, `views/`, or `seed/`.
+- When adding schema, update the appropriate canonical file under `sql/schema/domains/`, `types/`, `tables/`, `indexes/`, `functions/`, `procedures/`, `views/`, or `seed/`.
 - If a count or inventory matters, compute it from `sql/schema/`, not from memory or archived migration numbers.
 
 ## Schema separation
@@ -19,6 +19,8 @@ applyTo: 'sql/**/*.sql'
 | `substrate` | Reference tables: `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. | `sql/schema/tables/reference/`, `sql/schema/seed/` |
 | `substrate` | Junction tables: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc. | `sql/schema/tables/junctions/` |
 | `monitor` | Operational monitoring and metrics | `sql/schema/tables/monitor/` |
+
+Each canonical schema file contains one primary database object. Indexes live under `sql/schema/indexes/` as one `CREATE INDEX` per file; table files do not carry inline index definitions.
 
 ## Batch SQL patterns
 

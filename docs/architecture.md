@@ -585,16 +585,17 @@ Every database object is its own file. No file contains more than one object def
 
 ```
 sql/
-  domains/          -- one .sql per domain
-  types/            -- one .sql per custom type
-  tables/           -- one .sql per table (CREATE TABLE + constraints)
-  indexes/          -- one .sql per index
-  functions/        -- one .sql per function
-  procedures/       -- one .sql per stored procedure
-  views/            -- one .sql per view
-  triggers/         -- one .sql per trigger
-  migrations/       -- numbered migration scripts for schema evolution
-  seed/             -- seed data scripts (reference table bootstrap, etc.)
+  schema/
+    bootstrap.sql   -- include manifest for generated extension SQL
+    domains/        -- one .sql per domain
+    types/          -- one .sql per custom type
+    tables/         -- one .sql per table or partition
+    indexes/        -- one .sql per index
+    functions/      -- one .sql per function
+    procedures/     -- one .sql per stored procedure
+    views/          -- one .sql per view
+    seed/           -- seed data scripts
+  migrations.archive/ -- historical audit only
 ```
 
 No inline SQL in C# code. All database interaction goes through stored procedures/functions. The C# layer calls SQL; it does not construct SQL.

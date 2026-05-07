@@ -1,0 +1,1 @@
+CREATE INDEX idx_entity_morph_feature_feat ON substrate.entity_morph_feature(morph_feature_id, entity_hash);

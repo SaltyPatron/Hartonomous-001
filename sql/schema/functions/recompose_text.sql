@@ -1,15 +1,4 @@
--- substrate.recompose_text(parent_hash, max_depth)
---
--- Byte-for-byte text reconstruction by recursive walk of substrate.sequence
--- to codepoint leaves, each codepoint decoded via codepoint_property.
---
--- Phase C unification: hash-only signature. The recursion checks whether
--- a hash refers to a codepoint by joining substrate.entity_classification
--- (the type "codepoint" is metadata, not part of identity).
---
--- The sequence walk respects RLE: a row with rle_count=3 expands to three
--- codepoint emissions in a row. Microsecond per parent at small depth;
--- the btree on (parent_hash, ordinal) makes each step a single index dive.
+-- Byte-for-byte text reconstruction by recursive sequence walk.
 CREATE OR REPLACE FUNCTION substrate.recompose_text(
     p_entity_hash BYTEA,
     p_max_depth   INT DEFAULT 100000
@@ -50,7 +39,4 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
-    'Byte-for-byte text reconstruction via substrate.sequence walk. RLE-expanded. Hash-only signature (Phase C unification).';
-
--- Backward compat: drop old signature if it exists.
-DROP FUNCTION IF EXISTS substrate.recompose_text(INT, BYTEA, INT);
+    'Byte-for-byte text reconstruction via substrate.sequence walk. RLE-expanded. Hash-only signature.';

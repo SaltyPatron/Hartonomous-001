@@ -7,6 +7,6 @@ CREATE TABLE substrate.pattern_deprel (
     games       INT NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_hash, deprel_id)
 );
-CREATE INDEX idx_pattern_deprel_deprel ON substrate.pattern_deprel(deprel_id, entity_hash);
+
 COMMENT ON TABLE substrate.pattern_deprel IS
     'Attention pattern → deprel with Glicko-2. Hash-only entity reference.';

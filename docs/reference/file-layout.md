@@ -15,45 +15,33 @@ One object per file. No inline SQL anywhere outside this tree.
 | Artifact | Path template | Contains |
 |---|---|---|
 | Domain | `sql/schema/domains/{code}.sql` | One `CREATE DOMAIN` |
-| Composite type | `sql/schema/composite-types/{code}.sql` | One `CREATE TYPE` |
-| Reference table | `sql/schema/reference/{code}.sql` | One `CREATE TABLE` for `substrate.{code}` plus its indexes |
-| Junction table | `sql/schema/junctions/{code}.sql` | One `CREATE TABLE` plus indexes; Glicko columns if rated |
-| Substrate table | `sql/schema/substrate/{code}.sql` | One `CREATE TABLE` for `substrate.{code}` (entity, edge, edge_member, physicality, sequence, significance) |
-| Substrate partition | `sql/schema/substrate/partitions/{parent}_{code}.sql` | One `CREATE TABLE ... PARTITION OF ...` |
+| Composite type | `sql/schema/types/{code}.sql` | One `CREATE TYPE` |
+| Reference table | `sql/schema/tables/reference/{code}.sql` | One `CREATE TABLE` for `substrate.{code}` |
+| Junction table | `sql/schema/tables/junctions/{code}.sql` | One `CREATE TABLE`; Glicko columns if rated |
+| Substrate core table | `sql/schema/tables/core/{code}.sql` | One `CREATE TABLE` for `substrate.{code}` (entity, edge, edge_member, physicality, sequence, significance) |
+| Model table | `sql/schema/tables/models/{code}.sql` | One `CREATE TABLE` for model registry/source/checkpoint state |
+| Monitor table | `sql/schema/tables/monitor/{code}.sql` | One `CREATE TABLE` for `monitor.{code}` |
+| Meta table | `sql/schema/tables/meta/{code}.sql` | One `CREATE TABLE` for schema/meta bookkeeping |
+| Table partition | `sql/schema/tables/core/{parent}_{code}.sql` | One `CREATE TABLE ... PARTITION OF ...` |
 | GiST/B-tree/BRIN index | `sql/schema/indexes/{table}_{purpose}.sql` | One `CREATE INDEX` |
 | Function | `sql/schema/functions/{name}.sql` | One `CREATE OR REPLACE FUNCTION` |
 | Procedure | `sql/schema/procedures/{name}.sql` | One `CREATE OR REPLACE PROCEDURE` |
 | View | `sql/schema/views/{name}.sql` | One `CREATE OR REPLACE VIEW` |
-| Trigger | `sql/schema/triggers/{table}_{event}.sql` | One `CREATE TRIGGER` |
+| Extension prerequisite | `sql/schema/extensions/{name}.sql` | One `CREATE EXTENSION` for external prerequisites only |
+| Schema | `sql/schema/schemas/{name}.sql` | One `CREATE SCHEMA` |
 
-## Seeds (`sql/seeds/`)
+## Seeds (`sql/schema/seed/`)
 
 Reference data, one batch per file. Idempotent (`ON CONFLICT DO NOTHING`).
 
 | Artifact | Path template |
 |---|---|
-| Reference vocab seed | `sql/seeds/reference/{code}.sql` (e.g., `pos.sql`, `deprel.sql`, `entity_type.sql`) |
-| Provenance seed | `sql/seeds/provenance/{code}.sql` |
-| Phase 1 bootstrap | `sql/seeds/bootstrap/00_{code}.sql` (numbered for ordering) |
+| Reference vocab seed | `sql/schema/seed/{code}.sql` (e.g., `pos.sql`, `entity_type.sql`) |
+| Provenance seed | `sql/schema/seed/provenance.sql` |
 
-## Migrations (`sql/migrations/`)
+## Historical Migrations (`sql/migrations.archive/`)
 
-Numbered up/down pairs. Each migration is a thin wrapper that `\i` includes the relevant `sql/schema/` and `sql/seeds/` files.
-
-| Artifact | Path template |
-|---|---|
-| Up | `sql/migrations/{NNNN}_{snake_case_intent}.up.sql` |
-| Down | `sql/migrations/{NNNN}_{snake_case_intent}.down.sql` |
-
-A migration body looks like:
-
-```sql
--- 0042_add_lexicalized_compound_edge_type.up.sql
-\i ../schema/reference/edge_type_lexicalized_compound.sql
-\i ../seeds/edge_type_lexicalized_compound.sql
-```
-
-No DDL inline in the migration. The migration only orchestrates `\i` includes.
+Archived migrations are audit history only. Current pre-v1 schema work edits canonical `sql/schema/` files and the `sql/schema/bootstrap.sql` include manifest; runtime setup installs the generated `hartonomous` extension.
 
 ---
 

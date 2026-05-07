@@ -20,19 +20,20 @@ Exception: a record and its companion static factory may share a file ONLY if th
 
 ```
 sql/
-  domains/                  -- one .sql per domain
-  types/                    -- one .sql per custom type
-  tables/                   -- one .sql per table (CREATE TABLE + constraints)
-  indexes/                  -- one .sql per index
-  functions/                -- one .sql per function
-  procedures/               -- one .sql per stored procedure
-  views/                    -- one .sql per view
-  triggers/                 -- one .sql per trigger
-  migrations/               -- numbered migration scripts
-  seed/                     -- seed data scripts
+  schema/
+    domains/                -- one .sql per domain
+    types/                  -- one .sql per custom type
+    tables/                 -- one .sql per table or partition
+    indexes/                -- one .sql per index
+    functions/              -- one .sql per function
+    procedures/             -- one .sql per stored procedure
+    views/                  -- one .sql per view
+    seed/                   -- seed data scripts
+    bootstrap.sql           -- include manifest for generated extension SQL
+  migrations.archive/       -- historical audit only
 ```
 
-No file contains more than one object definition. `CREATE FUNCTION` x then `CREATE FUNCTION` y in one file: rejected at review.
+No file contains more than one object definition. `CREATE FUNCTION` x then `CREATE FUNCTION` y in one file: rejected at review. `CREATE TABLE` plus `CREATE INDEX` in one file is also rejected; indexes live under `sql/schema/indexes/`.
 
 ### Native extension source layout
 

@@ -7,6 +7,6 @@ CREATE TABLE monitor.error_log (
     stack_trace    TEXT,
     occurred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_error_log_recent ON monitor.error_log(occurred_at DESC);
+
 COMMENT ON TABLE monitor.error_log IS
     'Decomposer + pipeline errors with phase context for post-mortem.';

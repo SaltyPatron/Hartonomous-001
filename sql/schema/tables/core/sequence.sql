@@ -30,7 +30,5 @@ CREATE TABLE substrate.sequence (
     -- documented elsewhere; conservatively kept omitted post-collapse.)
 );
 
-CREATE INDEX idx_sequence_child ON substrate.sequence(child_hash, parent_hash);
-
 COMMENT ON TABLE substrate.sequence IS
     'Parent → ordered children with RLE for refrain compression. Hash-only references — entity type is irrelevant to ordinal lookup. Btree-indexed on (parent_hash, ordinal) for microsecond random access; inverse index on (child_hash) for parent lookup.';

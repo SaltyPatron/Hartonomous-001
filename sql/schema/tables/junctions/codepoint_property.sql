@@ -17,9 +17,6 @@ CREATE TABLE substrate.codepoint_property (
     simple_case_fold         INT,
     full_case_fold           INT[]
 );
-CREATE INDEX idx_codepoint_property_codepoint ON substrate.codepoint_property(codepoint_value);
-CREATE INDEX idx_codepoint_property_gc        ON substrate.codepoint_property(general_category_id);
-CREATE INDEX idx_codepoint_property_script    ON substrate.codepoint_property(script_id);
-CREATE INDEX idx_codepoint_property_block     ON substrate.codepoint_property(block_id);
+
 COMMENT ON TABLE substrate.codepoint_property IS
     'Codepoint → Unicode properties. Hash-only entity reference.';

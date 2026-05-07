@@ -10,6 +10,6 @@ CREATE TABLE monitor.significance_snapshot (
     games           INT NOT NULL,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_significance_snapshot_target ON monitor.significance_snapshot(target_kind, target_type_id, target_hash, recorded_at DESC);
+
 COMMENT ON TABLE monitor.significance_snapshot IS
     'Periodic snapshots of significance state for time-series analysis.';

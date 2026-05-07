@@ -70,18 +70,19 @@ internal sealed class StatusCommand(NpgsqlDataSource dataSource)
                 return;
             }
 
-            long totalEntities = 0;
-            long totalEdges = 0;
-            Console.WriteLine($"{"Entity Type",-25} {"Entities":>12} {"Edges":>10}");
+            SubstrateTotals? totals = await store.GetSubstrateTotalsAsync(CancellationToken.None);
+
+            Console.WriteLine($"{"Entity Type",-25} {"Classified":>12} {"Edges":>10}");
             Console.WriteLine(new string('-', 48));
             foreach ((string et, long ec, long edg) in counts)
             {
-                totalEntities += ec;
-                totalEdges += edg;
                 Console.WriteLine($"{et,-25} {ec,12:N0} {edg,10:N0}");
             }
             Console.WriteLine(new string('-', 48));
-            Console.WriteLine($"{"TOTAL",-25} {totalEntities,12:N0} {totalEdges,10:N0}");
+            if (totals is not null)
+            {
+                Console.WriteLine($"{"SUBSTRATE TOTAL",-25} {totals.TotalEntities,12:N0} {totals.TotalEdges,10:N0}");
+            }
         });
 
         return status;

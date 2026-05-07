@@ -166,7 +166,45 @@
 -- ── Phase 11: meta tables ────────────────────────────────────────────
 -- @include schema/tables/meta/arena_priming_state.sql
 
--- (Phase 12 deleted post-W2E refactor: substrate.staging_* tables and the
+-- ── Phase 12: indexes ─────────────────────────────────────────────────
+-- @include schema/indexes/idx_block_range.sql
+-- @include schema/indexes/idx_break_property_category.sql
+-- @include schema/indexes/idx_codepoint_property_block.sql
+-- @include schema/indexes/idx_codepoint_property_codepoint.sql
+-- @include schema/indexes/idx_codepoint_property_gc.sql
+-- @include schema/indexes/idx_codepoint_property_script.sql
+-- @include schema/indexes/idx_comparison_event_arena.sql
+-- @include schema/indexes/idx_comparison_event_session.sql
+-- @include schema/indexes/idx_edge_type_category.sql
+-- @include schema/indexes/idx_entity_classification_provenance.sql
+-- @include schema/indexes/idx_entity_classification_type.sql
+-- @include schema/indexes/idx_entity_language_lang.sql
+-- @include schema/indexes/idx_entity_lexname_lexname.sql
+-- @include schema/indexes/idx_entity_model_source_source.sql
+-- @include schema/indexes/idx_entity_morph_feature_feat.sql
+-- @include schema/indexes/idx_entity_pos_pos.sql
+-- @include schema/indexes/idx_entity_type_modality.sql
+-- @include schema/indexes/idx_error_log_recent.sql
+-- @include schema/indexes/idx_general_category_group.sql
+-- @include schema/indexes/idx_inference_metrics_recent.sql
+-- @include schema/indexes/idx_inference_metrics_session.sql
+-- @include schema/indexes/idx_ingestion_progress_recent.sql
+-- @include schema/indexes/idx_language_scope.sql
+-- @include schema/indexes/idx_language_type.sql
+-- @include schema/indexes/idx_model_arch_class.sql
+-- @include schema/indexes/idx_model_pass_checkpoint_source.sql
+-- @include schema/indexes/idx_model_source_model.sql
+-- @include schema/indexes/idx_model_source_publisher.sql
+-- @include schema/indexes/idx_morph_feature_key.sql
+-- @include schema/indexes/idx_pattern_deprel_deprel.sql
+-- @include schema/indexes/idx_sequence_child.sql
+-- @include schema/indexes/idx_session_started.sql
+-- @include schema/indexes/idx_significance_snapshot_target.sql
+-- @include schema/indexes/idx_substrate_health_code.sql
+-- @include schema/indexes/idx_substrate_health_recent.sql
+-- @include schema/indexes/idx_tensor_role.sql
+
+-- (Persistent staging deleted post-W2E refactor: substrate.staging_* tables and the
 --  drain_staging_*_chunk / drain_all_staging functions are gone. The
 --  StreamingIngestionPipeline writes DIRECTLY into substrate core tables
 --  via session-local pg_temp.X_inflight tables created per drain-task
@@ -205,9 +243,14 @@
 -- @include schema/functions/upsert_model_pass_checkpoint.sql
 -- @include schema/functions/get_completed_model_passes.sql
 -- Geometry / 4D operators
--- @include schema/functions/geom_bridge_4d.sql
+-- @include schema/functions/geom_to_linestring4d.sql
+-- @include schema/functions/polygon_exterior_linestring4d.sql
+-- @include schema/functions/dist_4d.sql
+-- @include schema/functions/frechet_4d_geom.sql
+-- @include schema/functions/hausdorff_4d_geom.sql
 -- @include schema/functions/entity_centroid_4d.sql
--- @include schema/functions/populate_edge_trajectories_v2.sql
+-- @include schema/functions/geom_to_pointzm.sql
+-- @include schema/functions/populate_edge_trajectories.sql
 -- Read helpers
 -- @include schema/functions/health_summary.sql
 -- @include schema/functions/entity_outbound_edges.sql
@@ -224,7 +267,7 @@
 -- @include schema/functions/composition_range.sql
 -- @include schema/functions/composition_subtrajectory.sql
 -- @include schema/functions/composition_parents.sql
--- @include schema/functions/recompose_text_v2.sql
+-- @include schema/functions/recompose_text.sql
 -- Significance machinery (prime_edge_significance_per_arena removed —
 -- it referenced substrate.staging_edge which no longer exists. The
 -- per-arena chunked primer below is what the C# pipeline calls at end of
@@ -247,7 +290,7 @@
 -- @include schema/functions/populate_scripts_from_ext.sql
 -- @include schema/functions/populate_blocks_from_ext.sql
 -- @include schema/functions/populate_break_properties_from_ext.sql
--- @include schema/functions/populate_codepoint_property_from_ext.sql
+-- @include schema/functions/populate_codepoint_property_range_from_ext.sql
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local
 --  temp table — no persistent staging, no auto-discovered drain manifest.)
@@ -275,10 +318,11 @@
 -- @include schema/functions/refinement_summary.sql
 -- @include schema/functions/tensor_provenance_chain.sql
 -- @include schema/functions/recompose_audit_walk.sql
+-- Monitor write functions
+-- @include schema/functions/monitor_create_session.sql
+-- @include schema/functions/monitor_close_session.sql
 
 -- ── Phase 14: procedures ─────────────────────────────────────────────
--- @include schema/procedures/monitor_create_session.sql
--- @include schema/procedures/monitor_close_session.sql
 -- @include schema/procedures/monitor_archive_session.sql
 -- @include schema/procedures/monitor_update_phase_status.sql
 -- @include schema/procedures/monitor_report_progress.sql
@@ -286,6 +330,7 @@
 
 -- ── Phase 15: views ──────────────────────────────────────────────────
 -- @include schema/views/substrate_dashboard.sql
+-- @include schema/views/entity_type_counts.sql
 -- @include schema/views/v_active_runs.sql
 
 -- (No Phase 16 hartonomous CREATE EXTENSION. The hartonomous-pg/sql/

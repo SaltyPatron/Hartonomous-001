@@ -133,7 +133,7 @@ CREATE TABLE substrate.entity_type (
     modality  VARCHAR(32) NOT NULL,
     parent_id INT REFERENCES substrate.entity_type(id)
 );
-CREATE INDEX idx_entity_type_modality ON substrate.entity_type(modality);
+
 COMMENT ON TABLE substrate.entity_type IS
     'Structural classification of entities by content kind and modality. Identifies which partition of substrate.entity a row belongs to.';
 
@@ -259,7 +259,7 @@ CREATE TABLE substrate.block (
     range_start INT NOT NULL,
     range_end   INT NOT NULL
 );
-CREATE INDEX idx_block_range ON substrate.block(range_start, range_end);
+
 COMMENT ON TABLE substrate.block IS
     'Unicode Block ranges. 300+ blocks. range_start/range_end enable O(log n) block lookup by codepoint integer.';
 
@@ -270,7 +270,7 @@ CREATE TABLE substrate.break_property (
     category VARCHAR(16) NOT NULL,
     UNIQUE(code, category)
 );
-CREATE INDEX idx_break_property_category ON substrate.break_property(category);
+
 COMMENT ON TABLE substrate.break_property IS
     'UAX #29 break properties for segmentation. Four categories: GCB (grapheme), WB (word), SB (sentence), LB (line).';
 
@@ -282,8 +282,7 @@ CREATE TABLE substrate.language (
     scope CHAR(1) NOT NULL,
     type  CHAR(1) NOT NULL
 );
-CREATE INDEX idx_language_scope ON substrate.language(scope);
-CREATE INDEX idx_language_type ON substrate.language(type);
+
 COMMENT ON TABLE substrate.language IS
     'ISO 639-3 language inventory. ~7,928 languages. Populated by ISO 639 seed.';
 COMMENT ON COLUMN substrate.language.scope IS 'I = individual, M = macrolanguage, S = special.';
@@ -296,7 +295,7 @@ CREATE TABLE substrate.general_category (
     group_code  VARCHAR(1) NOT NULL,
     description VARCHAR(64) NOT NULL
 );
-CREATE INDEX idx_general_category_group ON substrate.general_category(group_code);
+
 COMMENT ON TABLE substrate.general_category IS
     'Unicode General Category property. 30 values in 7 groups (L, M, N, P, S, Z, C).';
 
@@ -334,7 +333,7 @@ CREATE TABLE substrate.morph_feature (
     parent_id INT REFERENCES substrate.morph_feature(id),
     UNIQUE(key, value)
 );
-CREATE INDEX idx_morph_feature_key ON substrate.morph_feature(key);
+
 COMMENT ON TABLE substrate.morph_feature IS
     'Morphological feature key-value pairs (Number=Sing, Tense=Past, Mood=Ind, etc.). Each row = one (key, value).';
 COMMENT ON COLUMN substrate.morph_feature.parent_id IS
@@ -376,7 +375,7 @@ CREATE TABLE substrate.edge_type (
     -- Structural-value tier for COALESCE prior. Default 1.0 (full weight).
     semantic_weight FLOAT8 NOT NULL DEFAULT 1.0
 );
-CREATE INDEX idx_edge_type_category ON substrate.edge_type(category);
+
 COMMENT ON TABLE substrate.edge_type IS
     'Operational edge typing with domain/range entity type constraints + structural-value tier (semantic_weight) for the trust-prior formula. Categories: structural, semantic, syntactic, morphological, cross_lingual, cross_modal, model_derived, unicode.';
 COMMENT ON COLUMN substrate.edge_type.source_type_id IS
@@ -1033,8 +1032,6 @@ CREATE TABLE substrate.sequence (
     -- documented elsewhere; conservatively kept omitted post-collapse.)
 );
 
-CREATE INDEX idx_sequence_child ON substrate.sequence(child_hash, parent_hash);
-
 COMMENT ON TABLE substrate.sequence IS
     'Parent → ordered children with RLE for refrain compression. Hash-only references — entity type is irrelevant to ordinal lookup. Btree-indexed on (parent_hash, ordinal) for microsecond random access; inverse index on (child_hash) for parent lookup.';
 
@@ -1178,7 +1175,7 @@ CREATE TABLE substrate.entity_pos (
     games       INT NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_hash, pos_id)
 );
-CREATE INDEX idx_entity_pos_pos ON substrate.entity_pos(pos_id, entity_hash);
+
 COMMENT ON TABLE substrate.entity_pos IS
     'Entity → POS with Glicko-2. Hash-only entity reference. Multiple POS per entity supported.';
 
@@ -1188,7 +1185,7 @@ CREATE TABLE substrate.entity_lexname (
     lexname_id  INT  NOT NULL REFERENCES substrate.lexname(id),
     PRIMARY KEY (entity_hash, lexname_id)
 );
-CREATE INDEX idx_entity_lexname_lexname ON substrate.entity_lexname(lexname_id, entity_hash);
+
 COMMENT ON TABLE substrate.entity_lexname IS
     'Entity → lexname. Hash-only entity reference.';
 
@@ -1198,7 +1195,7 @@ CREATE TABLE substrate.entity_language (
     language_id INT  NOT NULL REFERENCES substrate.language(id),
     PRIMARY KEY (entity_hash, language_id)
 );
-CREATE INDEX idx_entity_language_lang ON substrate.entity_language(language_id, entity_hash);
+
 COMMENT ON TABLE substrate.entity_language IS
     'Entity → language. Hash-only entity reference.';
 
@@ -1208,7 +1205,7 @@ CREATE TABLE substrate.entity_morph_feature (
     morph_feature_id INT  NOT NULL REFERENCES substrate.morph_feature(id),
     PRIMARY KEY (entity_hash, morph_feature_id)
 );
-CREATE INDEX idx_entity_morph_feature_feat ON substrate.entity_morph_feature(morph_feature_id, entity_hash);
+
 COMMENT ON TABLE substrate.entity_morph_feature IS
     'Entity → morphological feature. Hash-only entity reference.';
 
@@ -1232,10 +1229,7 @@ CREATE TABLE substrate.codepoint_property (
     simple_case_fold         INT,
     full_case_fold           INT[]
 );
-CREATE INDEX idx_codepoint_property_codepoint ON substrate.codepoint_property(codepoint_value);
-CREATE INDEX idx_codepoint_property_gc        ON substrate.codepoint_property(general_category_id);
-CREATE INDEX idx_codepoint_property_script    ON substrate.codepoint_property(script_id);
-CREATE INDEX idx_codepoint_property_block     ON substrate.codepoint_property(block_id);
+
 COMMENT ON TABLE substrate.codepoint_property IS
     'Codepoint → Unicode properties. Hash-only entity reference.';
 
@@ -1245,7 +1239,7 @@ CREATE TABLE substrate.model_architecture_class (
     architecture_class_id INT  NOT NULL REFERENCES substrate.architecture_class(id),
     PRIMARY KEY (entity_hash, architecture_class_id)
 );
-CREATE INDEX idx_model_arch_class ON substrate.model_architecture_class(architecture_class_id, entity_hash);
+
 COMMENT ON TABLE substrate.model_architecture_class IS
     'Model entity → architecture class. Hash-only entity reference.';
 
@@ -1255,7 +1249,7 @@ CREATE TABLE substrate.tensor_tensor_role (
     tensor_role_id INT  NOT NULL REFERENCES substrate.tensor_role(id),
     PRIMARY KEY (entity_hash, tensor_role_id)
 );
-CREATE INDEX idx_tensor_role ON substrate.tensor_tensor_role(tensor_role_id, entity_hash);
+
 COMMENT ON TABLE substrate.tensor_tensor_role IS
     'Tensor entity → role. Hash-only entity reference.';
 
@@ -1269,7 +1263,7 @@ CREATE TABLE substrate.pattern_deprel (
     games       INT NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_hash, deprel_id)
 );
-CREATE INDEX idx_pattern_deprel_deprel ON substrate.pattern_deprel(deprel_id, entity_hash);
+
 COMMENT ON TABLE substrate.pattern_deprel IS
     'Attention pattern → deprel with Glicko-2. Hash-only entity reference.';
 
@@ -1313,11 +1307,6 @@ CREATE TABLE IF NOT EXISTS substrate.entity_classification (
     asserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (entity_hash, entity_type_id, provenance_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_entity_classification_type
-    ON substrate.entity_classification(entity_type_id, entity_hash);
-CREATE INDEX IF NOT EXISTS idx_entity_classification_provenance
-    ON substrate.entity_classification(provenance_id);
 
 COMMENT ON TABLE substrate.entity_classification IS
     'Per-entity classification metadata. Content (entity_hash) is identity; classification (entity_type_id) is metadata. Multiple decomposers can independently assert classifications on the same content; provenance distinguishes them.';
@@ -1396,8 +1385,7 @@ CREATE TABLE substrate.model_source (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (model_id, source_path, revision_label)
 );
-CREATE INDEX idx_model_source_model     ON substrate.model_source(model_id);
-CREATE INDEX idx_model_source_publisher ON substrate.model_source(publisher_id);
+
 COMMENT ON TABLE substrate.model_source IS
     'Specific ingestion sources: model + publisher + revision. Multiple revisions of one model produce multiple model_source rows.';
 
@@ -1412,7 +1400,7 @@ CREATE TABLE substrate.model_pass_checkpoint (
     error_message   TEXT,
     UNIQUE (model_source_id, pass_name)
 );
-CREATE INDEX idx_model_pass_checkpoint_source ON substrate.model_pass_checkpoint(model_source_id);
+
 COMMENT ON TABLE substrate.model_pass_checkpoint IS
     'Per-pass progress for safetensors decomposition. Lets a multi-pass ingestion resume after interruption.';
 
@@ -1423,7 +1411,7 @@ CREATE TABLE substrate.entity_model_source (
     PRIMARY KEY (entity_hash, model_source_id),
     FOREIGN KEY (entity_hash) REFERENCES substrate.entity(hash) ON DELETE CASCADE
 );
-CREATE INDEX idx_entity_model_source_source ON substrate.entity_model_source(model_source_id, entity_hash);
+
 COMMENT ON TABLE substrate.entity_model_source IS
     'Entity → model_source provenance. Hash-only entity reference. Same tensor in N model revisions has 1 entity row + N entity_model_source rows.';
 
@@ -1466,7 +1454,7 @@ CREATE TABLE monitor.ingestion_progress (
     current_file    TEXT,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_ingestion_progress_recent ON monitor.ingestion_progress(recorded_at DESC);
+
 COMMENT ON TABLE monitor.ingestion_progress IS
     'Per-batch ingestion telemetry. Operational, not part of substrate identity.';
 
@@ -1491,7 +1479,7 @@ CREATE TABLE monitor.error_log (
     stack_trace    TEXT,
     occurred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_error_log_recent ON monitor.error_log(occurred_at DESC);
+
 COMMENT ON TABLE monitor.error_log IS
     'Decomposer + pipeline errors with phase context for post-mortem.';
 
@@ -1503,8 +1491,7 @@ CREATE TABLE monitor.substrate_health (
     notes       TEXT,
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_substrate_health_recent ON monitor.substrate_health(recorded_at DESC);
-CREATE INDEX idx_substrate_health_code   ON monitor.substrate_health(metric_code, recorded_at DESC);
+
 COMMENT ON TABLE monitor.substrate_health IS
     'Periodic substrate-state metrics: entity count, edge count, geometry coverage, frayed edge count, etc.';
 
@@ -1519,8 +1506,7 @@ CREATE TABLE monitor.inference_metrics (
     elapsed_ms      INT,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_inference_metrics_recent  ON monitor.inference_metrics(recorded_at DESC);
-CREATE INDEX idx_inference_metrics_session ON monitor.inference_metrics(session_id, recorded_at DESC);
+
 COMMENT ON TABLE monitor.inference_metrics IS
     'Per-traversal latency + path-count telemetry.';
 
@@ -1532,7 +1518,7 @@ CREATE TABLE monitor.session (
     ended_at        TIMESTAMPTZ,
     notes           TEXT
 );
-CREATE INDEX idx_session_started ON monitor.session(started_at DESC);
+
 COMMENT ON TABLE monitor.session IS
     'Inference / interactive sessions. session_id is the FK target for comparison_event and inference_metrics.';
 
@@ -1553,8 +1539,7 @@ CREATE TABLE monitor.comparison_event (
     outcome_score   FLOAT8 NOT NULL DEFAULT 1.0,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_comparison_event_session ON monitor.comparison_event(session_id, recorded_at DESC);
-CREATE INDEX idx_comparison_event_arena   ON monitor.comparison_event(arena_code, recorded_at DESC);
+
 COMMENT ON TABLE monitor.comparison_event IS
     'Glicko-2 comparison events between substrate items. Drives entity_significance / edge_significance updates.';
 
@@ -1571,7 +1556,7 @@ CREATE TABLE monitor.significance_snapshot (
     games           INT NOT NULL,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_significance_snapshot_target ON monitor.significance_snapshot(target_kind, target_type_id, target_hash, recorded_at DESC);
+
 COMMENT ON TABLE monitor.significance_snapshot IS
     'Periodic snapshots of significance state for time-series analysis.';
 
@@ -1597,7 +1582,121 @@ CREATE TABLE IF NOT EXISTS substrate.arena_priming_state (
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
--- (Phase 12 deleted post-W2E refactor: substrate.staging_* tables and the
+-- ── Phase 12: indexes ─────────────────────────────────────────────────
+
+-- ── sql/schema/indexes/idx_block_range.sql ───────────────────────────────────────
+CREATE INDEX idx_block_range ON substrate.block(range_start, range_end);
+
+-- ── sql/schema/indexes/idx_break_property_category.sql ───────────────────────────────────────
+CREATE INDEX idx_break_property_category ON substrate.break_property(category);
+
+-- ── sql/schema/indexes/idx_codepoint_property_block.sql ───────────────────────────────────────
+CREATE INDEX idx_codepoint_property_block     ON substrate.codepoint_property(block_id);
+
+-- ── sql/schema/indexes/idx_codepoint_property_codepoint.sql ───────────────────────────────────────
+CREATE INDEX idx_codepoint_property_codepoint ON substrate.codepoint_property(codepoint_value);
+
+-- ── sql/schema/indexes/idx_codepoint_property_gc.sql ───────────────────────────────────────
+CREATE INDEX idx_codepoint_property_gc        ON substrate.codepoint_property(general_category_id);
+
+-- ── sql/schema/indexes/idx_codepoint_property_script.sql ───────────────────────────────────────
+CREATE INDEX idx_codepoint_property_script    ON substrate.codepoint_property(script_id);
+
+-- ── sql/schema/indexes/idx_comparison_event_arena.sql ───────────────────────────────────────
+CREATE INDEX idx_comparison_event_arena   ON monitor.comparison_event(arena_code, recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_comparison_event_session.sql ───────────────────────────────────────
+CREATE INDEX idx_comparison_event_session ON monitor.comparison_event(session_id, recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_edge_type_category.sql ───────────────────────────────────────
+CREATE INDEX idx_edge_type_category ON substrate.edge_type(category);
+
+-- ── sql/schema/indexes/idx_entity_classification_provenance.sql ───────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_entity_classification_provenance
+    ON substrate.entity_classification(provenance_id);
+
+-- ── sql/schema/indexes/idx_entity_classification_type.sql ───────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_entity_classification_type
+    ON substrate.entity_classification(entity_type_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_entity_language_lang.sql ───────────────────────────────────────
+CREATE INDEX idx_entity_language_lang ON substrate.entity_language(language_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_entity_lexname_lexname.sql ───────────────────────────────────────
+CREATE INDEX idx_entity_lexname_lexname ON substrate.entity_lexname(lexname_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_entity_model_source_source.sql ───────────────────────────────────────
+CREATE INDEX idx_entity_model_source_source ON substrate.entity_model_source(model_source_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_entity_morph_feature_feat.sql ───────────────────────────────────────
+CREATE INDEX idx_entity_morph_feature_feat ON substrate.entity_morph_feature(morph_feature_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_entity_pos_pos.sql ───────────────────────────────────────
+CREATE INDEX idx_entity_pos_pos ON substrate.entity_pos(pos_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_entity_type_modality.sql ───────────────────────────────────────
+CREATE INDEX idx_entity_type_modality ON substrate.entity_type(modality);
+
+-- ── sql/schema/indexes/idx_error_log_recent.sql ───────────────────────────────────────
+CREATE INDEX idx_error_log_recent ON monitor.error_log(occurred_at DESC);
+
+-- ── sql/schema/indexes/idx_general_category_group.sql ───────────────────────────────────────
+CREATE INDEX idx_general_category_group ON substrate.general_category(group_code);
+
+-- ── sql/schema/indexes/idx_inference_metrics_recent.sql ───────────────────────────────────────
+CREATE INDEX idx_inference_metrics_recent  ON monitor.inference_metrics(recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_inference_metrics_session.sql ───────────────────────────────────────
+CREATE INDEX idx_inference_metrics_session ON monitor.inference_metrics(session_id, recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_ingestion_progress_recent.sql ───────────────────────────────────────
+CREATE INDEX idx_ingestion_progress_recent ON monitor.ingestion_progress(recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_language_scope.sql ───────────────────────────────────────
+CREATE INDEX idx_language_scope ON substrate.language(scope);
+
+-- ── sql/schema/indexes/idx_language_type.sql ───────────────────────────────────────
+CREATE INDEX idx_language_type ON substrate.language(type);
+
+-- ── sql/schema/indexes/idx_model_arch_class.sql ───────────────────────────────────────
+CREATE INDEX idx_model_arch_class ON substrate.model_architecture_class(architecture_class_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_model_pass_checkpoint_source.sql ───────────────────────────────────────
+CREATE INDEX idx_model_pass_checkpoint_source ON substrate.model_pass_checkpoint(model_source_id);
+
+-- ── sql/schema/indexes/idx_model_source_model.sql ───────────────────────────────────────
+CREATE INDEX idx_model_source_model     ON substrate.model_source(model_id);
+
+-- ── sql/schema/indexes/idx_model_source_publisher.sql ───────────────────────────────────────
+CREATE INDEX idx_model_source_publisher ON substrate.model_source(publisher_id);
+
+-- ── sql/schema/indexes/idx_morph_feature_key.sql ───────────────────────────────────────
+CREATE INDEX idx_morph_feature_key ON substrate.morph_feature(key);
+
+-- ── sql/schema/indexes/idx_pattern_deprel_deprel.sql ───────────────────────────────────────
+CREATE INDEX idx_pattern_deprel_deprel ON substrate.pattern_deprel(deprel_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_sequence_child.sql ───────────────────────────────────────
+CREATE INDEX idx_sequence_child ON substrate.sequence(child_hash, parent_hash);
+
+-- ── sql/schema/indexes/idx_session_started.sql ───────────────────────────────────────
+CREATE INDEX idx_session_started ON monitor.session(started_at DESC);
+
+-- ── sql/schema/indexes/idx_significance_snapshot_target.sql ───────────────────────────────────────
+CREATE INDEX idx_significance_snapshot_target ON monitor.significance_snapshot(target_kind, target_type_id, target_hash, recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_substrate_health_code.sql ───────────────────────────────────────
+CREATE INDEX idx_substrate_health_code   ON monitor.substrate_health(metric_code, recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_substrate_health_recent.sql ───────────────────────────────────────
+CREATE INDEX idx_substrate_health_recent ON monitor.substrate_health(recorded_at DESC);
+
+-- ── sql/schema/indexes/idx_tensor_role.sql ───────────────────────────────────────
+CREATE INDEX idx_tensor_role ON substrate.tensor_tensor_role(tensor_role_id, entity_hash);
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- (Persistent staging deleted post-W2E refactor: substrate.staging_* tables and the
 --  drain_staging_*_chunk / drain_all_staging functions are gone. The
 --  StreamingIngestionPipeline writes DIRECTLY into substrate core tables
 --  via session-local pg_temp.X_inflight tables created per drain-task
@@ -3302,50 +3401,8 @@ COMMENT ON FUNCTION substrate.get_completed_model_passes(BIGINT) IS
 
 -- Geometry / 4D operators
 
--- ── sql/schema/functions/geom_bridge_4d.sql ───────────────────────────────────────
--- ============================================================================
--- Substrate 4D operator surface — subtype-aware bridge between PostGIS
--- GeometryZM storage and libhartonomous native compute.
--- ============================================================================
--- Storage is universal: substrate.physicality.geom is geometry(GeometryZM),
--- accepting the full GeometryZM subtype family (POINTZM, LINESTRINGZM,
--- MULTILINESTRINGZM, POLYGONZM, MULTIPOLYGONZM, MULTIPOINTZM,
--- GEOMETRYCOLLECTIONZM). Per-partition CHECK constraints declare which
--- subtype(s) and which axis semantics each physicality_type uses.
---
--- Compute lives in libhartonomous via the C extension. Two native primitives
--- carry all the load:
---   public.distance_4d(point4d, point4d) → 4D Euclidean
---   public.frechet_4d(linestring4d, linestring4d) → discrete Fréchet
---   public.hausdorff_4d(linestring4d, linestring4d) → symmetric Hausdorff
--- (point4d / linestring4d are internal native compute primitives, NOT
--- substrate-level types. They exist so the C kernels can take a flat
--- (x,y,z,m) sequence with zero PostGIS marshalling overhead.)
---
--- The substrate-side operators below dispatch on GeometryType and route to
--- the appropriate native primitive while preserving subtype structure:
---   * POINT-vs-POINT     → distance_4d
---   * LINESTRING-vs-LINESTRING → frechet_4d / hausdorff_4d on the linestring
---   * MULTILINESTRING    → minimum across pairwise component frechet
---   * POLYGON            → exterior ring as the structural trajectory
---   * MULTIPOLYGON       → minimum across pairwise component frechet
---   * GEOMETRYCOLLECTION → minimum across all component pairs
---   * MULTIPOINT         → Hausdorff (Fréchet undefined on unordered sets)
---   * Cross-shape pairs  → representative-point or vertex-stream fallback
---
--- This is explicitly NOT "ST_DumpPoints flatten everything" — that approach
--- loses subtype structural distinction (ring concatenation in polygons,
--- branch concatenation in multilinestrings, etc.) and produces wrong answers
--- for non-trivial subtype combinations.
-
--- ────────────────────────────────────────────────────────────────────────────
--- Helper: walk one geometry's vertex stream into a native linestring4d.
--- Used by dispatch arms that genuinely DO want the flat sequence (LINESTRING
--- treated as a single trajectory, MULTIPOINT treated as an unordered set for
--- Hausdorff). Callers that need subtype structure preserved must dispatch
--- on GeometryType BEFORE building the linestring4d.
--- ────────────────────────────────────────────────────────────────────────────
-DROP FUNCTION IF EXISTS substrate.geom_to_linestring4d(geometry);
+-- ── sql/schema/functions/geom_to_linestring4d.sql ───────────────────────────────────────
+-- Walk one GeometryZM value's vertex stream into a native linestring4d.
 CREATE OR REPLACE FUNCTION substrate.geom_to_linestring4d(g geometry)
 RETURNS public.linestring4d
 LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
@@ -3361,19 +3418,16 @@ AS $$
                          (COALESCE(ST_Z(d.geom), 0)::DOUBLE PRECISION),
                          (COALESCE(ST_M(d.geom), 0)::DOUBLE PRECISION)
                  ) AS f(v)
-            ORDER BY d.path, f.v   -- depth-first vertex order, 4 floats per vertex
+            ORDER BY d.path, f.v
         )
     );
 $$;
 
 COMMENT ON FUNCTION substrate.geom_to_linestring4d(geometry) IS
-    'Walk one geometry depth-first into a flat (x,y,z,m) sequence packed as a native linestring4d. Used by dispatch arms that legitimately want the flat sequence (LINESTRINGZM trajectory, MULTIPOINTZM scatter). Callers needing subtype structure (POLYGON rings, MULTILINESTRING branches) must dispatch BEFORE calling this — flattening loses structure.';
+    'Walk one geometry depth-first into a flat (x,y,z,m) sequence packed as a native linestring4d. Used only after callers have chosen a subtype-aware dispatch path.';
 
--- ────────────────────────────────────────────────────────────────────────────
--- Helper: extract POLYGON exterior ring as a linestring4d. The exterior ring
--- IS the polygon's structural trajectory for Fréchet purposes. Holes (interior
--- rings) are placement metadata, not part of the boundary shape.
--- ────────────────────────────────────────────────────────────────────────────
+-- ── sql/schema/functions/polygon_exterior_linestring4d.sql ───────────────────────────────────────
+-- Extract a POLYGONZM exterior ring as a native linestring4d.
 CREATE OR REPLACE FUNCTION substrate.polygon_exterior_linestring4d(g geometry)
 RETURNS public.linestring4d
 LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
@@ -3382,14 +3436,10 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.polygon_exterior_linestring4d(geometry) IS
-    'Extract a POLYGONZM''s exterior ring as a linestring4d for boundary-shape comparison. Interior rings (holes) are excluded — they are placement metadata, not boundary structure.';
+    'Extract a POLYGONZM exterior ring as a linestring4d for boundary-shape comparison. Interior rings are excluded.';
 
--- ────────────────────────────────────────────────────────────────────────────
--- substrate.dist_4d(g1, g2) — primary subtype-dispatching distance.
--- Returns a meaningful number for every subtype × subtype pair. NULL only
--- when at least one operand is empty.
--- ────────────────────────────────────────────────────────────────────────────
-DROP FUNCTION IF EXISTS substrate.dist_4d(geometry, geometry);
+-- ── sql/schema/functions/dist_4d.sql ───────────────────────────────────────
+-- Subtype-dispatching 4D distance over GeometryZM.
 CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry, g2 geometry)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
@@ -3398,30 +3448,24 @@ DECLARE
     t1 TEXT := ST_GeometryType(g1);
     t2 TEXT := ST_GeometryType(g2);
 BEGIN
-    -- Fast path: POINT-vs-POINT pure 4D Euclidean.
     IF t1 = 'ST_Point' AND t2 = 'ST_Point' THEN
         RETURN public.distance_4d(
             public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
             public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0)));
     END IF;
 
-    -- Same-shape LINESTRING: discrete Fréchet on the trajectory.
     IF t1 = 'ST_LineString' AND t2 = 'ST_LineString' THEN
         RETURN public.frechet_4d(
             substrate.geom_to_linestring4d(g1),
             substrate.geom_to_linestring4d(g2));
     END IF;
 
-    -- Same-shape POLYGON: Fréchet on the exterior rings (boundary shape).
     IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
         RETURN public.frechet_4d(
             substrate.polygon_exterior_linestring4d(g1),
             substrate.polygon_exterior_linestring4d(g2));
     END IF;
 
-    -- Same-shape MULTILINESTRING / MULTIPOLYGON: minimum component-pair
-    -- Fréchet. Each branch / ring is a separate trajectory; cross-branch
-    -- vertex concatenation would invent shape that isn't there.
     IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
         RETURN (
             SELECT MIN(public.frechet_4d(
@@ -3431,17 +3475,12 @@ BEGIN
         );
     END IF;
 
-    -- MULTIPOINT-vs-MULTIPOINT: Hausdorff (Fréchet is undefined on unordered
-    -- sets). Treats both inputs as scatter clouds.
     IF t1 = 'ST_MultiPoint' AND t2 = 'ST_MultiPoint' THEN
         RETURN public.hausdorff_4d(
             substrate.geom_to_linestring4d(g1),
             substrate.geom_to_linestring4d(g2));
     END IF;
 
-    -- Cross-shape with at least one POINT: minimum 4D distance from the
-    -- point to every vertex of the other geometry. Not Fréchet — that's
-    -- not defined point-to-trajectory.
     IF t1 = 'ST_Point' THEN
         RETURN (
             SELECT MIN(public.distance_4d(
@@ -3450,6 +3489,7 @@ BEGIN
               FROM ST_DumpPoints(g2) d
         );
     END IF;
+
     IF t2 = 'ST_Point' THEN
         RETURN (
             SELECT MIN(public.distance_4d(
@@ -3459,8 +3499,6 @@ BEGIN
         );
     END IF;
 
-    -- GEOMETRYCOLLECTION on either side: dispatch component-by-component
-    -- and return the minimum pairwise distance.
     IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
         RETURN (
             SELECT MIN(substrate.dist_4d(c1.geom, c2.geom))
@@ -3468,10 +3506,6 @@ BEGIN
         );
     END IF;
 
-    -- Fallback: vertex-stream Fréchet. Triggered for combinations like
-    -- LINESTRING-vs-POLYGON, MULTILINESTRING-vs-POLYGON, etc., where the
-    -- structural answer is "compare boundary trajectories." Caller can
-    -- dispatch differently if it needs a stricter shape semantic.
     RETURN public.frechet_4d(
         substrate.geom_to_linestring4d(g1),
         substrate.geom_to_linestring4d(g2));
@@ -3479,15 +3513,10 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.dist_4d(geometry, geometry) IS
-    'Subtype-dispatching 4D distance over GeometryZM. POINT/LINESTRING/POLYGON/MULTI*/COLLECTION pairs each route to the structurally appropriate native primitive (distance_4d, frechet_4d, hausdorff_4d, or component-wise minimum). Cross-shape pairs are explicitly handled. Substrate-side does no compute itself; libhartonomous via the C extension does the math.';
+    'Subtype-dispatching 4D distance over GeometryZM. POINT/LINESTRING/POLYGON/MULTI*/COLLECTION pairs route to the structurally appropriate native primitive.';
 
--- ────────────────────────────────────────────────────────────────────────────
--- substrate.frechet_4d_geom(g1, g2) — explicit Fréchet, subtype-aware.
--- Same dispatch principles as dist_4d but always returns a Fréchet value
--- (errors on subtype combinations where Fréchet is undefined, e.g. MULTIPOINT
--- — caller should use hausdorff_4d_geom instead).
--- ────────────────────────────────────────────────────────────────────────────
-DROP FUNCTION IF EXISTS substrate.frechet_4d_geom(geometry, geometry);
+-- ── sql/schema/functions/frechet_4d_geom.sql ───────────────────────────────────────
+-- Subtype-aware discrete Frechet over GeometryZM.
 CREATE OR REPLACE FUNCTION substrate.frechet_4d_geom(g1 geometry, g2 geometry)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
@@ -3497,7 +3526,7 @@ DECLARE
     t2 TEXT := ST_GeometryType(g2);
 BEGIN
     IF t1 = 'ST_MultiPoint' OR t2 = 'ST_MultiPoint' THEN
-        RAISE EXCEPTION 'frechet_4d_geom: Fréchet is undefined on MULTIPOINTZM (unordered set). Use substrate.hausdorff_4d_geom for scatter-cloud comparison.';
+        RAISE EXCEPTION 'frechet_4d_geom: Frechet is undefined on MULTIPOINTZM. Use substrate.hausdorff_4d_geom for scatter-cloud comparison.';
     END IF;
 
     IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
@@ -3531,13 +3560,10 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.frechet_4d_geom(geometry, geometry) IS
-    'Subtype-aware discrete Fréchet over GeometryZM. POLYGONZM uses exterior-ring trajectory; MULTI* uses minimum across component pairs; GEOMETRYCOLLECTIONZM dispatches per-component. Errors on MULTIPOINTZM (Fréchet undefined on unordered sets — use hausdorff_4d_geom).';
+    'Subtype-aware discrete Frechet over GeometryZM. POLYGONZM uses exterior-ring trajectory; MULTI* uses minimum across component pairs; GEOMETRYCOLLECTIONZM dispatches per component.';
 
--- ────────────────────────────────────────────────────────────────────────────
--- substrate.hausdorff_4d_geom(g1, g2) — symmetric Hausdorff. Defined for all
--- subtype combinations including MULTIPOINTZM.
--- ────────────────────────────────────────────────────────────────────────────
-DROP FUNCTION IF EXISTS substrate.hausdorff_4d_geom(geometry, geometry);
+-- ── sql/schema/functions/hausdorff_4d_geom.sql ───────────────────────────────────────
+-- Subtype-aware symmetric Hausdorff over GeometryZM.
 CREATE OR REPLACE FUNCTION substrate.hausdorff_4d_geom(g1 geometry, g2 geometry)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
@@ -3546,14 +3572,12 @@ DECLARE
     t1 TEXT := ST_GeometryType(g1);
     t2 TEXT := ST_GeometryType(g2);
 BEGIN
-    -- POLYGON: compare exterior rings.
     IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
         RETURN public.hausdorff_4d(
             substrate.polygon_exterior_linestring4d(g1),
             substrate.polygon_exterior_linestring4d(g2));
     END IF;
 
-    -- MULTI* same-shape: maximum across components (Hausdorff is a max-metric).
     IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
         RETURN (
             SELECT MAX(public.hausdorff_4d(
@@ -3563,7 +3587,6 @@ BEGIN
         );
     END IF;
 
-    -- GEOMETRYCOLLECTION: dispatch per-component, take the maximum.
     IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
         RETURN (
             SELECT MAX(substrate.hausdorff_4d_geom(c1.geom, c2.geom))
@@ -3571,9 +3594,6 @@ BEGIN
         );
     END IF;
 
-    -- Default (POINT, LINESTRING, MULTIPOINT, cross-shape): flatten and run
-    -- native hausdorff_4d. Hausdorff tolerates flattening better than Fréchet
-    -- because it's max-distance-of-min-distance over both sets.
     RETURN public.hausdorff_4d(
         substrate.geom_to_linestring4d(g1),
         substrate.geom_to_linestring4d(g2));
@@ -3581,7 +3601,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.hausdorff_4d_geom(geometry, geometry) IS
-    'Subtype-aware symmetric Hausdorff over GeometryZM. POLYGONZM uses exterior-ring; MULTI* takes maximum across component pairs (Hausdorff is a max-metric); GEOMETRYCOLLECTIONZM dispatches per-component. Defined for all subtypes including MULTIPOINTZM scatter clouds.';
+    'Subtype-aware symmetric Hausdorff over GeometryZM. POLYGONZM uses exterior-ring; MULTI* takes maximum across component pairs; GEOMETRYCOLLECTIONZM dispatches per component.';
 
 -- ── sql/schema/functions/entity_centroid_4d.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.entity_centroid_4d(INT, BYTEA);
@@ -3594,18 +3614,36 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
      ORDER BY physicality_type_id LIMIT 1;
 $f$;
 
--- ── sql/schema/functions/populate_edge_trajectories_v2.sql ───────────────────────────────────────
--- substrate.populate_edge_trajectories(p_limit INT)
---
--- Walks edges with NULL geom and populates each edge's geom column with a
--- LINESTRINGZM through its participants' 4D centroids in role order. For
--- edges with only one valid centroid, geom is the centroid POINTZM.
---
--- Set-based UPDATE — no plpgsql FOR LOOP, no per-row roundtrip. The
--- per-edge centroid aggregation runs as a single GROUP BY scan; PG's
--- executor parallelises across partitions of substrate.edge_member where
--- safe. substrate.entity_centroid_4d (the per-entity centroid lookup) is
--- itself a SQL function that calls native compute.
+-- ── sql/schema/functions/geom_to_pointzm.sql ───────────────────────────────────────
+-- Collapse any GeometryZM subtype to a representative POINTZM.
+CREATE OR REPLACE FUNCTION substrate.geom_to_pointzm(g geometry)
+RETURNS geometry(PointZM)
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT CASE
+        WHEN g IS NULL OR ST_IsEmpty(g) THEN NULL
+        WHEN ST_GeometryType(g) = 'ST_Point' THEN
+            ST_MakePoint(
+                ST_X(g),
+                ST_Y(g),
+                COALESCE(ST_Z(g), 0)::DOUBLE PRECISION,
+                COALESCE(ST_M(g), 0)::DOUBLE PRECISION)
+        ELSE (
+            SELECT ST_MakePoint(
+                AVG(ST_X(d.geom))::DOUBLE PRECISION,
+                AVG(ST_Y(d.geom))::DOUBLE PRECISION,
+                AVG(COALESCE(ST_Z(d.geom), 0))::DOUBLE PRECISION,
+                AVG(COALESCE(ST_M(d.geom), 0))::DOUBLE PRECISION)
+              FROM ST_DumpPoints(g) AS d
+        )
+    END;
+$$;
+
+COMMENT ON FUNCTION substrate.geom_to_pointzm(geometry) IS
+    'Collapse any GeometryZM subtype to a representative POINTZM = 4D mean of its vertex stream. Used before ST_MakeLine in populate_edge_trajectories.';
+
+-- ── sql/schema/functions/populate_edge_trajectories.sql ───────────────────────────────────────
+-- Populate edge trajectories from participant centroids.
 CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT)
 RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
@@ -3622,7 +3660,8 @@ BEGIN
     per_edge_pts AS (
         SELECT em.edge_type_id, em.edge_hash,
                em.edge_role_id, em.entity_hash,
-               substrate.entity_centroid_4d(em.entity_hash) AS cgeom
+               substrate.geom_to_pointzm(
+                   substrate.entity_centroid_4d(em.entity_hash)) AS cgeom
           FROM candidates c
           JOIN substrate.edge_member em
             ON em.edge_type_id = c.edge_type_id
@@ -3654,7 +3693,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. One set-based UPDATE — no plpgsql LOOP. substrate.entity_centroid_4d is the per-entity centroid lookup (native-backed).';
+    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. Participants are coerced to POINTZM via substrate.geom_to_pointzm before ST_MakeLine.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -3852,19 +3891,8 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
      WHERE s.child_hash = p_child_hash;
 $f$;
 
--- ── sql/schema/functions/recompose_text_v2.sql ───────────────────────────────────────
--- substrate.recompose_text(parent_hash, max_depth)
---
--- Byte-for-byte text reconstruction by recursive walk of substrate.sequence
--- to codepoint leaves, each codepoint decoded via codepoint_property.
---
--- Phase C unification: hash-only signature. The recursion checks whether
--- a hash refers to a codepoint by joining substrate.entity_classification
--- (the type "codepoint" is metadata, not part of identity).
---
--- The sequence walk respects RLE: a row with rle_count=3 expands to three
--- codepoint emissions in a row. Microsecond per parent at small depth;
--- the btree on (parent_hash, ordinal) makes each step a single index dive.
+-- ── sql/schema/functions/recompose_text.sql ───────────────────────────────────────
+-- Byte-for-byte text reconstruction by recursive sequence walk.
 CREATE OR REPLACE FUNCTION substrate.recompose_text(
     p_entity_hash BYTEA,
     p_max_depth   INT DEFAULT 100000
@@ -3905,10 +3933,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
-    'Byte-for-byte text reconstruction via substrate.sequence walk. RLE-expanded. Hash-only signature (Phase C unification).';
-
--- Backward compat: drop old signature if it exists.
-DROP FUNCTION IF EXISTS substrate.recompose_text(INT, BYTEA, INT);
+    'Byte-for-byte text reconstruction via substrate.sequence walk. RLE-expanded. Hash-only signature.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -4804,37 +4829,8 @@ $$;
 COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
     'Bulk-loads substrate.break_property with id = extension_id + 1. Each row is a (category, code) pair — GCB/WB/SB/LB/InCB enums tagged at generation time. Idempotent.';
 
--- ── sql/schema/functions/populate_codepoint_property_from_ext.sql ───────────────────────────────────────
--- substrate.populate_codepoint_property_range_from_ext()
---
--- Bulk-populates substrate.codepoint_property from the embedded UCD
--- catalog. Replaces the C# UCD decomposer's per-codepoint round-trips
--- with generated-static-C range scans: substrate.ucd_codepoints(lo, count)
--- emits bounded slices from the PG extension's generated UCD/UCA arrays.
---
--- The reference tables MUST already be populated. Call order in
--- scripts/seed/Ucd.ps1:
---   1. populate_general_categories_from_ext()
---   2. populate_scripts_from_ext()
---   3. populate_blocks_from_ext()
---   4. populate_break_properties_from_ext()
---   5. populate_codepoint_property_range_from_ext(lo, count), invoked from
---      the seed script in separate client-side chunks.
---
--- Reference-table FK translation: the embedded catalog's enum ids are
--- 0-based. The UCD reference loaders pin substrate reference IDs to
--- extension_id + 1, so this hot path projects FK IDs directly and lets the
--- table's FK constraints validate them. Break-property category offsets are
--- fixed by substrate.ucd_break_properties(): GCB 0→1, WB 0→15, SB 0→35,
--- LB 0→50. InCB exists in the reference table but codepoint_property does
--- not store it.
---
--- Idempotent — ON CONFLICT (entity_hash) DO NOTHING. The range function is
--- the real bulk-load primitive. It caps each actual substrate.ucd_codepoints()
--- scan to a bounded executor slice, and seed scripts also call it from
--- separate client-side chunks so every chunk has its own statement boundary
--- while leaving FK constraints active.
-
+-- ── sql/schema/functions/populate_codepoint_property_range_from_ext.sql ───────────────────────────────────────
+-- Populate a bounded codepoint_property slice from the embedded UCD catalog.
 CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_range_from_ext(
     p_start INT,
     p_count INT
@@ -4900,19 +4896,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_range_from_ext(INT, INT) IS
-    'Populates a bounded codepoint_property slice from the embedded UCD catalog. Internally caps native SRF scans at 32,768 rows; seed callers also provide client-side chunk boundaries.';
-
-CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_from_ext()
-RETURNS int
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    RAISE EXCEPTION 'populate_codepoint_property_from_ext() is intentionally disabled for the full UCD load; call populate_codepoint_property_range_from_ext(start,count) from the seed script so each chunk has a real client-side statement boundary';
-END;
-$$;
-
-COMMENT ON FUNCTION substrate.populate_codepoint_property_from_ext() IS
-    'Disabled compatibility wrapper. Use populate_codepoint_property_range_from_ext(start,count), which caps native SRF scans and is intended for client-side chunks.';
+    'Populates a bounded codepoint_property slice from the embedded UCD catalog. Internally caps native SRF scans at 32,768 rows; seed callers provide client-side chunk boundaries.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -6758,9 +6742,9 @@ COMMENT ON FUNCTION substrate.recompose_audit_walk(jsonb) IS
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
--- ── Phase 14: procedures ─────────────────────────────────────────────
+-- Monitor write functions
 
--- ── sql/schema/procedures/monitor_create_session.sql ───────────────────────────────────────
+-- ── sql/schema/functions/monitor_create_session.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION monitor.create_session(
     p_label TEXT,
     p_notes TEXT DEFAULT NULL
@@ -6774,10 +6758,11 @@ BEGIN
     VALUES (v_id, p_label, NOW(), p_notes);
     RETURN v_id;
 END $$;
+
 COMMENT ON FUNCTION monitor.create_session(TEXT, TEXT) IS
     'Open a new monitor.session row and return its UUID.';
 
--- ── sql/schema/procedures/monitor_close_session.sql ───────────────────────────────────────
+-- ── sql/schema/functions/monitor_close_session.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION monitor.close_session()
 RETURNS VOID
 LANGUAGE plpgsql
@@ -6788,8 +6773,13 @@ BEGIN
      WHERE ended_at IS NULL
        AND started_at = (SELECT MAX(started_at) FROM monitor.session WHERE ended_at IS NULL);
 END $$;
+
 COMMENT ON FUNCTION monitor.close_session() IS
     'Close the most recent open session.';
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- ── Phase 14: procedures ─────────────────────────────────────────────
 
 -- ── sql/schema/procedures/monitor_archive_session.sql ───────────────────────────────────────
 CREATE OR REPLACE PROCEDURE monitor.archive_session(p_session_id UUID)
@@ -6880,14 +6870,32 @@ COMMENT ON PROCEDURE monitor.snapshot_health() IS
 -- High-level "is the substrate healthy" rollup for the CLI's status command.
 CREATE OR REPLACE VIEW monitor.substrate_dashboard AS
 SELECT
-    (SELECT count(*) FROM substrate.entity)            AS total_entities,
-    (SELECT count(*) FROM substrate.edge)              AS total_edges,
-    (SELECT count(*) FROM substrate.physicality)       AS total_physicality,
+    (SELECT count(*) FROM substrate.entity)              AS total_entities,
+    (SELECT count(*) FROM substrate.edge)                AS total_edges,
+    (SELECT count(*) FROM substrate.physicality)         AS total_physicalities,
+    ((SELECT count(*) FROM substrate.entity_significance)
+     + (SELECT count(*) FROM substrate.edge_significance)) AS total_significance_records,
     (SELECT count(*) FROM monitor.phase_status WHERE status = 'completed') AS phases_completed,
     (SELECT count(*) FROM monitor.phase_status WHERE status = 'failed')    AS phases_failed,
     (SELECT max(recorded_at) FROM monitor.substrate_health)                AS last_health_snapshot;
 COMMENT ON VIEW monitor.substrate_dashboard IS
     'Single-row rollup of substrate state for the CLI''s status command.';
+
+-- ── sql/schema/views/entity_type_counts.sql ───────────────────────────────────────
+-- Classification-aware entity and edge counts by structural entity type.
+CREATE OR REPLACE VIEW monitor.entity_type_counts AS
+SELECT
+    et.code AS entity_type,
+    count(DISTINCT ec.entity_hash)::BIGINT AS entity_count,
+    (count(DISTINCT (em.edge_type_id, em.edge_hash))
+        FILTER (WHERE em.edge_hash IS NOT NULL))::BIGINT AS edge_count
+FROM substrate.entity_classification ec
+JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+LEFT JOIN substrate.edge_member em ON em.entity_hash = ec.entity_hash
+GROUP BY et.code;
+
+COMMENT ON VIEW monitor.entity_type_counts IS
+    'Counts classified entities and distinct incident edges per structural entity type using substrate.entity_classification.';
 
 -- ── sql/schema/views/v_active_runs.sql ───────────────────────────────────────
 CREATE OR REPLACE VIEW monitor.v_active_runs AS

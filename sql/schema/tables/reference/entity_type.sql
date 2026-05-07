@@ -4,6 +4,6 @@ CREATE TABLE substrate.entity_type (
     modality  VARCHAR(32) NOT NULL,
     parent_id INT REFERENCES substrate.entity_type(id)
 );
-CREATE INDEX idx_entity_type_modality ON substrate.entity_type(modality);
+
 COMMENT ON TABLE substrate.entity_type IS
     'Structural classification of entities by content kind and modality. Identifies which partition of substrate.entity a row belongs to.';

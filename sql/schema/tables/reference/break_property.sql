@@ -4,6 +4,6 @@ CREATE TABLE substrate.break_property (
     category VARCHAR(16) NOT NULL,
     UNIQUE(code, category)
 );
-CREATE INDEX idx_break_property_category ON substrate.break_property(category);
+
 COMMENT ON TABLE substrate.break_property IS
     'UAX #29 break properties for segmentation. Four categories: GCB (grapheme), WB (word), SB (sentence), LB (line).';

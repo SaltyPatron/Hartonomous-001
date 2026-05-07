@@ -1,0 +1,1 @@
+CREATE INDEX idx_model_pass_checkpoint_source ON substrate.model_pass_checkpoint(model_source_id);

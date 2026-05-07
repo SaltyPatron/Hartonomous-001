@@ -7,6 +7,6 @@ CREATE TABLE substrate.entity_pos (
     games       INT NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_hash, pos_id)
 );
-CREATE INDEX idx_entity_pos_pos ON substrate.entity_pos(pos_id, entity_hash);
+
 COMMENT ON TABLE substrate.entity_pos IS
     'Entity → POS with Glicko-2. Hash-only entity reference. Multiple POS per entity supported.';

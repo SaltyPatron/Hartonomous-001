@@ -1,0 +1,1 @@
+CREATE INDEX idx_codepoint_property_codepoint ON substrate.codepoint_property(codepoint_value);

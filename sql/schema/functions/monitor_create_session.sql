@@ -11,5 +11,6 @@ BEGIN
     VALUES (v_id, p_label, NOW(), p_notes);
     RETURN v_id;
 END $$;
+
 COMMENT ON FUNCTION monitor.create_session(TEXT, TEXT) IS
     'Open a new monitor.session row and return its UUID.';

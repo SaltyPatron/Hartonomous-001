@@ -8,6 +8,6 @@ CREATE TABLE substrate.model_pass_checkpoint (
     error_message   TEXT,
     UNIQUE (model_source_id, pass_name)
 );
-CREATE INDEX idx_model_pass_checkpoint_source ON substrate.model_pass_checkpoint(model_source_id);
+
 COMMENT ON TABLE substrate.model_pass_checkpoint IS
     'Per-pass progress for safetensors decomposition. Lets a multi-pass ingestion resume after interruption.';

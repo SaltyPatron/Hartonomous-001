@@ -25,7 +25,7 @@ CREATE TABLE substrate.edge_type (
     -- Structural-value tier for COALESCE prior. Default 1.0 (full weight).
     semantic_weight FLOAT8 NOT NULL DEFAULT 1.0
 );
-CREATE INDEX idx_edge_type_category ON substrate.edge_type(category);
+
 COMMENT ON TABLE substrate.edge_type IS
     'Operational edge typing with domain/range entity type constraints + structural-value tier (semantic_weight) for the trust-prior formula. Categories: structural, semantic, syntactic, morphological, cross_lingual, cross_modal, model_derived, unicode.';
 COMMENT ON COLUMN substrate.edge_type.source_type_id IS

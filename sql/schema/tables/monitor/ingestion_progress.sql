@@ -8,6 +8,6 @@ CREATE TABLE monitor.ingestion_progress (
     current_file    TEXT,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_ingestion_progress_recent ON monitor.ingestion_progress(recorded_at DESC);
+
 COMMENT ON TABLE monitor.ingestion_progress IS
     'Per-batch ingestion telemetry. Operational, not part of substrate identity.';

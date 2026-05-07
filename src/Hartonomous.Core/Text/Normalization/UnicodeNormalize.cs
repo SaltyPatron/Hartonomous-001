@@ -9,7 +9,7 @@ namespace Hartonomous.Core.Text.Normalization;
 /// substrate's <c>text_segmentation_profile</c> records the ICU / Unicode
 /// version so a future substrate-native implementation backed by UCD data
 /// ingested by the substrate-side UCD seed (scripts/seed/Ucd.ps1 +
-/// substrate.populate_codepoint_property_from_ext) is a drop-in replacement
+/// substrate.populate_codepoint_property_range_from_ext) is a drop-in replacement
 /// behind the
 /// same API. Content is never mutated — every method returns a new byte[].
 /// </summary>

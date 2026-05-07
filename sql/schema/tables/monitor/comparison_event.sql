@@ -14,7 +14,6 @@ CREATE TABLE monitor.comparison_event (
     outcome_score   FLOAT8 NOT NULL DEFAULT 1.0,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_comparison_event_session ON monitor.comparison_event(session_id, recorded_at DESC);
-CREATE INDEX idx_comparison_event_arena   ON monitor.comparison_event(arena_code, recorded_at DESC);
+
 COMMENT ON TABLE monitor.comparison_event IS
     'Glicko-2 comparison events between substrate items. Drives entity_significance / edge_significance updates.';
