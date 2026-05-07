@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -47,13 +46,9 @@ public abstract class BaseSubstrateRepository
         int? commandTimeoutSeconds = null)
         where TResult : IRecordMappable<TResult>
     {
-        AssertAllowlisted(functionName);
-        string sql = BuildSql(functionName, parameters.Length);
-
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(sql, conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(conn, functionName, parameters);
         if (commandTimeoutSeconds.HasValue) { cmd.CommandTimeout = commandTimeoutSeconds.Value; }
-        for (int i = 0; i < parameters.Length; i++) { cmd.Parameters.Add(parameters[i]); }
 
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -75,13 +70,9 @@ public abstract class BaseSubstrateRepository
         int? commandTimeoutSeconds = null)
         where TResult : IRecordMappable<TResult>
     {
-        AssertAllowlisted(functionName);
-        string sql = BuildSql(functionName, parameters.Length);
-
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(sql, conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(conn, functionName, parameters);
         if (commandTimeoutSeconds.HasValue) { cmd.CommandTimeout = commandTimeoutSeconds.Value; }
-        for (int i = 0; i < parameters.Length; i++) { cmd.Parameters.Add(parameters[i]); }
 
         List<TResult> results = [];
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -102,44 +93,10 @@ public abstract class BaseSubstrateRepository
         CancellationToken ct,
         int? commandTimeoutSeconds = null)
     {
-        AssertAllowlisted(functionName);
-        string sql = BuildSql(functionName, parameters.Length);
-
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(sql, conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(conn, functionName, parameters);
         if (commandTimeoutSeconds.HasValue) { cmd.CommandTimeout = commandTimeoutSeconds.Value; }
-        for (int i = 0; i < parameters.Length; i++) { cmd.Parameters.Add(parameters[i]); }
 
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-    }
-
-    private static void AssertAllowlisted(string functionName)
-    {
-        if (!SubstrateFunctionNames.Allowlist.Contains(functionName))
-        {
-            throw new InvalidOperationException(
-                $"Substrate function name '{functionName}' is not in the allowlist. " +
-                "Add it to SubstrateFunctionNames.Allowlist before calling.");
-        }
-    }
-
-    private static string BuildSql(string functionName, int paramCount)
-    {
-        if (paramCount == 0)
-        {
-            return string.Concat("SELECT * FROM ", functionName, "()");
-        }
-        StringBuilder sb = new(32 + functionName.Length + paramCount * 4);
-        sb.Append("SELECT * FROM ");
-        sb.Append(functionName);
-        sb.Append('(');
-        for (int i = 0; i < paramCount; i++)
-        {
-            if (i > 0) { sb.Append(", "); }
-            sb.Append('$');
-            sb.Append(i + 1);
-        }
-        sb.Append(')');
-        return sb.ToString();
     }
 }

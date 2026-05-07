@@ -1,8 +1,8 @@
 using Microsoft.AspNetCore.Builder;
+using Hartonomous.Core.Data;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Npgsql;
-using System.Text.Json;
 
 namespace Hartonomous.Api.Endpoints;
 
@@ -19,15 +19,16 @@ internal static class EntityEndpoints
     private static async Task<IResult> GetEntityByHash(
         string hash, NpgsqlDataSource db, CancellationToken ct)
     {
-        if (!TryParseHash(hash, out byte[]? hashBytes, out IResult? error))
+        if (!ApiHash.TryParse(hash, out byte[]? hashBytes, out IResult? error))
         {
             return error!;
         }
 
         await using NpgsqlConnection conn = await db.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT entity_hash, classifications FROM substrate.api_entity_by_hash($1)", conn);
-        cmd.Parameters.AddWithValue(hashBytes!);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ApiEntityByHash,
+            hashBytes!);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {
@@ -36,8 +37,8 @@ internal static class EntityEndpoints
 
         return Results.Ok(new
         {
-            hash = Convert.ToHexString((byte[])reader.GetValue(3)).ToLowerInvariant(),
-            classifications = ReadJson(reader, 1),
+            hash = ApiHash.ToHex((byte[])reader.GetValue(0)),
+            classifications = ApiJson.Read(reader, 1),
         });
     }
 
@@ -49,30 +50,31 @@ internal static class EntityEndpoints
         byte[]? cursorHash = null;
         if (!string.IsNullOrEmpty(cursor))
         {
-            if (!TryParseHash(cursor, out cursorHash, out IResult? error))
+            if (!ApiHash.TryParse(cursor, out cursorHash, out IResult? error))
             {
                 return error!;
             }
         }
 
         await using NpgsqlConnection conn = await db.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT entity_hash, classifications FROM substrate.api_list_entities($1, $2, $3)", conn);
-        cmd.Parameters.AddWithValue((object?)typeCode ?? DBNull.Value);
-        cmd.Parameters.AddWithValue((object?)cursorHash ?? DBNull.Value);
-        cmd.Parameters.AddWithValue(pageSize + 1); // Fetch one extra to detect hasMore.
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ApiListEntities,
+            typeCode,
+            cursorHash,
+            pageSize + 1);
 
         List<object> items = [];
         List<string> hashes = [];
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
-            string itemHash = Convert.ToHexString((byte[])reader.GetValue(0)).ToLowerInvariant();
+            string itemHash = ApiHash.ToHex((byte[])reader.GetValue(0));
             hashes.Add(itemHash);
             items.Add(new
             {
                 hash = itemHash,
-                classifications = ReadJson(reader, 1),
+                classifications = ApiJson.Read(reader, 1),
             });
         }
 
@@ -94,21 +96,22 @@ internal static class EntityEndpoints
     private static async Task<IResult> GetClassifications(
         string hash, NpgsqlDataSource db, CancellationToken ct)
     {
-        if (!TryParseHash(hash, out byte[]? hashBytes, out IResult? error))
+        if (!ApiHash.TryParse(hash, out byte[]? hashBytes, out IResult? error))
         {
             return error!;
         }
 
         await using NpgsqlConnection conn = await db.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.api_entity_classifications($1)", conn);
-        cmd.Parameters.AddWithValue(hashBytes!);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ApiEntityClassifications,
+            hashBytes!);
 
         object? result = await cmd.ExecuteScalarAsync(ct);
         return Results.Ok(new
         {
             hash = hash.ToLowerInvariant(),
-            classifications = ReadJson(result),
+            classifications = ApiJson.Read(result),
         });
     }
 
@@ -122,19 +125,19 @@ internal static class EntityEndpoints
         {
             return Results.Problem("direction must be one of: both, in, out", statusCode: 400, type: "invalid-direction");
         }
-        if (!TryParseHash(hash, out byte[]? hashBytes, out IResult? error))
+        if (!ApiHash.TryParse(hash, out byte[]? hashBytes, out IResult? error))
         {
             return error!;
         }
 
         await using NpgsqlConnection conn = await db.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT edge_type_id, edge_type_code, edge_hash, role_code, role_position, provenance_code " +
-            "FROM substrate.api_entity_edges($1, $2, $3, $4)", conn);
-        cmd.Parameters.AddWithValue(hashBytes!);
-        cmd.Parameters.AddWithValue(dir);
-        cmd.Parameters.AddWithValue((object?)edgeTypeCode ?? DBNull.Value);
-        cmd.Parameters.AddWithValue(pageSize);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ApiEntityEdges,
+            hashBytes!,
+            dir,
+            edgeTypeCode,
+            pageSize);
 
         List<object> items = [];
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
@@ -144,7 +147,7 @@ internal static class EntityEndpoints
             {
                 edgeTypeId = reader.GetInt32(0),
                 edgeTypeCode = reader.GetString(1).Trim(),
-                edgeHash = Convert.ToHexString((byte[])reader.GetValue(2)).ToLowerInvariant(),
+                edgeHash = ApiHash.ToHex((byte[])reader.GetValue(2)),
                 roleCode = reader.GetString(3).Trim(),
                 rolePosition = reader.GetInt32(4),
                 provenanceCode = reader.GetString(5).Trim(),
@@ -156,37 +159,5 @@ internal static class EntityEndpoints
             hash = hash.ToLowerInvariant(),
             items,
         });
-    }
-
-    private static bool TryParseHash(string hash, out byte[]? bytes, out IResult? error)
-    {
-        bytes = null;
-        error = null;
-        if (hash.Length != 64)
-        {
-            error = Results.Problem(
-                "Hash must be 64 hex characters (32 bytes)", statusCode: 400, type: "invalid-hash");
-            return false;
-        }
-        try
-        {
-            bytes = Convert.FromHexString(hash);
-            return true;
-        }
-        catch (FormatException)
-        {
-            error = Results.Problem("Invalid hex encoding", statusCode: 400, type: "invalid-hash");
-            return false;
-        }
-    }
-
-    private static JsonElement ReadJson(NpgsqlDataReader reader, int ordinal) =>
-        ReadJson(reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal));
-
-    private static JsonElement ReadJson(object? value)
-    {
-        string json = value is null or DBNull ? "[]" : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "[]";
-        using JsonDocument document = JsonDocument.Parse(json);
-        return document.RootElement.Clone();
     }
 }

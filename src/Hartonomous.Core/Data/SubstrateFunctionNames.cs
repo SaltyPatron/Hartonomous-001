@@ -18,6 +18,14 @@ public static class SubstrateFunctionNames
     public const string Rerank      = "substrate.rerank";
     public const string EmbedLookup = "substrate.embed_lookup";
 
+    public const string ApiEdgeByHash = "substrate.api_edge_by_hash";
+    public const string ApiEntityByHash = "substrate.api_entity_by_hash";
+    public const string ApiEntityClassifications = "substrate.api_entity_classifications";
+    public const string ApiEntityEdges = "substrate.api_entity_edges";
+    public const string ApiEntityNeighbors = "substrate.api_entity_neighbors";
+    public const string ApiEntitySignificance = "substrate.api_entity_significance";
+    public const string ApiListEntities = "substrate.api_list_entities";
+
     public static readonly IReadOnlySet<string> Allowlist = new HashSet<string>(System.StringComparer.Ordinal)
     {
         Complete,
@@ -25,5 +33,22 @@ public static class SubstrateFunctionNames
         Classify,
         Rerank,
         EmbedLookup,
+        ApiEdgeByHash,
+        ApiEntityByHash,
+        ApiEntityClassifications,
+        ApiEntityEdges,
+        ApiEntityNeighbors,
+        ApiEntitySignificance,
+        ApiListEntities,
     };
+
+    public static void AssertAllowlisted(string functionName)
+    {
+        if (!Allowlist.Contains(functionName))
+        {
+            throw new InvalidOperationException(
+                $"Substrate function name '{functionName}' is not in the allowlist. " +
+                "Add it to SubstrateFunctionNames.Allowlist before calling.");
+        }
+    }
 }
