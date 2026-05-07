@@ -1,3 +1,4 @@
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Text.Normalization;
 using Hartonomous.Core.Text.Segmentation;
 using Microsoft.Extensions.Logging;
@@ -107,18 +108,13 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         IReadOnlyCollection<int>? codepoints,
         CancellationToken ct)
     {
-        string sql =
-            "SELECT cp.codepoint_value, cp.gcb_id, cp.wb_id, cp.sb_id, cp.lb_id, " +
-            "       cp.is_extended_pictographic, cp.simple_case_fold, cp.full_case_fold " +
-            "FROM substrate.codepoint_property cp " +
-            "WHERE cp.codepoint_value IS NOT NULL";
-
-        await using NpgsqlCommand cmd = new(codepoints is null ? sql : sql + " AND cp.codepoint_value = ANY($1)", conn);
-        if (codepoints is not null)
-        {
-            int[] requested = [.. codepoints];
-            cmd.Parameters.AddWithValue(requested);
-        }
+        int[]? requestedCodepoints = codepoints is null ? null : [.. codepoints];
+        await using NpgsqlCommand cmd = requestedCodepoints is null
+            ? NpgsqlSubstrateCommand.CreateFunction(conn, SubstrateFunctionNames.CodepointPropertyRows)
+            : NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.CodepointPropertyRows,
+            new object?[] { requestedCodepoints });
         cmd.CommandTimeout = 300;
 
         int loaded = 0;
@@ -161,7 +157,7 @@ public sealed partial class NpgsqlCodepointPropertiesCache : ICodepointPropertie
         NpgsqlConnection conn, CancellationToken ct)
     {
         Dictionary<int, string> map = new();
-        await using NpgsqlCommand cmd = new("SELECT id, code FROM substrate.break_property", conn);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(conn, SubstrateFunctionNames.BreakPropertyCodeMap);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {

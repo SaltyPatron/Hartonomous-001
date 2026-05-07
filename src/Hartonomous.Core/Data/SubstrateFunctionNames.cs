@@ -26,6 +26,8 @@ public static class SubstrateFunctionNames
     public const string ApiEntitySignificance = "substrate.api_entity_significance";
     public const string ApiListEntities = "substrate.api_list_entities";
 
+    public const string BreakPropertyCodeMap = "substrate.break_property_code_map";
+    public const string CodepointPropertyRows = "substrate.codepoint_property_rows";
     public const string CompositionRange = "substrate.composition_range";
     public const string GetEdgeInfoByHandles = "substrate.get_edge_info_by_handles";
     public const string GetEntityInfoByHandles = "substrate.get_entity_info_by_handles";
@@ -76,6 +78,8 @@ public static class SubstrateFunctionNames
         ApiEntityNeighbors,
         ApiEntitySignificance,
         ApiListEntities,
+        BreakPropertyCodeMap,
+        CodepointPropertyRows,
         CompositionRange,
         GetEdgeInfoByHandles,
         GetEntityInfoByHandles,

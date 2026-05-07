@@ -323,6 +323,8 @@
 -- @include schema/functions/model_vocab_recovered.sql
 -- @include schema/functions/cross_model_consensus.sql
 -- @include schema/functions/cross_model_divergence.sql
+-- @include schema/functions/codepoint_property_rows.sql
+-- @include schema/functions/break_property_code_map.sql
 -- @include schema/functions/preview_target_arch.sql
 -- @include schema/functions/refinement_summary.sql
 -- @include schema/functions/tensor_provenance_chain.sql
