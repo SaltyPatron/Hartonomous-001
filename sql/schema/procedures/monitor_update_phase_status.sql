@@ -10,7 +10,7 @@ BEGIN
     VALUES (
         p_phase_code,
         p_status,
-        CASE WHEN p_status = 'started' THEN NOW() ELSE NULL END,
+        CASE WHEN p_status IN ('started','running') THEN NOW() ELSE NULL END,
         CASE WHEN p_status IN ('completed','failed','skipped') THEN NOW() ELSE NULL END,
         p_error_message
     )
@@ -21,4 +21,4 @@ BEGIN
             error_message = EXCLUDED.error_message;
 END $$;
 COMMENT ON PROCEDURE monitor.update_phase_status(TEXT, TEXT, TEXT) IS
-    'Upsert the last-known status of a phase. Status: started, completed, failed, skipped.';
+    'Upsert the last-known status of a phase. Status: running, completed, failed, skipped.';

@@ -6764,18 +6764,23 @@ COMMENT ON FUNCTION monitor.create_session(TEXT, TEXT) IS
 
 -- ── sql/schema/functions/monitor_close_session.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION monitor.close_session()
-RETURNS VOID
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  v_rows INT;
 BEGIN
     UPDATE monitor.session
        SET ended_at = NOW()
      WHERE ended_at IS NULL
        AND started_at = (SELECT MAX(started_at) FROM monitor.session WHERE ended_at IS NULL);
+
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows > 0;
 END $$;
 
 COMMENT ON FUNCTION monitor.close_session() IS
-    'Close the most recent open session.';
+  'Close the most recent open session and return true when a row was closed.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -6808,7 +6813,7 @@ BEGIN
     VALUES (
         p_phase_code,
         p_status,
-        CASE WHEN p_status = 'started' THEN NOW() ELSE NULL END,
+        CASE WHEN p_status IN ('started','running') THEN NOW() ELSE NULL END,
         CASE WHEN p_status IN ('completed','failed','skipped') THEN NOW() ELSE NULL END,
         p_error_message
     )
@@ -6819,7 +6824,7 @@ BEGIN
             error_message = EXCLUDED.error_message;
 END $$;
 COMMENT ON PROCEDURE monitor.update_phase_status(TEXT, TEXT, TEXT) IS
-    'Upsert the last-known status of a phase. Status: started, completed, failed, skipped.';
+    'Upsert the last-known status of a phase. Status: running, completed, failed, skipped.';
 
 -- ── sql/schema/procedures/monitor_report_progress.sql ───────────────────────────────────────
 CREATE OR REPLACE PROCEDURE monitor.report_progress(
@@ -6897,19 +6902,63 @@ GROUP BY et.code;
 COMMENT ON VIEW monitor.entity_type_counts IS
     'Counts classified entities and distinct incident edges per structural entity type using substrate.entity_classification.';
 
--- ── sql/schema/views/v_active_runs.sql ───────────────────────────────────────
-CREATE OR REPLACE VIEW monitor.v_active_runs AS
+-- ── sql/schema/views/session_summaries.sql ───────────────────────────────────────
+CREATE OR REPLACE VIEW monitor.session_summaries AS
 SELECT
-    s.id           AS session_id,
+    s.id AS session_id,
     s.user_label,
     s.started_at,
     s.ended_at,
-    (SELECT count(*) FROM monitor.comparison_event ce WHERE ce.session_id = s.id) AS comparison_count
-  FROM monitor.session s
- WHERE s.ended_at IS NULL
- ORDER BY s.started_at DESC;
-COMMENT ON VIEW monitor.v_active_runs IS
-    'Sessions currently in progress, with their comparison-event count.';
+    (SELECT count(*) FROM monitor.comparison_event ce WHERE ce.session_id = s.id)::BIGINT AS comparison_count
+FROM monitor.session s;
+
+COMMENT ON VIEW monitor.session_summaries IS
+    'List projection for monitor sessions with comparison-event counts.';
+
+-- ── sql/schema/views/session_details.sql ───────────────────────────────────────
+CREATE OR REPLACE VIEW monitor.session_details AS
+SELECT
+    s.id AS session_id,
+    s.user_label,
+    s.notes,
+    s.started_at,
+    s.ended_at,
+    (SELECT count(*) FROM monitor.comparison_event ce WHERE ce.session_id = s.id)::BIGINT AS comparison_count
+FROM monitor.session s;
+
+COMMENT ON VIEW monitor.session_details IS
+    'Detail projection for monitor sessions with notes and comparison-event counts.';
+
+-- ── sql/schema/views/active_sessions.sql ───────────────────────────────────────
+CREATE OR REPLACE VIEW monitor.active_sessions AS
+SELECT
+    s.id AS session_id,
+    s.user_label,
+    s.started_at,
+    s.ended_at,
+    (SELECT count(*) FROM monitor.comparison_event ce WHERE ce.session_id = s.id)::BIGINT AS comparison_count
+FROM monitor.session s
+WHERE s.ended_at IS NULL
+ORDER BY s.started_at DESC;
+
+COMMENT ON VIEW monitor.active_sessions IS
+    'Open monitor sessions with comparison-event counts.';
+
+-- ── sql/schema/views/phase_status_overview.sql ───────────────────────────────────────
+CREATE OR REPLACE VIEW monitor.phase_status_overview AS
+SELECT
+    ps.phase_code,
+    ps.status,
+    COALESCE(sum(ip.entities_total), 0)::BIGINT AS entity_count,
+    COALESCE(sum(ip.edges_total), 0)::BIGINT AS edge_count,
+    EXTRACT(EPOCH FROM (ps.completed_at - ps.started_at))::INT AS duration_seconds
+FROM monitor.phase_status ps
+LEFT JOIN monitor.ingestion_progress ip ON ip.pass_name = ps.phase_code
+GROUP BY ps.phase_code, ps.status, ps.started_at, ps.completed_at
+ORDER BY ps.started_at NULLS LAST;
+
+COMMENT ON VIEW monitor.phase_status_overview IS
+    'Phase status rows enriched with ingestion-progress totals and duration for status surfaces.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

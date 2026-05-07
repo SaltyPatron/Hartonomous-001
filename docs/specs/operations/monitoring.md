@@ -1,251 +1,69 @@
 # Monitoring
 
-**Status**: ✅ Complete
+**Status**: Current to the canonical `sql/schema/tables/monitor/` and `sql/schema/views/` inventory.
 
-The `monitor` schema tracks system health, ingestion progress, and phase status. No external monitoring stack. PostgreSQL IS the monitoring store.
+The `monitor` schema tracks operational state: ingestion progress, phase status, health snapshots, inference metrics, sessions, comparison events, and significance snapshots. It is operational infrastructure, not substrate content.
 
-Additional `monitor` schema tables for session management (`monitor.session`, `monitor.comparison_event`, `monitor.significance_snapshot`) are defined in [sessions.md](sessions.md). Views are defined in [views.md](../sql/views.md).
+Canonical SQL source lives under `sql/schema/`; this document summarizes those files and must not be treated as a parallel schema definition.
 
----
+## Monitor Tables
 
-## Monitor Schema Tables
+| Table | Source | Purpose |
+| --- | --- | --- |
+| `monitor.ingestion_progress` | `sql/schema/tables/monitor/ingestion_progress.sql` | Per-batch ingestion telemetry. |
+| `monitor.phase_status` | `sql/schema/tables/monitor/phase_status.sql` | Last known status per phase. |
+| `monitor.error_log` | `sql/schema/tables/monitor/error_log.sql` | Decomposer and pipeline errors with phase context. |
+| `monitor.substrate_health` | `sql/schema/tables/monitor/substrate_health.sql` | Periodic metric samples such as entity and edge counts. |
+| `monitor.inference_metrics` | `sql/schema/tables/monitor/inference_metrics.sql` | Per-traversal latency and path-count telemetry. |
+| `monitor.session` | `sql/schema/tables/monitor/session.sql` | Interactive/inference sessions keyed by UUID. |
+| `monitor.comparison_event` | `sql/schema/tables/monitor/comparison_event.sql` | Glicko-2 comparison events tied optionally to a session. |
+| `monitor.significance_snapshot` | `sql/schema/tables/monitor/significance_snapshot.sql` | Periodic global significance snapshots. |
 
-### `monitor.ingestion_progress`
+## Current Shapes
 
-Per-batch progress rows written by `report_progress` stored procedure.
+`monitor.ingestion_progress` stores `provenance_code`, `pass_name`, `batch_number`, `entities_total`, `edges_total`, optional `current_file`, and `recorded_at`.
 
-```sql
-CREATE TABLE monitor.ingestion_progress (
-    progress_id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    decomposer_code     text NOT NULL,
-    phase_code          text NOT NULL,
-    batch_number        int NOT NULL,
-    entities_ingested   bigint NOT NULL DEFAULT 0,
-    edges_created       bigint NOT NULL DEFAULT 0,
-    junctions_created   bigint NOT NULL DEFAULT 0,
-    started_at          timestamptz NOT NULL DEFAULT now(),
-    completed_at        timestamptz,
-    status              text NOT NULL DEFAULT 'running'
-                        CHECK (status IN ('running', 'completed', 'failed')),
-    error_message       text,
-    error_context       jsonb
-);
-```
+`monitor.phase_status` stores `phase_code`, `status`, `started_at`, `completed_at`, and `error_message`. Entity and edge counts are not columns on this table; status surfaces read `monitor.phase_status_overview`.
 
-**Write path**: `BaseDecomposer.SubmitAndReportAsync` calls `report_progress` SP after each batch. On failure, sets `status = 'failed'` with `error_message` and `error_context` (serialized `ErrorContext`).
+`monitor.session` stores `id UUID`, `user_label`, `started_at`, `ended_at`, and `notes`. Session IDs are UUIDs throughout monitor tables and C# DTOs.
 
-**Volume**: One row per batch. At 10K entities/batch on a 10M-entity dataset → ~1,000 rows per decomposer. Total across all decomposers: ~10K–20K rows. Negligible.
+`monitor.significance_snapshot` is global time-series state. It does not have `session_id`; session detail screens count comparison events only.
 
----
+## Write Contracts
 
-### `monitor.phase_status`
+| Contract | Source | Purpose |
+| --- | --- | --- |
+| `monitor.create_session(TEXT, TEXT)` | `sql/schema/functions/monitor_create_session.sql` | Insert a session and return its UUID. |
+| `monitor.close_session()` | `sql/schema/functions/monitor_close_session.sql` | Close the most recent open session and return whether a row changed. |
+| `monitor.archive_session(UUID)` | `sql/schema/procedures/monitor_archive_session.sql` | Mark a session ended idempotently. |
+| `monitor.update_phase_status(TEXT, TEXT, TEXT)` | `sql/schema/procedures/monitor_update_phase_status.sql` | Upsert the last known phase status. |
+| `monitor.report_progress(TEXT, TEXT, INT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TEXT)` | `sql/schema/procedures/monitor_report_progress.sql` | Append a per-batch ingestion progress row. |
+| `monitor.snapshot_health()` | `sql/schema/procedures/monitor_snapshot_health.sql` | Insert coarse substrate health metrics. |
 
-One row per phase. Created by phase runner on first run, updated on subsequent runs.
+## Read Views
 
-```sql
-CREATE TABLE monitor.phase_status (
-    phase_code      text PRIMARY KEY,
-    status          text NOT NULL DEFAULT 'not_started'
-                    CHECK (status IN ('not_started', 'running', 'completed', 'failed')),
-    started_at      timestamptz,
-    completed_at    timestamptz,
-    entity_count    bigint NOT NULL DEFAULT 0,
-    edge_count      bigint NOT NULL DEFAULT 0,
-    error_message   text
-);
-```
+| View | Source | Purpose |
+| --- | --- | --- |
+| `monitor.substrate_dashboard` | `sql/schema/views/substrate_dashboard.sql` | Single-row substrate totals for status surfaces. |
+| `monitor.entity_type_counts` | `sql/schema/views/entity_type_counts.sql` | Classification-aware entity and incident-edge counts. |
+| `monitor.session_summaries` | `sql/schema/views/session_summaries.sql` | Session list rows with comparison-event counts. |
+| `monitor.session_details` | `sql/schema/views/session_details.sql` | Session detail rows with notes and comparison-event counts. |
+| `monitor.active_sessions` | `sql/schema/views/active_sessions.sql` | Open sessions with comparison-event counts. |
+| `monitor.phase_status_overview` | `sql/schema/views/phase_status_overview.sql` | Phase status enriched with ingestion-progress totals and duration. |
 
-**Write path**: `SequentialPhaseRunner` updates status at phase start (`running`), phase end (`completed`), or phase failure (`failed`). Entity/edge counts are aggregated from `ingestion_progress` rows.
+## Operator Queries
 
----
-
-### `monitor.error_log`
-
-Structured error log for all decomposer/pass failures.
+Use the named views for status surfaces:
 
 ```sql
-CREATE TABLE monitor.error_log (
-    error_id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    timestamp       timestamptz NOT NULL DEFAULT now(),
-    decomposer_code text,
-    phase_code      text,
-    category        text NOT NULL,
-    message         text NOT NULL,
-    entity_hash     bytea,
-    source_file     text,
-    source_line     int,
-    context         jsonb
-);
+SELECT * FROM monitor.phase_status_overview;
+SELECT * FROM monitor.active_sessions;
+SELECT * FROM monitor.substrate_dashboard;
+SELECT * FROM monitor.entity_type_counts;
 ```
 
-**Write path**: `report_progress` SP inserts here on failure. Also callable directly via `log_error` SP.
+For exact readiness or semantic gates, query the underlying substrate tables directly and state the gate before calling a task complete. Build success alone is not a semantic gate.
 
-**Categories**: `parse_error`, `hash_error`, `ingestion_error`, `validation_error`, `schema_error`.
+## Retention
 
----
-
-### `monitor.substrate_health`
-
-Periodic snapshots of table statistics. Written by `snapshot_health` SP.
-
-```sql
-CREATE TABLE monitor.substrate_health (
-    snapshot_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    snapshot_time   timestamptz NOT NULL DEFAULT now(),
-    table_schema    text NOT NULL,
-    table_name      text NOT NULL,
-    row_count       bigint NOT NULL,
-    dead_tuples     bigint NOT NULL,
-    disk_bytes      bigint NOT NULL,
-    index_bytes     bigint NOT NULL
-);
-```
-
-**Write path**: `snapshot_health` SP queries `pg_stat_user_tables` and `pg_total_relation_size` for all tables in `substrate` and `monitor` schemas. Called by CLI `hartonomous status --snapshot` or on a schedule.
-
-**Related**: The `monitor.substrate_dashboard` **view** (defined in [views.md](../sql/views.md)) provides a live JSONB-aggregated dashboard of the substrate's current state. This table stores historical snapshots; the view computes live values.
-
----
-
-### `monitor.inference_metrics`
-
-Per-query metrics written by the inference engine.
-
-```sql
-CREATE TABLE monitor.inference_metrics (
-    metric_id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    session_id          bigint REFERENCES monitor.session(session_id),
-    decomposition_ms    double precision,
-    traversal_ms        double precision,
-    total_latency_ms    double precision NOT NULL,
-    nodes_visited       int,
-    paths_found         int,
-    exceeded_budget     boolean NOT NULL DEFAULT FALSE,
-    reported_at         timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_inference_metrics_time ON monitor.inference_metrics(reported_at DESC);
-```
-
-**Write path**: Inference engine inserts one row after each query completes. Timing breakdown: `decomposition_ms` = input decomposition, `traversal_ms` = graph traversal, `total_latency_ms` = end-to-end.
-
-**Volume**: One row per inference query. At 100 queries/minute → ~144K rows/day. Cleanup via `DELETE WHERE reported_at < now() - interval '7 days'`.
-
----
-
-## Monitor Views
-
-### `monitor.v_active_runs`
-
-```sql
-CREATE VIEW monitor.v_active_runs AS
-SELECT decomposer_code, phase_code, batch_number, entities_ingested, edges_created, started_at
-FROM monitor.ingestion_progress
-WHERE status = 'running';
-```
-
-### `monitor.v_ingestion_summary`
-
-```sql
-CREATE VIEW monitor.v_ingestion_summary AS
-SELECT decomposer_code,
-       COUNT(*) AS batch_count,
-       SUM(entities_ingested) AS total_entities,
-       SUM(edges_created) AS total_edges,
-       MIN(started_at) AS first_batch,
-       MAX(completed_at) AS last_batch,
-       COUNT(*) FILTER (WHERE status = 'failed') AS failed_batches
-FROM monitor.ingestion_progress
-GROUP BY decomposer_code;
-```
-
-### `monitor.v_error_summary`
-
-```sql
-CREATE VIEW monitor.v_error_summary AS
-SELECT category, decomposer_code, COUNT(*) AS error_count, MAX(timestamp) AS latest
-FROM monitor.error_log
-GROUP BY category, decomposer_code;
-```
-
-### `monitor.v_table_sizes`
-
-```sql
-CREATE VIEW monitor.v_table_sizes AS
-SELECT table_schema, table_name, row_count, disk_bytes, index_bytes,
-       disk_bytes + index_bytes AS total_bytes
-FROM monitor.substrate_health
-WHERE snapshot_id = (SELECT MAX(snapshot_id) FROM monitor.substrate_health);
-```
-
-### `monitor.v_phase_overview`
-
-```sql
-CREATE VIEW monitor.v_phase_overview AS
-SELECT ps.phase_code, ps.status, ps.started_at, ps.completed_at,
-       ps.entity_count, ps.edge_count,
-       EXTRACT(EPOCH FROM (ps.completed_at - ps.started_at)) AS duration_seconds
-FROM monitor.phase_status ps
-ORDER BY ps.started_at NULLS LAST;
-```
-
----
-
-## Alerting
-
-No external alerting system. No PagerDuty. No Prometheus. Alerts are log lines and exit codes.
-
-| Condition | Detection | Action |
-|-----------|----------|--------|
-| Decomposer failure | `status = 'failed'` in ingestion_progress | Phase runner halts. Exit code 1. Log line with full ErrorContext. |
-| Phase failure | `status = 'failed'` in phase_status | Same — halt + exit code 1. |
-| Disk usage > 90% | `snapshot_health` SP checks `pg_database_size` | SP returns warning flag. CLI prints warning. Does NOT halt. |
-| Dead tuple ratio > 20% | `snapshot_health` SP computes ratio | SP returns flag. CLI prints `VACUUM ANALYZE recommended`. |
-| Ingestion stall | No new `ingestion_progress` rows in 5 minutes while status = 'running' | CLI `status` command shows stale timestamp. Operator investigates. |
-
-No automated remediation. The operator reads the output and acts. This is a research system, not a production SaaS.
-
----
-
-## Data Retention
-
-| Table | Retention | Cleanup |
-|-------|----------|---------|
-| `ingestion_progress` | Indefinite | Manual `DELETE WHERE completed_at < now() - interval '30 days'` |
-| `phase_status` | Indefinite (one row per phase) | Never deleted |
-| `error_log` | Indefinite | Manual cleanup if disk pressure |
-| `substrate_health` | Last 100 snapshots | `DELETE WHERE snapshot_id < (SELECT MAX(snapshot_id) - 100 FROM substrate_health)` |
-
-No automatic cleanup jobs. No cron. The operator runs cleanup manually if needed.
-
----
-
-## Dashboard Queries
-
-For an operator running `hartonomous status`:
-
-```sql
--- Overall progress
-SELECT * FROM monitor.v_phase_overview;
-
--- Current activity
-SELECT * FROM monitor.v_active_runs;
-
--- Error summary
-SELECT * FROM monitor.v_error_summary;
-
--- Table sizes (after snapshot)
-SELECT * FROM monitor.v_table_sizes ORDER BY total_bytes DESC;
-
--- Entity counts by type
-SELECT et.code, COUNT(*) FROM substrate.entity e
-JOIN substrate.entity_type et ON e.entity_type_id = et.entity_type_id
-GROUP BY et.code ORDER BY COUNT(*) DESC;
-
--- Edge counts by type
-SELECT et.code, COUNT(*) FROM substrate.edge e
-JOIN substrate.edge_type et ON e.edge_type_id = et.edge_type_id
-GROUP BY et.code ORDER BY COUNT(*) DESC;
-```
-
-All queries run against the same database. No external dashboard server. The CLI `status` command executes these queries and formats the output as a text table to stdout.
+No automatic cleanup job is defined in the canonical schema. Monitor tables retain operational history until an operator removes it deliberately.

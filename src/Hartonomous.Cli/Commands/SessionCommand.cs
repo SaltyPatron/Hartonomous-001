@@ -27,7 +27,7 @@ internal sealed class SessionCommand(NpgsqlDataSource dataSource)
         {
             string description = ic.ParseResult.GetValueForOption(labelOpt) ?? "cli session";
             NpgsqlSessionStore store = new(dataSource);
-            long sessionId = await store.CreateSessionAsync(string.Empty, description, CancellationToken.None);
+            Guid sessionId = await store.CreateSessionAsync(description, null, CancellationToken.None);
             Console.WriteLine($"Session created: {sessionId}");
         });
 
@@ -50,32 +50,33 @@ internal sealed class SessionCommand(NpgsqlDataSource dataSource)
                 Console.WriteLine("No sessions found.");
                 return;
             }
-            Console.WriteLine($"{"ID",-8} {"Description",-30} {"Phase",-20} {"Status",-12} {"Created",-22}");
-            Console.WriteLine(new string('-', 95));
+            Console.WriteLine($"{"ID",-36} {"Label",-30} {"State",-10} {"Comparisons",12} {"Started",-22}");
+            Console.WriteLine(new string('-', 116));
             foreach (SessionSummary s in sessions)
             {
+                string state = s.EndedAt.HasValue ? "closed" : "open";
                 Console.WriteLine(
-                    $"{s.SessionId,-8} {(s.Description ?? "-"),-30} {(s.PhaseCode ?? "-"),-20} {s.Status,-12} {s.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),-22}");
+                    $"{s.SessionId,-36} {(s.Label ?? "-"),-30} {state,-10} {s.ComparisonEventCount,12:N0} {s.StartedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),-22}");
             }
         });
 
         Command archive = new("archive", "Archive a closed session (deletes session-scoped substrate rows).");
-        Argument<long> archiveSessionIdArg = new("session-id", "Session ID to archive.");
+        Argument<Guid> archiveSessionIdArg = new("session-id", "Session UUID to archive.");
         archive.AddArgument(archiveSessionIdArg);
         archive.SetHandler(async (InvocationContext ic) =>
         {
-            long sessionId = ic.ParseResult.GetValueForArgument(archiveSessionIdArg);
+            Guid sessionId = ic.ParseResult.GetValueForArgument(archiveSessionIdArg);
             NpgsqlSessionStore store = new(dataSource);
             await store.ArchiveSessionAsync(sessionId, CancellationToken.None);
             Console.WriteLine($"Session {sessionId} archived.");
         });
 
         Command show = new("show", "Show session details.");
-        Argument<long> showSessionIdArg = new("session-id", "Session ID to show.");
+        Argument<Guid> showSessionIdArg = new("session-id", "Session UUID to show.");
         show.AddArgument(showSessionIdArg);
         show.SetHandler(async (InvocationContext ic) =>
         {
-            long sessionId = ic.ParseResult.GetValueForArgument(showSessionIdArg);
+            Guid sessionId = ic.ParseResult.GetValueForArgument(showSessionIdArg);
             NpgsqlSessionStore store = new(dataSource);
             SessionDetail? detail = await store.GetSessionDetailAsync(sessionId, CancellationToken.None);
             if (detail is null)
@@ -85,13 +86,12 @@ internal sealed class SessionCommand(NpgsqlDataSource dataSource)
                 return;
             }
             Console.WriteLine($"ID:           {detail.SessionId}");
-            Console.WriteLine($"Description:  {detail.Description}");
-            Console.WriteLine($"Phase:        {detail.PhaseCode}");
-            Console.WriteLine($"Status:       {detail.Status}");
-            Console.WriteLine($"Created:      {detail.CreatedAt:yyyy-MM-dd HH:mm:ss}");
-            Console.WriteLine($"Closed:       {detail.ClosedAt?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "-"}");
+            Console.WriteLine($"Label:        {detail.Label}");
+            Console.WriteLine($"Notes:        {detail.Notes ?? "-"}");
+            Console.WriteLine($"State:        {(detail.EndedAt.HasValue ? "closed" : "open")}");
+            Console.WriteLine($"Started:      {detail.StartedAt:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine($"Ended:        {detail.EndedAt?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "-"}");
             Console.WriteLine($"Comparisons:  {detail.ComparisonEventCount:N0}");
-            Console.WriteLine($"Snapshots:    {detail.SignificanceSnapshotCount:N0}");
         });
 
         session.AddCommand(create);

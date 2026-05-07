@@ -10,7 +10,10 @@ Views are operational read surfaces over canonical substrate tables. They do not
 | --- | --- | --- | --- |
 | `monitor.substrate_dashboard` | `monitor` | `sql/schema/views/substrate_dashboard.sql` | Single-row substrate totals for status surfaces. |
 | `monitor.entity_type_counts` | `monitor` | `sql/schema/views/entity_type_counts.sql` | Classification-aware entity and incident-edge counts by structural entity type. |
-| `monitor.v_active_runs` | `monitor` | `sql/schema/views/v_active_runs.sql` | Open sessions with comparison-event counts. |
+| `monitor.session_summaries` | `monitor` | `sql/schema/views/session_summaries.sql` | List projection for monitor sessions with comparison-event counts. |
+| `monitor.session_details` | `monitor` | `sql/schema/views/session_details.sql` | Detail projection for monitor sessions with notes and comparison-event counts. |
+| `monitor.active_sessions` | `monitor` | `sql/schema/views/active_sessions.sql` | Open sessions with comparison-event counts. |
+| `monitor.phase_status_overview` | `monitor` | `sql/schema/views/phase_status_overview.sql` | Phase status enriched with ingestion-progress totals and duration. |
 
 ## `monitor.substrate_dashboard`
 
@@ -50,12 +53,12 @@ GROUP BY et.code;
 
 The view reads structural classifications from `substrate.entity_classification`. It does not assume `substrate.entity` has `id` or `entity_type_id` columns. Because a hash can carry multiple structural classifications, per-type entity counts are classification buckets; they are not additive substrate totals.
 
-## `monitor.v_active_runs`
+## `monitor.active_sessions`
 
 Open sessions with comparison-event counts.
 
 ```sql
-CREATE OR REPLACE VIEW monitor.v_active_runs AS
+CREATE OR REPLACE VIEW monitor.active_sessions AS
 SELECT
     s.id AS session_id,
     s.user_label,
@@ -65,6 +68,24 @@ SELECT
 FROM monitor.session s
 WHERE s.ended_at IS NULL
 ORDER BY s.started_at DESC;
+```
+
+## `monitor.phase_status_overview`
+
+Phase status rows enriched for CLI/API status surfaces. The count columns are aggregated from `monitor.ingestion_progress`; they are not columns on `monitor.phase_status`.
+
+```sql
+CREATE OR REPLACE VIEW monitor.phase_status_overview AS
+SELECT
+    ps.phase_code,
+    ps.status,
+    COALESCE(sum(ip.entities_total), 0)::BIGINT AS entity_count,
+    COALESCE(sum(ip.edges_total), 0)::BIGINT AS edge_count,
+    EXTRACT(EPOCH FROM (ps.completed_at - ps.started_at))::INT AS duration_seconds
+FROM monitor.phase_status ps
+LEFT JOIN monitor.ingestion_progress ip ON ip.pass_name = ps.phase_code
+GROUP BY ps.phase_code, ps.status, ps.started_at, ps.completed_at
+ORDER BY ps.started_at NULLS LAST;
 ```
 
 ## Maintenance Rule

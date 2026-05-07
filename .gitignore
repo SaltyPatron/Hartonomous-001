@@ -27,9 +27,9 @@ runtimes/
 .crash_dumps/
 
 # Data
-data/
-pgdata/
-temp/
+/data/
+/pgdata/
+/temp/
 
 # OS
 Thumbs.db

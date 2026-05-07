@@ -1,22 +1,22 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Wraps `Hartonomous.Cli session ...` (open, close, status).
+  Wraps `Hartonomous.Cli session ...`.
 
 .PARAMETER Action
-  open | close | status.
+  create | close | list | archive | show.
 
 .PARAMETER SessionId
-  Required for -Action close.
+  Required for -Action archive or show.
 
 .EXAMPLE
-  pwsh scripts/ops/Session.ps1 -Action open
-  pwsh scripts/ops/Session.ps1 -Action close -SessionId 42
+  pwsh scripts/ops/Session.ps1 -Action create
+  pwsh scripts/ops/Session.ps1 -Action show -SessionId 00000000-0000-0000-0000-000000000000
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('open','close','status')] [string]$Action = 'status',
-    [int]$SessionId,
+    [ValidateSet('create','close','list','archive','show')] [string]$Action = 'list',
+    [guid]$SessionId,
     [switch]$NoBuild
 )
 
@@ -27,15 +27,28 @@ $Cfg = Get-HartonomousConfig
 Start-HartonomousLog -ScriptName "ops.Session.$Action" -Cfg $Cfg
 
 try {
-    $cliArgs = @('session', $Action, '--connection', $Cfg.Postgres.ConnectionString)
-    if ($Action -eq 'close') {
+  $cliArgs = @('session', $Action)
+  if ($Action -in @('archive', 'show')) {
         if (-not $PSBoundParameters.ContainsKey('SessionId')) {
-            Write-HartError '-SessionId is required for close.'
+      Write-HartError "-SessionId is required for $Action."
             Exit-Hartonomous -Code $Cfg.ExitCodes.Usage
         }
-        $cliArgs += @('--id', $SessionId)
+    $cliArgs += @($SessionId.ToString())
     }
-    Invoke-HartCli -Cfg $Cfg -NoBuild:$NoBuild -CliArgs $cliArgs
+
+      $previousConnectionString = $env:HARTONOMOUS__Hartonomous__ConnectionString
+      try {
+        $env:HARTONOMOUS__Hartonomous__ConnectionString = $Cfg.Postgres.ConnectionString
+        Invoke-HartCli -Cfg $Cfg -NoBuild:$NoBuild -CliArgs $cliArgs
+      }
+      finally {
+        if ($null -eq $previousConnectionString) {
+          Remove-Item Env:HARTONOMOUS__Hartonomous__ConnectionString -ErrorAction SilentlyContinue
+        }
+        else {
+          $env:HARTONOMOUS__Hartonomous__ConnectionString = $previousConnectionString
+        }
+      }
     Exit-Hartonomous -Code $Cfg.ExitCodes.Ok
 }
 catch {

@@ -331,7 +331,10 @@
 -- ── Phase 15: views ──────────────────────────────────────────────────
 -- @include schema/views/substrate_dashboard.sql
 -- @include schema/views/entity_type_counts.sql
--- @include schema/views/v_active_runs.sql
+-- @include schema/views/session_summaries.sql
+-- @include schema/views/session_details.sql
+-- @include schema/views/active_sessions.sql
+-- @include schema/views/phase_status_overview.sql
 
 -- (No Phase 16 hartonomous CREATE EXTENSION. The hartonomous-pg/sql/
 --  hartonomous--1.0.sql.in template — containing all C-binding type

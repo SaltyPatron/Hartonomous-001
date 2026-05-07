@@ -78,8 +78,8 @@ app.MapGet("/status", async (ISessionStore sessionStore, CancellationToken ct) =
 {
     var phases = await sessionStore.GetPhaseStatusOverviewAsync(ct);
     var totals = await sessionStore.GetSubstrateTotalsAsync(ct);
-    var runs = await sessionStore.GetActiveRunsAsync(ct);
-    return Results.Ok(new { phases, totals, runs });
+    var activeSessions = await sessionStore.GetActiveSessionsAsync(ct);
+    return Results.Ok(new { phases, totals, activeSessions });
 });
 
 // Spec-defined /api/ endpoint groups.
