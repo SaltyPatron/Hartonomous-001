@@ -548,10 +548,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     {
                         await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                     }
-                    await using NpgsqlCommand cmd = new(
-                        "SELECT substrate.populate_edge_trajectories($1)", conn);
+                    await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                        conn,
+                        SubstrateFunctionNames.PopulateEdgeTrajectories,
+                        [new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = chunkSize }]);
                     cmd.CommandTimeout = 0;
-                    cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
                     object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
                     updated = result is long l ? l : (long?)result ?? 0L;
                     lastEx = null;
@@ -872,8 +873,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             try
             {
                 await using NpgsqlConnection listConn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-                await using NpgsqlCommand listCmd = new(
-                    "SELECT id FROM substrate.significance_context ORDER BY id", listConn);
+                await using NpgsqlCommand listCmd = NpgsqlSubstrateCommand.CreateFunction(
+                    listConn,
+                    SubstrateFunctionNames.SignificanceContextIds);
                 listCmd.CommandTimeout = 0;
                 await using NpgsqlDataReader r = await listCmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
                 arenaIds.Clear();
@@ -914,11 +916,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                         {
                             await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                         }
-                        await using NpgsqlCommand cmd = new(
-                            "SELECT substrate.prime_unprimed_edges_chunk($1, $2)", conn);
+                        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                            conn,
+                            SubstrateFunctionNames.PrimeUnprimedEdgesChunk,
+                            [
+                                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = arenaId },
+                                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = chunkSize }
+                            ]);
                         cmd.CommandTimeout = 0;
-                        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, arenaId);
-                        cmd.Parameters.AddWithValue(NpgsqlDbType.Integer, chunkSize);
                         object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
                         inserted = result is long l ? l : (long?)result ?? 0L;
                         lastEx = null;
