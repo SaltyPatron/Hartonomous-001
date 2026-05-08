@@ -52,6 +52,7 @@
 -- @include schema/tables/reference/edge_role.sql
 -- @include schema/tables/reference/physicality_type.sql
 -- @include schema/tables/reference/significance_context.sql
+-- @include schema/tables/reference/attestation_type.sql
 -- @include schema/tables/reference/provenance.sql
 -- @include schema/tables/reference/architecture_class.sql
 -- @include schema/tables/reference/tensor_role.sql
@@ -75,6 +76,7 @@
 -- @include schema/seed/physicality_type_embedding_firefly.sql
 -- @include schema/seed/edge_role.sql
 -- @include schema/seed/significance_context.sql
+-- @include schema/seed/attestation_type.sql
 -- @include schema/seed/provenance.sql
 -- @include schema/seed/lexname.sql
 -- @include schema/seed/pos.sql
@@ -222,6 +224,7 @@
 -- @include schema/functions/reference_int64_set.sql
 -- @include schema/functions/reference_id_by_code.sql
 -- @include schema/functions/resolve_context_id.sql
+-- @include schema/functions/resolve_attestation_type_id.sql
 -- @include schema/functions/resolve_entity_handles.sql
 -- Reference-data populators
 -- @include schema/functions/populate_general_categories.sql

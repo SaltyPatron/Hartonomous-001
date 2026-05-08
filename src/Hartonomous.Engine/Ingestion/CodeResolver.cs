@@ -13,6 +13,7 @@ internal sealed class CodeResolver
     private Dictionary<string, int>? _edgeTypes;
     private Dictionary<string, int>? _physicalityTypes;
     private Dictionary<string, int>? _significanceContexts;
+    private Dictionary<string, int>? _attestationTypes;
     private Dictionary<string, int>? _provenances;
     private Dictionary<string, double>? _provenanceMus;
     private Dictionary<string, int>? _edgeRoles;
@@ -64,6 +65,17 @@ internal sealed class CodeResolver
         }
         _significanceContexts = await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct);
         return Resolve(_significanceContexts, code, "significance_context");
+    }
+
+    public async Task<int> AttestationTypeIdAsync(string code, CancellationToken ct)
+    {
+        _attestationTypes ??= await _reader.LoadCodeMapAsync("substrate.attestation_type", 16, ct);
+        if (_attestationTypes.TryGetValue(code, out int id))
+        {
+            return id;
+        }
+        _attestationTypes = await _reader.LoadCodeMapAsync("substrate.attestation_type", 16, ct);
+        return Resolve(_attestationTypes, code, "attestation_type");
     }
 
     public async Task<int> ProvenanceIdAsync(string code, CancellationToken ct)

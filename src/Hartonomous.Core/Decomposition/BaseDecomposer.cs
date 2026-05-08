@@ -208,6 +208,11 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// <summary>
     /// Emit one junction row into the streaming sink. Mu is non-null only
     /// for Glicko-bearing junctions (entity_pos and pattern_deprel).
+    /// AttestationTypeCode stratifies the rating row for Glicko-bearing
+    /// junctions; non-Glicko junctions ignore it. Default
+    /// 'lexical_curated_relation' matches the dominant ingestion-time call
+    /// shape (lexicons assert POS / deprel classifications); model-derived
+    /// junctions should pass 'model_attention_pattern' or similar.
     /// </summary>
     protected static ValueTask EmitJunctionAsync(
         IRecordSink sink,
@@ -215,9 +220,10 @@ public abstract partial class BaseDecomposer : IDecomposer
         EntityHandle entity,
         int referenceId,
         double? mu,
-        CancellationToken ct)
+        CancellationToken ct,
+        string attestationTypeCode = "lexical_curated_relation")
         => sink.EmitAsync(new JunctionRecord(
-            junctionTable, entity.Hash, referenceId, mu), ct);
+            junctionTable, entity.Hash, referenceId, attestationTypeCode, mu), ct);
 
     /// <summary>
     /// Emit one physicality row. The Wkb bytes are the binary WKB encoding
@@ -259,17 +265,21 @@ public abstract partial class BaseDecomposer : IDecomposer
             rleCount), ct);
 
     /// <summary>
-    /// Emit one entity_significance row with an initial Mu. Sigma, volatility,
-    /// games default at the substrate side.
+    /// Emit one entity_significance row with an initial Mu, stratified by
+    /// attestation_type. Sigma, volatility, games default at the substrate
+    /// side. Default attestation_type 'provenance_authority_corroboration'
+    /// matches ingestion-time priming where the source's authority is the
+    /// kind of evidence being recorded.
     /// </summary>
     protected static ValueTask EmitEntitySignificanceAsync(
         IRecordSink sink,
         EntityHandle entity,
         string contextTypeCode,
         double initialMu,
-        CancellationToken ct)
+        CancellationToken ct,
+        string attestationTypeCode = "provenance_authority_corroboration")
         => sink.EmitAsync(new EntitySignificanceRecord(
-            contextTypeCode, entity.Hash, initialMu), ct);
+            contextTypeCode, attestationTypeCode, entity.Hash, initialMu), ct);
 
     /// <summary>
     /// Emit one entity_model_source lineage row.

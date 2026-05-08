@@ -64,12 +64,19 @@ public interface IIngestionBatch
     /// entity_morph_feature, codepoint_property, model_architecture_class,
     /// entity_lexname, tensor_tensor_role, pattern_deprel). Junction tables
     /// FK to substrate.entity(hash) through entity_hash.
+    ///
+    /// AttestationTypeCode stratifies Glicko-bearing junctions (entity_pos,
+    /// pattern_deprel) per kind of evidence. Default lexical_curated_relation
+    /// matches the dominant ingestion path (POS/deprel curators); model
+    /// decomposers should pass model_attention_pattern or similar.
+    /// Non-Glicko junctions ignore the value at the drain boundary.
     /// </summary>
     void AddJunction(
         string junctionTable,
         EntityHandle entity,
         int referenceId,
-        double? mu = null);
+        double? mu = null,
+        string attestationTypeCode = "lexical_curated_relation");
 
     /// <summary>
     /// Append a physicality row with raw PostGIS WKB. Used for GeometryZM
@@ -124,14 +131,18 @@ public interface IIngestionBatch
         int rleCount = 1);
 
     /// <summary>
-    /// Append an entity-significance prime row in the given arena.
-    /// Edge significance is primed in bulk by a separate substrate
-    /// procedure, not per-batch.
+    /// Append an entity-significance prime row in the given arena, stratified
+    /// by attestation_type. Default attestation_type
+    /// 'provenance_authority_corroboration' matches ingestion-time priming
+    /// where the source's authority is the kind of evidence. Edge
+    /// significance is primed in bulk by a separate substrate procedure, not
+    /// per-batch.
     /// </summary>
     void AddSignificance(
         EntityHandle entity,
         string contextTypeCode,
-        double initialMu);
+        double initialMu,
+        string attestationTypeCode = "provenance_authority_corroboration");
 
     /// <summary>
     /// Record that <paramref name="entity"/> was observed in the given

@@ -59,9 +59,14 @@ internal sealed class IngestionBatch : IIngestionBatch
         _edges.Add(new EdgeEntry(edgeTypeCode, provenanceCode, members.ToArray(), significance.ToArray()));
     }
 
-    public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null)
+    public void AddJunction(
+        string junctionTable,
+        EntityHandle entity,
+        int referenceId,
+        double? mu = null,
+        string attestationTypeCode = "lexical_curated_relation")
     {
-        _junctions.Add(new JunctionEntry(junctionTable, entity, referenceId, mu));
+        _junctions.Add(new JunctionEntry(junctionTable, entity, referenceId, mu, attestationTypeCode));
     }
 
     public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
@@ -101,9 +106,13 @@ internal sealed class IngestionBatch : IIngestionBatch
         _sequences.Add(new SequenceEntry(parent, ordinal, child, rleCount));
     }
 
-    public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu)
+    public void AddSignificance(
+        EntityHandle entity,
+        string contextTypeCode,
+        double initialMu,
+        string attestationTypeCode = "provenance_authority_corroboration")
     {
-        _significances.Add(new SignificanceEntry(entity, contextTypeCode, initialMu));
+        _significances.Add(new SignificanceEntry(entity, contextTypeCode, initialMu, attestationTypeCode));
     }
 
     public void AddEntityModelSource(EntityHandle entity, long modelSourceId)

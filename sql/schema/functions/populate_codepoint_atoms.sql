@@ -94,10 +94,16 @@ BEGIN
       FROM substrate.ucd_codepoints() a
     ON CONFLICT DO NOTHING;
 
-    -- 4. Source-authority significance prior.
-    INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
+    -- 4. Source-authority significance prior. UCD codepoint atoms come
+    -- from the embedded Unicode 17.0.0 tables; the kind of evidence is
+    -- provenance_authority_corroboration (Unicode Consortium asserts these
+    -- codepoints exist with this initial mu).
+    INSERT INTO substrate.entity_significance (
+        context_type_id, entity_hash, attestation_type_id,
+        mu, sigma, volatility, games)
     SELECT v_source_auth_ctx,
            a.hash,
+           substrate.resolve_attestation_type_id('provenance_authority_corroboration'),
            v_initial_mu,
            350.0,
            0.06,

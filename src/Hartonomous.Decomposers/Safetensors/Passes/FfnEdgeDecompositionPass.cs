@@ -123,9 +123,12 @@ internal sealed partial class FfnEdgeDecompositionPass : IModelAnalysisPass
                     // function as a cost gradient instead of uniform-cost BFS.
                     double muOffset = (w / meanAbs) * 200.0;
                     double mu = System.Math.Clamp(1500.0 + muOffset, 500.0, 2500.0);
+                    // FFN-derived edges are model-circuit attestations. Signal
+                    // strength comes from the per-row weight magnitude relative
+                    // to the tensor's mean, recorded as model_ffn_factor_alignment.
                     EdgeSignificanceSpec[] sigSpecs =
                     [
-                        new EdgeSignificanceSpec("model_trust", mu),
+                        new EdgeSignificanceSpec("model_trust", "model_ffn_factor_alignment", mu),
                     ];
 
                     EdgeMemberSpec[] members = isDown

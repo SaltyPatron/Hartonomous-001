@@ -58,7 +58,7 @@ public sealed class SubstrateTextDecomposerTests
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
             => Physicalities.Add((entity, physicalityTypeCode, geomWkb));
 
-        public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu)
+        public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu, string attestationTypeCode = "provenance_authority_corroboration")
         {
         }
 
@@ -69,7 +69,7 @@ public sealed class SubstrateTextDecomposerTests
         public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
             => throw new NotSupportedException();
 
-        public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null)
+        public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null, string attestationTypeCode = "lexical_curated_relation")
             => throw new NotSupportedException();
 
         public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4)

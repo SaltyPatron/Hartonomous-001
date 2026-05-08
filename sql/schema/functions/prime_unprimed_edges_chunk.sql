@@ -16,19 +16,33 @@
 -- Compound formula matches prime_edge_significance_for_staging:
 --   μ₀ = COALESCE(pea.initial_mu, p.initial_mu × et.semantic_weight × p.derivation_decay)
 --   σ₀ = COALESCE(pea.initial_sigma, p.initial_sigma)
+--
+-- attestation_type: priming attestation lands as
+-- 'provenance_authority_corroboration' — the substrate's record that THIS
+-- provenance asserts THIS edge with THIS prior. Other attestation types
+-- (corpus_co_occurrence_window, model_attention_pattern, etc.) accumulate
+-- separately via the streaming pipeline's significance-events drain.
 CREATE OR REPLACE FUNCTION substrate.prime_unprimed_edges_chunk(
     p_arena_id   INT,
     p_chunk_size INT DEFAULT 4096
 ) RETURNS BIGINT
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_last_etid   INT;
-    v_last_hash   BYTEA;
-    v_inserted    BIGINT;
-    v_max_etid    INT;
-    v_max_hash    BYTEA;
-    v_chunk_count INT;
+    v_last_etid             INT;
+    v_last_hash             BYTEA;
+    v_inserted              BIGINT;
+    v_max_etid              INT;
+    v_max_hash              BYTEA;
+    v_chunk_count           INT;
+    v_attestation_type_id   INT;
 BEGIN
+    v_attestation_type_id :=
+        substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION
+            'attestation_type "provenance_authority_corroboration" not seeded; cannot prime';
+    END IF;
+
     INSERT INTO substrate.arena_priming_state (context_type_id)
     VALUES (p_arena_id)
     ON CONFLICT (context_type_id) DO NOTHING;
@@ -40,11 +54,13 @@ BEGIN
        FOR UPDATE;
 
     INSERT INTO substrate.edge_significance
-        (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     SELECT
         p_arena_id,
         nc.edge_type_id,
         nc.hash,
+        v_attestation_type_id,
         COALESCE(
             pea.initial_mu,
             p.initial_mu * et.semantic_weight * p.derivation_decay
@@ -64,7 +80,7 @@ BEGIN
       LEFT JOIN substrate.provenance_edge_authority pea
         ON pea.provenance_id = p.id
        AND pea.edge_type_id  = nc.edge_type_id
-    ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING;
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
 
     GET DIAGNOSTICS v_inserted = ROW_COUNT;
 
@@ -103,4 +119,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.prime_unprimed_edges_chunk(INT, INT) IS
-    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index and avoids the anti-join shape that triggered PG18 batched-HashJoin slot mismatch.';
+    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index. Primes under attestation_type=provenance_authority_corroboration; other attestation types accumulate via the pipeline''s significance-events drain.';

@@ -904,11 +904,15 @@ static void flush_significance(SigList* L)
         PointerGetDatum(build_bytea_array(L->entity_hashes, L->count)),
         PointerGetDatum(build_float8_array(L->mus, L->count))
     };
+    /* Native text_decompose ships ingestion-time priors. attestation_type
+     * 'provenance_authority_corroboration' is resolved once via subquery —
+     * it's the canonical kind-of-evidence for source-authority priming. */
     int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu) "
-        "SELECT DISTINCT ON (c, h) c, h, m "
-        "  FROM unnest($1::int[], $2::bytea[], $3::float8[]) AS u(c, h, m) "
-        "ON CONFLICT (context_type_id, entity_hash) DO NOTHING",
+        "INSERT INTO substrate.entity_significance (context_type_id, entity_hash, attestation_type_id, mu) "
+        "SELECT DISTINCT ON (c, h, a) c, h, a, m "
+        "  FROM unnest($1::int[], $2::bytea[], $3::float8[]) AS u(c, h, m), "
+        "       (SELECT id AS a FROM substrate.attestation_type WHERE code = 'provenance_authority_corroboration') att "
+        "ON CONFLICT (context_type_id, entity_hash, attestation_type_id) DO NOTHING",
         3, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_significance: SPI_execute (%d)", rc);
 }

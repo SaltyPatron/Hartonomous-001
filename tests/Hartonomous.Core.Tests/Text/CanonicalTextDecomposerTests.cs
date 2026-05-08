@@ -243,12 +243,12 @@ public sealed class CanonicalTextDecomposerTests
         public void AddPhysicalityLineString4d(EntityHandle e, string t,
             ReadOnlySpan<(double X1, double X2, double X3, double X4)> verts)
             => LineStrings4d.Add((e, t, verts.Length));
-        public void AddSignificance(EntityHandle e, string c, double mu)
+        public void AddSignificance(EntityHandle e, string c, double mu, string attestationTypeCode = "provenance_authority_corroboration")
             => Significances.Add((e, c, mu));
 
         public void AddEdge(string c, string p, ReadOnlySpan<EdgeMemberSpec> m)
             => throw new NotSupportedException("Canonical text decomposer should not emit edges.");
-        public void AddJunction(string t, EntityHandle e, int r, double? mu = null)
+        public void AddJunction(string t, EntityHandle e, int r, double? mu = null, string attestationTypeCode = "lexical_curated_relation")
             => throw new NotSupportedException("Canonical text decomposer should not emit junctions.");
         public void AddPhysicality(EntityHandle e, string t, byte[] g)
             => throw new NotSupportedException("Canonical text decomposer should not emit raw WKB.");

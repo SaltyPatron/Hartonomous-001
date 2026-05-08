@@ -446,7 +446,11 @@ public sealed class SubstrateTextDecomposer
                         TextDecomposeNative.SigSourceAuthority => "source_authority",
                         _                                       => "source_authority",
                     };
-                    Records.Add(new EntitySignificanceRecord(ctxCode, entHash, record.DoubleParam));
+                    // Native text_decompose ships source_authority priors —
+                    // attestation_type 'provenance_authority_corroboration'
+                    // is the canonical match for ingestion-time priming.
+                    Records.Add(new EntitySignificanceRecord(
+                        ctxCode, "provenance_authority_corroboration", entHash, record.DoubleParam));
                     SignificanceCount++;
                     break;
                 }

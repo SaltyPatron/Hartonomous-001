@@ -1,7 +1,7 @@
 WITH src AS (SELECT * FROM pg_temp.junction_inflight)
   , ins_pos AS (
-        INSERT INTO substrate.entity_pos (entity_hash, pos_id, mu)
-        SELECT DISTINCT entity_hash, ref_id, COALESCE(mu, 1500.0)
+        INSERT INTO substrate.entity_pos (entity_hash, pos_id, attestation_type_id, mu)
+        SELECT DISTINCT entity_hash, ref_id, attestation_type_id, COALESCE(mu, 1500.0)
           FROM src WHERE table_name = 'entity_pos'
         ON CONFLICT DO NOTHING
         RETURNING 1
@@ -42,8 +42,8 @@ WITH src AS (SELECT * FROM pg_temp.junction_inflight)
         RETURNING 1
     )
   , ins_pdep AS (
-        INSERT INTO substrate.pattern_deprel (entity_hash, deprel_id, mu)
-        SELECT DISTINCT entity_hash, ref_id, COALESCE(mu, 1500.0)
+        INSERT INTO substrate.pattern_deprel (entity_hash, deprel_id, attestation_type_id, mu)
+        SELECT DISTINCT entity_hash, ref_id, attestation_type_id, COALESCE(mu, 1500.0)
           FROM src WHERE table_name = 'pattern_deprel'
         ON CONFLICT DO NOTHING
         RETURNING 1

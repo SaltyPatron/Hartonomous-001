@@ -161,6 +161,36 @@ CREATE TABLE substrate.significance_context (
 COMMENT ON TABLE substrate.significance_context IS
     'Open-vocabulary arena definitions. Codes can be added at runtime; significance must auto-prime against every existing arena (rule 45 AP-1).';
 
+-- ── sql/schema/tables/reference/attestation_type.sql ───────────────────────────────────────
+-- AttestationType reference vocabulary. Open vocabulary, same shape as
+-- entity_type / edge_type / significance_context. Distinguishes WHAT KIND OF
+-- EVIDENCE supports a Glicko-2 rating row from WHO asserted it (provenance),
+-- WHAT RELATION KIND (edge_type), and WHICH ARENA (significance_context).
+--
+-- The four discriminators together give a 4D rating surface:
+--   (arena × subject × attestation_type × provenance) → (mu, sigma, games)
+--
+-- Codes are open-vocabulary at runtime; the seed below is the starter set.
+-- Adding a new attestation_type at runtime requires no schema change — the
+-- significance partitions accept any valid attestation_type_id by FK.
+--
+-- Per-event weight default lives on the row so the weighted Glicko-2 bulk
+-- update can scale events differently per attestation_type without callers
+-- having to know the weight (e.g. corpus_co_occurrence_window default 0.1
+-- because individual window slides are low-confidence; lexical_curated_relation
+-- default 1.0 because curated lexicons are high-confidence per attestation).
+CREATE TABLE substrate.attestation_type (
+    id                    SERIAL PRIMARY KEY,
+    code                  VARCHAR(64) NOT NULL UNIQUE,
+    description           TEXT        NOT NULL,
+    default_event_weight  FLOAT8      NOT NULL DEFAULT 1.0,
+    default_initial_mu    FLOAT8      NOT NULL DEFAULT 1500.0,
+    default_initial_sigma FLOAT8      NOT NULL DEFAULT 350.0
+);
+
+COMMENT ON TABLE substrate.attestation_type IS
+    'Open-vocabulary kinds-of-evidence. Each attestation_type carries a default per-event weight used by hartonomous.glicko2_bulk_update_weighted. Adding a new code requires no schema change; partitions accept any FK-valid id.';
+
 -- ── sql/schema/tables/reference/provenance.sql ───────────────────────────────────────
 -- substrate.provenance — source of an entity or edge with trust prior.
 --
@@ -565,6 +595,63 @@ INSERT INTO substrate.significance_context (code) VALUES
     ('frequency_significance'),
     ('attention_pattern_confidence'),
     ('morphological_productivity');
+
+-- ── sql/schema/seed/attestation_type.sql ───────────────────────────────────────
+-- 14 starter attestation types. Open vocabulary — runtime additions are
+-- expected (e.g., per-corpus or per-model arena-attestation pairs).
+--
+-- Per-event weight defaults reflect evidence density vs confidence:
+--   curated lexical relations: 1.0 (one high-confidence event)
+--   corpus co-occurrence: 0.1  (high-volume, low-per-event-confidence)
+--   model attention/circuit: 0.5 (medium-volume, structural-confidence)
+--   inference outcomes:    1.5 (sparse, ground-truth signal)
+--   expert correction:     2.0 (highest single-event impact)
+--
+-- These are PRIORS. Per-emission weight overrides are passed through the
+-- significance-event API at call time.
+INSERT INTO substrate.attestation_type (code, description, default_event_weight) VALUES
+    ('corpus_co_occurrence_window',
+     'Decomposer slid window of radius R over a parent text composition; per-pair weighted comparison event. Weight scaled by 1/distance × parent_significance × 1/RLE_count. Substrate analog of word2vec/GloVe statistics.',
+     0.1),
+    ('corpus_proximity_within_sentence',
+     'Same as corpus_co_occurrence_window but strictly confined within a sentence boundary (no cross-sentence pairs). Used when sentence-level decomposition is the natural unit.',
+     0.1),
+    ('lexical_curated_relation',
+     'Curated lexicon assertion (WordNet has_sense, Wiktionary etymology, OMW alignment, UD deprel labels). High per-event confidence because hand-curated.',
+     1.0),
+    ('lexical_attested_translation',
+     'Bilingual lexicon entry or aligned-sentence translation pair (Tatoeba, OPUS). One attestation per parallel pair.',
+     0.8),
+    ('model_embedding_proximity',
+     'Cosine/magnitude of two tokens'' rows in a decomposed model''s embedding or unembedding matrix. Track-1 firefly geometry binding.',
+     0.4),
+    ('model_attention_pattern',
+     'Attention head''s Q×K projection peak between two existing token entities. Track-2 per-role-unit attestation expressed as a direct token↔token edge.',
+     0.5),
+    ('model_ffn_factor_alignment',
+     'FFN per-role unit''s input/output projection alignment with two existing token entities. Track-2 attestation.',
+     0.5),
+    ('model_per_role_unit_circuit',
+     'Identified circuit binding per-role units (substrate entities) to a relation between existing token entities. Bridge edges queries_from/attends_to_class/projects_to.',
+     0.6),
+    ('cross_model_corroboration',
+     'Voronoi-cell tightness or Fréchet-trajectory similarity between per-role units across two or more decomposed models. Cross-architecture consensus event.',
+     0.7),
+    ('cross_model_divergence',
+     'Cross-model fireflies disagree; cell fragmented. Recorded as negative-evidence event so Glicko sigma stays wide and the engine''s curiosity loop targets the gap.',
+     0.5),
+    ('inference_outcome_accept',
+     'Step 6 of inference: query path produced an answer the user/downstream-task accepted. Updates the path''s edge_significance positively. Closes the OODA loop.',
+     1.5),
+    ('inference_outcome_reject',
+     'Step 6: query path produced an answer that was rejected. Updates the path''s edge_significance negatively (loss event).',
+     1.5),
+    ('expert_correction',
+     'Human-in-loop override of an edge''s rating. Highest per-event weight; used sparingly for corrections that should dominate accumulated automatic evidence.',
+     2.0),
+    ('provenance_authority_corroboration',
+     'Multi-source assertion resolved through provenance_edge_authority. Used when several provenances of differing trust priors agree on an edge''s rating.',
+     0.8);
 
 -- ── sql/schema/seed/provenance.sql ───────────────────────────────────────
 -- substrate.provenance seed — wide-band tier ladder.
@@ -1036,22 +1123,30 @@ COMMENT ON TABLE substrate.sequence IS
     'Parent → ordered children with RLE for refrain compression. Hash-only references — entity type is irrelevant to ordinal lookup. Btree-indexed on (parent_hash, ordinal) for microsecond random access; inverse index on (child_hash) for parent lookup.';
 
 -- ── sql/schema/tables/core/entity_significance.sql ───────────────────────────────────────
--- Glicko-2 ratings on entities, per arena. Hash-only entity reference
--- (Phase C of unification refactor — substrate.entity has hash-only PK,
--- no entity_type_id).
+-- Glicko-2 ratings on entities, per arena, per attestation_type. Hash-only
+-- entity reference (Phase C of unification refactor — substrate.entity has
+-- hash-only PK, no entity_type_id).
+--
+-- attestation_type_id partitions the rating surface so corpus-derived,
+-- model-derived, lexicon-curated, and inference-outcome evidence stay
+-- distinguishable in their contribution to the same (arena, entity) rating.
+-- Same content from corpus_co_occurrence_window AND lexical_curated_relation
+-- gets two separate rows; the inference engine and recomposer can blend
+-- them at query time per AttestationTypeBlend.
 CREATE TABLE substrate.entity_significance (
-    context_type_id INT NOT NULL REFERENCES substrate.significance_context(id),
-    entity_hash     substrate.hash_value NOT NULL,
-    mu              substrate.significance_mu         NOT NULL DEFAULT 1500.0,
-    sigma           substrate.significance_sigma      NOT NULL DEFAULT 350.0,
-    volatility      substrate.significance_volatility NOT NULL DEFAULT 0.06,
-    games           INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (context_type_id, entity_hash)
+    context_type_id     INT NOT NULL REFERENCES substrate.significance_context(id),
+    entity_hash         substrate.hash_value NOT NULL,
+    attestation_type_id INT NOT NULL REFERENCES substrate.attestation_type(id),
+    mu                  substrate.significance_mu         NOT NULL DEFAULT 1500.0,
+    sigma               substrate.significance_sigma      NOT NULL DEFAULT 350.0,
+    volatility          substrate.significance_volatility NOT NULL DEFAULT 0.06,
+    games               INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (context_type_id, entity_hash, attestation_type_id)
     -- FK to substrate.entity(hash) application-enforced.
 ) PARTITION BY LIST (context_type_id);
 
 COMMENT ON TABLE substrate.entity_significance IS
-    'Glicko-2 trust per (entity, arena). Hash-only entity reference. Partitioned by context_type_id.';
+    'Glicko-2 trust per (entity, arena, attestation_type). Hash-only entity reference. Partitioned by context_type_id. Stratified by attestation_type so kinds of evidence remain distinguishable; query-time blend collapses them when desired.';
 
 -- ── sql/schema/tables/core/entity_significance_lexical.sql ───────────────────────────────────────
 CREATE TABLE substrate.entity_significance_lexical
@@ -1098,24 +1193,35 @@ CREATE TABLE substrate.entity_significance_default
     PARTITION OF substrate.entity_significance DEFAULT;
 
 -- ── sql/schema/tables/core/edge_significance.sql ───────────────────────────────────────
--- Glicko-2 ratings on edges, per arena. Split from entity_significance.
--- Edge cost during A* traversal = 1 / mu in the requested arena. New arenas
--- (open vocabulary) must auto-prime against every existing edge — see
--- substrate.prime_edge_significance.
+-- Glicko-2 ratings on edges, per arena, per attestation_type. Edge cost
+-- during A* traversal = 1 / blended_mu where blended_mu is computed at
+-- query time from per-attestation_type rows under an AttestationTypeBlend
+-- recipe (default: equal weight across attestation_types within arena).
+--
+-- New arenas (open vocabulary) auto-prime against every existing edge —
+-- see substrate.prime_unprimed_edges_chunk.
+--
+-- attestation_type_id stratifies the rating: same edge gets separate rows
+-- per (arena, attestation_type) so corpus-window evidence, model-circuit
+-- evidence, lexicon-curated evidence, and inference-outcome evidence remain
+-- distinguishable. The recomposer's WHERE clause and the inference engine's
+-- traversal blend can both filter by attestation_type to pull
+-- circuit-only-students, lexicon-only-students, etc.
 CREATE TABLE substrate.edge_significance (
-    context_type_id INT NOT NULL REFERENCES substrate.significance_context(id),
-    edge_type_id    INT NOT NULL,
-    edge_hash       substrate.hash_value NOT NULL,
-    mu              substrate.significance_mu         NOT NULL DEFAULT 1500.0,
-    sigma           substrate.significance_sigma      NOT NULL DEFAULT 350.0,
-    volatility      substrate.significance_volatility NOT NULL DEFAULT 0.06,
-    games           INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (context_type_id, edge_type_id, edge_hash)
+    context_type_id     INT NOT NULL REFERENCES substrate.significance_context(id),
+    edge_type_id        INT NOT NULL,
+    edge_hash           substrate.hash_value NOT NULL,
+    attestation_type_id INT NOT NULL REFERENCES substrate.attestation_type(id),
+    mu                  substrate.significance_mu         NOT NULL DEFAULT 1500.0,
+    sigma               substrate.significance_sigma      NOT NULL DEFAULT 350.0,
+    volatility          substrate.significance_volatility NOT NULL DEFAULT 0.06,
+    games               INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (context_type_id, edge_type_id, edge_hash, attestation_type_id)
     -- FK to substrate.edge application-enforced.
 ) PARTITION BY LIST (context_type_id);
 
 COMMENT ON TABLE substrate.edge_significance IS
-    'Glicko-2 trust per (edge, arena). Hash-addressable via (edge_type_id, edge_hash). Partitioned by context_type_id. FK application-enforced.';
+    'Glicko-2 trust per (edge, arena, attestation_type). Hash-addressable via (edge_type_id, edge_hash). Partitioned by context_type_id. Stratified by attestation_type so kinds of evidence (corpus, model, lexicon, outcome) remain distinguishable; query-time AttestationTypeBlend collapses them.';
 
 -- ── sql/schema/tables/core/edge_significance_lexical.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_significance_lexical
@@ -1167,17 +1273,18 @@ CREATE TABLE substrate.edge_significance_default
 
 -- ── sql/schema/tables/junctions/entity_pos.sql ───────────────────────────────────────
 CREATE TABLE substrate.entity_pos (
-    entity_hash substrate.hash_value NOT NULL,
-    pos_id      INT  NOT NULL REFERENCES substrate.pos(id),
-    mu          FLOAT8 NOT NULL DEFAULT 1500,
-    sigma       FLOAT8 NOT NULL DEFAULT 350,
-    volatility  FLOAT8 NOT NULL DEFAULT 0.06,
-    games       INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (entity_hash, pos_id)
+    entity_hash         substrate.hash_value NOT NULL,
+    pos_id              INT  NOT NULL REFERENCES substrate.pos(id),
+    attestation_type_id INT  NOT NULL REFERENCES substrate.attestation_type(id),
+    mu                  FLOAT8 NOT NULL DEFAULT 1500,
+    sigma               FLOAT8 NOT NULL DEFAULT 350,
+    volatility          FLOAT8 NOT NULL DEFAULT 0.06,
+    games               INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_hash, pos_id, attestation_type_id)
 );
 
 COMMENT ON TABLE substrate.entity_pos IS
-    'Entity → POS with Glicko-2. Hash-only entity reference. Multiple POS per entity supported.';
+    'Entity → POS classification with Glicko-2 confidence, stratified by attestation_type (e.g., lexical_curated_relation from POS lexicons vs. model_attention_pattern when a model''s heads attend with POS-aligned patterns). Hash-only entity reference. Multiple POS per entity supported.';
 
 -- ── sql/schema/tables/junctions/entity_lexname.sql ───────────────────────────────────────
 CREATE TABLE substrate.entity_lexname (
@@ -1255,17 +1362,18 @@ COMMENT ON TABLE substrate.tensor_tensor_role IS
 
 -- ── sql/schema/tables/junctions/pattern_deprel.sql ───────────────────────────────────────
 CREATE TABLE substrate.pattern_deprel (
-    entity_hash substrate.hash_value NOT NULL,
-    deprel_id   INT  NOT NULL REFERENCES substrate.deprel(id),
-    mu          FLOAT8 NOT NULL DEFAULT 1200,
-    sigma       FLOAT8 NOT NULL DEFAULT 350,
-    volatility  FLOAT8 NOT NULL DEFAULT 0.06,
-    games       INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (entity_hash, deprel_id)
+    entity_hash         substrate.hash_value NOT NULL,
+    deprel_id           INT  NOT NULL REFERENCES substrate.deprel(id),
+    attestation_type_id INT  NOT NULL REFERENCES substrate.attestation_type(id),
+    mu                  FLOAT8 NOT NULL DEFAULT 1200,
+    sigma               FLOAT8 NOT NULL DEFAULT 350,
+    volatility          FLOAT8 NOT NULL DEFAULT 0.06,
+    games               INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_hash, deprel_id, attestation_type_id)
 );
 
 COMMENT ON TABLE substrate.pattern_deprel IS
-    'Attention pattern → deprel with Glicko-2. Hash-only entity reference.';
+    'Attention pattern → deprel binding with Glicko-2 confidence, stratified by attestation_type. Most events arrive as model_attention_pattern (decomposed model heads aligned with UD deprels) and lexical_curated_relation (UD treebank labels). Hash-only entity reference.';
 
 -- ── sql/schema/tables/junctions/provenance_edge_authority.sql ───────────────────────────────────────
 -- substrate.provenance_edge_authority — explicit overrides for (source, edge_type) μ.
@@ -3035,6 +3143,28 @@ $$;
 COMMENT ON FUNCTION substrate.resolve_context_id(TEXT) IS
     'Resolve a significance_context.code to its INT id. Returns NULL if unknown. STABLE — safe to inline in larger queries.';
 
+-- ── sql/schema/functions/resolve_attestation_type_id.sql ───────────────────────────────────────
+-- substrate.resolve_attestation_type_id(p_code TEXT)
+--
+-- Translate an attestation_type code to its INT id. Same shape as
+-- resolve_context_id. AttestationType is open-vocabulary; new codes can be
+-- added at runtime via INSERT. Code that hard-codes the 14 starter codes is
+-- wrong (analogous to AP-1 for arenas).
+--
+-- Returns NULL when the code does not exist. Callers MUST handle NULL
+-- (the C# pipeline raises InvalidOperationException with the unknown code).
+CREATE OR REPLACE FUNCTION substrate.resolve_attestation_type_id(p_code TEXT)
+RETURNS INT
+LANGUAGE sql STABLE
+AS $$
+    SELECT id
+      FROM substrate.attestation_type
+     WHERE code = p_code;
+$$;
+
+COMMENT ON FUNCTION substrate.resolve_attestation_type_id(TEXT) IS
+    'Resolve an attestation_type.code to its INT id. Returns NULL if unknown. STABLE — safe to inline in larger queries.';
+
 -- ── sql/schema/functions/resolve_entity_handles.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.resolve_entity_handles(BYTEA[], TEXT[]);
 DROP FUNCTION IF EXISTS substrate.resolve_entity_handles(BYTEA[]);
@@ -4190,24 +4320,34 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 -- ── sql/schema/functions/api_entity_significance.sql ───────────────────────────────────────
+-- API helper: per-entity significance, optionally filtered by arena and/or
+-- attestation_type. Returns one row per (arena, attestation_type) so callers
+-- can blend stratified evidence at the edge of the API.
 CREATE OR REPLACE FUNCTION substrate.api_entity_significance(
-    p_entity_hash BYTEA,
-    p_arena_code TEXT DEFAULT NULL
+    p_entity_hash       BYTEA,
+    p_arena_code        TEXT DEFAULT NULL,
+    p_attestation_code  TEXT DEFAULT NULL
 ) RETURNS TABLE (
-    arena_code TEXT,
-    mu DOUBLE PRECISION,
-    sigma DOUBLE PRECISION,
-    volatility DOUBLE PRECISION,
-    games INT
+    arena_code        TEXT,
+    attestation_code  TEXT,
+    mu                DOUBLE PRECISION,
+    sigma             DOUBLE PRECISION,
+    volatility        DOUBLE PRECISION,
+    games             INT
 )
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT sc.code::TEXT, es.mu, es.sigma, es.volatility, es.games
+    SELECT sc.code::TEXT, at.code::TEXT, es.mu, es.sigma, es.volatility, es.games
       FROM substrate.entity_significance es
       JOIN substrate.significance_context sc ON sc.id = es.context_type_id
+      JOIN substrate.attestation_type     at ON at.id = es.attestation_type_id
      WHERE es.entity_hash = p_entity_hash
        AND (p_arena_code IS NULL OR sc.code = p_arena_code)
-     ORDER BY sc.code;
+       AND (p_attestation_code IS NULL OR at.code = p_attestation_code)
+     ORDER BY sc.code, at.code;
 $f$;
+
+COMMENT ON FUNCTION substrate.api_entity_significance(BYTEA, TEXT, TEXT) IS
+    'Per-entity significance rows, optionally filtered by arena_code and/or attestation_code. Returns the stratified rating surface — one row per (arena, attestation_type). Callers blend at the edge of the API.';
 
 -- ── sql/schema/functions/api_entity_neighbors.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.api_entity_neighbors(
@@ -4414,19 +4554,33 @@ COMMENT ON FUNCTION substrate.reset_arena_priming_state() IS
 -- Compound formula matches prime_edge_significance_for_staging:
 --   μ₀ = COALESCE(pea.initial_mu, p.initial_mu × et.semantic_weight × p.derivation_decay)
 --   σ₀ = COALESCE(pea.initial_sigma, p.initial_sigma)
+--
+-- attestation_type: priming attestation lands as
+-- 'provenance_authority_corroboration' — the substrate's record that THIS
+-- provenance asserts THIS edge with THIS prior. Other attestation types
+-- (corpus_co_occurrence_window, model_attention_pattern, etc.) accumulate
+-- separately via the streaming pipeline's significance-events drain.
 CREATE OR REPLACE FUNCTION substrate.prime_unprimed_edges_chunk(
     p_arena_id   INT,
     p_chunk_size INT DEFAULT 4096
 ) RETURNS BIGINT
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_last_etid   INT;
-    v_last_hash   BYTEA;
-    v_inserted    BIGINT;
-    v_max_etid    INT;
-    v_max_hash    BYTEA;
-    v_chunk_count INT;
+    v_last_etid             INT;
+    v_last_hash             BYTEA;
+    v_inserted              BIGINT;
+    v_max_etid              INT;
+    v_max_hash              BYTEA;
+    v_chunk_count           INT;
+    v_attestation_type_id   INT;
 BEGIN
+    v_attestation_type_id :=
+        substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION
+            'attestation_type "provenance_authority_corroboration" not seeded; cannot prime';
+    END IF;
+
     INSERT INTO substrate.arena_priming_state (context_type_id)
     VALUES (p_arena_id)
     ON CONFLICT (context_type_id) DO NOTHING;
@@ -4438,11 +4592,13 @@ BEGIN
        FOR UPDATE;
 
     INSERT INTO substrate.edge_significance
-        (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     SELECT
         p_arena_id,
         nc.edge_type_id,
         nc.hash,
+        v_attestation_type_id,
         COALESCE(
             pea.initial_mu,
             p.initial_mu * et.semantic_weight * p.derivation_decay
@@ -4462,7 +4618,7 @@ BEGIN
       LEFT JOIN substrate.provenance_edge_authority pea
         ON pea.provenance_id = p.id
        AND pea.edge_type_id  = nc.edge_type_id
-    ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING;
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
 
     GET DIAGNOSTICS v_inserted = ROW_COUNT;
 
@@ -4501,7 +4657,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.prime_unprimed_edges_chunk(INT, INT) IS
-    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index and avoids the anti-join shape that triggered PG18 batched-HashJoin slot mismatch.';
+    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index. Primes under attestation_type=provenance_authority_corroboration; other attestation types accumulate via the pipeline''s significance-events drain.';
 
 -- ── sql/schema/functions/prune_significance.sql ───────────────────────────────────────
 -- substrate.prune_significance(
@@ -4604,47 +4760,41 @@ COMMENT ON FUNCTION substrate.prune_significance_for_context(TEXT, DOUBLE PRECIS
 --     p_winner_edge_type_id   INT,
 --     p_winner_edge_hash      BYTEA,
 --     p_loser_edge_type_id    INT,
---     p_loser_edge_hash       BYTEA)
+--     p_loser_edge_hash       BYTEA,
+--     p_attestation_type_id   INT)
 --
--- Record a head-to-head outcome between two edges in the same arena. Step 6
--- of inference (docs/specs/engine/inference.md): when an outcome arrives
--- (user accept/reject, downstream task succeed/fail), comparison events
--- between selected and rejected paths fire Glicko-2 on the corresponding
--- edge_significance rows. Winners' μ rises, losers' μ falls. The substrate
--- learns from every interaction — closed-loop without training, without
--- gradient descent, without labeled data.
+-- Record a head-to-head outcome between two edges in the same arena under a
+-- specific attestation_type. Step 6 of inference (docs/specs/engine/inference.md):
+-- when an outcome arrives (user accept/reject, downstream task succeed/fail),
+-- comparison events between selected and rejected paths fire Glicko-2 on the
+-- corresponding edge_significance rows. Winners' μ rises, losers' μ falls.
+-- The substrate learns from every interaction — closed-loop without training,
+-- without gradient descent, without labeled data.
+--
+-- attestation_type stratifies the rating: an inference_outcome_accept event
+-- updates a different row than a corpus_co_occurrence_window event, so the
+-- engine can blend them at query time per AttestationTypeBlend rather than
+-- collapsing all evidence into one mu.
 --
 -- Algorithm: Glickman 2012 (http://www.glicko.net/glicko/glicko2.pdf), tau=0.5.
 -- Implementation: ONE call to public.glicko2_bulk_update (native C —
--- ext/libhartonomous/src/glicko_bulk.c via ext/hartonomous_pg/src/pg_glicko_bulk.c)
--- with n=2 — row 0 is the winner-side update (player=winner, opponent=loser,
--- score=1.0); row 1 is the loser-side update (player=loser, opponent=winner,
--- score=0.0). Both new ratings come back in one bulk call; both rows are
--- updated set-based via UPDATE ... FROM unnest.
---
--- Determinism: the formula lives in C with IEEE-754 round-to-nearest-even,
--- fixed evaluation order, no PRNG. Same inputs → bit-identical outputs across
--- C, SQL, and C# (Law #6). Do NOT add a plpgsql or C# reimplementation.
---
--- Hash-addressable: both edges are addressed by (edge_type_id, edge_hash)
--- against substrate.edge_significance, scoped to p_arena_id (the
--- substrate.significance_context.id resolved upstream via
--- substrate.resolve_context_id).
+-- ext/libhartonomous/src/glicko_bulk.c via ext/hartonomous_pg/src/pg_glicko_bulk.c).
 
 DROP FUNCTION IF EXISTS substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION);
+DROP FUNCTION IF EXISTS substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA);
 
 CREATE OR REPLACE FUNCTION substrate.record_comparison(
-    p_arena_id            INT,
-    p_winner_edge_type_id INT,
-    p_winner_edge_hash    BYTEA,
-    p_loser_edge_type_id  INT,
-    p_loser_edge_hash     BYTEA
+    p_arena_id              INT,
+    p_winner_edge_type_id   INT,
+    p_winner_edge_hash      BYTEA,
+    p_loser_edge_type_id    INT,
+    p_loser_edge_hash       BYTEA,
+    p_attestation_type_id   INT
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    -- Current state for both edges (public scale, 1500-anchored).
     w_mu       DOUBLE PRECISION;
     w_sigma    DOUBLE PRECISION;
     w_vol      DOUBLE PRECISION;
@@ -4654,37 +4804,36 @@ DECLARE
     l_vol      DOUBLE PRECISION;
     l_games    INT;
 
-    -- Bulk-Glicko output (n=2: row 0 = winner update, row 1 = loser update).
     new_mu     DOUBLE PRECISION[];
     new_sigma  DOUBLE PRECISION[];
     new_vol    DOUBLE PRECISION[];
 BEGIN
-    -- Auto-create rows at default rating if missing (priming may have lagged
-    -- for this arena × edge). Matches the engine contract.
     INSERT INTO substrate.edge_significance
-        (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     VALUES
-        (p_arena_id, p_winner_edge_type_id, p_winner_edge_hash, 1500.0, 350.0, 0.06, 0),
-        (p_arena_id, p_loser_edge_type_id,  p_loser_edge_hash,  1500.0, 350.0, 0.06, 0)
-    ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING;
+        (p_arena_id, p_winner_edge_type_id, p_winner_edge_hash, p_attestation_type_id,
+         1500.0, 350.0, 0.06, 0),
+        (p_arena_id, p_loser_edge_type_id,  p_loser_edge_hash,  p_attestation_type_id,
+         1500.0, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
 
     SELECT mu, sigma, volatility, games
       INTO w_mu, w_sigma, w_vol, w_games
       FROM substrate.edge_significance
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = p_winner_edge_type_id
-       AND edge_hash       = p_winner_edge_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_winner_edge_type_id
+       AND edge_hash            = p_winner_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
 
     SELECT mu, sigma, volatility, games
       INTO l_mu, l_sigma, l_vol, l_games
       FROM substrate.edge_significance
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = p_loser_edge_type_id
-       AND edge_hash       = p_loser_edge_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_loser_edge_type_id
+       AND edge_hash            = p_loser_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
 
-    -- One bulk-Glicko call covers both updates.
-    --   row 0: player=winner, opponent=loser, score=1.0
-    --   row 1: player=loser,  opponent=winner, score=0.0
     SELECT g.new_mu, g.new_sigma, g.new_vol
       INTO new_mu, new_sigma, new_vol
       FROM public.glicko2_bulk_update(
@@ -4701,38 +4850,44 @@ BEGIN
            sigma      = new_sigma[1],
            volatility = new_vol[1],
            games      = w_games + 1
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = p_winner_edge_type_id
-       AND edge_hash       = p_winner_edge_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_winner_edge_type_id
+       AND edge_hash            = p_winner_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
 
     UPDATE substrate.edge_significance
        SET mu         = new_mu[2],
            sigma      = new_sigma[2],
            volatility = new_vol[2],
            games      = l_games + 1
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = p_loser_edge_type_id
-       AND edge_hash       = p_loser_edge_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_loser_edge_type_id
+       AND edge_hash            = p_loser_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
 END $$;
 
-COMMENT ON FUNCTION substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA) IS
-    'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within an arena. Calls public.glicko2_bulk_update once with n=2 — the formula lives in C (ext/libhartonomous/src/glicko_bulk.c), not in plpgsql. Auto-creates missing rows at default rating before updating. games += 1 on both rows.';
+COMMENT ON FUNCTION substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA, INT) IS
+    'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within (arena, attestation_type). Calls public.glicko2_bulk_update once with n=2 — the formula lives in C (ext/libhartonomous/src/glicko_bulk.c), not in plpgsql. Auto-creates missing rows at default rating before updating. games += 1 on both rows. attestation_type stratifies — same edge can have separate ratings under inference_outcome_accept vs corpus_co_occurrence_window etc.';
 
 -- ── sql/schema/functions/record_edge_comparison.sql ───────────────────────────────────────
+DROP FUNCTION IF EXISTS substrate.record_edge_comparison(TEXT, TEXT, BYTEA, TEXT, BYTEA);
+
 CREATE OR REPLACE FUNCTION substrate.record_edge_comparison(
     p_context_code          TEXT,
     p_winner_edge_type_code TEXT,
     p_winner_edge_hash      BYTEA,
     p_loser_edge_type_code  TEXT,
-    p_loser_edge_hash       BYTEA
+    p_loser_edge_hash       BYTEA,
+    p_attestation_type_code TEXT DEFAULT 'inference_outcome_accept'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    v_context_id INT;
-    v_winner_edge_type_id INT;
-    v_loser_edge_type_id INT;
+    v_context_id           INT;
+    v_winner_edge_type_id  INT;
+    v_loser_edge_type_id   INT;
+    v_attestation_type_id  INT;
 BEGIN
     v_context_id := substrate.resolve_context_id(p_context_code);
     IF v_context_id IS NULL THEN
@@ -4753,28 +4908,38 @@ BEGIN
         RAISE EXCEPTION 'unknown loser edge_type: %', p_loser_edge_type_code;
     END IF;
 
+    v_attestation_type_id := substrate.resolve_attestation_type_id(p_attestation_type_code);
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown attestation_type: %', p_attestation_type_code;
+    END IF;
+
     PERFORM substrate.record_comparison(
         v_context_id,
         v_winner_edge_type_id,
         p_winner_edge_hash,
         v_loser_edge_type_id,
-        p_loser_edge_hash);
+        p_loser_edge_hash,
+        v_attestation_type_id);
 END $$;
 
-COMMENT ON FUNCTION substrate.record_edge_comparison(TEXT, TEXT, BYTEA, TEXT, BYTEA) IS
-    'Resolve arena and edge type codes, then record a Glicko-2 head-to-head update on substrate.edge_significance for winner/loser edge handles.';
+COMMENT ON FUNCTION substrate.record_edge_comparison(TEXT, TEXT, BYTEA, TEXT, BYTEA, TEXT) IS
+    'Resolve arena, edge type codes, and attestation_type code, then record a Glicko-2 head-to-head update on substrate.edge_significance. Default attestation_type is inference_outcome_accept (Step 6 of inference). Pass corpus_co_occurrence_window or model_attention_pattern for ingestion-time pair comparisons.';
 
 -- ── sql/schema/functions/record_entity_comparison.sql ───────────────────────────────────────
+DROP FUNCTION IF EXISTS substrate.record_entity_comparison(TEXT, BYTEA, BYTEA);
+
 CREATE OR REPLACE FUNCTION substrate.record_entity_comparison(
-    p_context_code       TEXT,
-    p_winner_entity_hash BYTEA,
-    p_loser_entity_hash  BYTEA
+    p_context_code          TEXT,
+    p_winner_entity_hash    BYTEA,
+    p_loser_entity_hash     BYTEA,
+    p_attestation_type_code TEXT DEFAULT 'inference_outcome_accept'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    v_context_id INT;
+    v_context_id           INT;
+    v_attestation_type_id  INT;
     w_mu       DOUBLE PRECISION;
     w_sigma    DOUBLE PRECISION;
     w_vol      DOUBLE PRECISION;
@@ -4792,24 +4957,32 @@ BEGIN
         RAISE EXCEPTION 'unknown significance context: %', p_context_code;
     END IF;
 
+    v_attestation_type_id := substrate.resolve_attestation_type_id(p_attestation_type_code);
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown attestation_type: %', p_attestation_type_code;
+    END IF;
+
     INSERT INTO substrate.entity_significance
-        (context_type_id, entity_hash, mu, sigma, volatility, games)
+        (context_type_id, entity_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     VALUES
-        (v_context_id, p_winner_entity_hash, 1500.0, 350.0, 0.06, 0),
-        (v_context_id, p_loser_entity_hash,  1500.0, 350.0, 0.06, 0)
-    ON CONFLICT (context_type_id, entity_hash) DO NOTHING;
+        (v_context_id, p_winner_entity_hash, v_attestation_type_id, 1500.0, 350.0, 0.06, 0),
+        (v_context_id, p_loser_entity_hash,  v_attestation_type_id, 1500.0, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, entity_hash, attestation_type_id) DO NOTHING;
 
     SELECT mu, sigma, volatility, games
       INTO w_mu, w_sigma, w_vol, w_games
       FROM substrate.entity_significance
-     WHERE context_type_id = v_context_id
-       AND entity_hash = p_winner_entity_hash;
+     WHERE context_type_id     = v_context_id
+       AND entity_hash         = p_winner_entity_hash
+       AND attestation_type_id = v_attestation_type_id;
 
     SELECT mu, sigma, volatility, games
       INTO l_mu, l_sigma, l_vol, l_games
       FROM substrate.entity_significance
-     WHERE context_type_id = v_context_id
-       AND entity_hash = p_loser_entity_hash;
+     WHERE context_type_id     = v_context_id
+       AND entity_hash         = p_loser_entity_hash
+       AND attestation_type_id = v_attestation_type_id;
 
     SELECT g.new_mu, g.new_sigma, g.new_vol
       INTO new_mu, new_sigma, new_vol
@@ -4827,58 +5000,49 @@ BEGIN
            sigma = new_sigma[1],
            volatility = new_vol[1],
            games = w_games + 1
-     WHERE context_type_id = v_context_id
-       AND entity_hash = p_winner_entity_hash;
+     WHERE context_type_id     = v_context_id
+       AND entity_hash         = p_winner_entity_hash
+       AND attestation_type_id = v_attestation_type_id;
 
     UPDATE substrate.entity_significance
        SET mu = new_mu[2],
            sigma = new_sigma[2],
            volatility = new_vol[2],
            games = l_games + 1
-     WHERE context_type_id = v_context_id
-       AND entity_hash = p_loser_entity_hash;
+     WHERE context_type_id     = v_context_id
+       AND entity_hash         = p_loser_entity_hash
+       AND attestation_type_id = v_attestation_type_id;
 END $$;
 
-COMMENT ON FUNCTION substrate.record_entity_comparison(TEXT, BYTEA, BYTEA) IS
-    'Glicko-2 head-to-head update on substrate.entity_significance for winner/loser entity hashes within an arena. Uses public.glicko2_bulk_update; auto-creates missing rows at default rating.';
+COMMENT ON FUNCTION substrate.record_entity_comparison(TEXT, BYTEA, BYTEA, TEXT) IS
+    'Glicko-2 head-to-head update on substrate.entity_significance for winner/loser entity hashes within (arena, attestation_type). Default attestation_type is inference_outcome_accept. Uses public.glicko2_bulk_update; auto-creates missing rows at default rating.';
 
 -- ── sql/schema/functions/record_corroboration.sql ───────────────────────────────────────
 -- substrate.record_corroboration(
---     p_arena_id     INT,
---     p_edge_type_id INT,
---     p_edge_hash    BYTEA,
---     p_strength     DOUBLE PRECISION)
+--     p_arena_id              INT,
+--     p_edge_type_id          INT,
+--     p_edge_hash             BYTEA,
+--     p_strength              DOUBLE PRECISION,
+--     p_attestation_type_id   INT)
 --
 -- Record a positive corroboration event without head-to-head comparison.
 -- Algebraically: a Glicko-2 draw against a synthetic opponent equal to this
--- edge itself, scaled by p_strength ∈ (0, 1]. The case p_strength = 1 is
--- the "draw against self" specialization (re-encounter on identical content
--- from another source), and reduces to:
+-- edge itself, scaled by p_strength ∈ (0, 1]. Cross-source corroboration
+-- naturally lands here — when a second source attests the same edge, sigma
+-- narrows; mu unchanged.
 --
---   g(σ)        = 1 / sqrt(1 + 3·σ²/π²)
---   E           = 1 / (1 + exp(-g·(μ - μ)))      = 0.5            (draw)
---   v           = 1 / (g² · E·(1−E)) = 1 / (g² · 0.25)            = 4/g²
---   new_σ²      = 1 / (1/σ² + 1/v)               = 1 / (1/σ² + g²/4)
---   new_μ       = μ + new_σ² · g · (0.5 − 0.5)   = μ   (unchanged)
---   volatility  = unchanged (one-step approximation; full iterative
---                 volatility update is reserved for active comparison
---                 events between distinct entities — see record_comparison)
---
--- For p_strength < 1, sigma narrows by a fraction of the full-strength
--- amount (linear interpolation between current σ and the post-draw σ);
--- p_strength = 0 is a no-op. Light-touch update — no μ shift, no
--- volatility change, just sigma tightening proportional to corroboration
--- strength. games += 1 on every call.
---
--- Hash-addressable: edge identified by (edge_type_id, edge_hash) within
--- arena (significance_context.id resolved upstream). Auto-creates the row
--- at default rating if missing.
+-- attestation_type stratifies — corroboration from corpus_co_occurrence_window
+-- updates a different rating row than corroboration from
+-- cross_model_corroboration; the engine blends them per AttestationTypeBlend.
+
+DROP FUNCTION IF EXISTS substrate.record_corroboration(INT, INT, BYTEA, DOUBLE PRECISION);
 
 CREATE OR REPLACE FUNCTION substrate.record_corroboration(
-    p_arena_id     INT,
-    p_edge_type_id INT,
-    p_edge_hash    BYTEA,
-    p_strength     DOUBLE PRECISION
+    p_arena_id              INT,
+    p_edge_type_id          INT,
+    p_edge_hash             BYTEA,
+    p_strength              DOUBLE PRECISION,
+    p_attestation_type_id   INT
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
@@ -4890,72 +5054,69 @@ DECLARE
     new_sigma_full DOUBLE PRECISION;
 BEGIN
     IF p_strength IS NULL OR p_strength <= 0.0 THEN
-        RETURN;  -- no-op for non-positive strength
+        RETURN;
     END IF;
 
-    -- Auto-create the row at default rating if missing.
     INSERT INTO substrate.edge_significance
-        (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     VALUES
-        (p_arena_id, p_edge_type_id, p_edge_hash, 1500.0, 350.0, 0.06, 0)
-    ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING;
+        (p_arena_id, p_edge_type_id, p_edge_hash, p_attestation_type_id,
+         1500.0, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
 
     SELECT sigma
       INTO cur_sigma
       FROM substrate.edge_significance
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = p_edge_type_id
-       AND edge_hash       = p_edge_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_edge_type_id
+       AND edge_hash           = p_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
 
-    -- Spec-correct Glicko-2 draw-against-self specialization (public scale
-    -- because g and σ both live there: σ² appears in both numerator and
-    -- denominator so the c_scale²-by-c_scale² cancellation lets us compute
-    -- directly in public scale).
-    --
-    --   g(σ)   = 1 / sqrt(1 + 3·σ²/π²)
-    --   v      = 4 / g²
-    --   new_σ² = 1 / (1/σ² + g²/4)
     g_val          := 1.0 / sqrt(1.0 + 3.0 * cur_sigma * cur_sigma / c_pi_sq);
     new_sigma_full := 1.0 / sqrt(
                           1.0 / (cur_sigma * cur_sigma)
                           + (g_val * g_val) / 4.0
                       );
 
-    -- Linear interpolation between current σ and post-full-draw σ by
-    -- p_strength. Strength = 1 → full draw-against-self update.
-    -- Strength < 1 → partial sigma narrowing.
     UPDATE substrate.edge_significance
        SET sigma = cur_sigma + (new_sigma_full - cur_sigma) * LEAST(p_strength, 1.0),
            games = games + 1
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = p_edge_type_id
-       AND edge_hash       = p_edge_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_edge_type_id
+       AND edge_hash           = p_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
 END $$;
 
-COMMENT ON FUNCTION substrate.record_corroboration(INT, INT, BYTEA, DOUBLE PRECISION) IS
-    'Glicko-2 corroboration update on substrate.edge_significance: lightweight sigma narrowing (μ unchanged) for the algebraic specialization of a draw against self. p_strength scales the σ narrowing; 1.0 = full draw-against-self update, 0 = no-op. games += 1.';
+COMMENT ON FUNCTION substrate.record_corroboration(INT, INT, BYTEA, DOUBLE PRECISION, INT) IS
+    'Glicko-2 corroboration update on substrate.edge_significance: lightweight sigma narrowing (μ unchanged) for the algebraic specialization of a draw against self. p_strength scales the σ narrowing; 1.0 = full draw-against-self update, 0 = no-op. games += 1. attestation_type required — corroboration from different evidence kinds lands in different rating rows.';
 
 -- ── sql/schema/functions/record_outcome.sql ───────────────────────────────────────
--- substrate.record_outcome(arena_id, winner_target_hash, loser_target_hashes[])
+-- substrate.record_outcome(
+--     p_arena_id              INT,
+--     p_winner_target_hash    BYTEA,
+--     p_loser_target_hashes   BYTEA[],
+--     p_attestation_type_id   INT)
 --
 -- Engine spec Step 6 (inference.md): Glicko-2 comparison events update
 -- significance ratings on edges that supported selected vs rejected
--- paths. For each (winner, loser) pair: identify strongest edge
--- incident to each target in the arena, then update both sides.
+-- paths. attestation_type stratifies the rating row updated — typical
+-- Step 6 calls pass inference_outcome_accept (winners) or
+-- inference_outcome_reject (losers) so outcome evidence accumulates
+-- separately from corpus/model/lexicon evidence on the same edges.
+--
+-- For each (winner, loser) pair: identify strongest edge in the
+-- (arena, attestation_type) row family, then update both sides.
 --
 -- Set-based + native bulk-Glicko. No FOREACH, no per-row PERFORM.
---   * unnest + LATERAL LIMIT 1 finds the strongest edge per loser.
---   * public.glicko2_bulk_update (native C) applies winner-side
---     (score=1) and loser-side (score=0) Glicko-2 updates in one call
---     each, returning new mu/sigma/volatility arrays.
---   * UPDATE ... FROM unnest writes the new ratings back set-based.
---
--- Returns the number of (winner_edge × loser_edge) pairs recorded.
 DROP FUNCTION IF EXISTS substrate.record_outcome(INT, BYTEA, BYTEA[]);
+DROP FUNCTION IF EXISTS substrate.record_outcome(INT, BYTEA, BYTEA[], INT);
+
 CREATE OR REPLACE FUNCTION substrate.record_outcome(
     p_arena_id            INT,
     p_winner_target_hash  BYTEA,
-    p_loser_target_hashes BYTEA[]
+    p_loser_target_hashes BYTEA[],
+    p_attestation_type_id INT
 )
 RETURNS INT
 LANGUAGE plpgsql VOLATILE
@@ -4991,22 +5152,20 @@ BEGIN
         RETURN 0;
     END IF;
 
-    -- 1. Strongest edge incident to winner in arena (single set-based SELECT).
     SELECT em.edge_type_id, em.edge_hash, es.mu, es.sigma, es.volatility
       INTO v_w_etid, v_w_hash, v_w_mu, v_w_sigma, v_w_vol
       FROM substrate.edge_member em
       JOIN substrate.edge_significance es
-        ON es.edge_type_id = em.edge_type_id
-       AND es.edge_hash    = em.edge_hash
-       AND es.context_type_id = p_arena_id
+        ON es.edge_type_id        = em.edge_type_id
+       AND es.edge_hash            = em.edge_hash
+       AND es.context_type_id     = p_arena_id
+       AND es.attestation_type_id = p_attestation_type_id
      WHERE em.entity_hash = p_winner_target_hash
      ORDER BY es.mu DESC NULLS LAST
      LIMIT 1;
 
     IF v_w_etid IS NULL THEN RETURN 0; END IF;
 
-    -- 2. Strongest edge per loser, set-based via unnest + LATERAL LIMIT 1,
-    --    aggregated into parallel arrays for one bulk-Glicko call.
     SELECT
         array_agg(le.edge_type_id),
         array_agg(le.edge_hash),
@@ -5019,9 +5178,10 @@ BEGIN
           SELECT em.edge_type_id, em.edge_hash, es.mu, es.sigma, es.volatility
             FROM substrate.edge_member em
             JOIN substrate.edge_significance es
-              ON es.edge_type_id = em.edge_type_id
-             AND es.edge_hash    = em.edge_hash
-             AND es.context_type_id = p_arena_id
+              ON es.edge_type_id        = em.edge_type_id
+             AND es.edge_hash            = em.edge_hash
+             AND es.context_type_id     = p_arena_id
+             AND es.attestation_type_id = p_attestation_type_id
            WHERE em.entity_hash = lt.loser_hash
            ORDER BY es.mu DESC NULLS LAST
            LIMIT 1
@@ -5032,14 +5192,12 @@ BEGIN
     v_pair_count := COALESCE(array_length(v_l_etid_arr, 1), 0);
     IF v_pair_count = 0 THEN RETURN 0; END IF;
 
-    -- 3. Winner-side parallel arrays (same μ/σ/vol repeated N times).
     v_w_mu_arr    := array_fill(v_w_mu,    ARRAY[v_pair_count]);
     v_w_sigma_arr := array_fill(v_w_sigma, ARRAY[v_pair_count]);
     v_w_vol_arr   := array_fill(v_w_vol,   ARRAY[v_pair_count]);
     v_score_w_arr := array_fill(1.0::double precision, ARRAY[v_pair_count]);
     v_score_l_arr := array_fill(0.0::double precision, ARRAY[v_pair_count]);
 
-    -- 4. Bulk Glicko-2 in native C — two calls (winner side / loser side).
     SELECT new_mu, new_sigma, new_volatility
       INTO v_w_new_mu, v_w_new_sigma, v_w_new_vol
       FROM public.glicko2_bulk_update(
@@ -5054,9 +5212,6 @@ BEGIN
           v_w_mu_arr,  v_w_sigma_arr,
           v_score_l_arr);
 
-    -- 5. Winner is rated against N opponents; collapse to single value
-    --    using the most-uncertain (largest σ) result so games-played is
-    --    monotonic but uncertainty stays honest.
     SELECT mu, sigma, volatility
       INTO v_w_final_mu, v_w_final_sigma, v_w_final_vol
       FROM unnest(v_w_new_mu, v_w_new_sigma, v_w_new_vol) AS u(mu, sigma, volatility)
@@ -5067,11 +5222,11 @@ BEGIN
            sigma      = v_w_final_sigma,
            volatility = v_w_final_vol,
            games      = games + v_pair_count
-     WHERE context_type_id = p_arena_id
-       AND edge_type_id    = v_w_etid
-       AND edge_hash       = v_w_hash;
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = v_w_etid
+       AND edge_hash           = v_w_hash
+       AND attestation_type_id = p_attestation_type_id;
 
-    -- 6. Loser updates via UPDATE...FROM unnest — set-based apply.
     UPDATE substrate.edge_significance es
        SET mu         = u.new_mu,
            sigma      = u.new_sigma,
@@ -5079,29 +5234,32 @@ BEGIN
            games      = es.games + 1
       FROM unnest(v_l_etid_arr, v_l_hash_arr, v_l_new_mu, v_l_new_sigma, v_l_new_vol)
         AS u(etype_id, ehash, new_mu, new_sigma, new_volatility)
-     WHERE es.context_type_id = p_arena_id
-       AND es.edge_type_id    = u.etype_id
-       AND es.edge_hash       = u.ehash;
+     WHERE es.context_type_id     = p_arena_id
+       AND es.edge_type_id        = u.etype_id
+       AND es.edge_hash           = u.ehash
+       AND es.attestation_type_id = p_attestation_type_id;
 
     RETURN v_pair_count;
 END $$;
 
-COMMENT ON FUNCTION substrate.record_outcome(INT, BYTEA, BYTEA[]) IS
-    'Engine Step 6 outcome update — set-based + native bulk-Glicko. unnest + LATERAL gather pairs; public.glicko2_bulk_update (C) computes new ratings; UPDATE ... FROM unnest applies them. No FOREACH, no per-pair PERFORM.';
+COMMENT ON FUNCTION substrate.record_outcome(INT, BYTEA, BYTEA[], INT) IS
+    'Engine Step 6 outcome update — set-based + native bulk-Glicko, scoped to (arena, attestation_type). unnest + LATERAL gather pairs; public.glicko2_bulk_update (C) computes new ratings; UPDATE ... FROM unnest applies them. attestation_type required — typically inference_outcome_accept for winner-side outcomes, inference_outcome_reject for loser-side.';
 
 -- ── sql/schema/functions/initialize_edge_significance.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.initialize_edge_significance(
-    p_context_code     TEXT,
-    p_edge_type_code   TEXT,
-    p_edge_hash        BYTEA,
-    p_initial_mu       DOUBLE PRECISION
+    p_context_code          TEXT,
+    p_edge_type_code        TEXT,
+    p_edge_hash             BYTEA,
+    p_initial_mu            DOUBLE PRECISION,
+    p_attestation_type_code TEXT DEFAULT 'provenance_authority_corroboration'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    v_context_id INT;
-    v_edge_type_id INT;
+    v_context_id          INT;
+    v_edge_type_id        INT;
+    v_attestation_type_id INT;
 BEGIN
     v_context_id := substrate.resolve_context_id(p_context_code);
     IF v_context_id IS NULL THEN
@@ -5115,44 +5273,60 @@ BEGIN
         RAISE EXCEPTION 'unknown edge_type: %', p_edge_type_code;
     END IF;
 
+    v_attestation_type_id := substrate.resolve_attestation_type_id(p_attestation_type_code);
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown attestation_type: %', p_attestation_type_code;
+    END IF;
+
     INSERT INTO substrate.edge_significance
-        (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     VALUES
-        (v_context_id, v_edge_type_id, p_edge_hash, p_initial_mu, 350.0, 0.06, 0)
-    ON CONFLICT (context_type_id, edge_type_id, edge_hash)
+        (v_context_id, v_edge_type_id, p_edge_hash, v_attestation_type_id,
+         p_initial_mu, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id)
     DO UPDATE SET mu = EXCLUDED.mu;
 END $$;
 
-COMMENT ON FUNCTION substrate.initialize_edge_significance(TEXT, TEXT, BYTEA, DOUBLE PRECISION) IS
-    'Initialize or reset the mu value for one edge_significance row addressed by arena code and edge handle. Preserves sigma, volatility, and games on existing rows.';
+COMMENT ON FUNCTION substrate.initialize_edge_significance(TEXT, TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
+    'Initialize or reset the mu value for one edge_significance row addressed by (arena, edge handle, attestation_type). Default attestation_type is provenance_authority_corroboration — the kind of evidence that ingestion-time priming represents. Preserves sigma, volatility, and games on existing rows.';
 
 -- ── sql/schema/functions/initialize_entity_significance.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.initialize_entity_significance(
-    p_context_code TEXT,
-    p_entity_hash  BYTEA,
-    p_initial_mu   DOUBLE PRECISION
+    p_context_code          TEXT,
+    p_entity_hash           BYTEA,
+    p_initial_mu            DOUBLE PRECISION,
+    p_attestation_type_code TEXT DEFAULT 'provenance_authority_corroboration'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    v_context_id INT;
+    v_context_id          INT;
+    v_attestation_type_id INT;
 BEGIN
     v_context_id := substrate.resolve_context_id(p_context_code);
     IF v_context_id IS NULL THEN
         RAISE EXCEPTION 'unknown significance context: %', p_context_code;
     END IF;
 
+    v_attestation_type_id := substrate.resolve_attestation_type_id(p_attestation_type_code);
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown attestation_type: %', p_attestation_type_code;
+    END IF;
+
     INSERT INTO substrate.entity_significance
-        (context_type_id, entity_hash, mu, sigma, volatility, games)
+        (context_type_id, entity_hash, attestation_type_id,
+         mu, sigma, volatility, games)
     VALUES
-        (v_context_id, p_entity_hash, p_initial_mu, 350.0, 0.06, 0)
-    ON CONFLICT (context_type_id, entity_hash)
+        (v_context_id, p_entity_hash, v_attestation_type_id,
+         p_initial_mu, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, entity_hash, attestation_type_id)
     DO UPDATE SET mu = EXCLUDED.mu;
 END $$;
 
-COMMENT ON FUNCTION substrate.initialize_entity_significance(TEXT, BYTEA, DOUBLE PRECISION) IS
-    'Initialize or reset the mu value for one entity_significance row addressed by arena code and entity hash. Preserves sigma, volatility, and games on existing rows.';
+COMMENT ON FUNCTION substrate.initialize_entity_significance(TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
+    'Initialize or reset the mu value for one entity_significance row addressed by (arena, entity, attestation_type). Default attestation_type is provenance_authority_corroboration — ingestion-time priming. Preserves sigma, volatility, and games on existing rows.';
 
 -- ── sql/schema/functions/create_arena.sql ───────────────────────────────────────
 -- substrate.create_arena(code TEXT, backfill BOOLEAN DEFAULT TRUE)
@@ -5346,10 +5520,16 @@ BEGIN
       FROM substrate.ucd_codepoints() a
     ON CONFLICT DO NOTHING;
 
-    -- 4. Source-authority significance prior.
-    INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu, sigma, volatility, games)
+    -- 4. Source-authority significance prior. UCD codepoint atoms come
+    -- from the embedded Unicode 17.0.0 tables; the kind of evidence is
+    -- provenance_authority_corroboration (Unicode Consortium asserts these
+    -- codepoints exist with this initial mu).
+    INSERT INTO substrate.entity_significance (
+        context_type_id, entity_hash, attestation_type_id,
+        mu, sigma, volatility, games)
     SELECT v_source_auth_ctx,
            a.hash,
+           substrate.resolve_attestation_type_id('provenance_authority_corroboration'),
            v_initial_mu,
            350.0,
            0.06,
@@ -6747,10 +6927,19 @@ COMMENT ON FUNCTION substrate.complete(BYTEA, INT, INT, TEXT) IS
 CREATE OR REPLACE FUNCTION substrate.bind_bpe_tokens_to_seed_pos(p_model_source_id INT)
 RETURNS BIGINT
 LANGUAGE sql VOLATILE AS $f$
-    WITH inserted AS (
-        INSERT INTO substrate.entity_pos (entity_hash, pos_id)
-        SELECT DISTINCT token_member.entity_hash, lemma_pos.pos_id
+    WITH att AS (
+        SELECT id FROM substrate.attestation_type WHERE code = 'model_attention_pattern'
+    ),
+    inserted AS (
+        -- Propagated POS attestations land as model_attention_pattern: the
+        -- BPE token's POS is asserted because the model's covers_lemma edge
+        -- ties it to a lemma whose POS is curated. The attestation kind is
+        -- model-derived — separate from the underlying lemma_pos rating row
+        -- which carries lexical_curated_relation evidence.
+        INSERT INTO substrate.entity_pos (entity_hash, pos_id, attestation_type_id, mu, sigma)
+        SELECT DISTINCT token_member.entity_hash, lemma_pos.pos_id, att.id, lemma_pos.mu, lemma_pos.sigma
           FROM substrate.edge coverage
+          CROSS JOIN att
           JOIN substrate.edge_type coverage_type ON coverage_type.id = coverage.edge_type_id
           JOIN substrate.edge_member token_member
             ON token_member.edge_type_id = coverage.edge_type_id
@@ -6769,7 +6958,7 @@ LANGUAGE sql VOLATILE AS $f$
             ON model_entity.entity_hash = token_member.entity_hash
          WHERE coverage_type.code = 'covers_lemma'
            AND model_entity.model_source_id = p_model_source_id
-        ON CONFLICT (entity_hash, pos_id) DO NOTHING
+        ON CONFLICT (entity_hash, pos_id, attestation_type_id) DO NOTHING
         RETURNING 1
     )
     SELECT count(*)::BIGINT FROM inserted;
@@ -8022,18 +8211,20 @@ COMMENT ON PROCEDURE substrate.write_codepoint_properties(JSONB) IS
 
 -- ── sql/schema/procedures/write_glicko_junction.sql ───────────────────────────────────────
 CREATE OR REPLACE PROCEDURE substrate.write_glicko_junction(
-    p_table_name TEXT,
-    p_ref_column TEXT,
-    p_entity_hashes BYTEA[],
-    p_ref_ids INT[],
-    p_mus DOUBLE PRECISION[],
-    p_sigmas DOUBLE PRECISION[]
+    p_table_name            TEXT,
+    p_ref_column            TEXT,
+    p_entity_hashes         BYTEA[],
+    p_ref_ids               INT[],
+    p_mus                   DOUBLE PRECISION[],
+    p_sigmas                DOUBLE PRECISION[],
+    p_attestation_type_code TEXT DEFAULT 'lexical_curated_relation'
 )
 LANGUAGE plpgsql
 AS $$
 DECLARE
     v_table_name TEXT := lower(CASE WHEN left(p_table_name, 10) = 'substrate.' THEN substring(p_table_name FROM 11) ELSE p_table_name END);
     v_ref_column TEXT := lower(p_ref_column);
+    v_attestation_type_id INT;
 BEGIN
     IF p_entity_hashes IS NULL OR p_ref_ids IS NULL OR p_mus IS NULL OR p_sigmas IS NULL THEN
         RAISE EXCEPTION 'Junction arrays cannot be null';
@@ -8046,27 +8237,32 @@ BEGIN
             cardinality(p_entity_hashes), cardinality(p_ref_ids), cardinality(p_mus), cardinality(p_sigmas);
     END IF;
 
+    v_attestation_type_id := substrate.resolve_attestation_type_id(p_attestation_type_code);
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown attestation_type: %', p_attestation_type_code;
+    END IF;
+
     IF v_table_name = 'entity_pos' AND v_ref_column = 'pos_id' THEN
-        INSERT INTO substrate.entity_pos (entity_hash, pos_id, mu, sigma)
-        SELECT src.entity_hash, src.ref_id, src.mu, src.sigma
+        INSERT INTO substrate.entity_pos (entity_hash, pos_id, attestation_type_id, mu, sigma)
+        SELECT src.entity_hash, src.ref_id, v_attestation_type_id, src.mu, src.sigma
           FROM unnest(p_entity_hashes, p_ref_ids, p_mus, p_sigmas) AS src(entity_hash, ref_id, mu, sigma)
-        ON CONFLICT (entity_hash, pos_id) DO NOTHING;
+        ON CONFLICT (entity_hash, pos_id, attestation_type_id) DO NOTHING;
         RETURN;
     END IF;
 
     IF v_table_name = 'pattern_deprel' AND v_ref_column = 'deprel_id' THEN
-        INSERT INTO substrate.pattern_deprel (entity_hash, deprel_id, mu, sigma)
-        SELECT src.entity_hash, src.ref_id, src.mu, src.sigma
+        INSERT INTO substrate.pattern_deprel (entity_hash, deprel_id, attestation_type_id, mu, sigma)
+        SELECT src.entity_hash, src.ref_id, v_attestation_type_id, src.mu, src.sigma
           FROM unnest(p_entity_hashes, p_ref_ids, p_mus, p_sigmas) AS src(entity_hash, ref_id, mu, sigma)
-        ON CONFLICT (entity_hash, deprel_id) DO NOTHING;
+        ON CONFLICT (entity_hash, deprel_id, attestation_type_id) DO NOTHING;
         RETURN;
     END IF;
 
     RAISE EXCEPTION 'Unsupported Glicko junction target %.%', v_table_name, v_ref_column;
 END $$;
 
-COMMENT ON PROCEDURE substrate.write_glicko_junction(TEXT, TEXT, BYTEA[], INT[], DOUBLE PRECISION[], DOUBLE PRECISION[]) IS
-    'Bulk insert allowlisted Glicko-bearing junction rows. Routing is SQL-side and explicit.';
+COMMENT ON PROCEDURE substrate.write_glicko_junction(TEXT, TEXT, BYTEA[], INT[], DOUBLE PRECISION[], DOUBLE PRECISION[], TEXT) IS
+    'Bulk insert allowlisted Glicko-bearing junction rows. Routing is SQL-side and explicit. attestation_type defaults to lexical_curated_relation (POS/deprel curated lexicons); model-derived junction priors should pass model_attention_pattern or similar.';
 
 -- ── sql/schema/procedures/write_plain_junction.sql ───────────────────────────────────────
 CREATE OR REPLACE PROCEDURE substrate.write_plain_junction(

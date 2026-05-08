@@ -281,12 +281,12 @@ public sealed class SequentialPhaseRunnerTests
         public int EdgeCount => 0;
         public EntityHandle AddEntity(byte[] hash, string entityTypeCode) => new(hash, entityTypeCode);
         public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members) { }
-        public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null) { }
+        public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null, string attestationTypeCode = "lexical_curated_relation") { }
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }
         public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4) { }
         public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices) { }
         public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1) { }
-        public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu) { }
+        public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu, string attestationTypeCode = "provenance_authority_corroboration") { }
         public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }
     }
 

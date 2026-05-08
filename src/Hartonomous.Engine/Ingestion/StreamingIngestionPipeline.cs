@@ -470,18 +470,29 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             double provenanceMu = await _codeResolver.ProvenanceMuAsync(edge.ProvenanceCode, ct).ConfigureAwait(false);
             IReadOnlyList<string> arenas = await _codeResolver.AllSignificanceContextCodesAsync(ct).ConfigureAwait(false);
             EdgeSignificanceSpec[] overrides = edge.SignificanceOverrides;
+            // Auto-prime lands as provenance_authority_corroboration
+            // (the substrate's record that THIS provenance asserts this edge
+            // with this initial mu). Other attestation kinds — corpus
+            // co-occurrence, model attention, inference outcomes — are
+            // emitted separately under their own attestation_type codes.
+            const string AutoPrimeAttestation = "provenance_authority_corroboration";
             foreach (string arenaCode in arenas)
             {
                 double mu = provenanceMu;
+                string attestation = AutoPrimeAttestation;
                 for (int k = 0; k < overrides.Length; k++)
                 {
                     if (string.Equals(overrides[k].ContextTypeCode, arenaCode, StringComparison.Ordinal))
                     {
                         mu = overrides[k].InitialMu;
+                        attestation = string.IsNullOrEmpty(overrides[k].AttestationTypeCode)
+                            ? AutoPrimeAttestation
+                            : overrides[k].AttestationTypeCode;
                         break;
                     }
                 }
-                await EmitAsync(new EdgeSignificanceRecord(arenaCode, edge.EdgeTypeCode, edgeHash, mu), ct).ConfigureAwait(false);
+                await EmitAsync(new EdgeSignificanceRecord(
+                    arenaCode, attestation, edge.EdgeTypeCode, edgeHash, mu), ct).ConfigureAwait(false);
             }
         }
 
@@ -489,7 +500,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             await EmitAsync(new JunctionRecord(
                 j.JunctionTable, j.Entity.Hash,
-                j.ReferenceId, j.Mu), ct).ConfigureAwait(false);
+                j.ReferenceId,
+                j.AttestationTypeCode ?? "lexical_curated_relation",
+                j.Mu), ct).ConfigureAwait(false);
         }
 
         foreach (PhysicalityEntry p in b.Physicalities)
@@ -514,6 +527,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             await EmitAsync(new EntitySignificanceRecord(
                 sig.ContextTypeCode,
+                sig.AttestationTypeCode ?? "provenance_authority_corroboration",
                 sig.Entity.Hash,
                 sig.InitialMu), ct).ConfigureAwait(false);
         }
@@ -753,7 +767,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async ValueTask EmitEntitySignificanceAsync(EntitySignificanceRecord r, CancellationToken ct)
     {
-        Hash32 key = ComposeKey(r.ContextTypeCode, r.EntityHash);
+        // Dedup key includes attestation_type — same (arena, entity) under
+        // different attestation_types is intentionally distinct rating data,
+        // not a duplicate. Collapsing them would conflate evidence kinds.
+        Hash32 key = ComposeKey(r.ContextTypeCode, r.AttestationTypeCode, r.EntityHash);
         if (TryAddDedup(_entitySignificanceDedup, key))
         {
             await WriteTrackedAsync(_entitySignificances.Writer, r, KindIndex.EntitySignificance, ct).ConfigureAwait(false);
@@ -762,11 +779,32 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async ValueTask EmitEdgeSignificanceAsync(EdgeSignificanceRecord r, CancellationToken ct)
     {
-        Hash32 key = ComposeKey(r.ContextTypeCode, r.EdgeTypeCode, r.EdgeHash);
+        // Dedup key includes attestation_type for the same reason as the
+        // entity-side: corpus_co_occurrence_window vs lexical_curated_relation
+        // vs model_attention_pattern attestations on the same edge are
+        // distinct rating rows, not duplicates.
+        Hash32 key = ComposeKey(r.ContextTypeCode, r.AttestationTypeCode, r.EdgeTypeCode, r.EdgeHash);
         if (TryAddDedup(_edgeSignificanceDedup, key))
         {
             await WriteTrackedAsync(_edgeSignificances.Writer, r, KindIndex.EdgeSignificance, ct).ConfigureAwait(false);
         }
+    }
+
+    private static Hash32 ComposeKey(string codeA, string codeB, string codeC, byte[] hash)
+    {
+        byte[] aBytes = System.Text.Encoding.UTF8.GetBytes(codeA);
+        byte[] bBytes = System.Text.Encoding.UTF8.GetBytes(codeB);
+        byte[] cBytes = System.Text.Encoding.UTF8.GetBytes(codeC);
+        byte[] buf = new byte[aBytes.Length + 1 + bBytes.Length + 1 + cBytes.Length + 1 + hash.Length];
+        int o = 0;
+        Buffer.BlockCopy(aBytes, 0, buf, o, aBytes.Length); o += aBytes.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(bBytes, 0, buf, o, bBytes.Length); o += bBytes.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(cBytes, 0, buf, o, cBytes.Length); o += cBytes.Length;
+        buf[o++] = 0x1F;
+        Buffer.BlockCopy(hash, 0, buf, o, hash.Length);
+        return new Hash32(Hartonomous.Core.Compute.Common.Blake3.Hash(buf));
     }
 
     /// <summary>
@@ -1274,10 +1312,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     throw new ArgumentException(
                         $"JunctionRecord.JunctionTable not in allowlist: '{rec.JunctionTable}'");
                 }
+                int attestationTypeId = await _codeResolver
+                    .AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.JunctionTable, NpgsqlDbType.Text, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.ReferenceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                await writer.WriteAsync(attestationTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 if (rec.Mu.HasValue)
                 {
                     await writer.WriteAsync(rec.Mu.Value, NpgsqlDbType.Double, ct).ConfigureAwait(false);
@@ -1356,9 +1397,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             writeRow: async (writer, rec) =>
             {
                 int contextId = await _codeResolver.SignificanceContextIdAsync(rec.ContextTypeCode, ct).ConfigureAwait(false);
+                int attestationTypeId = await _codeResolver.AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(contextId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EntityHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                await writer.WriteAsync(attestationTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.InitialMu, NpgsqlDbType.Double, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _entitySignificancesEmitted);
             },
@@ -1380,10 +1423,12 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             {
                 int contextId = await _codeResolver.SignificanceContextIdAsync(rec.ContextTypeCode, ct).ConfigureAwait(false);
                 int edgeTypeId = await _codeResolver.EdgeTypeIdAsync(rec.EdgeTypeCode, ct).ConfigureAwait(false);
+                int attestationTypeId = await _codeResolver.AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
                 await writer.StartRowAsync(ct).ConfigureAwait(false);
                 await writer.WriteAsync(contextId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(edgeTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.EdgeHash, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                await writer.WriteAsync(attestationTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
                 await writer.WriteAsync(rec.InitialMu, NpgsqlDbType.Double, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _edgeSignificancesEmitted);
             },
