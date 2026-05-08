@@ -1,0 +1,1 @@
+SET temp_buffers = '256MB'

@@ -1,0 +1,1 @@
+COPY pg_temp.entity_significance_inflight (context_type_id, entity_hash, mu) FROM STDIN (FORMAT binary)

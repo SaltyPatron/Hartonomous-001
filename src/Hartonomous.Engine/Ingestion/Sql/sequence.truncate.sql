@@ -1,0 +1,1 @@
+TRUNCATE pg_temp.sequence_inflight

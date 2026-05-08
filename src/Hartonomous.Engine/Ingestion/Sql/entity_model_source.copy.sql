@@ -1,0 +1,1 @@
+COPY pg_temp.entity_model_source_inflight (entity_hash, model_source_id) FROM STDIN (FORMAT binary)

@@ -1,0 +1,1 @@
+TRUNCATE pg_temp.junction_inflight

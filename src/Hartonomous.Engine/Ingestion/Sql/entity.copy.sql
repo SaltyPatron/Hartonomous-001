@@ -1,0 +1,1 @@
+COPY pg_temp.entity_inflight (hash) FROM STDIN (FORMAT binary)

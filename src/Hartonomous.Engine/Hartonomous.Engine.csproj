@@ -9,6 +9,10 @@
     <PackageReference Include="Npgsql" Version="9.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Ingestion\Sql\*.sql" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

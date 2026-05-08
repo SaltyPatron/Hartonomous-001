@@ -1,0 +1,3 @@
+CREATE TEMP TABLE IF NOT EXISTS entity_inflight (
+    hash BYTEA NOT NULL
+)

@@ -1,0 +1,1 @@
+TRUNCATE pg_temp.entity_inflight

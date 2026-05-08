@@ -543,8 +543,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 {
                     await using NpgsqlConnection conn =
                         await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-                    await using (NpgsqlCommand setCmd = new(
-                        "SET max_parallel_workers_per_gather = 0; SET work_mem = '128MB'", conn))
+                    await using (NpgsqlCommand setCmd = new(IngestionSql.PostPassSessionSettings, conn))
                     {
                         await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                     }
@@ -911,8 +910,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     try
                     {
                         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-                        await using (NpgsqlCommand setCmd = new(
-                            "SET max_parallel_workers_per_gather = 0; SET work_mem = '128MB'", conn))
+                        await using (NpgsqlCommand setCmd = new(IngestionSql.PostPassSessionSettings, conn))
                         {
                             await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                         }
@@ -993,20 +991,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEntitiesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.Entity;
         await DrainKindAsync(
             _entities.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS entity_inflight (
-                    hash BYTEA NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.entity_inflight (hash) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.entity_inflight",
-            drainSql: """
-                INSERT INTO substrate.entity (hash)
-                SELECT DISTINCT hash FROM pg_temp.entity_inflight
-                ON CONFLICT (hash) DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "entities",
             kindIndex: KindIndex.Entity,
             writeRow: async (writer, rec) =>
@@ -1020,24 +1011,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEntityClassificationsAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.EntityClassification;
         await DrainKindAsync(
             _entityClassifications.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS entity_classification_inflight (
-                    entity_hash    BYTEA NOT NULL,
-                    entity_type_id INT   NOT NULL,
-                    provenance_id  INT   NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.entity_classification_inflight (entity_hash, entity_type_id, provenance_id) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.entity_classification_inflight",
-            drainSql: """
-                INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
-                SELECT DISTINCT entity_hash, entity_type_id, provenance_id
-                  FROM pg_temp.entity_classification_inflight ec
-                 WHERE EXISTS (SELECT 1 FROM substrate.entity e WHERE e.hash = ec.entity_hash)
-                ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "entity_classifications",
             kindIndex: KindIndex.EntityClassification,
             writeRow: async (writer, rec) =>
@@ -1055,30 +1035,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEdgesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.Edge;
         await DrainKindAsync(
             _edges.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS edge_inflight (
-                    edge_type_id  INT   NOT NULL,
-                    hash          BYTEA NOT NULL,
-                    provenance_id INT   NOT NULL,
-                    geom_wkb      BYTEA
-                )
-                """,
-            copySql: "COPY pg_temp.edge_inflight (edge_type_id, hash, provenance_id, geom_wkb) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.edge_inflight",
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
             // Inline geom path: ST_GeomFromWKB lifts producer-built EWKB to
             // substrate.edge.geom. Edges with NULL geom_wkb go in with
             // geom = NULL and are backfilled by substrate.populate_edge_trajectories
             // at end-of-phase via PopulateEdgeTrajectoriesAsync.
-            drainSql: """
-                INSERT INTO substrate.edge (edge_type_id, hash, provenance_id, geom)
-                SELECT DISTINCT ON (edge_type_id, hash)
-                       edge_type_id, hash, provenance_id,
-                       CASE WHEN geom_wkb IS NULL THEN NULL ELSE ST_GeomFromWKB(geom_wkb, 0) END
-                  FROM pg_temp.edge_inflight
-                ON CONFLICT (edge_type_id, hash) DO NOTHING
-                """,
+                        drainSql: sql.Drain,
             kindName: "edges",
             kindIndex: KindIndex.Edge,
             writeRow: async (writer, rec) =>
@@ -1104,25 +1071,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEdgeMembersAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.EdgeMember;
         await DrainKindAsync(
             _edgeMembers.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS edge_member_inflight (
-                    edge_type_id  INT   NOT NULL,
-                    edge_hash     BYTEA NOT NULL,
-                    entity_hash   BYTEA NOT NULL,
-                    edge_role_id  INT   NOT NULL,
-                    role_position INT   NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.edge_member_inflight (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.edge_member_inflight",
-            drainSql: """
-                INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
-                SELECT DISTINCT edge_type_id, edge_hash, entity_hash, edge_role_id, role_position
-                  FROM pg_temp.edge_member_inflight
-                ON CONFLICT DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "edge_members",
             kindIndex: KindIndex.EdgeMember,
             writeRow: async (writer, rec) =>
@@ -1142,82 +1097,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainJunctionsAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.Junction;
         await DrainKindAsync(
             _junctions.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS junction_inflight (
-                    table_name  TEXT  NOT NULL,
-                    entity_hash BYTEA NOT NULL,
-                    ref_id      INT   NOT NULL,
-                    mu          FLOAT8
-                )
-                """,
-            copySql: "COPY pg_temp.junction_inflight (table_name, entity_hash, ref_id, mu) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.junction_inflight",
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
             // Junction routing: one INSERT per allowlisted target table. The
             // ELSE branch silently discards rows with unknown table_name —
             // EmitAsync's allowlist check should prevent this in practice.
-            drainSql: """
-                WITH src AS (SELECT * FROM pg_temp.junction_inflight)
-                  , ins_pos AS (
-                        INSERT INTO substrate.entity_pos (entity_hash, pos_id, mu)
-                        SELECT DISTINCT entity_hash, ref_id, COALESCE(mu, 1500.0)
-                          FROM src WHERE table_name = 'entity_pos'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                  , ins_lex AS (
-                        INSERT INTO substrate.entity_lexname (entity_hash, lexname_id)
-                        SELECT DISTINCT entity_hash, ref_id
-                          FROM src WHERE table_name = 'entity_lexname'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                  , ins_lang AS (
-                        INSERT INTO substrate.entity_language (entity_hash, language_id)
-                        SELECT DISTINCT entity_hash, ref_id
-                          FROM src WHERE table_name = 'entity_language'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                  , ins_morph AS (
-                        INSERT INTO substrate.entity_morph_feature (entity_hash, morph_feature_id)
-                        SELECT DISTINCT entity_hash, ref_id
-                          FROM src WHERE table_name = 'entity_morph_feature'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                  , ins_arch AS (
-                        INSERT INTO substrate.model_architecture_class (entity_hash, architecture_class_id)
-                        SELECT DISTINCT entity_hash, ref_id
-                          FROM src WHERE table_name = 'model_architecture_class'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                  , ins_trole AS (
-                        INSERT INTO substrate.tensor_tensor_role (entity_hash, tensor_role_id)
-                        SELECT DISTINCT entity_hash, ref_id
-                          FROM src WHERE table_name = 'tensor_tensor_role'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                  , ins_pdep AS (
-                        INSERT INTO substrate.pattern_deprel (entity_hash, deprel_id, mu)
-                        SELECT DISTINCT entity_hash, ref_id, COALESCE(mu, 1500.0)
-                          FROM src WHERE table_name = 'pattern_deprel'
-                        ON CONFLICT DO NOTHING
-                        RETURNING 1
-                    )
-                SELECT COUNT(*) FROM (
-                    SELECT 1 FROM ins_pos UNION ALL
-                    SELECT 1 FROM ins_lex UNION ALL
-                    SELECT 1 FROM ins_lang UNION ALL
-                    SELECT 1 FROM ins_morph UNION ALL
-                    SELECT 1 FROM ins_arch UNION ALL
-                    SELECT 1 FROM ins_trole UNION ALL
-                    SELECT 1 FROM ins_pdep
-                ) all_ins
-                """,
+                        drainSql: sql.Drain,
             kindName: "junctions",
             kindIndex: KindIndex.Junction,
             writeRow: async (writer, rec) =>
@@ -1246,29 +1135,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainPhysicalitiesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.Physicality;
         await DrainKindAsync(
             _physicalities.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS physicality_inflight (
-                    physicality_type_id INT   NOT NULL,
-                    entity_hash         BYTEA NOT NULL,
-                    content_hash        BYTEA NOT NULL,
-                    wkb                 BYTEA NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.physicality_inflight (physicality_type_id, entity_hash, content_hash, wkb) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.physicality_inflight",
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
             // WKB → geometry conversion happens in this INSERT-SELECT step,
             // exactly as the deleted drain_staging_physicality_chunk did.
             // Producer streams raw WKB bytes (cheap to encode in C#);
             // ST_GeomFromWKB runs server-side once per chunk.
-            drainSql: """
-                INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
-                SELECT DISTINCT ON (physicality_type_id, entity_hash, content_hash)
-                       physicality_type_id, entity_hash, content_hash, ST_GeomFromWKB(wkb, 0)
-                  FROM pg_temp.physicality_inflight
-                ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
-                """,
+                        drainSql: sql.Drain,
             kindName: "physicalities",
             kindIndex: KindIndex.Physicality,
             writeRow: async (writer, rec) =>
@@ -1286,24 +1163,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainSequencesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.Sequence;
         await DrainKindAsync(
             _sequences.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS sequence_inflight (
-                    parent_hash BYTEA NOT NULL,
-                    ordinal     INT   NOT NULL,
-                    child_hash  BYTEA NOT NULL,
-                    rle_count   INT   NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.sequence_inflight (parent_hash, ordinal, child_hash, rle_count) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.sequence_inflight",
-            drainSql: """
-                INSERT INTO substrate.sequence (parent_hash, ordinal, child_hash, rle_count)
-                SELECT DISTINCT ON (parent_hash, ordinal) parent_hash, ordinal, child_hash, rle_count
-                  FROM pg_temp.sequence_inflight
-                ON CONFLICT (parent_hash, ordinal) DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "sequences",
             kindIndex: KindIndex.Sequence,
             writeRow: async (writer, rec) =>
@@ -1320,23 +1186,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEntitySignificancesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.EntitySignificance;
         await DrainKindAsync(
             _entitySignificances.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS entity_significance_inflight (
-                    context_type_id INT   NOT NULL,
-                    entity_hash     BYTEA NOT NULL,
-                    mu              FLOAT8 NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.entity_significance_inflight (context_type_id, entity_hash, mu) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.entity_significance_inflight",
-            drainSql: """
-                INSERT INTO substrate.entity_significance (context_type_id, entity_hash, mu)
-                SELECT DISTINCT ON (context_type_id, entity_hash) context_type_id, entity_hash, mu
-                  FROM pg_temp.entity_significance_inflight
-                ON CONFLICT (context_type_id, entity_hash) DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "entity_significances",
             kindIndex: KindIndex.EntitySignificance,
             writeRow: async (writer, rec) =>
@@ -1353,24 +1209,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEdgeSignificancesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.EdgeSignificance;
         await DrainKindAsync(
             _edgeSignificances.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS edge_significance_inflight (
-                    context_type_id INT   NOT NULL,
-                    edge_type_id    INT   NOT NULL,
-                    edge_hash       BYTEA NOT NULL,
-                    mu              FLOAT8 NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.edge_significance_inflight (context_type_id, edge_type_id, edge_hash, mu) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.edge_significance_inflight",
-            drainSql: """
-                INSERT INTO substrate.edge_significance (context_type_id, edge_type_id, edge_hash, mu)
-                SELECT DISTINCT ON (context_type_id, edge_type_id, edge_hash) context_type_id, edge_type_id, edge_hash, mu
-                  FROM pg_temp.edge_significance_inflight
-                ON CONFLICT (context_type_id, edge_type_id, edge_hash) DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "edge_significances",
             kindIndex: KindIndex.EdgeSignificance,
             writeRow: async (writer, rec) =>
@@ -1389,23 +1234,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
     private async Task DrainEntityModelSourcesAsync(CancellationToken ct)
     {
+        DrainSqlSpec sql = IngestionSql.EntityModelSource;
         await DrainKindAsync(
             _entityModelSources.Reader,
-            tempCreate: """
-                CREATE TEMP TABLE IF NOT EXISTS entity_model_source_inflight (
-                    entity_hash     BYTEA NOT NULL,
-                    model_source_id INT   NOT NULL
-                )
-                """,
-            copySql: "COPY pg_temp.entity_model_source_inflight (entity_hash, model_source_id) FROM STDIN (FORMAT binary)",
-            truncateSql: "TRUNCATE pg_temp.entity_model_source_inflight",
-            drainSql: """
-                INSERT INTO substrate.entity_model_source (entity_hash, model_source_id)
-                SELECT DISTINCT entity_hash, model_source_id
-                  FROM pg_temp.entity_model_source_inflight ems
-                 WHERE EXISTS (SELECT 1 FROM substrate.entity e WHERE e.hash = ems.entity_hash)
-                ON CONFLICT (entity_hash, model_source_id) DO NOTHING
-                """,
+            tempCreate: sql.TempCreate,
+            copySql: sql.Copy,
+            truncateSql: sql.Truncate,
+            drainSql: sql.Drain,
             kindName: "entity_model_sources",
             kindIndex: KindIndex.EntityModelSource,
             writeRow: async (writer, rec) =>
@@ -1445,7 +1280,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             // trip PG 53000 'no empty local buffer available' which kills the
             // drain task and silently deadlocks the producer. Set per-session
             // before any temp pages are touched.
-            await using (NpgsqlCommand tbufCmd = new("SET temp_buffers = '256MB'", conn))
+            await using (NpgsqlCommand tbufCmd = new(IngestionSql.DrainSessionSettings, conn))
             {
                 await tbufCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
