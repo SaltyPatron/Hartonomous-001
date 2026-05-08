@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace Hartonomous.Engine.Traversal;
 
@@ -110,15 +112,13 @@ public sealed class NpgsqlTraversal : ITraversal
             // returns co-members regardless of role direction so the A* can
             // follow forward edges, inverse edges, and arbitrary n-ary
             // relations in one walk).
-            await using NpgsqlCommand cmd = new(
-                "SELECT edge_type_code, edge_hash, " +
-                "       co_entity_type_code, co_entity_hash, edge_mu " +
-                "FROM substrate.entity_neighbors(" +
-                "  (SELECT id FROM substrate.entity_type WHERE code = $1), " +
-                "  $2::bytea, $3::text)", conn);
-            cmd.Parameters.AddWithValue(cur.Entity.EntityTypeCode);
-            cmd.Parameters.AddWithValue(cur.Entity.Hash);
-            cmd.Parameters.AddWithValue(query.ArenaCode);
+            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                conn,
+                SubstrateFunctionNames.TraversalNeighbors,
+                [
+                    new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Bytea, Value = cur.Entity.Hash },
+                    new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = query.ArenaCode }
+                ]);
 
             List<(EdgeHandle EdgeH, EntityHandle CoH, double EdgeMu)> neighbors = [];
             await using (NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct))

@@ -77,6 +77,7 @@ public static class SubstrateFunctionNames
     public const string PrimeUnprimedEdgesChunk = "substrate.prime_unprimed_edges_chunk";
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
+    public const string TraversalNeighbors = "substrate.traversal_neighbors";
     public const string UpsertArchitectureClass = "substrate.upsert_architecture_class";
     public const string UpsertHomogeneousEdgeTypes = "substrate.upsert_homogeneous_edge_types";
     public const string UpsertModelPassCheckpoint = "substrate.upsert_model_pass_checkpoint";
@@ -150,6 +151,7 @@ public static class SubstrateFunctionNames
         PrimeUnprimedEdgesChunk,
         ResolveEntityHandles,
         SignificanceContextIds,
+        TraversalNeighbors,
         UpsertArchitectureClass,
         UpsertHomogeneousEdgeTypes,
         UpsertModelPassCheckpoint,

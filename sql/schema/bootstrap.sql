@@ -258,6 +258,7 @@
 -- @include schema/functions/entity_outbound_edges.sql
 -- @include schema/functions/entity_inbound_edges.sql
 -- @include schema/functions/entity_neighbors.sql
+-- @include schema/functions/traversal_neighbors.sql
 -- @include schema/functions/get_entity_info_by_handles.sql
 -- @include schema/functions/get_edge_info_by_handles.sql
 -- @include schema/functions/get_outbound_edge_targets.sql
