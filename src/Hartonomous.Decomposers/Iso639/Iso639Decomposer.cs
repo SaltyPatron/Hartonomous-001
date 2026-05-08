@@ -95,7 +95,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             long edgeCount = 0;
             int batchNum = 0;
 
-            // Track code → nameHash for FK updates and edge creation.
+            // Track code → nameHash for junction rows and edge creation.
             Dictionary<string, byte[]> codeToNameHash = new(languages.Count, StringComparer.Ordinal);
             IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
@@ -107,7 +107,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 // EmitWordFormMerkle creates codepoint + grapheme_cluster + language_name
                 // entities and sequence rows in one pass; same content from any decomposer
                 // (e.g. text_composition "English" from TextDecomposer) yields the same
-                // Merkle hash → same entity row in the language_name partition.
+                // Merkle hash → same entity row with language_name classification.
                 (EntityHandle nameEntity, byte[] nameHash, _) =
                     EmitText(batch, rec.RefName, _codepointProperties, "language_name", TrustPriorMu);
                 codeToNameHash[rec.Id] = nameHash;
@@ -187,25 +187,20 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
             Log.EntitiesCreated(Logger, entityCount, batchNum);
 
-            // ── Step 4: language.name_entity_(type_id, hash) FK + entity_language junctions
-            // No phase-wide resolve — codeToNameHash already carries every name hash, and in
-            // the hash-as-PK substrate the (entity_type_id, hash) pair IS the FK that
-            // language.name references. The reference writer takes (code, hash) pairs and
-            // updates the row directly.
-            List<(string Code, byte[] NameHash)> fkUpdates = new(codeToNameHash.Count);
+            // ── Step 4: entity_language junctions ──
+            // The substrate.language reference table has no back-pointer to
+            // name entities. Names are substrate content; language membership
+            // is evidence on entity_language keyed by entity hash.
+            List<(string Code, byte[] NameHash)> languageNameRows = new(codeToNameHash.Count);
             foreach (KeyValuePair<string, byte[]> kv in codeToNameHash)
             {
-                fkUpdates.Add((kv.Key, kv.Value));
+                languageNameRows.Add((kv.Key, kv.Value));
             }
 
-            await refWriter.UpdateNameEntityIdsAsync(fkUpdates, ct);
-            Log.NameEntityIdsUpdated(Logger, fkUpdates.Count);
+            await refWriter.WriteLanguageJunctionsAsync(languageNameRows, langIdMap, ct);
+            Log.JunctionEntriesWritten(Logger, languageNameRows.Count);
 
-            // ── Step 6: entity_language junctions ──
-            await refWriter.WriteLanguageJunctionsAsync(fkUpdates, langIdMap, ct);
-            Log.JunctionEntriesWritten(Logger, fkUpdates.Count);
-
-            // ── Step 7: cross-language edges between language_name entities ──
+            // ── Step 5: cross-language edges between language_name entities ──
             // Three relations from the ISO 639-3 source data that the substrate
             // surfaces as traversable edges:
             //   has_alternate_name        — alt names from Name_Index
@@ -292,7 +287,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 await ReportProgressAsync(pipeline, reporter, edgeBatch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
             }
 
-            Log.DecompositionComplete(Logger, entityCount, edgeCount, fkUpdates.Count);
+            Log.DecompositionComplete(Logger, entityCount, edgeCount, languageNameRows.Count);
         }
         finally
         {
@@ -318,9 +313,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Entities created: {Count} in {Batches} batches")]
         public static partial void EntitiesCreated(ILogger logger, long count, int batches);
-
-        [LoggerMessage(Level = LogLevel.Information, Message = "Name entity IDs updated on {Count} language rows")]
-        public static partial void NameEntityIdsUpdated(ILogger logger, int count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "entity_language junction: {Count} entries")]
         public static partial void JunctionEntriesWritten(ILogger logger, int count);

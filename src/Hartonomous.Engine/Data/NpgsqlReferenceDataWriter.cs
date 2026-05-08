@@ -166,20 +166,6 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         _ = await cmd.ExecuteScalarAsync(ct);
     }
 
-    public Task UpdateLanguageNameEntityIdsAsync(
-        IReadOnlyList<(string Code, byte[] NameHash)> updates,
-        CancellationToken ct)
-    {
-        // No-op in the hash-as-PK substrate. The substrate.language reference
-        // table doesn't carry a back-pointer to its name entity any more —
-        // entity_language junctions are the canonical link, and the language's
-        // name entity is reachable directly by hash. Decomposers still call
-        // this for symmetry with the prior schema; it intentionally does
-        // nothing.
-        _ = updates; _ = ct;
-        return Task.CompletedTask;
-    }
-
     public async Task<int> EnsureArchitectureClassAsync(
         string code,
         CancellationToken ct)

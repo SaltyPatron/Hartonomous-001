@@ -139,13 +139,6 @@ internal static class PerRowContentPass
                 new EdgeMemberSpec(row, "target", 1),
             ]);
 
-            // Use t.EntityId (the orchestrator-resolved tensor entity_id) directly —
-            // not a per-batch handle that flush invalidates. Without this, ~5/6 of
-            // sequence rows ended up linked to the wrong parent (a random
-            // embedding_position entity instead of the tensor) because each new
-            // batch's first AddEntity got a fresh BatchIndex that resolved to
-            // whatever entity happened to be in that ord slot.
-
             emitted++;
             await session.MaybeFlushAsync(flushThreshold, ct);
         }

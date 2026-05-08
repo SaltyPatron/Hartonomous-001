@@ -144,11 +144,6 @@ internal abstract class BaseReferenceTableWriter
         CancellationToken ct) =>
         _writer.PopulateLanguagesAsync(records, ct);
 
-    protected Task UpdateLanguageNameEntityIdsCoreAsync(
-        IReadOnlyList<(string Code, byte[] NameHash)> updates,
-        CancellationToken ct) =>
-        _writer.UpdateLanguageNameEntityIdsAsync(updates, ct);
-
     protected Task<int> EnsureArchitectureClassCoreAsync(
         string code,
         CancellationToken ct) =>

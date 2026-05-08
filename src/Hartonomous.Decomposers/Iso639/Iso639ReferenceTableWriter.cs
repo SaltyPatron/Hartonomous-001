@@ -6,9 +6,9 @@ using Hartonomous.Core.Data;
 namespace Hartonomous.Decomposers.Iso639;
 
 /// <summary>
-/// ISO 639 ref-table writer. Inherits the language code→id loader + entity_language
-/// junction writer from <see cref="BaseReferenceTableWriter"/>; adds the
-/// ISO-639 language row populator and the <c>language.name_entity_id</c> back-fill.
+/// ISO 639 ref-table writer. Inherits the language code→id loader and
+/// entity_language junction writer from <see cref="BaseReferenceTableWriter"/>;
+/// adds the ISO-639 language row populator.
 /// </summary>
 internal sealed class Iso639ReferenceTableWriter : BaseReferenceTableWriter
 {
@@ -59,8 +59,4 @@ internal sealed class Iso639ReferenceTableWriter : BaseReferenceTableWriter
 
         await WriteEntityLanguageJunctionsAsync(entries, ct);
     }
-
-    public Task UpdateNameEntityIdsAsync(
-        IReadOnlyList<(string Code, byte[] NameHash)> updates, CancellationToken ct) =>
-        UpdateLanguageNameEntityIdsCoreAsync(updates, ct);
 }

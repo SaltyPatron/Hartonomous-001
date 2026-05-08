@@ -271,8 +271,8 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
 
         sentenceIdToHash[row.SentenceId] = sentHash;
 
-        // entity_language junction inline. Pipeline resolves the in-batch
-        // EntityHandle to substrate.entity.id at flush; no phase-wide hash list.
+        // entity_language junction inline, keyed by the text_composition hash;
+        // no phase-wide hash list.
         if (languageMap.TryGetValue(row.Lang, out int langId))
         {
             batch.AddJunction("entity_language", sentEntity, langId);

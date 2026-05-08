@@ -277,9 +277,8 @@ public sealed partial class UdDecomposer : BaseDecomposer
             }
 
             // POS and morph feature evidence — written inline as junction rows
-            // on the in-batch word_form handle. The pipeline resolves the handle
-            // to substrate.entity.id at flush; no phase-wide hash list, no
-            // separate FlushJunctionsAsync pass.
+            // keyed by the in-batch word_form hash. No phase-wide hash list,
+            // no separate FlushJunctionsAsync pass.
             if (tok.Upos is not null && posMap.TryGetValue(tok.Upos, out int posId))
             {
                 batch.AddJunction("entity_pos", wfHandle, posId, TrustPriorMu);

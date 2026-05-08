@@ -51,15 +51,6 @@ public interface IReferenceDataWriter
         CancellationToken ct);
 
     /// <summary>
-    /// Back-fill the (entity_type_id, entity_hash) composite that
-    /// <c>substrate.language</c> uses to point at its name entity. Replaces
-    /// the BIGINT name_entity_id of the surrogate-id schema.
-    /// </summary>
-    Task UpdateLanguageNameEntityIdsAsync(
-        IReadOnlyList<(string Code, byte[] NameHash)> updates,
-        CancellationToken ct);
-
-    /// <summary>
     /// Upsert and return an architecture class id via the substrate helper function.
     /// </summary>
     Task<int> EnsureArchitectureClassAsync(
@@ -122,8 +113,8 @@ public interface IReferenceDataWriter
         CancellationToken ct);
 
     /// <summary>
-    /// Binary-copy rows into <c>substrate.codepoint_property</c>. Composite
-    /// hash FK to substrate.entity replaces the legacy BIGINT entity_id.
+    /// Binary-copy rows into <c>substrate.codepoint_property</c> using hash FKs
+    /// to <c>substrate.entity(hash)</c>.
     /// </summary>
     Task WriteCodepointPropertiesAsync(
         IReadOnlyList<(

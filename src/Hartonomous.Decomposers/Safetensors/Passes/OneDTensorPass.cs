@@ -67,9 +67,8 @@ internal sealed partial class OneDTensorPass : IModelAnalysisPass
                     b + 2 < length ? values[b + 2] : 0.0,
                     b + 3 < length ? values[b + 3] : 0.0);
             }
-            // Re-add the tensor entity by content hash so we get a batch
-            // handle; server-side dedup resolves it to the existing
-            // entity_id. Then attach the contour physicality.
+            // Re-add the tensor entity by content hash so this batch has a
+            // handle; server-side dedup preserves the existing hash identity.
             EntityHandle tensorH = session.Batch.AddEntity(t.ContentHash, "tensor");
             session.Batch.AddPhysicalityLineString4d(tensorH, "contour", verts.AsSpan());
             processed++;
