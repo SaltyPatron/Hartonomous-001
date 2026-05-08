@@ -21,8 +21,8 @@ namespace Hartonomous.Decomposers.WordNet;
 /// <summary>
 /// Princeton WordNet 3.0 decomposer with content-pure synset identity.
 ///
-/// Synset identity = BLAKE3 Merkle of (sorted member lemma hashes ‖ gloss
-/// byte hash). The WordNet file offset and lex_filenum are placement
+/// Synset identity = BLAKE3 Merkle of (sorted member lemma hashes plus
+/// gloss text-composition hashes). The WordNet file offset and lex_filenum are placement
 /// metadata, not content, so they do NOT enter the synset's identity hash.
 /// Two synsets with the same lemma group + same gloss collapse to one
 /// substrate.entity row even from different lexicons.
@@ -217,19 +217,45 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 }
 
                 // Synset content hash: Merkle over sorted member lemma hashes
-                // plus gloss byte hash. Sorting drops member-order from the
-                // identity (the order survives via has_sense edge member
-                // positions, not in the synset's content). Gloss enters as
-                // BLAKE3(utf8 bytes) — the canonical authored definition is
-                // the synset's distinguishing content beyond its lemma group.
+                // plus core text-decomposition hashes for the authored gloss
+                // content. Sorting drops member-order from the identity (the
+                // order survives via has_sense edge member positions, not in
+                // the synset's content).
                 byte[][] sortedLemmaHashes = memberHashes
                     .OrderBy(h => h, ByteArraySortComparer.Instance)
                     .ToArray();
-                byte[] glossBytesHash = ComputeAtomicStringHash(syn.Gloss);
 
-                byte[][] synsetContent = new byte[sortedLemmaHashes.Length + 1][];
+                (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
+                List<(string EdgeType, EntityHandle TextHandle)> glossEdges = [];
+                List<byte[]> glossTextHashes = [];
+                if (definition.Length > 0)
+                {
+                    EntityHandle defDoc = IngestText(batch, definition);
+                    glossEdges.Add(("has_gloss", defDoc));
+                    glossTextHashes.Add(defDoc.Hash);
+                }
+                foreach (string example in examples)
+                {
+                    if (example.Length == 0)
+                    {
+                        continue;
+                    }
+                    EntityHandle exDoc = IngestText(batch, example);
+                    glossEdges.Add(("has_example", exDoc));
+                    glossTextHashes.Add(exDoc.Hash);
+                }
+                if (glossTextHashes.Count == 0)
+                {
+                    EntityHandle emptyGlossDoc = IngestText(batch, syn.Gloss);
+                    glossTextHashes.Add(emptyGlossDoc.Hash);
+                }
+
+                byte[][] synsetContent = new byte[sortedLemmaHashes.Length + glossTextHashes.Count][];
                 Array.Copy(sortedLemmaHashes, synsetContent, sortedLemmaHashes.Length);
-                synsetContent[sortedLemmaHashes.Length] = glossBytesHash;
+                for (int i = 0; i < glossTextHashes.Count; i++)
+                {
+                    synsetContent[sortedLemmaHashes.Length + i] = glossTextHashes[i];
+                }
                 byte[] synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
 
                 EntityHandle synsetHandle = batch.AddEntity(synsetHash, "synset");
@@ -283,33 +309,17 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                     batch.AddJunction("entity_language", memberHandles[i], engLangId);
                 }
 
-                // has_gloss + has_example edges. The gloss bytes are already
-                // part of the synset's identity; these edges surface the text
-                // entities for navigation, recompose, and example attestation.
-                (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
-                if (definition.Length > 0)
+                // has_gloss + has_example edges surface the same text entities
+                // used in synset identity for navigation, recompose, and
+                // example attestation.
+                foreach ((string edgeType, EntityHandle textHandle) in glossEdges)
                 {
-                    EntityHandle defDoc = IngestText(batch, definition);
-                    batch.AddEdge("has_gloss", ProvenanceCode,
+                    batch.AddEdge(edgeType, ProvenanceCode,
                     [
                         new EdgeMemberSpec(synsetHandle, "source", 0),
-                        new EdgeMemberSpec(defDoc,       "target", 1),
+                        new EdgeMemberSpec(textHandle,   "target", 1),
                     ]);
-                    Bump("has_gloss");
-                }
-                foreach (string example in examples)
-                {
-                    if (example.Length == 0)
-                    {
-                        continue;
-                    }
-                    EntityHandle exDoc = IngestText(batch, example);
-                    batch.AddEdge("has_example", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(synsetHandle, "source", 0),
-                        new EdgeMemberSpec(exDoc,        "target", 1),
-                    ]);
-                    Bump("has_example");
+                    Bump(edgeType);
                 }
 
                 synsetsProcessed++;
