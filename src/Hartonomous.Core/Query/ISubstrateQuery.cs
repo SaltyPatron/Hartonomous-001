@@ -32,8 +32,8 @@ public interface ISubstrateQuery
         CancellationToken ct);
 
     /// <summary>
-    /// All embedding_firefly entities anchored to the given bpe_token vocabulary
-    /// set, above the given significance threshold in the chosen arena.
+    /// Token entities carrying embedding_firefly physicality, narrowed to the
+    /// supplied vocabulary set and significance threshold in the chosen arena.
     /// </summary>
     Task<IReadOnlyList<EntityHandle>> QueryFireflyForVocabAsync(
         IReadOnlyList<EntityHandle> bpeTokens,

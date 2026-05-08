@@ -329,6 +329,12 @@
 -- @include schema/functions/cross_model_divergence.sql
 -- @include schema/functions/codepoint_property_rows.sql
 -- @include schema/functions/break_property_code_map.sql
+-- @include schema/functions/query_entities.sql
+-- @include schema/functions/query_tensors_for_architecture.sql
+-- @include schema/functions/query_fireflies_for_vocab.sql
+-- @include schema/functions/query_ffn_neurons_by_hidden_dim.sql
+-- @include schema/functions/query_attention_components.sql
+-- @include schema/functions/query_singular_directions_for_role.sql
 -- @include schema/functions/preview_target_arch.sql
 -- @include schema/functions/refinement_summary.sql
 -- @include schema/functions/refinement_summary_top.sql

@@ -78,36 +78,44 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Walk one step out from each seed, accumulating Glicko-2 mu in the
-    -- code_completion arena, and pick the best candidate.
-    WITH cands AS (
-        SELECT em_t.entity_hash AS target_hash,
-               sum(COALESCE(es.mu, 1500.0)) AS total_mu
-        FROM substrate.sequence sq
-        JOIN substrate.edge_member em_s
-          ON em_s.entity_hash = sq.child_hash
-        JOIN substrate.edge e
-          ON e.edge_type_id = em_s.edge_type_id
-         AND e.hash = em_s.edge_hash
-        JOIN substrate.edge_role r_s ON r_s.id = em_s.edge_role_id AND r_s.code = 'source'
-        JOIN substrate.edge_member em_t
-          ON em_t.edge_type_id = e.edge_type_id
-         AND em_t.edge_hash    = e.hash
-        JOIN substrate.edge_role r_t ON r_t.id = em_t.edge_role_id AND r_t.code = 'target'
-        LEFT JOIN substrate.edge_significance es
-               ON es.edge_type_id   = e.edge_type_id
-              AND es.edge_hash      = e.hash
-              AND es.context_type_id = v_arena_id
-        WHERE sq.parent_hash = p_seed_hash
-          AND em_t.entity_hash <> p_seed_hash
-        GROUP BY em_t.entity_hash
-        ORDER BY total_mu DESC
-        LIMIT p_max_results
-    )
-    SELECT count(*), max(total_mu),
-           (SELECT target_hash FROM cands ORDER BY total_mu DESC LIMIT 1)
+        -- Walk one step out from each seed, accumulating Glicko-2 mu in the
+        -- code_completion arena, and pick the best candidate.
+        SELECT count(*), max(cands.total_mu),
+                     (array_agg(cands.target_hash ORDER BY cands.total_mu DESC))[1]
     INTO v_targets, v_best_mu, v_best_hash
-    FROM cands;
+            FROM (
+                    SELECT ranked.target_hash, ranked.total_mu
+                        FROM (
+                                SELECT em_t.entity_hash AS target_hash,
+                                             sum(COALESCE(es.mu, 1500.0)) AS total_mu,
+                                             row_number() OVER (
+                                                     ORDER BY sum(COALESCE(es.mu, 1500.0)) DESC, em_t.entity_hash ASC
+                                             ) AS rn
+                                    FROM substrate.sequence sq
+                                    JOIN substrate.edge_member em_s
+                                        ON em_s.entity_hash = sq.child_hash
+                                    JOIN substrate.edge e
+                                        ON e.edge_type_id = em_s.edge_type_id
+                                     AND e.hash = em_s.edge_hash
+                                    JOIN substrate.edge_role r_s
+                                        ON r_s.id = em_s.edge_role_id
+                                     AND r_s.code = 'source'
+                                    JOIN substrate.edge_member em_t
+                                        ON em_t.edge_type_id = e.edge_type_id
+                                     AND em_t.edge_hash = e.hash
+                                    JOIN substrate.edge_role r_t
+                                        ON r_t.id = em_t.edge_role_id
+                                     AND r_t.code = 'target'
+                                    LEFT JOIN substrate.edge_significance es
+                                        ON es.edge_type_id = e.edge_type_id
+                                     AND es.edge_hash = e.hash
+                                     AND es.context_type_id = v_arena_id
+                                 WHERE sq.parent_hash = p_seed_hash
+                                     AND em_t.entity_hash <> p_seed_hash
+                                 GROUP BY em_t.entity_hash
+                        ) ranked
+                     WHERE ranked.rn <= GREATEST(COALESCE(p_max_results, 25), 0)
+            ) cands;
 
     IF v_best_hash IS NOT NULL THEN
         v_answer := substrate.recompose_text(v_best_hash, p_max_depth);

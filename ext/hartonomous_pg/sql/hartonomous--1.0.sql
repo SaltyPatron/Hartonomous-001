@@ -6331,36 +6331,44 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Walk one step out from each seed, accumulating Glicko-2 mu in the
-    -- code_completion arena, and pick the best candidate.
-    WITH cands AS (
-        SELECT em_t.entity_hash AS target_hash,
-               sum(COALESCE(es.mu, 1500.0)) AS total_mu
-        FROM substrate.sequence sq
-        JOIN substrate.edge_member em_s
-          ON em_s.entity_hash = sq.child_hash
-        JOIN substrate.edge e
-          ON e.edge_type_id = em_s.edge_type_id
-         AND e.hash = em_s.edge_hash
-        JOIN substrate.edge_role r_s ON r_s.id = em_s.edge_role_id AND r_s.code = 'source'
-        JOIN substrate.edge_member em_t
-          ON em_t.edge_type_id = e.edge_type_id
-         AND em_t.edge_hash    = e.hash
-        JOIN substrate.edge_role r_t ON r_t.id = em_t.edge_role_id AND r_t.code = 'target'
-        LEFT JOIN substrate.edge_significance es
-               ON es.edge_type_id   = e.edge_type_id
-              AND es.edge_hash      = e.hash
-              AND es.context_type_id = v_arena_id
-        WHERE sq.parent_hash = p_seed_hash
-          AND em_t.entity_hash <> p_seed_hash
-        GROUP BY em_t.entity_hash
-        ORDER BY total_mu DESC
-        LIMIT p_max_results
-    )
-    SELECT count(*), max(total_mu),
-           (SELECT target_hash FROM cands ORDER BY total_mu DESC LIMIT 1)
+        -- Walk one step out from each seed, accumulating Glicko-2 mu in the
+        -- code_completion arena, and pick the best candidate.
+        SELECT count(*), max(cands.total_mu),
+                     (array_agg(cands.target_hash ORDER BY cands.total_mu DESC))[1]
     INTO v_targets, v_best_mu, v_best_hash
-    FROM cands;
+            FROM (
+                    SELECT ranked.target_hash, ranked.total_mu
+                        FROM (
+                                SELECT em_t.entity_hash AS target_hash,
+                                             sum(COALESCE(es.mu, 1500.0)) AS total_mu,
+                                             row_number() OVER (
+                                                     ORDER BY sum(COALESCE(es.mu, 1500.0)) DESC, em_t.entity_hash ASC
+                                             ) AS rn
+                                    FROM substrate.sequence sq
+                                    JOIN substrate.edge_member em_s
+                                        ON em_s.entity_hash = sq.child_hash
+                                    JOIN substrate.edge e
+                                        ON e.edge_type_id = em_s.edge_type_id
+                                     AND e.hash = em_s.edge_hash
+                                    JOIN substrate.edge_role r_s
+                                        ON r_s.id = em_s.edge_role_id
+                                     AND r_s.code = 'source'
+                                    JOIN substrate.edge_member em_t
+                                        ON em_t.edge_type_id = e.edge_type_id
+                                     AND em_t.edge_hash = e.hash
+                                    JOIN substrate.edge_role r_t
+                                        ON r_t.id = em_t.edge_role_id
+                                     AND r_t.code = 'target'
+                                    LEFT JOIN substrate.edge_significance es
+                                        ON es.edge_type_id = e.edge_type_id
+                                     AND es.edge_hash = e.hash
+                                     AND es.context_type_id = v_arena_id
+                                 WHERE sq.parent_hash = p_seed_hash
+                                     AND em_t.entity_hash <> p_seed_hash
+                                 GROUP BY em_t.entity_hash
+                        ) ranked
+                     WHERE ranked.rn <= GREATEST(COALESCE(p_max_results, 25), 0)
+            ) cands;
 
     IF v_best_hash IS NOT NULL THEN
         v_answer := substrate.recompose_text(v_best_hash, p_max_depth);
@@ -6908,6 +6916,300 @@ $f$;
 
 COMMENT ON FUNCTION substrate.break_property_code_map() IS
     'Return break_property id/code rows for C# UAX #29 cache compatibility.';
+
+-- ── sql/schema/functions/query_entities.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.query_entities(
+    p_entity_type_codes    TEXT[] DEFAULT NULL,
+    p_model_source_ids     INT[] DEFAULT NULL,
+    p_min_significance_mu  FLOAT8 DEFAULT NULL,
+    p_context_type_code    TEXT DEFAULT NULL,
+    p_limit                INT DEFAULT NULL
+)
+  RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT results.entity_type_code, results.entity_hash
+      FROM (
+        SELECT DISTINCT et.code AS entity_type_code, e.hash AS entity_hash, ranked.mu AS rank_mu
+          FROM substrate.entity e
+          JOIN substrate.entity_classification ec ON ec.entity_hash = e.hash
+          JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+          LEFT JOIN LATERAL (
+              SELECT max(significance.mu) AS mu
+                FROM substrate.entity_significance significance
+                LEFT JOIN substrate.significance_context context
+                  ON context.id = significance.context_type_id
+               WHERE significance.entity_hash = e.hash
+                 AND (p_context_type_code IS NULL OR context.code = p_context_type_code)
+          ) ranked ON TRUE
+         WHERE (COALESCE(array_length(p_entity_type_codes, 1), 0) = 0 OR et.code = ANY(p_entity_type_codes))
+           AND (COALESCE(array_length(p_model_source_ids, 1), 0) = 0 OR EXISTS (
+                   SELECT 1
+                     FROM substrate.entity_model_source model_entity
+                    WHERE model_entity.entity_hash = e.hash
+                      AND model_entity.model_source_id = ANY(p_model_source_ids)))
+           AND (p_min_significance_mu IS NULL OR ranked.mu >= p_min_significance_mu)
+      ) results
+     ORDER BY
+       CASE WHEN p_min_significance_mu IS NOT NULL THEN results.rank_mu END DESC NULLS LAST,
+       CASE WHEN p_min_significance_mu IS NULL THEN results.entity_type_code END ASC,
+       results.entity_hash ASC
+     LIMIT p_limit;
+$f$;
+
+COMMENT ON FUNCTION substrate.query_entities(TEXT[], INT[], FLOAT8, TEXT, INT) IS
+    'Filter entities by classification, model source, optional arena significance threshold, and limit. Returns type code plus hash handles.';
+
+-- ── sql/schema/functions/query_tensors_for_architecture.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.query_tensors_for_architecture(
+    p_model_architecture_type_code TEXT,
+    p_model_architecture_hash      BYTEA,
+    p_model_source_ids             INT[] DEFAULT NULL,
+    p_min_significance_mu          FLOAT8 DEFAULT NULL,
+    p_context_type_code            TEXT DEFAULT NULL,
+    p_limit                        INT DEFAULT NULL
+)
+RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT results.entity_type_code, results.entity_hash
+      FROM (
+        SELECT DISTINCT target_type.code AS entity_type_code,
+               target_member.entity_hash AS entity_hash,
+               ranked.mu AS rank_mu
+          FROM substrate.edge edge_row
+          JOIN substrate.edge_type edge_type
+            ON edge_type.id = edge_row.edge_type_id
+           AND edge_type.code = 'has_tensor'
+          JOIN substrate.edge_member source_member
+            ON source_member.edge_type_id = edge_row.edge_type_id
+           AND source_member.edge_hash = edge_row.hash
+          JOIN substrate.edge_role source_role
+            ON source_role.id = source_member.edge_role_id
+           AND source_role.code = 'source'
+          JOIN substrate.edge_member target_member
+            ON target_member.edge_type_id = edge_row.edge_type_id
+           AND target_member.edge_hash = edge_row.hash
+          JOIN substrate.edge_role target_role
+            ON target_role.id = target_member.edge_role_id
+           AND target_role.code = 'target'
+          JOIN substrate.entity_classification source_class
+            ON source_class.entity_hash = source_member.entity_hash
+          JOIN substrate.entity_type source_type
+            ON source_type.id = source_class.entity_type_id
+          JOIN substrate.entity_classification target_class
+            ON target_class.entity_hash = target_member.entity_hash
+          JOIN substrate.entity_type target_type
+            ON target_type.id = target_class.entity_type_id
+          LEFT JOIN LATERAL (
+              SELECT max(significance.mu) AS mu
+                FROM substrate.entity_significance significance
+                LEFT JOIN substrate.significance_context context
+                  ON context.id = significance.context_type_id
+               WHERE significance.entity_hash = target_member.entity_hash
+                 AND (p_context_type_code IS NULL OR context.code = p_context_type_code)
+          ) ranked ON TRUE
+         WHERE source_type.code = p_model_architecture_type_code
+           AND source_member.entity_hash = p_model_architecture_hash
+           AND (COALESCE(array_length(p_model_source_ids, 1), 0) = 0 OR EXISTS (
+                   SELECT 1
+                     FROM substrate.entity_model_source model_entity
+                    WHERE model_entity.entity_hash = target_member.entity_hash
+                      AND model_entity.model_source_id = ANY(p_model_source_ids)))
+           AND (p_min_significance_mu IS NULL OR ranked.mu >= p_min_significance_mu)
+      ) results
+     ORDER BY
+       CASE WHEN p_min_significance_mu IS NOT NULL THEN results.rank_mu END DESC NULLS LAST,
+       results.entity_hash ASC
+     LIMIT p_limit;
+$f$;
+
+COMMENT ON FUNCTION substrate.query_tensors_for_architecture(TEXT, BYTEA, INT[], FLOAT8, TEXT, INT) IS
+    'Return tensor handles attached to a model_architecture by has_tensor, with optional model-source and significance filters.';
+
+-- ── sql/schema/functions/query_fireflies_for_vocab.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.query_fireflies_for_vocab(
+    p_bpe_token_hashes     BYTEA[],
+    p_min_significance_mu  FLOAT8,
+    p_context_type_code    TEXT,
+    p_limit                INT DEFAULT NULL
+)
+RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT ranked.entity_type_code, ranked.entity_hash
+      FROM (
+        SELECT source_type.code AS entity_type_code,
+               source_entity.hash AS entity_hash,
+               max(significance.mu) AS rank_mu
+          FROM substrate.entity source_entity
+          JOIN substrate.entity_classification source_class
+            ON source_class.entity_hash = source_entity.hash
+          JOIN substrate.entity_type source_type
+            ON source_type.id = source_class.entity_type_id
+          JOIN substrate.physicality firefly
+            ON firefly.entity_hash = source_entity.hash
+          JOIN substrate.physicality_type firefly_type
+            ON firefly_type.id = firefly.physicality_type_id
+           AND firefly_type.code = 'embedding_firefly'
+          JOIN substrate.entity_significance significance
+            ON significance.entity_hash = source_entity.hash
+          JOIN substrate.significance_context context
+            ON context.id = significance.context_type_id
+         WHERE source_entity.hash = ANY(p_bpe_token_hashes)
+           AND source_type.code = 'word_form'
+           AND significance.mu >= p_min_significance_mu
+           AND context.code = p_context_type_code
+         GROUP BY source_type.code, source_entity.hash
+      ) ranked
+     ORDER BY ranked.rank_mu DESC, ranked.entity_hash ASC
+     LIMIT p_limit;
+$f$;
+
+COMMENT ON FUNCTION substrate.query_fireflies_for_vocab(BYTEA[], FLOAT8, TEXT, INT) IS
+    'Return word_form handles from the supplied vocabulary hash set that carry embedding_firefly physicality above an arena significance threshold.';
+
+-- ── sql/schema/functions/query_ffn_neurons_by_hidden_dim.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.query_ffn_neurons_by_hidden_dim(
+    p_hidden_size_hash  BYTEA,
+    p_context_type_code TEXT,
+    p_top_k             INT
+)
+RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT target_type.code, target_member.entity_hash
+      FROM substrate.edge edge_row
+      JOIN substrate.edge_type edge_type ON edge_type.id = edge_row.edge_type_id
+      JOIN substrate.edge_member source_member
+        ON source_member.edge_type_id = edge_row.edge_type_id
+       AND source_member.edge_hash = edge_row.hash
+      JOIN substrate.edge_role source_role
+        ON source_role.id = source_member.edge_role_id
+       AND source_role.code = 'source'
+      JOIN substrate.edge_member target_member
+        ON target_member.edge_type_id = edge_row.edge_type_id
+       AND target_member.edge_hash = edge_row.hash
+      JOIN substrate.edge_role target_role
+        ON target_role.id = target_member.edge_role_id
+       AND target_role.code = 'target'
+      JOIN substrate.entity_classification target_class ON target_class.entity_hash = target_member.entity_hash
+      JOIN substrate.entity_type target_type ON target_type.id = target_class.entity_type_id
+      JOIN substrate.entity_significance significance ON significance.entity_hash = target_member.entity_hash
+      JOIN substrate.significance_context context ON context.id = significance.context_type_id
+      JOIN substrate.edge size_edge
+        ON size_edge.edge_type_id = (SELECT id FROM substrate.edge_type WHERE code = 'has_hidden_size')
+      JOIN substrate.edge_member size_source
+        ON size_source.edge_type_id = size_edge.edge_type_id
+       AND size_source.edge_hash = size_edge.hash
+      JOIN substrate.edge_role size_source_role
+        ON size_source_role.id = size_source.edge_role_id
+       AND size_source_role.code = 'source'
+      JOIN substrate.edge_member size_target
+        ON size_target.edge_type_id = size_edge.edge_type_id
+       AND size_target.edge_hash = size_edge.hash
+      JOIN substrate.edge_role size_target_role
+        ON size_target_role.id = size_target.edge_role_id
+       AND size_target_role.code = 'target'
+     WHERE edge_type.code = 'has_ffn_neuron'
+       AND target_type.code = 'ffn_neuron'
+       AND context.code = p_context_type_code
+       AND size_source.entity_hash = source_member.entity_hash
+       AND size_target.entity_hash = p_hidden_size_hash
+     ORDER BY significance.mu DESC
+     LIMIT p_top_k;
+$f$;
+
+COMMENT ON FUNCTION substrate.query_ffn_neurons_by_hidden_dim(BYTEA, TEXT, INT) IS
+    'Return top ffn_neuron handles for FFN tensors whose has_hidden_size target hash matches the supplied hidden-size hash.';
+
+-- ── sql/schema/functions/query_attention_components.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.query_attention_components(
+    p_archetype_hash    BYTEA DEFAULT NULL,
+    p_context_type_code TEXT DEFAULT NULL,
+    p_top_k             INT DEFAULT 25
+)
+RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT target_type.code, target_member.entity_hash
+      FROM substrate.edge edge_row
+      JOIN substrate.edge_type edge_type ON edge_type.id = edge_row.edge_type_id
+      JOIN substrate.edge_member source_member
+        ON source_member.edge_type_id = edge_row.edge_type_id
+       AND source_member.edge_hash = edge_row.hash
+      JOIN substrate.edge_role source_role
+        ON source_role.id = source_member.edge_role_id
+       AND source_role.code = 'source'
+      JOIN substrate.edge_member target_member
+        ON target_member.edge_type_id = edge_row.edge_type_id
+       AND target_member.edge_hash = edge_row.hash
+      JOIN substrate.edge_role target_role
+        ON target_role.id = target_member.edge_role_id
+       AND target_role.code = 'target'
+      JOIN substrate.entity_classification target_class ON target_class.entity_hash = target_member.entity_hash
+      JOIN substrate.entity_type target_type ON target_type.id = target_class.entity_type_id
+      JOIN substrate.entity_significance significance ON significance.entity_hash = target_member.entity_hash
+      JOIN substrate.significance_context context ON context.id = significance.context_type_id
+     WHERE edge_type.code = 'has_attention_component'
+       AND target_type.code = 'attention_component'
+       AND (p_context_type_code IS NULL OR context.code = p_context_type_code)
+       AND (p_archetype_hash IS NULL OR EXISTS (
+             SELECT 1
+               FROM substrate.edge archetype_edge
+               JOIN substrate.edge_type archetype_edge_type
+                 ON archetype_edge_type.id = archetype_edge.edge_type_id
+                AND archetype_edge_type.code = 'encodes_archetype'
+               JOIN substrate.edge_member archetype_source
+                 ON archetype_source.edge_type_id = archetype_edge.edge_type_id
+                AND archetype_source.edge_hash = archetype_edge.hash
+               JOIN substrate.edge_role archetype_source_role
+                 ON archetype_source_role.id = archetype_source.edge_role_id
+                AND archetype_source_role.code = 'source'
+               JOIN substrate.edge_member archetype_target
+                 ON archetype_target.edge_type_id = archetype_edge.edge_type_id
+                AND archetype_target.edge_hash = archetype_edge.hash
+               JOIN substrate.edge_role archetype_target_role
+                 ON archetype_target_role.id = archetype_target.edge_role_id
+                AND archetype_target_role.code = 'target'
+              WHERE archetype_source.entity_hash = source_member.entity_hash
+                AND archetype_target.entity_hash = p_archetype_hash))
+     ORDER BY significance.mu DESC
+     LIMIT p_top_k;
+$f$;
+
+COMMENT ON FUNCTION substrate.query_attention_components(BYTEA, TEXT, INT) IS
+    'Return top attention_component handles, optionally requiring the source attention tensor to encode a supplied archetype hash.';
+
+-- ── sql/schema/functions/query_singular_directions_for_role.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.query_singular_directions_for_role(
+    p_tensor_role_code TEXT,
+    p_top_k            INT
+)
+RETURNS TABLE (entity_type_code TEXT, entity_hash BYTEA)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT target_type.code, target_member.entity_hash
+      FROM substrate.edge edge_row
+      JOIN substrate.edge_type edge_type ON edge_type.id = edge_row.edge_type_id
+      JOIN substrate.edge_member source_member
+        ON source_member.edge_type_id = edge_row.edge_type_id
+       AND source_member.edge_hash = edge_row.hash
+      JOIN substrate.edge_role source_role
+        ON source_role.id = source_member.edge_role_id
+       AND source_role.code = 'source'
+      JOIN substrate.edge_member target_member
+        ON target_member.edge_type_id = edge_row.edge_type_id
+       AND target_member.edge_hash = edge_row.hash
+      JOIN substrate.edge_role target_role
+        ON target_role.id = target_member.edge_role_id
+       AND target_role.code = 'target'
+      JOIN substrate.entity_classification target_class ON target_class.entity_hash = target_member.entity_hash
+      JOIN substrate.entity_type target_type ON target_type.id = target_class.entity_type_id
+      JOIN substrate.tensor_tensor_role tensor_role_link ON tensor_role_link.entity_hash = source_member.entity_hash
+      JOIN substrate.tensor_role tensor_role ON tensor_role.id = tensor_role_link.tensor_role_id
+     WHERE edge_type.code = 'has_rank_component'
+       AND tensor_role.code = p_tensor_role_code
+     ORDER BY edge_row.hash ASC
+     LIMIT p_top_k;
+$f$;
+
+COMMENT ON FUNCTION substrate.query_singular_directions_for_role(TEXT, INT) IS
+    'Return svd rank-component handles for tensors with the supplied tensor_role code.';
 
 -- ── sql/schema/functions/preview_target_arch.sql ───────────────────────────────────────
 -- substrate.preview_target_arch(p_target_spec jsonb, p_recipe jsonb)
