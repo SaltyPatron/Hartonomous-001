@@ -20,14 +20,13 @@ namespace Hartonomous.Engine.Significance;
 /// identically, A* could not differentiate paths, and inference returned ranked
 /// results that were actually all tied at 1500.
 /// <para>
-/// Bulk-inserts edge-level significance rows in <c>semantic_relevance</c> and
-/// <c>lexical_disambiguation</c> arenas, seeding each edge's μ from its
-/// provenance trust prior. Subsequent arena plays (corroboration_strength,
-/// frequency_significance) refine these values as inference traverses edges
-/// and Glicko-2 updates accumulate evidence.
+/// Bulk-inserts edge-level significance rows for every arena currently present
+/// in <c>substrate.significance_context</c>, seeding each edge's μ from its
+/// provenance trust prior. Subsequent arena plays refine these values as
+/// inference traverses edges and Glicko-2 updates accumulate evidence.
 /// </para>
 /// <para>
-/// Trust-prior tiers (set by <c>0005_phase1_seed.up.sql</c>):
+/// Trust-prior tiers (set by canonical provenance seed data):
 ///   * authoritative_standard (Unicode, ISO 639): 100000
 ///   * academic_curated (Princeton WordNet): 95000
 ///   * academic_consortium (UD, OMW): 90000-92000
@@ -66,8 +65,8 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
         await using NpgsqlConnection conn = new(_connectionString);
         await conn.OpenAsync(ct);
 
-        // Drive the watermark primer (substrate.prime_unprimed_edges_chunk)
-        // per arena until each returns 0. This:
+        // Drive the phase-owned primer (substrate.prime_unprimed_edges_chunk)
+        // per arena until each has scanned the current edge set. This:
         //   - Targets the actual schema: substrate.edge_significance
         //     (composite key: context_type_id, edge_type_id, edge_hash) NOT
         //     the obsolete substrate.significance table that was split into
@@ -81,7 +80,15 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
         //   - Reuses the watermark forward-scan shape (no anti-join, no merge
         //     join, no spill — the buggy LEFT JOIN/IS NULL/LIMIT plan that
         //     hit the PG18 batched-HashJoin path is gone).
-        long rowsInserted = 0;
+        await using (NpgsqlCommand resetCmd = NpgsqlSubstrateCommand.CreateFunction(
+                         conn,
+                         SubstrateFunctionNames.ResetArenaPrimingState))
+        {
+            resetCmd.CommandTimeout = 600;
+            await resetCmd.ExecuteScalarAsync(ct);
+        }
+
+        long rowsScanned = 0;
         const int ChunkSize = 4096;
 
         // Snapshot arena list once (open-vocabulary at start of run).
@@ -96,6 +103,11 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
                 arenas.Add(reader.GetInt32(0));
             }
         }
+        if (arenas.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "SignificanceField found zero significance arenas; phase cannot complete without edge significance arena coverage.");
+        }
 
         foreach (int arenaId in arenas)
         {
@@ -109,14 +121,14 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
                 primeCmd.CommandTimeout = 600;
 
                 object? raw = await primeCmd.ExecuteScalarAsync(ct);
-                long primed = raw switch
+                long scanned = raw switch
                 {
                     long l => l,
                     int i => i,
                     _ => 0L,
                 };
-                rowsInserted += primed;
-                if (primed == 0)
+                rowsScanned += scanned;
+                if (scanned == 0)
                 {
                     break;
                 }
@@ -124,7 +136,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
         }
 
         sw.Stop();
-        Log.Primed(_logger, rowsInserted, sw.Elapsed);
+        Log.Primed(_logger, rowsScanned, sw.Elapsed);
 
         // Surface progress to the standard reporter so the phase runner records the work.
         await reporter.ReportAsync(
@@ -135,7 +147,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
                 EntitiesCreated = 0,
                 EdgesCreated = 0,
                 CurrentFile = $"primed_edge_significance",
-                CurrentBatch = (int)Math.Min(rowsInserted, int.MaxValue),
+                CurrentBatch = (int)Math.Min(rowsScanned, int.MaxValue),
             },
             ct);
     }
@@ -148,7 +160,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
 
     private static partial class Log
     {
-        [LoggerMessage(Level = LogLevel.Information, Message = "SignificanceField primed {RowCount:N0} edge-significance rows in {Elapsed}")]
+        [LoggerMessage(Level = LogLevel.Information, Message = "SignificanceField scanned {RowCount:N0} edge rows for significance priming in {Elapsed}")]
         public static partial void Primed(ILogger logger, long rowCount, TimeSpan elapsed);
     }
 }

@@ -93,7 +93,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         Log.ModelsDiscovered(Logger, models.Count, _hubRoot);
         if (models.Count == 0)
         {
-            return;
+            ThrowIfIncompleteModelDecomposition(0, 0, []);
         }
 
         // Identity resolution (publisher / model / source) flows through the same
@@ -124,6 +124,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 codepointProperties: _codepointProperties);
 
             int modelIdx = 0;
+            int successfulModels = 0;
+            List<string> failedModels = [];
             foreach (DiscoveredModel model in models)
             {
                 ct.ThrowIfCancellationRequested();
@@ -139,12 +141,16 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 try
                 {
                     await orchestrator.RunAsync(model, modelSourceId, modelIdx, models.Count, ct);
+                    successfulModels++;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException) // BOUNDARY: per-model failure isolation — orchestrator persisted an in-flight checkpoint; remaining models must still process.
                 {
+                    failedModels.Add(model.ModelId);
                     Log.ModelFailed(Logger, ex, model.ModelId, modelIdx, models.Count);
                 }
             }
+
+            ThrowIfIncompleteModelDecomposition(models.Count, successfulModels, failedModels);
         }
         finally
         {
@@ -170,6 +176,37 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 }
             }
         }
+    }
+
+    internal static void ThrowIfIncompleteModelDecomposition(
+        int discoveredModelCount,
+        int successfulModelCount,
+        IReadOnlyCollection<string> failedModelIds)
+    {
+        if (discoveredModelCount == 0)
+        {
+            throw new InvalidOperationException(
+                "Safetensors ModelDecomp discovered zero models. Check the source path and ModelFilter; a no-op model phase is not a successful ingestion.");
+        }
+
+        if (successfulModelCount == 0)
+        {
+            throw new InvalidOperationException(
+                $"Safetensors ModelDecomp completed zero of {discoveredModelCount} discovered model(s). Failed models: {FormatFailedModelIds(failedModelIds)}");
+        }
+
+        if (failedModelIds.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Safetensors ModelDecomp completed {successfulModelCount} of {discoveredModelCount} discovered model(s); {failedModelIds.Count} failed: {FormatFailedModelIds(failedModelIds)}");
+        }
+    }
+
+    private static string FormatFailedModelIds(IReadOnlyCollection<string> failedModelIds)
+    {
+        return failedModelIds.Count == 0
+            ? "(none recorded)"
+            : string.Join(", ", failedModelIds);
     }
 
     private List<IModelAnalysisPass> BuildPassSet()

@@ -141,8 +141,10 @@ public sealed class SubstrateTextDecomposer
 
         byte[] utf8Copy = utf8.ToArray();
         byte[] rootHashBuf = new byte[32];
+        double[] rootCentroidBuf = new double[4];
         GCHandle utf8Pin = GCHandle.Alloc(utf8Copy, GCHandleType.Pinned);
         GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
+        GCHandle rootCentroidPin = GCHandle.Alloc(rootCentroidBuf, GCHandleType.Pinned);
         int rc;
         try
         {
@@ -154,12 +156,14 @@ public sealed class SubstrateTextDecomposer
                 cb,
                 IntPtr.Zero,
                 rootPin.AddrOfPinnedObject(),
-                out _);
+                out _,
+                rootCentroidPin.AddrOfPinnedObject());
         }
         finally
         {
             utf8Pin.Free();
             rootPin.Free();
+            rootCentroidPin.Free();
             GC.KeepAlive(cb);
         }
 
@@ -179,7 +183,7 @@ public sealed class SubstrateTextDecomposer
             SequenceRowsEmitted: context.SequenceCount,
             PhysicalityRowsEmitted: context.PhysicalityCount,
             SignificanceRowsEmitted: context.SignificanceCount,
-            RootCentroid: (0, 0, 0, 0));
+            RootCentroid: (rootCentroidBuf[0], rootCentroidBuf[1], rootCentroidBuf[2], rootCentroidBuf[3]));
     }
 
     public static async ValueTask<TextDecomposeResult> EmitStaticAsync(
@@ -207,8 +211,10 @@ public sealed class SubstrateTextDecomposer
         TextDecomposeNative.EmitCallback cb = context.OnRecord;
 
         byte[] rootHashBuf = new byte[32];
+        double[] rootCentroidBuf = new double[4];
         GCHandle utf8Pin = GCHandle.Alloc(utf8, GCHandleType.Pinned);
         GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
+        GCHandle rootCentroidPin = GCHandle.Alloc(rootCentroidBuf, GCHandleType.Pinned);
         int rc;
         try
         {
@@ -220,12 +226,14 @@ public sealed class SubstrateTextDecomposer
                 cb,
                 IntPtr.Zero,
                 rootPin.AddrOfPinnedObject(),
-                out _);
+                out _,
+                rootCentroidPin.AddrOfPinnedObject());
         }
         finally
         {
             utf8Pin.Free();
             rootPin.Free();
+            rootCentroidPin.Free();
             GC.KeepAlive(cb);
         }
 
@@ -252,7 +260,7 @@ public sealed class SubstrateTextDecomposer
             SequenceRowsEmitted: context.SequenceCount,
             PhysicalityRowsEmitted: context.PhysicalityCount,
             SignificanceRowsEmitted: context.SignificanceCount,
-            RootCentroid: (0, 0, 0, 0));
+            RootCentroid: (rootCentroidBuf[0], rootCentroidBuf[1], rootCentroidBuf[2], rootCentroidBuf[3]));
     }
 
     private static int NativeKindFor(string topEntityType) => topEntityType switch

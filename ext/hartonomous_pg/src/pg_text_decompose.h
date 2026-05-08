@@ -9,19 +9,17 @@
  *
  *   Inside, in compiled C:
  *     1. UTF-8 decode → codepoint stream (utf8_decode.c)
- *     2. Codepoint property lookup via per-backend cache (loaded once via SPI
- *        from substrate.codepoint_property; subsequent calls hit static memory)
- *     3. UAX #29 grapheme cluster boundary detection (table-driven, ports the
- *        substrate's existing C# reference for byte-identical determinism)
+ *     2. Codepoint property lookup via generated embedded UCD tables
+ *     3. UAX #29 grapheme cluster boundary detection (table-driven)
  *     4. UAX #29 word boundary detection (same)
  *     5. BLAKE3 chain hashing per codepoint, grapheme, word_form, composition
  *        (uses libhartonomous's batched primitives — Blake3Many)
  *     6. 4D centroid math: per-codepoint via super_fibonacci_4d (S^3 anchor),
  *        per-composition via mean_4d aggregate of constituents
- *     7. SPI INSERTs into substrate.staging_entity, staging_entity_classification,
- *        staging_edge, staging_edge_member, staging_physicality, staging_sequence,
- *        staging_entity_significance — directly writing the staging surface the
- *        background flush worker drains. No round-trip back to .NET.
+ *     7. SPI bulk INSERTs directly into substrate.entity,
+ *        substrate.entity_classification, substrate.physicality,
+ *        substrate.sequence, and substrate.entity_significance with
+ *        ON CONFLICT DO NOTHING. No staging surface and no round-trip back to .NET.
  *
  *   Returns a summary record (counts) so the caller can report progress.
  *
@@ -31,10 +29,9 @@
  *   inserts use bulk binary-encoded buffers stitched together at flush time.
  *
  * Determinism (Law #6):
- *   - Property lookups come from substrate.codepoint_property — UCD 17.0.0
- *     tables identical to those the C# reference uses.
- *   - UAX #29 boundary rules ported verbatim from
- *     src/Hartonomous.Core/Text/Segmentation/{GraphemeClusters,WordBoundaries}.cs.
+ *   - Property lookups come from generated UCD 17.0.0 tables.
+ *   - UAX #29 boundary rules are table-driven from the same generated source
+ *     inventory used by the native in-process decomposer.
  *   - Determinism gate: a separate test (test_text_decompose_determinism.cc)
  *     asserts byte-identical hash output for a corpus of UCD-supplied
  *     boundary tests + Wiktionary fixture entries vs the C# reference, before

@@ -112,7 +112,8 @@ public static partial class TextDecomposeNative
     /// Decompose UTF-8 bytes into the substrate's text DAG. Native walks the
     /// codepoint/grapheme/word/composition DAG and fires <paramref name="emit"/>
     /// once per record. <paramref name="outRootHash"/> receives the 32-byte
-    /// composition hash on success.
+    /// composition hash on success. <paramref name="outRootCentroid"/> receives
+    /// four doubles for the root composition centroid.
     ///
     /// Returns 0 on success; -1 null arg; -2 UcdLoad not called or failed;
     /// -3 zero-length input; -9 allocation failure; or the callback's
@@ -128,6 +129,7 @@ public static partial class TextDecomposeNative
         EmitCallback emit,
         IntPtr ctx,
         IntPtr outRootHash,
-        out int outRootKind);
+        out int outRootKind,
+        IntPtr outRootCentroid);
 #pragma warning restore CA1401
 }

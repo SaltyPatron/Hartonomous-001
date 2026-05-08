@@ -91,24 +91,42 @@ internal sealed class PhasesCommand(IConfiguration configuration)
 
             if (dryRun)
             {
-                PrintDryRun(phaseStr);
+                ic.ExitCode = PrintDryRun(phaseStr);
                 return;
             }
 
-            await RunPhasesAsync(phaseStr, conn, source, skipDeps, force, CancellationToken.None);
+            ic.ExitCode = await RunPhasesAsync(phaseStr, conn, source, skipDeps, force, CancellationToken.None);
         });
 
+        Option<string> statusConnOpt = new(
+            CliConfiguration.ConnAliases,
+            getDefaultValue: CliConfiguration.DefaultConnectionString,
+            description: "Npgsql connection string.");
+
         Command statusCmd = new("status", "Show the status of all phases.");
-        statusCmd.SetHandler(() =>
+        statusCmd.AddOption(statusConnOpt);
+        statusCmd.SetHandler(async (InvocationContext ic) =>
         {
+            string conn = ic.ParseResult.GetValueForOption(statusConnOpt)!;
+            await using NpgsqlDataSource phaseDs = NpgsqlDataSource.Create(conn);
+            NpgsqlSessionStore sessionStore = new(phaseDs);
+            IReadOnlyDictionary<string, string> statusMap = await sessionStore.GetPhaseStatusMapAsync(CancellationToken.None);
+
             IReadOnlyList<Phase> order = PhaseDag.TopologicalOrder();
             Console.WriteLine($"{"Phase",-25}{"Status",-15}{"Dependencies Met?",-20}");
             Console.WriteLine(new string('-', 60));
             foreach (Phase p in order)
             {
                 IReadOnlyList<Phase> deps = PhaseDag.GetDependencies(p);
-                string depsMet = deps.Count == 0 ? "yes" : "pending";
-                Console.WriteLine($"{p,-25}{"NotStarted",-15}{depsMet,-20}");
+                string status = statusMap.TryGetValue(p.ToString(), out string? persisted)
+                    ? persisted
+                    : "not_started";
+                string depsMet = deps.Count == 0 || deps.All(dep =>
+                    statusMap.TryGetValue(dep.ToString(), out string? depStatus)
+                    && string.Equals(depStatus, "completed", StringComparison.OrdinalIgnoreCase))
+                    ? "yes"
+                    : "no";
+                Console.WriteLine($"{p,-25}{status,-15}{depsMet,-20}");
             }
         });
 
@@ -118,10 +136,12 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         return phases;
     }
 
-    private async Task RunPhasesAsync(
+    private async Task<int> RunPhasesAsync(
         string? phaseStr, string conn, string sourceRoot,
         bool skipDeps, bool force, CancellationToken ct)
     {
+        int exitCode = 0;
+
         // Log level resolves from HARTONOMOUS_LOG_LEVEL env var (Trace, Debug,
         // Information, Warning, Error). Defaults to Information for normal runs.
         LogLevel logLevel = LogLevel.Information;
@@ -263,9 +283,10 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             if (!Enum.TryParse<Phase>(phaseStr, ignoreCase: true, out Phase target))
             {
                 Console.Error.WriteLine($"Unknown phase: '{phaseStr}'");
-                return;
+                return 1;
             }
 
+            bool dependencyFailed = false;
             if (skipDeps)
             {
                 runner.MarkAllCompletedExcept(target);
@@ -283,23 +304,27 @@ internal sealed class PhasesCommand(IConfiguration configuration)
                         if (depResult.Status == PhaseStatus.Failed)
                         {
                             Console.Error.WriteLine($"Dependency {dep} failed: {depResult.ErrorMessage}");
-                            Environment.ExitCode = 1;
-                            return;
+                            exitCode = 1;
+                            dependencyFailed = true;
+                            break;
                         }
                     }
                 }
             }
 
-            PhaseResult result = await runner.RunPhaseAsync(target, ct);
-            Console.WriteLine($"\n{result.Phase}: {result.Status} ({result.Elapsed.TotalSeconds:F1}s)");
-            if (result.ErrorMessage is not null)
+            if (!dependencyFailed)
             {
-                Console.Error.WriteLine($"  Error: {result.ErrorMessage}");
-            }
+                PhaseResult result = await runner.RunPhaseAsync(target, ct);
+                Console.WriteLine($"\n{result.Phase}: {result.Status} ({result.Elapsed.TotalSeconds:F1}s)");
+                if (result.ErrorMessage is not null)
+                {
+                    Console.Error.WriteLine($"  Error: {result.ErrorMessage}");
+                }
 
-            if (result.Status == PhaseStatus.Failed)
-            {
-                Environment.ExitCode = 1;
+                if (result.Status == PhaseStatus.Failed)
+                {
+                    exitCode = 1;
+                }
             }
         }
         else
@@ -316,6 +341,10 @@ internal sealed class PhasesCommand(IConfiguration configuration)
 
                 Console.WriteLine();
             }
+            if (results.Any(static result => result.Status == PhaseStatus.Failed))
+            {
+                exitCode = 1;
+            }
         }
 
         await pipeline.FlushAsync(ct);
@@ -326,11 +355,13 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         {
             Console.Error.WriteLine();
             Console.Error.WriteLine($"ERROR: {sStats.CopyErrors:N0} chunk drain errors during ingestion. Substrate may be incomplete.");
-            Environment.ExitCode = 1;
+            exitCode = 1;
         }
+
+        return exitCode;
     }
 
-    private static void PrintDryRun(string? phaseFilter)
+    private static int PrintDryRun(string? phaseFilter)
     {
         IReadOnlyList<Phase> order = PhaseDag.TopologicalOrder();
 
@@ -340,7 +371,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             {
                 Console.Error.WriteLine($"Unknown phase: '{phaseFilter}'");
                 Console.Error.WriteLine($"Valid phases: {string.Join(", ", Enum.GetNames<Phase>())}");
-                return;
+                return 1;
             }
 
             HashSet<Phase> required = [];
@@ -376,6 +407,8 @@ internal sealed class PhasesCommand(IConfiguration configuration)
                 Console.WriteLine($"{step++,-6}{p,-25}{depStr,-40}");
             }
         }
+
+        return 0;
     }
 
     private static async Task<HashSet<int>> CollectDistinctCodepointsAsync(

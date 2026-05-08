@@ -812,6 +812,8 @@ HARTONOMOUS_API int32_t hartonomous_ucd_cp_from_hash(const uint8_t hash32[32]);
  *   emit / ctx         — callback fired once per emitted record
  *   out_root_hash      — 32-byte buffer; receives the root composition hash
  *   out_root_kind      — receives the resolved top kind (== top_kind)
+ *   out_root_centroid  — optional 4-double buffer; receives root POINTZM
+ *                        centroid coordinates
  *
  * Returns:
  *    0 on success,
@@ -828,7 +830,8 @@ HARTONOMOUS_API int hartonomous_text_decompose(
     hartonomous_text_emit_cb emit,
     void* ctx,
     uint8_t out_root_hash[HARTONOMOUS_HASH_LEN],
-    int* out_root_kind
+    int* out_root_kind,
+    double out_root_centroid[4]
 );
 
 /* ── Glicko-2 bulk update ───────────────────────────────────── */

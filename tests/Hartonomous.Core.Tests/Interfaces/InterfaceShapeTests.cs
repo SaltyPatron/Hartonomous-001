@@ -19,6 +19,9 @@ public sealed class InterfaceShapeTests
     private static MethodInfo Method(Type t, string name) =>
         t.GetMethod(name) ?? throw new InvalidOperationException($"{t.Name}.{name} missing");
 
+    private static MethodInfo Method(Type t, string name, params Type[] parameterTypes) =>
+        t.GetMethod(name, parameterTypes) ?? throw new InvalidOperationException($"{t.Name}.{name} missing");
+
     private static PropertyInfo Property(Type t, string name) =>
         t.GetProperty(name) ?? throw new InvalidOperationException($"{t.Name}.{name} missing");
 
@@ -74,8 +77,13 @@ public sealed class InterfaceShapeTests
     {
         Type t = typeof(IIngestionPipeline);
         Assert.True(typeof(IAsyncDisposable).IsAssignableFrom(t));
-        Assert.Equal(typeof(IIngestionBatch), Method(t, "CreateBatch").ReturnType);
+        Assert.Equal(typeof(IIngestionBatch), Method(t, "CreateBatch", typeof(string)).ReturnType);
+        Assert.Equal(typeof(IIngestionBatch), Method(t, "CreateBatch", Type.EmptyTypes).ReturnType);
         Assert.Equal(typeof(Task), Method(t, "SubmitBatchAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "DrainPendingAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "PopulateSequencePhysicalityAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "PopulateEdgeTrajectoriesAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "PrimeAllSignificanceAsync").ReturnType);
         Assert.Equal(typeof(PipelineStats), Property(t, "Stats").PropertyType);
     }
 
@@ -84,7 +92,8 @@ public sealed class InterfaceShapeTests
     {
         Type t = typeof(IIngestionBatch);
         Assert.Equal(typeof(EntityHandle), Method(t, "AddEntity").ReturnType);
-        Assert.Equal(typeof(void), Method(t, "AddEdge").ReturnType);
+        Assert.Equal(typeof(void), Method(t, "AddEdge", typeof(string), typeof(string), typeof(ReadOnlySpan<EdgeMemberSpec>)).ReturnType);
+        Assert.Equal(typeof(void), Method(t, "AddEdge", typeof(string), typeof(string), typeof(ReadOnlySpan<EdgeMemberSpec>), typeof(ReadOnlySpan<EdgeSignificanceSpec>)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddJunction").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicality").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicalityPoint4d").ReturnType);
@@ -99,8 +108,10 @@ public sealed class InterfaceShapeTests
     public void ISignificanceUpdater_HasSpecShape()
     {
         Type t = typeof(ISignificanceUpdater);
-        Assert.Equal(typeof(Task), Method(t, "RecordComparisonAsync").ReturnType);
-        Assert.Equal(typeof(Task), Method(t, "InitializeAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "RecordEntityComparisonAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "RecordEdgeComparisonAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "InitializeEntityAsync").ReturnType);
+        Assert.Equal(typeof(Task), Method(t, "InitializeEdgeAsync").ReturnType);
         Assert.Equal(typeof(Task<int>), Method(t, "PruneBelowThresholdAsync").ReturnType);
     }
 

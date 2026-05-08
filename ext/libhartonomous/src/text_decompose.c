@@ -450,7 +450,8 @@ int hartonomous_text_decompose(
     hartonomous_text_emit_cb emit,
     void* ctx,
     uint8_t out_root_hash[HARTONOMOUS_HASH_LEN],
-    int* out_root_kind)
+    int* out_root_kind,
+    double out_root_centroid[4])
 {
     if (!utf8 || !emit || !out_root_hash) return -1;
     if (!hartonomous_ucd_loaded()) return -2;
@@ -575,7 +576,15 @@ int hartonomous_text_decompose(
             .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
             .hash_a = gh, .double_param = trust_mu
         }));
-        if (cpCount > 1) {
+        if (cpCount == 1) {
+            uint8_t pt[37];
+            td_pointzm_wkb(gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3], pt);
+            EMIT(((hartonomous_text_record_t){
+                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
+                .hash_a = gh, .hash_b = gh,
+                .wkb = pt, .wkb_len = 37
+            }));
+        } else if (cpCount > 1) {
             size_t ls_len;
             xfree(ls_buf);
             ls_buf = td_linestringzm_wkb(cp_c + firstCp * 4, cpCount, &ls_len);
@@ -623,7 +632,15 @@ int hartonomous_text_decompose(
             .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
             .hash_a = wh, .double_param = trust_mu
         }));
-        if (gcCount > 1) {
+        if (gcCount == 1) {
+            uint8_t pt[37];
+            td_pointzm_wkb(w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3], pt);
+            EMIT(((hartonomous_text_record_t){
+                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
+                .hash_a = wh, .hash_b = wh,
+                .wkb = pt, .wkb_len = 37
+            }));
+        } else if (gcCount > 1) {
             size_t ls_len;
             xfree(ls_buf);
             ls_buf = td_linestringzm_wkb(gc_c + firstGc * 4, gcCount, &ls_len);
@@ -657,7 +674,15 @@ int hartonomous_text_decompose(
         .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
         .hash_a = comp_h, .double_param = trust_mu
     }));
-    if (wN > 1) {
+    if (wN == 1) {
+        uint8_t pt[37];
+        td_pointzm_wkb(comp_c[0], comp_c[1], comp_c[2], comp_c[3], pt);
+        EMIT(((hartonomous_text_record_t){
+            .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
+            .hash_a = comp_h, .hash_b = comp_h,
+            .wkb = pt, .wkb_len = 37
+        }));
+    } else if (wN > 1) {
         size_t ls_len;
         xfree(ls_buf);
         ls_buf = td_linestringzm_wkb(w_c, wN, &ls_len);
@@ -679,6 +704,12 @@ int hartonomous_text_decompose(
 
     memcpy(out_root_hash, comp_h, HASH_LEN);
     if (out_root_kind) *out_root_kind = top_kind;
+    if (out_root_centroid) {
+        out_root_centroid[0] = comp_c[0];
+        out_root_centroid[1] = comp_c[1];
+        out_root_centroid[2] = comp_c[2];
+        out_root_centroid[3] = comp_c[3];
+    }
     rc_final = 0;
     goto out_cleanup;
 

@@ -41,6 +41,7 @@ function Invoke-HartPhase {
         [string]$SourceRoot,
         [switch]$SkipDeps,
         [switch]$DryRun,
+        [switch]$Force,
         [switch]$NoBuild
     )
     if (-not $SourceRoot) { $SourceRoot = $Cfg.Paths.SourceRoot }
@@ -50,6 +51,7 @@ function Invoke-HartPhase {
                  '--source',     $SourceRoot)
     if ($SkipDeps) { $cliArgs += '--skip-deps' }
     if ($DryRun)   { $cliArgs += '--dry-run' }
+    if ($Force)    { $cliArgs += '--force' }
     Invoke-HartCli -Cfg $Cfg -NoBuild:$NoBuild -CliArgs $cliArgs
 }
 

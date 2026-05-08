@@ -34,6 +34,7 @@ public static class SubstrateFunctionNames
     public const string ClaimOrGetEmbeddingAnchor = "substrate.claim_or_get_embedding_anchor";
     public const string CodepointPropertyRows = "substrate.codepoint_property_rows";
     public const string CompositionRange = "substrate.composition_range";
+    public const string CountMissingEdgeTrajectories = "substrate.count_missing_edge_trajectories";
     public const string EmbeddingFireflyTokenHashes = "substrate.embedding_firefly_token_hashes";
     public const string GetFireflyCoords = "substrate.get_firefly_coords";
     public const string GetEdgeInfoByHandles = "substrate.get_edge_info_by_handles";
@@ -46,6 +47,7 @@ public static class SubstrateFunctionNames
     public const string ModelVocabRecovered = "substrate.model_vocab_recovered";
     public const string PhysicalityLineString4d = "substrate.physicality_linestring4d";
     public const string PhysicalityPoint4d = "substrate.physicality_point4d";
+    public const string PopulateSequencePhysicality = "substrate.populate_sequence_physicality";
     public const string PopulateEdgeTrajectories = "substrate.populate_edge_trajectories";
     public const string PopulateBlocks = "substrate.populate_blocks";
     public const string PopulateBreakProperties = "substrate.populate_break_properties";
@@ -81,6 +83,7 @@ public static class SubstrateFunctionNames
     public const string RefinementSummary = "substrate.refinement_summary";
     public const string RefinementSummaryTop = "substrate.refinement_summary_top";
     public const string PrimeUnprimedEdgesChunk = "substrate.prime_unprimed_edges_chunk";
+    public const string ResetArenaPrimingState = "substrate.reset_arena_priming_state";
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
     public const string TraversalNeighbors = "substrate.traversal_neighbors";
@@ -114,6 +117,7 @@ public static class SubstrateFunctionNames
         ClaimOrGetEmbeddingAnchor,
         CodepointPropertyRows,
         CompositionRange,
+        CountMissingEdgeTrajectories,
         EmbeddingFireflyTokenHashes,
         GetFireflyCoords,
         GetEdgeInfoByHandles,
@@ -126,6 +130,7 @@ public static class SubstrateFunctionNames
         ModelVocabRecovered,
         PhysicalityLineString4d,
         PhysicalityPoint4d,
+        PopulateSequencePhysicality,
         PopulateEdgeTrajectories,
         PopulateBlocks,
         PopulateBreakProperties,
@@ -161,6 +166,7 @@ public static class SubstrateFunctionNames
         RefinementSummary,
         RefinementSummaryTop,
         PrimeUnprimedEdgesChunk,
+        ResetArenaPrimingState,
         ResolveEntityHandles,
         SignificanceContextIds,
         TraversalNeighbors,

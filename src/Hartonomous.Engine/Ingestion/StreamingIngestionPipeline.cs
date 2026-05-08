@@ -32,13 +32,13 @@ namespace Hartonomous.Engine.Ingestion;
 ///     happens within the same connection that COPY-loaded the temp table,
 ///     before the next chunk reads — no cross-session staging pile-up, no
 ///     post-producer "catch-up drain", no shutdown-drain segfault risk.
-///   * <c>BackgroundSignificancePrimer</c> is GONE. Edge / entity significance
-///     records are emitted INLINE by producers (one row per (record × arena)
-///     using the producer's known provenance.initial_mu and the arena
-///     snapshot in <c>SignificanceContextCache</c>). AP-1 compliance: cross-
-///     product against ALL arenas at emission, no cherry-picking.
-///   * Edge LINESTRINGZM geometry is built INLINE in C# from participant
-///     centroids tracked in an in-process LRU. No
+///   * <c>BackgroundSignificancePrimer</c> is GONE. Entity significance records
+///     are emitted inline by producers. Edge significance is primed by the
+///     phase-owned post-pass, cross-producted against every arena present at
+///     execution time.
+///   * Edge LINESTRINGZM geometry is built inline in C# when participant
+///     centroids are present in the producer batch. Edges whose participant
+///     physicality is not available inline are populated by the phase-owned
 ///     <c>populate_edge_trajectories</c> post-pass.
 ///   * Producer-side dedup via per-channel <c>HashSet&lt;Hash32&gt;</c> drops
 ///     within-session duplicates before COPY; cross-session duplicates are
@@ -136,6 +136,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     // rather than "what was emitted (and possibly dedupped before COPY)".
     private readonly long[] _drainRowsCommitted = new long[KindIndex.Count];
 
+    // Per-kind producer-side row counters. Incremented after a record is
+    // accepted by its bounded channel so phase orchestration can wait for all
+    // records submitted so far without closing channels between phases.
+    private readonly long[] _producerRowsSubmitted = new long[KindIndex.Count];
+
     private static class KindIndex
     {
         public const int Entity = 0;
@@ -179,11 +184,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         if (vt.IsCompletedSuccessfully)
         {
             await vt.ConfigureAwait(false);
+            Interlocked.Increment(ref _producerRowsSubmitted[kindIndex]);
             return;
         }
         long start = Stopwatch.GetTimestamp();
         await vt.ConfigureAwait(false);
         Interlocked.Add(ref _producerWaitTicks[kindIndex], Stopwatch.GetTimestamp() - start);
+        Interlocked.Increment(ref _producerRowsSubmitted[kindIndex]);
     }
 
     /// <summary>
@@ -373,7 +380,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         // inline so the drain INSERT writes geom directly. Edges whose
         // participants don't have POINTZM here (compositions whose physicality
         // is LINESTRINGZM, or participants from prior batches) leave geom
-        // NULL and are backfilled by PopulateEdgeTrajectoriesAsync.
+        // NULL for PopulateEdgeTrajectoriesAsync.
         Dictionary<Hash32, (double X, double Y, double Z, double M)>? centroidMap = null;
         foreach (PhysicalityEntry p in b.Physicalities)
         {
@@ -519,15 +526,52 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         }
     }
 
+    public async Task DrainPendingAsync(CancellationToken ct)
+    {
+        long[] targetRows = new long[KindIndex.Count];
+        for (int i = 0; i < KindIndex.Count; i++)
+        {
+            targetRows[i] = Interlocked.Read(ref _producerRowsSubmitted[i]);
+        }
+
+        while (true)
+        {
+            for (int i = 0; i < _drainTasks.Length; i++)
+            {
+                if (_drainTasks[i].IsFaulted)
+                {
+                    await Task.WhenAll(_drainTasks).ConfigureAwait(false);
+                }
+            }
+
+            bool allDrained = true;
+            for (int i = 0; i < KindIndex.Count; i++)
+            {
+                if (Interlocked.Read(ref _drainRowsCommitted[i]) < targetRows[i])
+                {
+                    allDrained = false;
+                    break;
+                }
+            }
+
+            if (allDrained)
+            {
+                return;
+            }
+
+            await Task.Delay(IdleFlushAfter, ct).ConfigureAwait(false);
+        }
+    }
+
     public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
     {
-        // Backfill geom on edges where the producer didn't (or couldn't)
+        // Populate geom on edges where the producer didn't (or couldn't)
         // attach an inline LINESTRINGZM EWKB. Per-chunk connection so a PG
         // restart between chunks doesn't poison the whole post-pass; small
         // chunk + parallel-disabled session so the per-call working set fits
         // comfortably under work_mem and never spawns parallel workers each
         // grabbing their own work_mem (the historical OOM-kill path on a
-        // 7M-edge backfill against the 64GB-host WSL2 PG container).
+        // 7M-edge trajectory population pass against the 64GB-host WSL2 PG container).
         const int chunkSize = 4_096;
         const int maxRetries = 5;
         long totalUpdated = 0;
@@ -572,7 +616,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             if (lastEx is not null)
             {
                 Log.PostPassGivingUp(_logger, "populate_edge_trajectories", maxRetries, totalUpdated, lastEx);
-                break;
+                throw new InvalidOperationException(
+                    "populate_edge_trajectories failed after retry exhaustion; phase cannot complete with missing edge geometry.",
+                    lastEx);
             }
             totalUpdated += updated;
             chunksProcessed++;
@@ -586,6 +632,21 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             }
         }
         Log.EdgeTrajectoriesPopulated(_logger, totalUpdated);
+
+        await using NpgsqlConnection verifyConn =
+            await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand verifyCmd = NpgsqlSubstrateCommand.CreateFunction(
+            verifyConn,
+            SubstrateFunctionNames.CountMissingEdgeTrajectories,
+            []);
+        verifyCmd.CommandTimeout = 0;
+        object? missingResult = await verifyCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        long missing = missingResult is long missingLong ? missingLong : (long?)missingResult ?? 0L;
+        if (missing > 0)
+        {
+            throw new InvalidOperationException(
+                $"populate_edge_trajectories left {missing} edges without geometry; phase cannot complete with missing edge trajectories.");
+        }
     }
 
     PipelineStats IIngestionPipeline.Stats => new()
@@ -842,31 +903,101 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 #pragma warning restore CA1873
         }
 
-        // FlushAsync drains channels only. Post-phase enrichment (edge trajectory
-        // backfill and significance priming) is the phase orchestrator's
+        // FlushAsync drains channels only. Post-phase enrichment (sequence
+        // physicality, edge trajectory population, and significance priming) is the phase orchestrator's
         // responsibility and must be called explicitly via
-        // PopulateEdgeTrajectoriesAsync and PrimeAllSignificanceAsync.
+        // PopulateSequencePhysicalityAsync, PopulateEdgeTrajectoriesAsync,
+        // and PrimeAllSignificanceAsync.
         // Keeping them here would execute them twice — once per phase by the
         // orchestrator and again at dispose — wasting time on already-complete
         // work. Idempotency of the underlying functions makes the double-call
         // safe but not free; at Wiktionary scale each redundant pass is minutes.
     }
 
+    public async Task PopulateSequencePhysicalityAsync(CancellationToken ct)
+    {
+        const int chunkSize = 16_384;
+        const int maxRetries = 5;
+        long totalInserted = 0;
+        int chunksProcessed = 0;
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            long inserted = 0;
+            Exception? lastEx = null;
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    await using NpgsqlConnection conn =
+                        await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+                    await using (NpgsqlCommand setCmd = new(IngestionSql.PostPassSessionSettings, conn))
+                    {
+                        await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                    }
+                    await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                        conn,
+                        SubstrateFunctionNames.PopulateSequencePhysicality,
+                        [new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = chunkSize }]);
+                    cmd.CommandTimeout = 0;
+                    object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                    inserted = result is long l ? l : (long?)result ?? 0L;
+                    lastEx = null;
+                    break;
+                }
+                catch (Exception ex) when (
+                    ex is NpgsqlException ||
+                    ex is System.IO.IOException ||
+                    ex is System.Net.Sockets.SocketException ||
+                    (ex.InnerException is System.Net.Sockets.SocketException))
+                {
+                    lastEx = ex;
+                    int delayMs = 1000 * (1 << attempt);
+                    Log.PostPassRetry(_logger, "populate_sequence_physicality", attempt + 1, delayMs, ex);
+                    await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                }
+            }
+
+            if (lastEx is not null)
+            {
+                Log.PostPassGivingUp(_logger, "populate_sequence_physicality", maxRetries, totalInserted, lastEx);
+                throw new InvalidOperationException(
+                    "populate_sequence_physicality failed after retry exhaustion; phase cannot complete with missing sequence physicality.",
+                    lastEx);
+            }
+
+            totalInserted += inserted;
+            chunksProcessed++;
+            if (chunksProcessed % 50 == 0 || inserted == 0)
+            {
+                Log.PostPassProgress(_logger, "populate_sequence_physicality", chunksProcessed, totalInserted);
+            }
+            if (inserted == 0)
+            {
+                break;
+            }
+        }
+
+        Log.SequencePhysicalityPopulated(_logger, totalInserted);
+    }
+
     /// <summary>
     /// Prime substrate.edge_significance for every arena currently in
-    /// substrate.significance_context, walking unprimed edges via the
-    /// watermark-based <c>substrate.prime_unprimed_edges_chunk</c>. Replaces
-    /// the deleted BackgroundSignificancePrimer's continuous loop — runs once
-    /// per phase from FlushAsync. AP-1 compliant: re-reads the arena list
-    /// at call time so newly-added arenas auto-prime against existing edges.
+    /// substrate.significance_context, scanning current edges via the
+    /// watermark-based <c>substrate.prime_unprimed_edges_chunk</c>. The scan
+    /// is reset at the start of each phase-owned pass because later phases can
+    /// add lower edge_type_id values. AP-1 compliant: re-reads the arena list
+    /// at call time so newly-added arenas are included.
     /// </summary>
     public async Task PrimeAllSignificanceAsync(CancellationToken ct)
     {
         const int chunkSize = 16_384;
         const int maxRetries = 5;
 
-        // Snapshot arena list under its own (resilient) connection.
+        // Snapshot arena list under its own resilient connection.
         List<int> arenaIds = new();
+        Exception? arenaListException = null;
         for (int attempt = 0; attempt < maxRetries; attempt++)
         {
             try
@@ -882,6 +1013,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 {
                     arenaIds.Add(r.GetInt32(0));
                 }
+                arenaListException = null;
                 break;
             }
             catch (Exception ex) when (
@@ -889,13 +1021,37 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 ex is System.Net.Sockets.SocketException ||
                 (ex.InnerException is System.Net.Sockets.SocketException))
             {
+                arenaListException = ex;
                 int delayMs = 1000 * (1 << attempt);
                 Log.PostPassRetry(_logger, "significance_context_list", attempt + 1, delayMs, ex);
                 await Task.Delay(delayMs, ct).ConfigureAwait(false);
             }
         }
 
-        long totalPrimed = 0;
+        if (arenaListException is not null)
+        {
+            Log.PostPassGivingUp(_logger, "significance_context_list", maxRetries, 0, arenaListException);
+            throw new InvalidOperationException(
+                "significance_context_list failed after retry exhaustion; phase cannot complete without arena coverage.",
+                arenaListException);
+        }
+
+        if (arenaIds.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "significance_context_list returned zero arenas; phase cannot complete without edge significance arena coverage.");
+        }
+
+        await using (NpgsqlConnection resetConn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false))
+        await using (NpgsqlCommand resetCmd = NpgsqlSubstrateCommand.CreateFunction(
+                         resetConn,
+                         SubstrateFunctionNames.ResetArenaPrimingState))
+        {
+            resetCmd.CommandTimeout = 0;
+            await resetCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        }
+
+        long totalScanned = 0;
         foreach (int arenaId in arenaIds)
         {
             string label = $"prime_significance(arena={arenaId})";
@@ -903,7 +1059,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                long inserted = 0;
+                long scanned = 0;
                 Exception? lastEx = null;
                 for (int attempt = 0; attempt < maxRetries; attempt++)
                 {
@@ -923,7 +1079,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                             ]);
                         cmd.CommandTimeout = 0;
                         object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-                        inserted = result is long l ? l : (long?)result ?? 0L;
+                        scanned = result is long l ? l : (long?)result ?? 0L;
                         lastEx = null;
                         break;
                     }
@@ -940,22 +1096,24 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
                 if (lastEx is not null)
                 {
-                    Log.PostPassGivingUp(_logger, label, maxRetries, totalPrimed, lastEx);
-                    break;
+                    Log.PostPassGivingUp(_logger, label, maxRetries, totalScanned, lastEx);
+                    throw new InvalidOperationException(
+                        $"{label} failed after retry exhaustion; phase cannot complete with incomplete edge significance.",
+                        lastEx);
                 }
-                totalPrimed += inserted;
+                totalScanned += scanned;
                 chunksProcessed++;
-                if (chunksProcessed % 50 == 0 || inserted == 0)
+                if (chunksProcessed % 50 == 0 || scanned == 0)
                 {
-                    Log.PostPassProgress(_logger, label, chunksProcessed, totalPrimed);
+                    Log.PostPassProgress(_logger, label, chunksProcessed, totalScanned);
                 }
-                if (inserted == 0)
+                if (scanned == 0)
                 {
                     break;
                 }
             }
         }
-        Log.SignificancePrimed(_logger, arenaIds.Count, totalPrimed);
+        Log.SignificancePrimed(_logger, arenaIds.Count, totalScanned);
     }
 
     public async ValueTask DisposeAsync()
@@ -1043,7 +1201,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             truncateSql: sql.Truncate,
             // Inline geom path: ST_GeomFromWKB lifts producer-built EWKB to
             // substrate.edge.geom. Edges with NULL geom_wkb go in with
-            // geom = NULL and are backfilled by substrate.populate_edge_trajectories
+            // geom = NULL for substrate.populate_edge_trajectories
             // at end-of-phase via PopulateEdgeTrajectoriesAsync.
                         drainSql: sql.Drain,
             kindName: "edges",
@@ -1434,12 +1592,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             long commits, long errors);
 
         [LoggerMessage(Level = LogLevel.Information,
+            Message = "Sequence physicality populated (post-pass): entities_inserted={EntitiesInserted}")]
+        public static partial void SequencePhysicalityPopulated(ILogger logger, long entitiesInserted);
+
+        [LoggerMessage(Level = LogLevel.Information,
             Message = "Edge trajectories populated (post-pass): edges_updated={EdgesUpdated}")]
         public static partial void EdgeTrajectoriesPopulated(ILogger logger, long edgesUpdated);
 
         [LoggerMessage(Level = LogLevel.Information,
-            Message = "Edge significance primed (post-pass): arenas={Arenas} edges_primed={EdgesPrimed}")]
-        public static partial void SignificancePrimed(ILogger logger, int arenas, long edgesPrimed);
+            Message = "Edge significance primed (post-pass): arenas={Arenas} edge_rows_scanned={EdgeRowsScanned}")]
+        public static partial void SignificancePrimed(ILogger logger, int arenas, long edgeRowsScanned);
 
         [LoggerMessage(Level = LogLevel.Information,
             Message = "Pipeline kind summary: kind={Kind} rows={Rows} drain={DrainElapsed} producerWait={WaitElapsed} rate={RowsPerSec:F0} rows/s")]
@@ -1464,7 +1626,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         public static partial void PostPassRetry(ILogger logger, string pass, int attempt, int delayMs, Exception ex);
 
         [LoggerMessage(Level = LogLevel.Error,
-            Message = "Post-pass {Pass} gave up after {MaxRetries} retries; processed_so_far={ProcessedSoFar} (continuing chain)")]
+            Message = "Post-pass {Pass} gave up after {MaxRetries} retries; processed_so_far={ProcessedSoFar}")]
         public static partial void PostPassGivingUp(ILogger logger, string pass, int maxRetries, long processedSoFar, Exception ex);
 
         [LoggerMessage(Level = LogLevel.Information,

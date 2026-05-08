@@ -19,7 +19,7 @@ namespace Hartonomous.Core.Ingestion;
 ///       INSERT INTO substrate.X SELECT … FROM pg_temp.X_inflight ON CONFLICT DO NOTHING
 ///
 /// There is NO background staging drain and NO background significance primer.
-/// Both were removed. End-of-phase post-passes (edge trajectory backfill and
+/// Both were removed. End-of-phase post-passes (edge trajectory population and
 /// significance priming) are owned by the phase orchestrator, not this interface.
 ///
 /// Lifecycle: callers MUST call <see cref="FlushAsync"/> before the sink is
@@ -47,7 +47,7 @@ public interface IRecordSink
     ///
     /// Call this at the end of a decomposer / phase / shutdown to guarantee
     /// every emitted record has reached the persistence boundary. Post-phase
-    /// enrichment (edge trajectory backfill, significance priming) is NOT
+    /// enrichment (edge trajectory population, significance priming) is NOT
     /// performed by this method — that is the phase orchestrator's responsibility.
     /// </summary>
     ValueTask FlushAsync(CancellationToken ct);

@@ -54,8 +54,10 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
         Assert.Equal(PhaseStatus.Completed, result.Status);
 
-        (string status, string? err) = await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
+        (string status, DateTime? startedAt, DateTime? completedAt, string? err) = await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
         Assert.Equal("completed", status);
+        Assert.NotNull(startedAt);
+        Assert.NotNull(completedAt);
         Assert.Null(err);
     }
 
@@ -77,9 +79,45 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
         Assert.Equal(PhaseStatus.Failed, result.Status);
 
-        (string status, string? err) = await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
+        (string status, DateTime? startedAt, DateTime? completedAt, string? err) = await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
         Assert.Equal("failed", status);
+        Assert.NotNull(startedAt);
+        Assert.NotNull(completedAt);
         Assert.Equal("boom", err);
+    }
+
+    [Fact]
+    public async Task UpdatePhaseStatus_RerunAfterFailure_ClearsStaleCompletionAndError()
+    {
+        NpgsqlSessionStore store = new(_ds);
+
+        await store.UpdatePhaseStatusAsync(Phase.CoreAlgebra.ToString(), "running", null, CancellationToken.None);
+        await store.UpdatePhaseStatusAsync(Phase.CoreAlgebra.ToString(), "failed", "boom", CancellationToken.None);
+
+        (string failedStatus, DateTime? failedStartedAt, DateTime? failedCompletedAt, string? failedError) =
+            await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
+        Assert.Equal("failed", failedStatus);
+        Assert.NotNull(failedStartedAt);
+        Assert.NotNull(failedCompletedAt);
+        Assert.Equal("boom", failedError);
+
+        await store.UpdatePhaseStatusAsync(Phase.CoreAlgebra.ToString(), "running", null, CancellationToken.None);
+
+        (string runningStatus, DateTime? runningStartedAt, DateTime? runningCompletedAt, string? runningError) =
+            await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
+        Assert.Equal("running", runningStatus);
+        Assert.NotNull(runningStartedAt);
+        Assert.Null(runningCompletedAt);
+        Assert.Null(runningError);
+
+        await store.UpdatePhaseStatusAsync(Phase.CoreAlgebra.ToString(), "completed", null, CancellationToken.None);
+
+        (string completedStatus, DateTime? completedStartedAt, DateTime? completedCompletedAt, string? completedError) =
+            await ReadPhaseStatusAsync(Phase.CoreAlgebra, CancellationToken.None);
+        Assert.Equal("completed", completedStatus);
+        Assert.NotNull(completedStartedAt);
+        Assert.NotNull(completedCompletedAt);
+        Assert.Null(completedError);
     }
 
     [Fact]
@@ -124,11 +162,11 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private async Task<(string Status, string? Error)> ReadPhaseStatusAsync(Phase phase, CancellationToken ct)
+    private async Task<(string Status, DateTime? StartedAt, DateTime? CompletedAt, string? Error)> ReadPhaseStatusAsync(Phase phase, CancellationToken ct)
     {
         await using NpgsqlConnection conn = await _ds.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(
-            "SELECT status, error_message FROM monitor.phase_status WHERE phase_code = $1", conn);
+            "SELECT status, started_at, completed_at, error_message FROM monitor.phase_status WHERE phase_code = $1", conn);
         cmd.Parameters.AddWithValue(phase.ToString());
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
@@ -136,8 +174,10 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
             Assert.Fail($"No phase_status row for {phase}");
         }
         string status = reader.GetString(0);
-        string? err = reader.IsDBNull(1) ? null : reader.GetString(1);
-        return (status, err);
+        DateTime? startedAt = reader.IsDBNull(1) ? null : reader.GetDateTime(1);
+        DateTime? completedAt = reader.IsDBNull(2) ? null : reader.GetDateTime(2);
+        string? err = reader.IsDBNull(3) ? null : reader.GetString(3);
+        return (status, startedAt, completedAt, err);
     }
 
     private sealed class ThrowingDecomposer(string message) : IDecomposer
@@ -160,6 +200,8 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public IIngestionBatch CreateBatch() => new FakeBatch();
         public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
+        public Task DrainPendingAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task PopulateSequencePhysicalityAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

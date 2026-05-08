@@ -20,6 +20,7 @@ param(
     [string]$Phase,
     [string]$SourceRoot,
     [switch]$SkipDeps,
+    [switch]$Force,
     [switch]$NoBuild
 )
 
@@ -39,7 +40,7 @@ try {
                 Exit-Hartonomous -Code $Cfg.ExitCodes.Usage
             }
             if (-not $SourceRoot) { $SourceRoot = $Cfg.Paths.SourceRoot }
-            Invoke-HartPhase -Cfg $Cfg -Phase $Phase -SourceRoot $SourceRoot -SkipDeps:$SkipDeps -NoBuild:$NoBuild
+            Invoke-HartPhase -Cfg $Cfg -Phase $Phase -SourceRoot $SourceRoot -SkipDeps:$SkipDeps -Force:$Force -NoBuild:$NoBuild
         }
     }
     Exit-Hartonomous -Code $Cfg.ExitCodes.Ok

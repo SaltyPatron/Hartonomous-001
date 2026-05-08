@@ -243,6 +243,13 @@ public static class CanonicalTextDecomposer
             if (gcCpCount == 1)
             {
                 gcCentroid = cpCentroids[firstCp];
+
+                HashKey gcKey = new(gcHash);
+                if (physicalityEmitted.Add(gcKey))
+                {
+                    batch.AddPhysicalityPoint4d(gcHandle, "s3_position", gcCentroid.X, gcCentroid.Y, gcCentroid.Z, gcCentroid.M);
+                    c.PhysicalityRows++;
+                }
             }
             else
             {
@@ -251,8 +258,8 @@ public static class CanonicalTextDecomposer
                 gcCentroid = BaseDecomposer.MeanCentroid(verts);
 
                 // Multi-cp graphemes get a contour LINESTRINGZM stored in
-                // physicality. (Single-cp graphemes don't — their centroid IS
-                // the codepoint's POINTZM, already memoized at codepoint level.)
+                // physicality. Single-cp graphemes already emitted their own
+                // POINTZM above so the entity hash has a persisted centroid.
                 HashKey gcKey = new(gcHash);
                 if (physicalityEmitted.Add(gcKey))
                 {
@@ -366,6 +373,13 @@ public static class CanonicalTextDecomposer
             if (gcCount == 1)
             {
                 wfCentroid = gcCentroids[firstGc];
+
+                HashKey wfKey = new(wfHash);
+                if (physicalityEmitted.Add(wfKey))
+                {
+                    batch.AddPhysicalityPoint4d(wfHandle, "s3_position", wfCentroid.X, wfCentroid.Y, wfCentroid.Z, wfCentroid.M);
+                    c.PhysicalityRows++;
+                }
             }
             else
             {
@@ -421,13 +435,20 @@ public static class CanonicalTextDecomposer
             compositionCentroid = wordRanges.Count > 0
                 ? GetWordCentroid(wordRanges[0], graphemeRanges, gcIndexByByteOffset, gcCentroids)
                 : default;
+
+            HashKey ckey = new(compositionHash);
+            if (physicalityEmitted.Add(ckey))
+            {
+                batch.AddPhysicalityPoint4d(compositionHandle, "s3_position", compositionCentroid.X, compositionCentroid.Y, compositionCentroid.Z, compositionCentroid.M);
+                c.PhysicalityRows++;
+            }
         }
         else if (wordRanges.Count == 0)
         {
             // Whitespace-only / punctuation-only / empty input: composition
             // entity exists (so callers always have a handle to refer to)
             // but has no geometric trajectory through word_form centroids.
-            // Skip physicality emission. Centroid defaults to origin.
+            // Centroid defaults to origin.
             compositionCentroid = default;
         }
         else

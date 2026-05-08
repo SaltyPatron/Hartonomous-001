@@ -250,7 +250,9 @@
 -- @include schema/functions/hausdorff_4d_geom.sql
 -- @include schema/functions/entity_centroid_4d.sql
 -- @include schema/functions/geom_to_pointzm.sql
+-- @include schema/functions/populate_sequence_physicality.sql
 -- @include schema/functions/populate_edge_trajectories.sql
+-- @include schema/functions/count_missing_edge_trajectories.sql
 -- @include schema/functions/physicality_linestring4d.sql
 -- @include schema/functions/physicality_point4d.sql
 -- Read helpers
@@ -280,8 +282,9 @@
 -- @include schema/functions/recompose_text.sql
 -- Significance machinery (prime_edge_significance_per_arena removed —
 -- it referenced substrate.staging_edge which no longer exists. The
--- per-arena chunked primer below is what the C# pipeline calls at end of
--- phase via PrimeAllSignificanceAsync.)
+-- per-arena chunked primer below is what the C# pipeline calls from the
+-- phase-owned PrimeAllSignificanceAsync post-pass.)
+-- @include schema/functions/reset_arena_priming_state.sql
 -- @include schema/functions/prime_unprimed_edges_chunk.sql
 -- @include schema/functions/prune_significance.sql
 -- @include schema/functions/prune_significance_for_context.sql

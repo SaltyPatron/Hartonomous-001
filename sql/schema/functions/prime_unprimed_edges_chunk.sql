@@ -1,10 +1,10 @@
 -- substrate.prime_unprimed_edges_chunk(p_arena_id, p_chunk_size)
 --
--- Backfill primer for arenas that didn't get inline cross-product at
--- edge-insert time (drain_staging_edge_chunk handles steady state per AP-1).
--- This function is for: (a) edges inserted before the AP-1 inline
--- cross-product was added, and (b) new arenas added after some edges
--- already exist.
+-- Phase-owned significance primer. The caller resets the per-arena scan at
+-- the start of a priming pass, then this function advances over
+-- substrate.edge's PK index in bounded chunks. ON CONFLICT makes re-scanning
+-- already-primed edges idempotent while still catching later phases that add
+-- lower edge_type_id values.
 --
 -- Watermark-based forward scan over substrate.edge's PK index
 -- (edge_type_id, hash). Per-arena state lives in
@@ -96,8 +96,11 @@ BEGIN
          WHERE context_type_id = p_arena_id;
     END IF;
 
-    RETURN v_inserted;
+    -- Return rows scanned, not rows inserted. A chunk can legitimately scan
+    -- only already-primed rows; returning inserted rows would falsely signal
+    -- completion and leave later edges unvisited.
+    RETURN COALESCE(v_chunk_count, 0);
 END $$;
 
 COMMENT ON FUNCTION substrate.prime_unprimed_edges_chunk(INT, INT) IS
-    'Per-arena backfill primer. Watermark-driven forward scan over substrate.edge PK index. Replaces the anti-join shape that triggered PG18 batched-HashJoin slot mismatch.';
+    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index and avoids the anti-join shape that triggered PG18 batched-HashJoin slot mismatch.';

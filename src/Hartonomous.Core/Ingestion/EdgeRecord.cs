@@ -18,7 +18,7 @@ namespace Hartonomous.Core.Ingestion;
 /// non-null, the drain INSERT lifts it via ST_GeomFromWKB straight into
 /// substrate.edge.geom — no post-pass populate. When null, the row goes in
 /// with geom = NULL and an end-of-phase
-/// substrate.populate_edge_trajectories backfills from
+/// substrate.populate_edge_trajectories populates from
 /// substrate.edge_member ⋈ substrate.physicality (s3_position).
 /// </summary>
 public sealed record EdgeRecord(

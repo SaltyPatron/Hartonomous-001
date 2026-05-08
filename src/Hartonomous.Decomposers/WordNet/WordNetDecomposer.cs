@@ -206,13 +206,15 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
 
                 List<EntityHandle> memberHandles = new(syn.Words.Count);
                 List<byte[]> memberHashes = new(syn.Words.Count);
+                List<(byte[] Hash, (double X, double Y, double Z, double M) Centroid)> memberPhysicalityComponents = new(syn.Words.Count);
                 foreach (SynsetWord sw in syn.Words)
                 {
-                    (EntityHandle h, byte[] lemmaHash, _) =
+                    (EntityHandle h, byte[] lemmaHash, (double X, double Y, double Z, double M) lemmaCentroid) =
                         EmitText(batch, sw.Word, _codepointProperties, "lemma", TrustPriorMu);
                     batch.AddSignificance(h, "source_authority", TrustPriorMu);
                     memberHandles.Add(h);
                     memberHashes.Add(lemmaHash);
+                    memberPhysicalityComponents.Add((lemmaHash, lemmaCentroid));
                     entityCount++;
                 }
 
@@ -221,8 +223,11 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 // content. Sorting drops member-order from the identity (the
                 // order survives via has_sense edge member positions, not in
                 // the synset's content).
-                byte[][] sortedLemmaHashes = memberHashes
-                    .OrderBy(h => h, ByteArraySortComparer.Instance)
+                (byte[] Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents = memberPhysicalityComponents
+                    .OrderBy(component => component.Hash, ByteArraySortComparer.Instance)
+                    .ToArray();
+                byte[][] sortedLemmaHashes = sortedMemberPhysicalityComponents
+                    .Select(component => component.Hash)
                     .ToArray();
 
                 (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
@@ -259,6 +264,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 byte[] synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
 
                 EntityHandle synsetHandle = batch.AddEntity(synsetHash, "synset");
+                AddSynsetPhysicality(batch, synsetHandle, sortedMemberPhysicalityComponents);
                 batch.AddSignificance(synsetHandle, "source_authority", TrustPriorMu);
                 entityCount++;
 
@@ -482,6 +488,31 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
         {
             await refWriter.DisposeAsync();
         }
+    }
+
+    private static void AddSynsetPhysicality(
+        IIngestionBatch batch,
+        EntityHandle synsetHandle,
+        (byte[] Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents)
+    {
+        if (sortedMemberPhysicalityComponents.Length == 0)
+        {
+            return;
+        }
+
+        int vertexCount = Math.Max(2, sortedMemberPhysicalityComponents.Length);
+        (double X1, double X2, double X3, double X4)[] vertices = new (double X1, double X2, double X3, double X4)[vertexCount];
+        for (int index = 0; index < sortedMemberPhysicalityComponents.Length; index++)
+        {
+            (double x, double y, double z, double m) = sortedMemberPhysicalityComponents[index].Centroid;
+            vertices[index] = (x, y, z, m);
+        }
+        if (sortedMemberPhysicalityComponents.Length == 1)
+        {
+            vertices[1] = vertices[0];
+        }
+
+        batch.AddPhysicalityLineString4d(synsetHandle, "contour", vertices.AsSpan());
     }
 
     /// <summary>

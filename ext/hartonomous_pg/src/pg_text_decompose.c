@@ -1123,7 +1123,15 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
         sig.mus[sig.count] = trust_mu;
         sig.count++;
 
-        if (cpCount > 1) {
+        if (cpCount == 1) {
+            phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
+            phys.entity_hashes[phys.count] = gh;
+            phys.content_hashes[phys.count] = gh;
+            phys.wkbs[phys.count] = point4d_to_wkb(
+                gc_centroids[gi*4+0], gc_centroids[gi*4+1],
+                gc_centroids[gi*4+2], gc_centroids[gi*4+3]);
+            phys.count++;
+        } else if (cpCount > 1) {
             phys.phys_type_ids[phys.count] = ids.physicality_type_contour;
             phys.entity_hashes[phys.count] = gh;
             phys.content_hashes[phys.count] = gh;
@@ -1169,7 +1177,15 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
         sig.mus[sig.count] = trust_mu;
         sig.count++;
 
-        if (gcCount > 1) {
+        if (gcCount == 1) {
+            phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
+            phys.entity_hashes[phys.count] = wh;
+            phys.content_hashes[phys.count] = wh;
+            phys.wkbs[phys.count] = point4d_to_wkb(
+                w_centroids[wi*4+0], w_centroids[wi*4+1],
+                w_centroids[wi*4+2], w_centroids[wi*4+3]);
+            phys.count++;
+        } else if (gcCount > 1) {
             phys.phys_type_ids[phys.count] = ids.physicality_type_contour;
             phys.entity_hashes[phys.count] = wh;
             phys.content_hashes[phys.count] = wh;
@@ -1200,7 +1216,15 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
         sig.entity_hashes[sig.count] = ch;
         sig.mus[sig.count] = trust_mu;
         sig.count++;
-        if (wN > 1) {
+        if (wN == 1) {
+            phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
+            phys.entity_hashes[phys.count] = ch;
+            phys.content_hashes[phys.count] = ch;
+            phys.wkbs[phys.count] = point4d_to_wkb(
+                comp_centroid[0], comp_centroid[1],
+                comp_centroid[2], comp_centroid[3]);
+            phys.count++;
+        } else if (wN > 1) {
             phys.phys_type_ids[phys.count] = ids.physicality_type_contour;
             phys.entity_hashes[phys.count] = ch;
             phys.content_hashes[phys.count] = ch;

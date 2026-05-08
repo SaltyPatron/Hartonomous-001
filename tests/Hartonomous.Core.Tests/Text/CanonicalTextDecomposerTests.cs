@@ -114,10 +114,10 @@ public sealed class CanonicalTextDecomposerTests
 
         // Physicality rows:
         //   - codepoint POINTZM × 3 unique (d, o, g)
-        //   - single-cp graphemes don't get a contour (centroid IS the codepoint POINTZM)
+        //   - single-cp graphemes get POINTZM × 3 so their entity hashes have persisted centroids
         //   - word_form "dog" has 3 graphemes → emits a contour LINESTRINGZM (1 row)
-        //   - composition has only 1 child (the word_form) → no contour
-        Assert.Equal(3, batch.PhysicalityPoint4dAdded);
+        //   - composition has only 1 child (the word_form) → POINTZM at that centroid
+        Assert.Equal(7, batch.PhysicalityPoint4dAdded);
         Assert.Equal(1, batch.PhysicalityLineString4dAdded);
 
         // Significance: every distinct hash gets one source_authority row.

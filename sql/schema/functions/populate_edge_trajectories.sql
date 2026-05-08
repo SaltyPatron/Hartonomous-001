@@ -6,46 +6,48 @@ AS $$
 DECLARE
     v_updated BIGINT;
 BEGIN
-    WITH candidates AS (
-        SELECT e.edge_type_id, e.hash
+        WITH per_edge_pts AS (
+                SELECT e.edge_type_id, e.hash AS edge_hash,
+                             em.edge_role_id, em.role_position, em.entity_hash,
+                             substrate.geom_to_pointzm(
+                                     substrate.entity_centroid_4d(em.entity_hash)) AS cgeom
           FROM substrate.edge e
-         WHERE e.geom IS NULL
+                    JOIN substrate.edge_member em
+                        ON em.edge_type_id = e.edge_type_id
+                     AND em.edge_hash    = e.hash
+                 WHERE e.geom IS NULL
+        ),
+        candidates AS (
+                SELECT edge_type_id, edge_hash
+                    FROM per_edge_pts
+                 GROUP BY edge_type_id, edge_hash
+                HAVING count(*) >= 2
+                     AND count(cgeom) = count(*)
+                 ORDER BY edge_type_id, edge_hash
          LIMIT p_limit
     ),
-    per_edge_pts AS (
-        SELECT em.edge_type_id, em.edge_hash,
-               em.edge_role_id, em.entity_hash,
-               substrate.geom_to_pointzm(
-                   substrate.entity_centroid_4d(em.entity_hash)) AS cgeom
-          FROM candidates c
-          JOIN substrate.edge_member em
-            ON em.edge_type_id = c.edge_type_id
-           AND em.edge_hash    = c.hash
-    ),
     aggregated AS (
-        SELECT edge_type_id, edge_hash,
-               ST_MakeLine(cgeom ORDER BY edge_role_id, entity_hash) AS line_geom,
-               (array_agg(cgeom ORDER BY edge_role_id, entity_hash))[1] AS first_geom,
-               count(*) FILTER (WHERE cgeom IS NOT NULL) AS valid_count
-          FROM per_edge_pts
-         WHERE cgeom IS NOT NULL
-         GROUP BY edge_type_id, edge_hash
+                SELECT p.edge_type_id, p.edge_hash,
+                             ST_MakeLine(p.cgeom ORDER BY p.edge_role_id, p.role_position, p.entity_hash) AS line_geom,
+                             count(*) AS member_count
+                    FROM per_edge_pts p
+                    JOIN candidates c
+                        ON c.edge_type_id = p.edge_type_id
+                     AND c.edge_hash    = p.edge_hash
+                 GROUP BY p.edge_type_id, p.edge_hash
     )
     UPDATE substrate.edge e
-       SET geom = CASE
-                      WHEN a.line_geom IS NOT NULL AND ST_NumPoints(a.line_geom) >= 2 THEN a.line_geom
-                      WHEN a.first_geom IS NOT NULL                                  THEN a.first_geom
-                      ELSE NULL
-                   END
+             SET geom = a.line_geom
       FROM aggregated a
      WHERE e.edge_type_id = a.edge_type_id
        AND e.hash         = a.edge_hash
        AND e.geom IS NULL
-       AND a.valid_count >= 1;
+             AND a.member_count >= 2
+             AND ST_NumPoints(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. Participants are coerced to POINTZM via substrate.geom_to_pointzm before ST_MakeLine.';
+    'Populate substrate.edge.geom with LINESTRINGZM through all participant centroids in role order. Edges with missing participant centroids are left NULL so the phase can fail truthfully.';

@@ -16,9 +16,18 @@ BEGIN
     )
     ON CONFLICT (phase_code) DO UPDATE
         SET status        = EXCLUDED.status,
-            started_at    = COALESCE(monitor.phase_status.started_at, EXCLUDED.started_at),
-            completed_at  = EXCLUDED.completed_at,
-            error_message = EXCLUDED.error_message;
+            started_at    = CASE
+                                WHEN EXCLUDED.status IN ('started','running') THEN EXCLUDED.started_at
+                                ELSE monitor.phase_status.started_at
+                            END,
+            completed_at  = CASE
+                                WHEN EXCLUDED.status IN ('started','running') THEN NULL
+                                ELSE EXCLUDED.completed_at
+                            END,
+            error_message = CASE
+                                WHEN EXCLUDED.status IN ('started','running','completed') THEN NULL
+                                ELSE EXCLUDED.error_message
+                            END;
 END $$;
 COMMENT ON PROCEDURE monitor.update_phase_status(TEXT, TEXT, TEXT) IS
     'Upsert the last-known status of a phase. Status: running, completed, failed, skipped.';

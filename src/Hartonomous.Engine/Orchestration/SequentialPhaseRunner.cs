@@ -149,11 +149,17 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             // Post-phase enrichment: single authority for these operations.
             // Order is significant: trajectories must exist before significance
             // priming can correctly compute costs over the edge graph.
-            //   1. Backfill substrate.edge.geom for edges whose producer
-            //      couldn't attach inline LINESTRINGZM (cross-batch participants,
+            //   0. Wait until all phase emissions are durable in substrate;
+            //      the post-passes read database state, not channel state.
+            //   1. Populate missing sequence-derived entity physicality so
+            //      every sequence-backed participant has a memoized centroid.
+            //   2. Populate substrate.edge.geom for edges whose producer did
+            //      not attach inline LINESTRINGZM (cross-batch participants,
             //      LINESTRINGZM-physicality compositions, etc.).
-            //   2. Prime substrate.edge_significance for every arena in
+            //   3. Prime substrate.edge_significance for every arena in
             //      substrate.significance_context (AP-1: cross-product, no filter).
+            await _pipeline.DrainPendingAsync(ct);
+            await _pipeline.PopulateSequencePhysicalityAsync(ct);
             await _pipeline.PopulateEdgeTrajectoriesAsync(ct);
             await _pipeline.PrimeAllSignificanceAsync(ct);
 

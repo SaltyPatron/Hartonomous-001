@@ -25,6 +25,20 @@ public interface IIngestionPipeline : IAsyncDisposable
     Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct);
 
     /// <summary>
+    /// Wait until all records submitted so far have been drained to substrate,
+    /// without closing the pipeline to later phase emissions.
+    /// </summary>
+    Task DrainPendingAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Populate missing entity physicality for sequence-backed compositions.
+    /// Call once at the end of a decomposition phase after emissions are
+    /// durable and before edge trajectory population reads participant
+    /// centroids.
+    /// </summary>
+    Task PopulateSequencePhysicalityAsync(CancellationToken ct);
+
+    /// <summary>
     /// Populate edge trajectory geometry for all edges whose trajectories are
     /// not yet set. Call once at the end of a decomposition phase rather than
     /// per-batch.

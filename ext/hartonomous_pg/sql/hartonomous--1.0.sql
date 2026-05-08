@@ -3649,6 +3649,63 @@ $$;
 COMMENT ON FUNCTION substrate.geom_to_pointzm(geometry) IS
     'Collapse any GeometryZM subtype to a representative POINTZM = 4D mean of its vertex stream. Used before ST_MakeLine in populate_edge_trajectories.';
 
+-- ── sql/schema/functions/populate_sequence_physicality.sql ───────────────────────────────────────
+-- Populate missing composition physicality from existing sequence child centroids.
+CREATE OR REPLACE FUNCTION substrate.populate_sequence_physicality(p_limit INT)
+RETURNS BIGINT
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_inserted BIGINT;
+BEGIN
+    WITH candidate_parents AS (
+        SELECT s.parent_hash
+          FROM substrate.sequence s
+         WHERE NOT EXISTS (
+                   SELECT 1
+                     FROM substrate.physicality existing
+                    WHERE existing.entity_hash = s.parent_hash)
+         GROUP BY s.parent_hash
+        HAVING count(*) >= 1
+           AND count(substrate.geom_to_pointzm(substrate.entity_centroid_4d(s.child_hash))) = count(*)
+         ORDER BY s.parent_hash
+         LIMIT p_limit
+    ), child_points AS (
+        SELECT s.parent_hash,
+               s.ordinal,
+               s.child_hash,
+               substrate.geom_to_pointzm(substrate.entity_centroid_4d(s.child_hash)) AS point_geom
+          FROM substrate.sequence s
+          JOIN candidate_parents c ON c.parent_hash = s.parent_hash
+    ), assembled AS (
+        SELECT parent_hash,
+               count(*) AS child_count,
+               (array_agg(point_geom ORDER BY ordinal, child_hash))[1] AS first_point,
+               ST_MakeLine(point_geom ORDER BY ordinal, child_hash) AS line_geom
+          FROM child_points
+         GROUP BY parent_hash
+    ), rows_to_insert AS (
+        SELECT CASE WHEN a.child_count = 1 THEN s3.id ELSE contour.id END AS physicality_type_id,
+               a.parent_hash AS entity_hash,
+               a.parent_hash AS content_hash,
+               CASE WHEN a.child_count = 1 THEN a.first_point ELSE a.line_geom END AS geom
+          FROM assembled a
+          JOIN substrate.physicality_type s3 ON s3.code = 's3_position'
+          JOIN substrate.physicality_type contour ON contour.code = 'contour'
+    )
+    INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+    SELECT physicality_type_id, entity_hash, content_hash, geom
+      FROM rows_to_insert
+     WHERE geom IS NOT NULL
+    ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING;
+
+    GET DIAGNOSTICS v_inserted = ROW_COUNT;
+    RETURN v_inserted;
+END $$;
+
+COMMENT ON FUNCTION substrate.populate_sequence_physicality(INT) IS
+    'Populate missing entity physicality from substrate.sequence child centroids: singleton compositions receive POINTZM s3_position, multi-child compositions receive contour LINESTRINGZM.';
+
 -- ── sql/schema/functions/populate_edge_trajectories.sql ───────────────────────────────────────
 -- Populate edge trajectories from participant centroids.
 CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT)
@@ -3658,49 +3715,65 @@ AS $$
 DECLARE
     v_updated BIGINT;
 BEGIN
-    WITH candidates AS (
-        SELECT e.edge_type_id, e.hash
+        WITH per_edge_pts AS (
+                SELECT e.edge_type_id, e.hash AS edge_hash,
+                             em.edge_role_id, em.role_position, em.entity_hash,
+                             substrate.geom_to_pointzm(
+                                     substrate.entity_centroid_4d(em.entity_hash)) AS cgeom
           FROM substrate.edge e
-         WHERE e.geom IS NULL
+                    JOIN substrate.edge_member em
+                        ON em.edge_type_id = e.edge_type_id
+                     AND em.edge_hash    = e.hash
+                 WHERE e.geom IS NULL
+        ),
+        candidates AS (
+                SELECT edge_type_id, edge_hash
+                    FROM per_edge_pts
+                 GROUP BY edge_type_id, edge_hash
+                HAVING count(*) >= 2
+                     AND count(cgeom) = count(*)
+                 ORDER BY edge_type_id, edge_hash
          LIMIT p_limit
     ),
-    per_edge_pts AS (
-        SELECT em.edge_type_id, em.edge_hash,
-               em.edge_role_id, em.entity_hash,
-               substrate.geom_to_pointzm(
-                   substrate.entity_centroid_4d(em.entity_hash)) AS cgeom
-          FROM candidates c
-          JOIN substrate.edge_member em
-            ON em.edge_type_id = c.edge_type_id
-           AND em.edge_hash    = c.hash
-    ),
     aggregated AS (
-        SELECT edge_type_id, edge_hash,
-               ST_MakeLine(cgeom ORDER BY edge_role_id, entity_hash) AS line_geom,
-               (array_agg(cgeom ORDER BY edge_role_id, entity_hash))[1] AS first_geom,
-               count(*) FILTER (WHERE cgeom IS NOT NULL) AS valid_count
-          FROM per_edge_pts
-         WHERE cgeom IS NOT NULL
-         GROUP BY edge_type_id, edge_hash
+                SELECT p.edge_type_id, p.edge_hash,
+                             ST_MakeLine(p.cgeom ORDER BY p.edge_role_id, p.role_position, p.entity_hash) AS line_geom,
+                             count(*) AS member_count
+                    FROM per_edge_pts p
+                    JOIN candidates c
+                        ON c.edge_type_id = p.edge_type_id
+                     AND c.edge_hash    = p.edge_hash
+                 GROUP BY p.edge_type_id, p.edge_hash
     )
     UPDATE substrate.edge e
-       SET geom = CASE
-                      WHEN a.line_geom IS NOT NULL AND ST_NumPoints(a.line_geom) >= 2 THEN a.line_geom
-                      WHEN a.first_geom IS NOT NULL                                  THEN a.first_geom
-                      ELSE NULL
-                   END
+             SET geom = a.line_geom
       FROM aggregated a
      WHERE e.edge_type_id = a.edge_type_id
        AND e.hash         = a.edge_hash
        AND e.geom IS NULL
-       AND a.valid_count >= 1;
+             AND a.member_count >= 2
+             AND ST_NumPoints(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. Participants are coerced to POINTZM via substrate.geom_to_pointzm before ST_MakeLine.';
+    'Populate substrate.edge.geom with LINESTRINGZM through all participant centroids in role order. Edges with missing participant centroids are left NULL so the phase can fail truthfully.';
+
+-- ── sql/schema/functions/count_missing_edge_trajectories.sql ───────────────────────────────────────
+-- Count edges whose relation trajectory has not been populated.
+CREATE OR REPLACE FUNCTION substrate.count_missing_edge_trajectories()
+RETURNS BIGINT
+LANGUAGE sql STABLE
+AS $$
+    SELECT count(*)::BIGINT
+      FROM substrate.edge
+     WHERE geom IS NULL;
+$$;
+
+COMMENT ON FUNCTION substrate.count_missing_edge_trajectories() IS
+    'Count substrate edges with NULL geom. Phase post-passes use this as the fail-loud semantic gate for edge trajectory completeness.';
 
 -- ── sql/schema/functions/physicality_linestring4d.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.physicality_linestring4d(
@@ -4299,17 +4372,37 @@ COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
 
 -- Significance machinery (prime_edge_significance_per_arena removed —
 -- it referenced substrate.staging_edge which no longer exists. The
--- per-arena chunked primer below is what the C# pipeline calls at end of
--- phase via PrimeAllSignificanceAsync.)
+-- per-arena chunked primer below is what the C# pipeline calls from the
+-- phase-owned PrimeAllSignificanceAsync post-pass.)
+
+-- ── sql/schema/functions/reset_arena_priming_state.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.reset_arena_priming_state()
+RETURNS BIGINT
+LANGUAGE sql VOLATILE
+AS $$
+    WITH reset_rows AS (
+        UPDATE substrate.arena_priming_state
+           SET last_edge_type_id = 0,
+               last_hash = '\x'::BYTEA,
+               completed = FALSE,
+               updated_at = now()
+         RETURNING 1
+    )
+    SELECT count(*)::BIGINT FROM reset_rows;
+$$;
+
+COMMENT ON FUNCTION substrate.reset_arena_priming_state() IS
+    'Reset per-arena significance-primer watermarks before a phase-owned priming pass. Re-scanning is idempotent via edge_significance ON CONFLICT and is required because later phases can add lower edge_type_id values.';
+
 
 -- ── sql/schema/functions/prime_unprimed_edges_chunk.sql ───────────────────────────────────────
 -- substrate.prime_unprimed_edges_chunk(p_arena_id, p_chunk_size)
 --
--- Backfill primer for arenas that didn't get inline cross-product at
--- edge-insert time (drain_staging_edge_chunk handles steady state per AP-1).
--- This function is for: (a) edges inserted before the AP-1 inline
--- cross-product was added, and (b) new arenas added after some edges
--- already exist.
+-- Phase-owned significance primer. The caller resets the per-arena scan at
+-- the start of a priming pass, then this function advances over
+-- substrate.edge's PK index in bounded chunks. ON CONFLICT makes re-scanning
+-- already-primed edges idempotent while still catching later phases that add
+-- lower edge_type_id values.
 --
 -- Watermark-based forward scan over substrate.edge's PK index
 -- (edge_type_id, hash). Per-arena state lives in
@@ -4401,11 +4494,14 @@ BEGIN
          WHERE context_type_id = p_arena_id;
     END IF;
 
-    RETURN v_inserted;
+    -- Return rows scanned, not rows inserted. A chunk can legitimately scan
+    -- only already-primed rows; returning inserted rows would falsely signal
+    -- completion and leave later edges unvisited.
+    RETURN COALESCE(v_chunk_count, 0);
 END $$;
 
 COMMENT ON FUNCTION substrate.prime_unprimed_edges_chunk(INT, INT) IS
-    'Per-arena backfill primer. Watermark-driven forward scan over substrate.edge PK index. Replaces the anti-join shape that triggered PG18 batched-HashJoin slot mismatch.';
+    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index and avoids the anti-join shape that triggered PG18 batched-HashJoin slot mismatch.';
 
 -- ── sql/schema/functions/prune_significance.sql ───────────────────────────────────────
 -- substrate.prune_significance(
@@ -8077,9 +8173,18 @@ BEGIN
     )
     ON CONFLICT (phase_code) DO UPDATE
         SET status        = EXCLUDED.status,
-            started_at    = COALESCE(monitor.phase_status.started_at, EXCLUDED.started_at),
-            completed_at  = EXCLUDED.completed_at,
-            error_message = EXCLUDED.error_message;
+            started_at    = CASE
+                                WHEN EXCLUDED.status IN ('started','running') THEN EXCLUDED.started_at
+                                ELSE monitor.phase_status.started_at
+                            END,
+            completed_at  = CASE
+                                WHEN EXCLUDED.status IN ('started','running') THEN NULL
+                                ELSE EXCLUDED.completed_at
+                            END,
+            error_message = CASE
+                                WHEN EXCLUDED.status IN ('started','running','completed') THEN NULL
+                                ELSE EXCLUDED.error_message
+                            END;
 END $$;
 COMMENT ON PROCEDURE monitor.update_phase_status(TEXT, TEXT, TEXT) IS
     'Upsert the last-known status of a phase. Status: running, completed, failed, skipped.';
