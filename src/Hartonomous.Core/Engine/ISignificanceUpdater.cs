@@ -1,22 +1,33 @@
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Core.Engine;
 
 public interface ISignificanceUpdater
 {
-    Task RecordComparisonAsync(
-        long winnerId,
-        long loserId,
+    Task RecordEntityComparisonAsync(
+        EntityHandle winner,
+        EntityHandle loser,
         string contextCode,
-        bool isEntity,
         CancellationToken ct);
 
-    Task InitializeAsync(
-        long targetId,
+    Task RecordEdgeComparisonAsync(
+        EdgeHandle winner,
+        EdgeHandle loser,
+        string contextCode,
+        CancellationToken ct);
+
+    Task InitializeEntityAsync(
+        EntityHandle target,
         string contextCode,
         double initialMu,
-        bool isEntity,
+        CancellationToken ct);
+
+    Task InitializeEdgeAsync(
+        EdgeHandle target,
+        string contextCode,
+        double initialMu,
         CancellationToken ct);
 
     Task<int> PruneBelowThresholdAsync(

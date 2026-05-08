@@ -71,6 +71,11 @@ public static class SubstrateFunctionNames
     public const string RecomposeText = "substrate.recompose_text";
     public const string RecomposeAuditWalk = "substrate.recompose_audit_walk";
     public const string RecordOutcome = "substrate.record_outcome";
+    public const string RecordEdgeComparison = "substrate.record_edge_comparison";
+    public const string RecordEntityComparison = "substrate.record_entity_comparison";
+    public const string InitializeEdgeSignificance = "substrate.initialize_edge_significance";
+    public const string InitializeEntitySignificance = "substrate.initialize_entity_significance";
+    public const string PruneSignificanceForContext = "substrate.prune_significance_for_context";
     public const string Recall = "substrate.recall";
     public const string RefinementSummary = "substrate.refinement_summary";
     public const string RefinementSummaryTop = "substrate.refinement_summary_top";
@@ -145,6 +150,11 @@ public static class SubstrateFunctionNames
         RecomposeText,
         RecomposeAuditWalk,
         RecordOutcome,
+        RecordEdgeComparison,
+        RecordEntityComparison,
+        InitializeEdgeSignificance,
+        InitializeEntitySignificance,
+        PruneSignificanceForContext,
         Recall,
         RefinementSummary,
         RefinementSummaryTop,

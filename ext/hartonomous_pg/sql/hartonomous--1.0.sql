@@ -4464,6 +4464,44 @@ END $$;
 COMMENT ON FUNCTION substrate.prune_significance(DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN) IS
     'Remove low-confidence rows from substrate.edge_significance: μ < p_min_mu AND σ > p_max_sigma (each NULL disables that side). p_dry_run = TRUE returns the would-prune count without deleting. NULL/NULL is a no-op refusing to delete everything. Returns rows pruned (or to-be-pruned).';
 
+-- ── sql/schema/functions/prune_significance_for_context.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.prune_significance_for_context(
+    p_context_code TEXT,
+    p_min_mu       DOUBLE PRECISION
+)
+RETURNS BIGINT
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_context_id INT;
+    v_deleted BIGINT;
+BEGIN
+    v_context_id := substrate.resolve_context_id(p_context_code);
+    IF v_context_id IS NULL THEN
+        RAISE EXCEPTION 'unknown significance context: %', p_context_code;
+    END IF;
+
+    WITH deleted_edges AS (
+        DELETE FROM substrate.edge_significance
+         WHERE context_type_id = v_context_id
+           AND mu < p_min_mu
+         RETURNING 1
+    ), deleted_entities AS (
+        DELETE FROM substrate.entity_significance
+         WHERE context_type_id = v_context_id
+           AND mu < p_min_mu
+         RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM deleted_edges) +
+           (SELECT count(*) FROM deleted_entities)
+      INTO v_deleted;
+
+    RETURN v_deleted;
+END $$;
+
+COMMENT ON FUNCTION substrate.prune_significance_for_context(TEXT, DOUBLE PRECISION) IS
+    'Prune entity_significance and edge_significance rows below p_min_mu within one arena code. Returns total rows deleted across both substrate significance surfaces.';
+
 -- ── sql/schema/functions/record_comparison.sql ───────────────────────────────────────
 -- substrate.record_comparison(
 --     p_arena_id              INT,
@@ -4551,7 +4589,7 @@ BEGIN
     -- One bulk-Glicko call covers both updates.
     --   row 0: player=winner, opponent=loser, score=1.0
     --   row 1: player=loser,  opponent=winner, score=0.0
-    SELECT g.new_mu, g.new_sigma, g.new_volatility
+    SELECT g.new_mu, g.new_sigma, g.new_vol
       INTO new_mu, new_sigma, new_vol
       FROM public.glicko2_bulk_update(
           ARRAY[w_mu,    l_mu]::DOUBLE PRECISION[],
@@ -4583,6 +4621,130 @@ END $$;
 
 COMMENT ON FUNCTION substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA) IS
     'Glicko-2 head-to-head update on substrate.edge_significance for a (winner, loser) pair within an arena. Calls public.glicko2_bulk_update once with n=2 — the formula lives in C (ext/libhartonomous/src/glicko_bulk.c), not in plpgsql. Auto-creates missing rows at default rating before updating. games += 1 on both rows.';
+
+-- ── sql/schema/functions/record_edge_comparison.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.record_edge_comparison(
+    p_context_code          TEXT,
+    p_winner_edge_type_code TEXT,
+    p_winner_edge_hash      BYTEA,
+    p_loser_edge_type_code  TEXT,
+    p_loser_edge_hash       BYTEA
+)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_context_id INT;
+    v_winner_edge_type_id INT;
+    v_loser_edge_type_id INT;
+BEGIN
+    v_context_id := substrate.resolve_context_id(p_context_code);
+    IF v_context_id IS NULL THEN
+        RAISE EXCEPTION 'unknown significance context: %', p_context_code;
+    END IF;
+
+    SELECT id INTO v_winner_edge_type_id
+      FROM substrate.edge_type
+     WHERE code = p_winner_edge_type_code;
+    IF v_winner_edge_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown winner edge_type: %', p_winner_edge_type_code;
+    END IF;
+
+    SELECT id INTO v_loser_edge_type_id
+      FROM substrate.edge_type
+     WHERE code = p_loser_edge_type_code;
+    IF v_loser_edge_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown loser edge_type: %', p_loser_edge_type_code;
+    END IF;
+
+    PERFORM substrate.record_comparison(
+        v_context_id,
+        v_winner_edge_type_id,
+        p_winner_edge_hash,
+        v_loser_edge_type_id,
+        p_loser_edge_hash);
+END $$;
+
+COMMENT ON FUNCTION substrate.record_edge_comparison(TEXT, TEXT, BYTEA, TEXT, BYTEA) IS
+    'Resolve arena and edge type codes, then record a Glicko-2 head-to-head update on substrate.edge_significance for winner/loser edge handles.';
+
+-- ── sql/schema/functions/record_entity_comparison.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.record_entity_comparison(
+    p_context_code       TEXT,
+    p_winner_entity_hash BYTEA,
+    p_loser_entity_hash  BYTEA
+)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_context_id INT;
+    w_mu       DOUBLE PRECISION;
+    w_sigma    DOUBLE PRECISION;
+    w_vol      DOUBLE PRECISION;
+    w_games    INT;
+    l_mu       DOUBLE PRECISION;
+    l_sigma    DOUBLE PRECISION;
+    l_vol      DOUBLE PRECISION;
+    l_games    INT;
+    new_mu     DOUBLE PRECISION[];
+    new_sigma  DOUBLE PRECISION[];
+    new_vol    DOUBLE PRECISION[];
+BEGIN
+    v_context_id := substrate.resolve_context_id(p_context_code);
+    IF v_context_id IS NULL THEN
+        RAISE EXCEPTION 'unknown significance context: %', p_context_code;
+    END IF;
+
+    INSERT INTO substrate.entity_significance
+        (context_type_id, entity_hash, mu, sigma, volatility, games)
+    VALUES
+        (v_context_id, p_winner_entity_hash, 1500.0, 350.0, 0.06, 0),
+        (v_context_id, p_loser_entity_hash,  1500.0, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, entity_hash) DO NOTHING;
+
+    SELECT mu, sigma, volatility, games
+      INTO w_mu, w_sigma, w_vol, w_games
+      FROM substrate.entity_significance
+     WHERE context_type_id = v_context_id
+       AND entity_hash = p_winner_entity_hash;
+
+    SELECT mu, sigma, volatility, games
+      INTO l_mu, l_sigma, l_vol, l_games
+      FROM substrate.entity_significance
+     WHERE context_type_id = v_context_id
+       AND entity_hash = p_loser_entity_hash;
+
+    SELECT g.new_mu, g.new_sigma, g.new_vol
+      INTO new_mu, new_sigma, new_vol
+      FROM public.glicko2_bulk_update(
+          ARRAY[w_mu,    l_mu]::DOUBLE PRECISION[],
+          ARRAY[w_sigma, l_sigma]::DOUBLE PRECISION[],
+          ARRAY[w_vol,   l_vol]::DOUBLE PRECISION[],
+          ARRAY[l_mu,    w_mu]::DOUBLE PRECISION[],
+          ARRAY[l_sigma, w_sigma]::DOUBLE PRECISION[],
+          ARRAY[1.0,     0.0]::DOUBLE PRECISION[]
+      ) g;
+
+    UPDATE substrate.entity_significance
+       SET mu = new_mu[1],
+           sigma = new_sigma[1],
+           volatility = new_vol[1],
+           games = w_games + 1
+     WHERE context_type_id = v_context_id
+       AND entity_hash = p_winner_entity_hash;
+
+    UPDATE substrate.entity_significance
+       SET mu = new_mu[2],
+           sigma = new_sigma[2],
+           volatility = new_vol[2],
+           games = l_games + 1
+     WHERE context_type_id = v_context_id
+       AND entity_hash = p_loser_entity_hash;
+END $$;
+
+COMMENT ON FUNCTION substrate.record_entity_comparison(TEXT, BYTEA, BYTEA) IS
+    'Glicko-2 head-to-head update on substrate.entity_significance for winner/loser entity hashes within an arena. Uses public.glicko2_bulk_update; auto-creates missing rows at default rating.';
 
 -- ── sql/schema/functions/record_corroboration.sql ───────────────────────────────────────
 -- substrate.record_corroboration(
@@ -4830,6 +4992,71 @@ END $$;
 
 COMMENT ON FUNCTION substrate.record_outcome(INT, BYTEA, BYTEA[]) IS
     'Engine Step 6 outcome update — set-based + native bulk-Glicko. unnest + LATERAL gather pairs; public.glicko2_bulk_update (C) computes new ratings; UPDATE ... FROM unnest applies them. No FOREACH, no per-pair PERFORM.';
+
+-- ── sql/schema/functions/initialize_edge_significance.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.initialize_edge_significance(
+    p_context_code     TEXT,
+    p_edge_type_code   TEXT,
+    p_edge_hash        BYTEA,
+    p_initial_mu       DOUBLE PRECISION
+)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_context_id INT;
+    v_edge_type_id INT;
+BEGIN
+    v_context_id := substrate.resolve_context_id(p_context_code);
+    IF v_context_id IS NULL THEN
+        RAISE EXCEPTION 'unknown significance context: %', p_context_code;
+    END IF;
+
+    SELECT id INTO v_edge_type_id
+      FROM substrate.edge_type
+     WHERE code = p_edge_type_code;
+    IF v_edge_type_id IS NULL THEN
+        RAISE EXCEPTION 'unknown edge_type: %', p_edge_type_code;
+    END IF;
+
+    INSERT INTO substrate.edge_significance
+        (context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)
+    VALUES
+        (v_context_id, v_edge_type_id, p_edge_hash, p_initial_mu, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash)
+    DO UPDATE SET mu = EXCLUDED.mu;
+END $$;
+
+COMMENT ON FUNCTION substrate.initialize_edge_significance(TEXT, TEXT, BYTEA, DOUBLE PRECISION) IS
+    'Initialize or reset the mu value for one edge_significance row addressed by arena code and edge handle. Preserves sigma, volatility, and games on existing rows.';
+
+-- ── sql/schema/functions/initialize_entity_significance.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.initialize_entity_significance(
+    p_context_code TEXT,
+    p_entity_hash  BYTEA,
+    p_initial_mu   DOUBLE PRECISION
+)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_context_id INT;
+BEGIN
+    v_context_id := substrate.resolve_context_id(p_context_code);
+    IF v_context_id IS NULL THEN
+        RAISE EXCEPTION 'unknown significance context: %', p_context_code;
+    END IF;
+
+    INSERT INTO substrate.entity_significance
+        (context_type_id, entity_hash, mu, sigma, volatility, games)
+    VALUES
+        (v_context_id, p_entity_hash, p_initial_mu, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, entity_hash)
+    DO UPDATE SET mu = EXCLUDED.mu;
+END $$;
+
+COMMENT ON FUNCTION substrate.initialize_entity_significance(TEXT, BYTEA, DOUBLE PRECISION) IS
+    'Initialize or reset the mu value for one entity_significance row addressed by arena code and entity hash. Preserves sigma, volatility, and games on existing rows.';
 
 -- ── sql/schema/functions/create_arena.sql ───────────────────────────────────────
 -- substrate.create_arena(code TEXT, backfill BOOLEAN DEFAULT TRUE)

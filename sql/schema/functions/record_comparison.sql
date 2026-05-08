@@ -84,7 +84,7 @@ BEGIN
     -- One bulk-Glicko call covers both updates.
     --   row 0: player=winner, opponent=loser, score=1.0
     --   row 1: player=loser,  opponent=winner, score=0.0
-    SELECT g.new_mu, g.new_sigma, g.new_volatility
+    SELECT g.new_mu, g.new_sigma, g.new_vol
       INTO new_mu, new_sigma, new_vol
       FROM public.glicko2_bulk_update(
           ARRAY[w_mu,    l_mu]::DOUBLE PRECISION[],

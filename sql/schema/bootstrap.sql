@@ -284,9 +284,14 @@
 -- phase via PrimeAllSignificanceAsync.)
 -- @include schema/functions/prime_unprimed_edges_chunk.sql
 -- @include schema/functions/prune_significance.sql
+-- @include schema/functions/prune_significance_for_context.sql
 -- @include schema/functions/record_comparison.sql
+-- @include schema/functions/record_edge_comparison.sql
+-- @include schema/functions/record_entity_comparison.sql
 -- @include schema/functions/record_corroboration.sql
 -- @include schema/functions/record_outcome.sql
+-- @include schema/functions/initialize_edge_significance.sql
+-- @include schema/functions/initialize_entity_significance.sql
 -- @include schema/functions/create_arena.sql
 -- @include schema/functions/create_model_trust_arena.sql
 -- @include schema/functions/populate_codepoint_atoms.sql
