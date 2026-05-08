@@ -16,7 +16,7 @@ BEGIN
             ('substrate.provenance',            10),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            111)
+            ('substrate.edge_type',            114)
         ) AS t(table_name, expected)
     LOOP
         EXECUTE format('SELECT count(*) FROM %s', rec.table_name) INTO actual;

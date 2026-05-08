@@ -271,6 +271,11 @@ public sealed class SequentialPhaseRunnerTests
         public Task PopulateSequencePhysicalityAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<byte[]> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
+        public Task<HashSet<EntityClassificationKey>> GetExistingEntityClassificationsAsync(IReadOnlyCollection<EntityClassificationKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EntityClassificationKey>());
+        public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());
+        public Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<PhysicalityKey>());
+        public Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<SequenceKey>());
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

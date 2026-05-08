@@ -55,6 +55,47 @@
 -- Removed (vs the original 25-row schema, none re-added):
 --   ud_sentence, ud_token, tatoeba_sentence, word_sense, wikt_sense,
 --   bpe_token, inflected_form. See prior version comments.
+--
+-- ARCHITECTURAL CORRECTION (2026-05-08): The per-role-unit / per-tensor-
+-- analysis entity types below (ids 19-54 except 16/17/18) are PHANTOMS from
+-- earlier framing where every model component became its own entity. Per
+-- the user-stated invention (every model calculation = attestation_type on
+-- edges between EXISTING token entities), these are deprecated:
+--
+--   Phantom entity types (deprecated; should become attestation_types on
+--   token↔token edges in the per-role attestation taxonomy seeded in
+--   sql/schema/seed/attestation_type.sql):
+--     attention_pattern, attention_head, attention_archetype,
+--     embedding_position, ffn_neuron, logit_projection, moe_route,
+--     moe_routing_profile, residual_direction, archetype,
+--     svd_rank_component, codec_codevector, codevector,
+--     audio_codec_filter, bbox_projection, class_projection,
+--     conformer_component, conv_filter, diffusion_component,
+--     lora_component, modality_basis_vector, moe_expert_neuron,
+--     moe_route_direction, object_query_slot, vision_feature_direction
+--
+--   Stay (per-tensor-level analysis surfaces — properly attached to the
+--   tensor entity, not to phantom row-level entities. Migrating these to
+--   physicality on the tensor entity is a follow-up):
+--     sparsity_profile, weight_distribution, eigenvalue_spectrum,
+--     svd_spectrum, activation_range, layer_norm_scale,
+--     layer_similarity_pair, rope_freq_table, codec_codebook, codebook,
+--     vocab_coverage_profile
+--
+--   Real structural artifacts (keep):
+--     tensor, model_architecture, tokenizer_model
+--
+-- The per-role attestation_types added in attestation_type.sql
+-- (model_attention_qk_pattern, model_ffn_full_path, model_input_embedding,
+-- model_lm_head_projection, etc.) are the replacement: they live on edges
+-- between token (word_form) entities, NOT as separate entity types.
+--
+-- Until decomposer passes are rewritten to emit token↔token edges instead
+-- of phantom entities, the rows below remain in the seed so existing code
+-- that looks up these codes doesn't crash. Code that creates these phantom
+-- entities is on the deprecation path (see AP-21 in
+-- .claude/rules/45-anti-patterns.md and the architectural correction
+-- note 2026-05-08).
 INSERT INTO substrate.entity_type (code, modality) VALUES
     ('codepoint',                'text'),           --  1
     ('grapheme_cluster',         'text'),           --  2

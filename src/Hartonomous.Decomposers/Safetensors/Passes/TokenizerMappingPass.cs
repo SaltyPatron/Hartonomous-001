@@ -122,14 +122,28 @@ internal sealed partial class TokenizerMappingPass : IModelAnalysisPass
         {
             ct.ThrowIfCancellationRequested();
 
-            byte[] tokenHash = ComputeBpeTokenHash(context, entry.TokenBytes);
-            // BPE token IS a word_form. Its content (the UTF-8 bytes) is the
-            // identity; tokenizer-specific associations (token_id, model
-            // membership) are edges, not a separate entity type per
-            // tokenizer.
-            EntityHandle tokenEntity = session.Batch.AddEntity(tokenHash, "word_form");
+            // Token bytes route through the canonical text decomposer, same
+            // path corpora use. "King" from Llama's vocab and "King" from
+            // Moby Dick produce the SAME word_form entity hash because they
+            // are decomposed identically (codepoint → grapheme_cluster →
+            // word_form Merkle composition). Cross-model AND cross-source
+            // dedup falls out for free. The pass no longer hashes tokens
+            // under a "bptk" kind tag — that broke corpus⇄model collapse.
+            //
+            // Codepoint sequence rows are emitted internally by the native
+            // text_decompose; we no longer enumerate UTF-8 codepoints here.
+            Hartonomous.Core.Text.TextDecomposeResult tokenResult =
+                Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
+                    session.Batch,
+                    entry.TokenBytes,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: context.ProvenanceCode,
+                        TopEntityType: "word_form",
+                        TrustMu: ModelDerivedTrustMu));
+            EntityHandle tokenEntity = tokenResult.RootHandle;
             session.Batch.AddEntityModelSource(tokenEntity, context.Source.ModelSourceId);
-            session.Batch.AddSignificance(tokenEntity, "model_trust", ModelDerivedTrustMu);
+            session.Batch.AddSignificance(
+                tokenEntity, "model_trust", ModelDerivedTrustMu, "model_embedding_proximity");
 
             session.Batch.AddEdge("has_token_in_tokenizer", context.ProvenanceCode,
             [
@@ -141,19 +155,6 @@ internal sealed partial class TokenizerMappingPass : IModelAnalysisPass
                 new EdgeMemberSpec(tokenEntity, "source", 0),
                 new EdgeMemberSpec(session.ModelEntity, "target", 1),
             ]);
-
-            // Compose the bpe_token from its constituent codepoint atoms via
-            // substrate.sequence — same parent/child/ordinal pattern the text
-            // decomposer uses for grapheme_cluster → codepoint. Codepoint
-            // entities dedup with the UCD seed.
-            int ordinal = 0;
-            foreach (int cp in EnumerateUtf8Codepoints(entry.TokenBytes))
-            {
-                EntityHandle cpEntity = session.Batch.AddEntity(
-                    BaseDecomposer.HashCodepoint(cp), "codepoint");
-                ordinal++;
-                sequenceRows++;
-            }
 
             tokenCount++;
             await session.MaybeFlushAsync(FlushThreshold, ct);

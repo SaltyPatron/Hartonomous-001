@@ -133,11 +133,27 @@ internal static class PerRowContentPass
             }
             session.Batch.AddPhysicalityLineString4d(row, "contour", verts.AsSpan());
 
-            session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+            // Per-role-unit edge carries model_per_role_unit_circuit
+            // attestation_type — this is structural model evidence (Track 2:
+            // per-role units are what carries the model's learned function).
+            // The model_trust arena's mu derives from row energy (sumSq) so
+            // higher-magnitude rows get higher initial Glicko-2 priors,
+            // reflecting that they encode stronger learned signal.
+            double rowEnergy = Math.Sqrt(sumSq);
+            // Map to mu band 1500..2500 via row energy / max-row energy
+            // approximation (clamp to keep within Glicko-2 sane range).
+            double mu = Math.Clamp(1500.0 + (rowEnergy * 100.0), 1500.0, 2500.0);
+            EdgeSignificanceSpec[] sigSpecs =
             [
-                new EdgeMemberSpec(t.Entity, "source", 0),
-                new EdgeMemberSpec(row, "target", 1),
-            ]);
+                new EdgeSignificanceSpec("model_trust", "model_per_role_unit_circuit", mu),
+                new EdgeSignificanceSpec("attention_pattern_confidence", "model_per_role_unit_circuit", mu),
+            ];
+            session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+                [
+                    new EdgeMemberSpec(t.Entity, "source", 0),
+                    new EdgeMemberSpec(row, "target", 1),
+                ],
+                sigSpecs);
 
             emitted++;
             await session.MaybeFlushAsync(flushThreshold, ct);
@@ -233,11 +249,24 @@ internal static class PerRowContentPass
             }
             session.Batch.AddPhysicalityLineString4d(unit, "contour", verts.AsSpan());
 
-            session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+            // Same model_per_role_unit_circuit attestation_type as
+            // RunPerRowAsync — rank-N tensors (conv kernels, codec stages,
+            // per-block diffusion / conformer) are still per-role units of
+            // Track 2 transformation tensors. Initial mu scales with row
+            // energy.
+            double unitEnergy = Math.Sqrt(sumSq);
+            double mu = Math.Clamp(1500.0 + (unitEnergy * 100.0), 1500.0, 2500.0);
+            EdgeSignificanceSpec[] sigSpecs =
             [
-                new EdgeMemberSpec(t.Entity, "source", 0),
-                new EdgeMemberSpec(unit, "target", 1),
-            ]);
+                new EdgeSignificanceSpec("model_trust", "model_per_role_unit_circuit", mu),
+                new EdgeSignificanceSpec("attention_pattern_confidence", "model_per_role_unit_circuit", mu),
+            ];
+            session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+                [
+                    new EdgeMemberSpec(t.Entity, "source", 0),
+                    new EdgeMemberSpec(unit, "target", 1),
+                ],
+                sigSpecs);
 
 
             emitted++;

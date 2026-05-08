@@ -109,6 +109,29 @@ public sealed record RecompositionOptions
     public string? ArenaFilter { get; init; }
 
     /// <summary>
+    /// Attestation-type filter. When set, only rating rows whose
+    /// attestation_type is in this list contribute to the effective μ. Pair
+    /// with <see cref="AttestationTypeBlend"/> for per-type weighting; pass
+    /// just this list for a uniform-weight subset (e.g. circuit-only or
+    /// lexicon-only distillation). NULL = include every attestation_type
+    /// present on the edge in the requested arena.
+    /// </summary>
+    public IReadOnlyList<string>? AttestationTypeCodes { get; init; }
+
+    /// <summary>
+    /// Per-attestation-type weights for blending stratified rating rows.
+    /// When NULL, blending is uniform (every attestation_type present in the
+    /// blend contributes equally). When set, the SQL distillation computes
+    ///   <c>SUM(es.μ × blend.weight) / SUM(blend.weight)</c>
+    /// across attestation_types in the blend's keys; types not in the blend
+    /// contribute zero.
+    ///
+    /// Mutually compatible with <see cref="AttestationTypeCodes"/>: when both
+    /// are set, the blend's keys are intersected with the type-list filter.
+    /// </summary>
+    public AttestationTypeBlend? AttestationTypeBlend { get; init; }
+
+    /// <summary>
     /// Per-element magnitude floor at recompose time. Row values whose |x|
     /// is below this are written as exactly 0. Substrate STORES the
     /// original lossless value; this filter applies only to export bytes.

@@ -38,11 +38,12 @@ RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    v_provenance_id    INT;
-    v_codepoint_etype  INT;
-    v_s3_phys_type     INT;
-    v_source_auth_ctx  INT;
-    v_initial_mu       FLOAT8;
+    v_provenance_id        INT;
+    v_codepoint_etype      INT;
+    v_s3_phys_type         INT;
+    v_source_auth_ctx      INT;
+    v_attestation_type_id  INT;
+    v_initial_mu           FLOAT8;
 BEGIN
 
     SELECT id, COALESCE(p_trust_mu, initial_mu)
@@ -69,6 +70,14 @@ BEGIN
       FROM substrate.significance_context WHERE code = 'source_authority';
     IF v_source_auth_ctx IS NULL THEN
         RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
+    END IF;
+
+    -- Resolve attestation_type_id ONCE outside the SELECT below — invoking
+    -- substrate.resolve_attestation_type_id() per row across 1.1M codepoints
+    -- is gratuitous function-call overhead (single-threaded in one backend).
+    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
     END IF;
 
     -- Warm up the composite tupdesc cache before plpgsql plans the SRF.
@@ -103,7 +112,7 @@ BEGIN
         mu, sigma, volatility, games)
     SELECT v_source_auth_ctx,
            a.hash,
-           substrate.resolve_attestation_type_id('provenance_authority_corroboration'),
+           v_attestation_type_id,
            v_initial_mu,
            350.0,
            0.06,

@@ -136,10 +136,21 @@ internal sealed partial class VocabCoveragePass : IModelAnalysisPass
                 continue;
             }
 
-            byte[] tokenHash = ComputeBpeTokenHash(context, entry.TokenBytes);
-            byte[] lemmaHash = BaseDecomposer.ComputeWordFormHash(text);
+            // Token bytes route through the canonical text decomposer, same
+            // path TokenizerMappingPass and EmbeddingFireflyPass use post the
+            // bptk-prefix removal. Hashes line up across all model passes
+            // AND with corpus-derived word_forms.
+            Hartonomous.Core.Text.TextDecomposeResult tokenResult =
+                Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
+                    session.Batch,
+                    entry.TokenBytes,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: context.ProvenanceCode,
+                        TopEntityType: "word_form",
+                        TrustMu: ModelDerivedTrustMu));
+            EntityHandle bpeTokenEntity = tokenResult.RootHandle;
 
-            EntityHandle bpeTokenEntity = session.Batch.AddEntity(tokenHash, "word_form");
+            byte[] lemmaHash = BaseDecomposer.ComputeWordFormHash(text);
             EntityHandle lemmaEntity = session.Batch.AddEntity(lemmaHash, "lemma");
 
             session.Batch.AddEdge("covers_lemma", context.ProvenanceCode,

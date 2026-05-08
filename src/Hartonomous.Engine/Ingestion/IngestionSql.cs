@@ -10,6 +10,15 @@ internal static class IngestionSql
     public static string DrainSessionSettings { get; } = Read("drain_session_settings.sql");
     public static string PostPassSessionSettings { get; } = Read("post_pass_session_settings.sql");
 
+    // Substrate-aware ingestion: bulk existence-check SQL. One round-trip per
+    // kind per chunk; the substrate's btree-on-bytea identity model answers
+    // million-element ANY-array probes in well under a second.
+    public static string GetExistingEntityHashes { get; } = Read("get_existing_entity_hashes.sql");
+    public static string GetExistingEntityClassifications { get; } = Read("get_existing_entity_classifications.sql");
+    public static string GetExistingEdges { get; } = Read("get_existing_edges.sql");
+    public static string GetExistingPhysicalities { get; } = Read("get_existing_physicalities.sql");
+    public static string GetExistingSequenceRows { get; } = Read("get_existing_sequence_rows.sql");
+
     public static DrainSqlSpec Entity { get; } = Drain("entity");
     public static DrainSqlSpec EntityClassification { get; } = Drain("entity_classification");
     public static DrainSqlSpec Edge { get; } = Drain("edge");

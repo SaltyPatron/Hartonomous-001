@@ -137,22 +137,32 @@ internal sealed partial class EmbeddingFireflyPass : IModelAnalysisPass
                     continue;
                 }
 
-                // Hash by token bytes ONLY — same canonical signature
-                // TokenizerMappingPass uses. "king" from Llama and "king" from Qwen
-                // produce the same hash → same bpe_token entity → both fireflies
-                // attach to the SAME row, and Voronoi consensus aggregates over the
-                // shared entity's firefly cloud.
-                byte[] tokenHash = new CanonicalSignatureBuilder(context.Compute.Common, "bptk")
-                    .WriteBytes(entry.TokenBytes)
-                    .Finalize();
-
-                EntityHandle bpeToken = session.Batch.AddEntity(tokenHash, "word_form");
+                // Token bytes route through the canonical text decomposer —
+                // same path TokenizerMappingPass now uses, same path corpora
+                // use. "king" from Llama, "king" from Qwen, and "king" from
+                // Moby Dick produce the SAME word_form entity hash. Both
+                // models' fireflies attach to the SAME row; Voronoi consensus
+                // aggregates over the shared entity's firefly cloud across
+                // models AND any corpus that mentioned the token's surface.
+                Hartonomous.Core.Text.TextDecomposeResult tokenResult =
+                    Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
+                        session.Batch,
+                        entry.TokenBytes,
+                        new Hartonomous.Core.Text.TextDecomposeOptions(
+                            ProvenanceCode: context.ProvenanceCode,
+                            TopEntityType: "word_form",
+                            TrustMu: ModelDerivedTrustMu));
+                EntityHandle bpeToken = tokenResult.RootHandle;
 
                 // Attach this model's firefly as a physicality of the shared entity.
                 // Provenance on the entity_model_source link distinguishes which
                 // model contributed which firefly.
                 session.Batch.AddPhysicalityPoint4d(bpeToken, "embedding_firefly", x[i], y[i], z[i], magnitude[i]);
-                session.Batch.AddSignificance(bpeToken, "model_trust", ModelDerivedTrustMu);
+                // Embedding firefly = token's position in this model's hidden
+                // space. attestation_type=model_embedding_proximity keeps this
+                // evidence distinguishable from corpus_co_occurrence_window or
+                // lexical_curated_relation evidence on the same token.
+                session.Batch.AddSignificance(bpeToken, "model_trust", ModelDerivedTrustMu, "model_embedding_proximity");
                 session.Batch.AddEntityModelSource(bpeToken, context.Source.ModelSourceId);
 
                 // Edge from this model's embedding tensor to the shared bpe_token.

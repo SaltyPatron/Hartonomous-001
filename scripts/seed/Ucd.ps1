@@ -144,11 +144,66 @@ try {
         Write-HartInfo "  +$n codepoint_property rows"
     }
 
-    Invoke-HartStep -Name "substrate.populate_codepoint_atoms('$ProvenanceCode')" -Action {
-        # Server-side function performs all four atom inserts in one SQL call
-        # using set-based INSERT...SELECT operations.
-        $n = Invoke-Psql -Sql "SELECT substrate.populate_codepoint_atoms('$ProvenanceCode')" -Label 'populate_codepoint_atoms'
-        Write-HartInfo "  +$n codepoint atoms processed"
+    Invoke-HartStep -Name "substrate.populate_codepoint_atoms_chunk × 8 parallel" -Action {
+        # Parallel UCD seed: split 1,114,112 codepoints into 8 disjoint
+        # ranges and run populate_codepoint_atoms_chunk concurrently across
+        # 8 PG backends. Replaces the previous single-backend call which
+        # pinned UCD seed to one core for tens of minutes (5% CPU on a
+        # 24-core 14900KS host).
+        #
+        # Each parallel branch opens its own docker exec / psql connection.
+        # PG-side concurrency is bounded by the docker-compose
+        # max_connections=50 setting; 8 backends well within that.
+        $maxCp = 1114112
+        $degree = 8
+        $chunkSize = [Math]::Ceiling($maxCp / $degree)
+        $ranges = @()
+        for ($lo = 0; $lo -lt $maxCp; $lo += $chunkSize) {
+            $hi = [Math]::Min($lo + $chunkSize, $maxCp)
+            $ranges += [pscustomobject]@{ Lo = $lo; Hi = $hi }
+        }
+        Write-HartInfo "  parallelism=$degree, ranges:"
+        foreach ($r in $ranges) { Write-HartInfo "    [$($r.Lo),$($r.Hi))" }
+
+        $useDocker = $useDockerPsql
+        $usr = $kv['Username']
+        $pwd = $kv['Password']
+        $db = $kv['Database']
+        $hst = $kv['Host']
+        $prt = $kv['Port']
+        $localPsql = $psql
+        $prov = $ProvenanceCode
+
+        # ForEach-Object -Parallel runs each range in its own runspace.
+        $results = $ranges | ForEach-Object -Parallel {
+            $r = $_
+            # Explicit type casts — Postgres types bare NULL as unknown and
+            # cannot resolve the (TEXT, FLOAT8, INT, INT) overload without
+            # them, even though 'unicode_consortium' would auto-cast on its
+            # own. Without ::float8 on NULL the call fails with
+            # "function substrate.populate_codepoint_atoms_chunk(unknown,
+            # unknown, integer, integer) does not exist".
+            $sql = "SELECT substrate.populate_codepoint_atoms_chunk('$using:prov'::text, NULL::float8, $($r.Lo)::int, $($r.Hi)::int)"
+            if ($using:useDocker) {
+                $out = & docker exec -e "PGPASSWORD=$using:pwd" hartonomous-postgres `
+                    psql -U $using:usr -d $using:db -v ON_ERROR_STOP=1 -t -A -c $sql 2>&1
+            }
+            else {
+                $env:PGPASSWORD = $using:pwd
+                $out = & $using:localPsql -h $using:hst -p $using:prt -U $using:usr -d $using:db `
+                    -v ON_ERROR_STOP=1 -t -A -c $sql 2>&1
+            }
+            if ($LASTEXITCODE -ne 0) { throw "populate_codepoint_atoms_chunk [$($r.Lo),$($r.Hi)): $out" }
+            [pscustomobject]@{ Lo = $r.Lo; Hi = $r.Hi; Count = ($out -join "`n").Trim() }
+        } -ThrottleLimit $degree
+
+        [int64]$total = 0
+        foreach ($res in $results) {
+            if (-not [string]::IsNullOrWhiteSpace($res.Count)) {
+                $total += [int64]$res.Count
+            }
+        }
+        Write-HartInfo "  +$total codepoint atoms processed across $degree parallel backends"
     }
 
     # Mark UcdUca as completed in monitor.phase_status so subsequent

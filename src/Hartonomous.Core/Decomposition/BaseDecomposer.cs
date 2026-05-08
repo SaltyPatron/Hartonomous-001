@@ -115,6 +115,74 @@ public abstract partial class BaseDecomposer : IDecomposer
         await reporter.ReportAsync(snapshot, ct);
     }
 
+    // ── Substrate-aware ingestion: bulk existence check orchestration ─────
+    //
+    // Decomposers that opt into the streaming-bulk-check pattern call
+    // BulkCheckChunkAsync once per chunk after they've populated
+    // ChunkCandidates with locally-precomputed PKs. This issues the per-kind
+    // bulk-existence-check calls in parallel — five sub-second round-trips
+    // become ~one round-trip wall-time. The decomposer subtracts the result
+    // from candidates and emits ONLY the diff into the existing pipeline,
+    // collapsing 30:1+ redundant-emission patterns to ~1:1.
+    //
+    // Glicko-2 rating events still fire for every observed candidate (not
+    // just the missing ones) — row-identity dedup and rating-event dedup
+    // are different paths (per memory: feedback_streaming_and_rating).
+
+    /// <summary>
+    /// Issue per-kind bulk-existence-checks in parallel against the
+    /// substrate. Returns the existing-PK subset for each kind; the
+    /// decomposer's missing set per kind is <c>candidates.X \ existing.X</c>.
+    /// </summary>
+    protected static async Task<ChunkExisting> BulkCheckChunkAsync(
+        IIngestionPipeline pipeline,
+        ChunkCandidates candidates,
+        CancellationToken ct)
+    {
+        Task<HashSet<HashKey>> entitiesTask = candidates.EntityHashes.Count == 0
+            ? Task.FromResult(new HashSet<HashKey>())
+            : pipeline.GetExistingEntityHashesAsync(
+                ToByteArrayList(candidates.EntityHashes), ct);
+
+        Task<HashSet<EntityClassificationKey>> classificationsTask = candidates.EntityClassifications.Count == 0
+            ? Task.FromResult(new HashSet<EntityClassificationKey>())
+            : pipeline.GetExistingEntityClassificationsAsync(candidates.EntityClassifications, ct);
+
+        Task<HashSet<EdgeKey>> edgesTask = candidates.Edges.Count == 0
+            ? Task.FromResult(new HashSet<EdgeKey>())
+            : pipeline.GetExistingEdgesAsync(candidates.Edges, ct);
+
+        Task<HashSet<PhysicalityKey>> physicalitiesTask = candidates.Physicalities.Count == 0
+            ? Task.FromResult(new HashSet<PhysicalityKey>())
+            : pipeline.GetExistingPhysicalitiesAsync(candidates.Physicalities, ct);
+
+        Task<HashSet<SequenceKey>> sequencesTask = candidates.SequenceRows.Count == 0
+            ? Task.FromResult(new HashSet<SequenceKey>())
+            : pipeline.GetExistingSequenceRowsAsync(candidates.SequenceRows, ct);
+
+        await Task.WhenAll(entitiesTask, classificationsTask, edgesTask, physicalitiesTask, sequencesTask)
+            .ConfigureAwait(false);
+
+        return new ChunkExisting
+        {
+            EntityHashes = entitiesTask.Result,
+            EntityClassifications = classificationsTask.Result,
+            Edges = edgesTask.Result,
+            Physicalities = physicalitiesTask.Result,
+            SequenceRows = sequencesTask.Result,
+        };
+    }
+
+    private static List<byte[]> ToByteArrayList(HashSet<HashKey> hashes)
+    {
+        List<byte[]> result = new(hashes.Count);
+        foreach (HashKey k in hashes)
+        {
+            result.Add(k.Hash);
+        }
+        return result;
+    }
+
     // ── Streaming sink helpers (Phase D) ─────────────────────────────────
     // Decomposers in the streaming-pipeline migration use these to emit
     // records one-at-a-time to an IRecordSink. No batch accumulation in
@@ -501,6 +569,28 @@ public abstract partial class BaseDecomposer : IDecomposer
             double trustMu)
     {
         ArgumentNullException.ThrowIfNull(text);
+
+        // Cache fast-path. Same architecture as EmitTextAsync — short-circuit
+        // the full text-AST decompose for strings the subclass has already
+        // emitted in this process. The codepoint → grapheme → word_form →
+        // composition DAG plus all its physicalities/sequences/significance
+        // are already in (or in flight to) the substrate via the prior call's
+        // emission; we only need to register the root entity on the current
+        // batch so downstream edges in this batch can FK to it. ON CONFLICT
+        // DO NOTHING in each drain's INSERT-SELECT makes the duplicate root
+        // emission free on the DB side.
+        //
+        // This eliminates the 30:1+ redundant-emission ratios observed when
+        // sources call EmitText for the same surface form repeatedly (WordNet
+        // re-emits "run" lemma's full DAG dozens of times because "run" is in
+        // many synsets; with the cache the second-and-subsequent calls do
+        // zero work past the cache lookup).
+        if (TryGetCachedTextEntry(text, out byte[]? cachedHash, out (double X, double Y, double Z, double M) cachedCentroid))
+        {
+            Hartonomous.Core.Ingestion.EntityHandle cachedHandle = batch.AddEntity(cachedHash!, topEntityType);
+            return (cachedHandle, cachedHash!, cachedCentroid);
+        }
+
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         // Routes through libhartonomous's in-process native pipeline
         // (hartonomous_text_decompose + UCD blob), NOT a per-text Npgsql
@@ -515,6 +605,7 @@ public abstract partial class BaseDecomposer : IDecomposer
                     ProvenanceCode: ProvenanceCode,
                     TopEntityType: topEntityType,
                     TrustMu: trustMu));
+        CacheTextEntry(text, r.RootHash, r.RootCentroid);
         return (r.RootHandle, r.RootHash, r.RootCentroid);
     }
 
@@ -579,6 +670,36 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// overrides.
     /// </summary>
     protected virtual void CacheTextHash(string text, byte[] hash) { }
+
+    /// <summary>
+    /// Subclass hook: return a previously-emitted (hash, centroid) for
+    /// <paramref name="text"/>. Used by the synchronous <see cref="EmitText"/>
+    /// path, which needs the centroid for downstream geometric composition
+    /// (e.g. WordNet's synset LINESTRINGZM whose vertices are member-lemma
+    /// centroids). Default delegates to the hash-only cache and returns
+    /// default centroid; <see cref="TextIngestingDecomposer"/> overrides with
+    /// the centroid-aware variant.
+    /// </summary>
+    protected virtual bool TryGetCachedTextEntry(
+        string text, out byte[]? hash, out (double X, double Y, double Z, double M) centroid)
+    {
+        if (TryGetCachedTextHash(text, out hash))
+        {
+            centroid = default;
+            return true;
+        }
+        centroid = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Subclass hook: record (hash, centroid) for <paramref name="text"/>.
+    /// Default delegates to the hash-only cache.
+    /// </summary>
+    protected virtual void CacheTextEntry(string text, byte[] hash, (double X, double Y, double Z, double M) centroid)
+    {
+        CacheTextHash(text, hash);
+    }
 
     /// <summary>
     /// Per-decomposer ISO 639-3 allowlist resolved from <see cref="DecomposerConfig.LanguageFilter"/>.

@@ -298,9 +298,12 @@
 -- @include schema/functions/record_outcome.sql
 -- @include schema/functions/initialize_edge_significance.sql
 -- @include schema/functions/initialize_entity_significance.sql
+-- @include schema/functions/blended_edge_mu.sql
+-- @include schema/functions/consensus_token_pairs.sql
 -- @include schema/functions/create_arena.sql
 -- @include schema/functions/create_model_trust_arena.sql
 -- @include schema/functions/populate_codepoint_atoms.sql
+-- @include schema/functions/populate_codepoint_atoms_chunk.sql
 -- Extension-driven UCD/UCA reference + property population (replaces the
 -- C# UCD decomposer's per-codepoint round-trips with five SQL calls). The
 -- functions below depend on the hartonomous extension being loaded —

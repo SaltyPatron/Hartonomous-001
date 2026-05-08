@@ -13,9 +13,12 @@ namespace Hartonomous.Core.Decomposition;
 /// subsequent occurrences register the document entity by hash on the current
 /// batch and skip all sub-tree work.
 ///
-/// Single-threaded by contract — decomposers are sequential producers per
-/// the pipeline's thread model. No locking; insertion / lookup / eviction
-/// are O(1).
+/// Thread-safe via a single coarse lock. Decomposers that fan their producer
+/// out across N tasks (ParallelChunkProcessor pattern) all share one cache,
+/// so concurrent TryGet / Add are protected. Lookups are O(1) under the
+/// dictionary; the lock holds for the LRU move-to-front + eviction step
+/// only, which is microsecond-scale and not contention-bound for ingestion
+/// workloads at typical fanout (4-16 parallel tasks).
 ///
 /// Strings longer than <see cref="MaxKeyLength"/> are not cached: large
 /// model artifacts (READMEs, config blobs) rarely repeat exactly across
@@ -23,6 +26,7 @@ namespace Hartonomous.Core.Decomposition;
 /// </summary>
 public sealed class TextIngestionCache
 {
+    private readonly object _gate = new();
     private readonly int _capacity;
     private readonly int _maxKeyLength;
     private readonly LinkedList<KeyValuePair<string, byte[]>> _list = new();
@@ -74,46 +78,55 @@ public sealed class TextIngestionCache
             hash = null;
             return false;
         }
-        if (_index.TryGetValue(text, out LinkedListNode<KeyValuePair<string, byte[]>>? node))
+        lock (_gate)
         {
-            // Move-to-front: the just-touched node is now most recently used.
-            _list.Remove(node);
-            _list.AddFirst(node);
-            hash = node.Value.Value;
-            Hits++;
-            return true;
+            if (_index.TryGetValue(text, out LinkedListNode<KeyValuePair<string, byte[]>>? node))
+            {
+                // Move-to-front: the just-touched node is now most recently used.
+                _list.Remove(node);
+                _list.AddFirst(node);
+                hash = node.Value.Value;
+                Hits++;
+                return true;
+            }
+            hash = null;
+            Misses++;
+            return false;
         }
-        hash = null;
-        Misses++;
-        return false;
     }
 
     public void Add(string text, byte[] hash)
     {
         if (text.Length > _maxKeyLength)
         {
-            SkippedTooLong++;
-            return;
-        }
-        if (_index.ContainsKey(text))
-        {
-            // Already cached — TryGet would have hit. Treat as no-op rather
-            // than overwrite to keep LRU semantics simple.
-            return;
-        }
-        if (_index.Count >= _capacity)
-        {
-            // Evict least-recently-used (tail of list).
-            LinkedListNode<KeyValuePair<string, byte[]>>? lru = _list.Last;
-            if (lru is not null)
+            lock (_gate)
             {
-                _list.RemoveLast();
-                _index.Remove(lru.Value.Key);
-                Evictions++;
+                SkippedTooLong++;
             }
+            return;
         }
-        LinkedListNode<KeyValuePair<string, byte[]>> node = new(new KeyValuePair<string, byte[]>(text, hash));
-        _list.AddFirst(node);
-        _index[text] = node;
+        lock (_gate)
+        {
+            if (_index.ContainsKey(text))
+            {
+                // Already cached — TryGet would have hit (or another thread
+                // added concurrently). No-op to keep LRU semantics simple.
+                return;
+            }
+            if (_index.Count >= _capacity)
+            {
+                // Evict least-recently-used (tail of list).
+                LinkedListNode<KeyValuePair<string, byte[]>>? lru = _list.Last;
+                if (lru is not null)
+                {
+                    _list.RemoveLast();
+                    _index.Remove(lru.Value.Key);
+                    Evictions++;
+                }
+            }
+            LinkedListNode<KeyValuePair<string, byte[]>> node = new(new KeyValuePair<string, byte[]>(text, hash));
+            _list.AddFirst(node);
+            _index[text] = node;
+        }
     }
 }

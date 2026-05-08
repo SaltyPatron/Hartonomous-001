@@ -66,6 +66,22 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private const int ChannelCapacity = 262_144;
 
     /// <summary>
+    /// Number of parallel drain workers per channel. Each worker owns its own
+    /// long-lived NpgsqlConnection + its own pg_temp.X_inflight table (pg_temp
+    /// is connection-local, so identical temp-table names don't collide). All
+    /// workers for the same kind read from the same Channel&lt;T&gt; — bounded
+    /// MPMC dispatch is what makes a single-channel/multi-reader pipeline fan
+    /// out to N PG backends per kind. With 10 kinds and 4 workers that's 40
+    /// drain backends; max_connections=100 in docker-compose leaves headroom
+    /// for the producer connections, the bulk-existence-check pool, and the
+    /// post-pass workers. Was 1 (single-reader) — that capped throughput per
+    /// kind to one PG backend's COPY+INSERT-SELECT, ~2k rows/s on physicality
+    /// and ~2k rows/s on entity. With 4× workers the bulk seed phases become
+    /// CPU-bound on the host instead of single-backend-bound on PG.
+    /// </summary>
+    private const int DrainWorkersPerKind = 1;
+
+    /// <summary>
     /// COPY chunk threshold. Each drain task COPY-loads up to this many rows
     /// into its temp table, then drains via INSERT-SELECT into substrate.
     /// Larger chunks amortize COPY overhead better; smaller chunks reduce
@@ -225,7 +241,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         BoundedChannelOptions opts = new(ChannelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
+            SingleReader = (DrainWorkersPerKind == 1),
             SingleWriter = false,
         };
 
@@ -240,19 +256,25 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _edgeSignificances = Channel.CreateBounded<EdgeSignificanceRecord>(opts);
         _entityModelSources = Channel.CreateBounded<EntityModelSourceRecord>(opts);
 
-        _drainTasks = new[]
+        // N workers per channel. Each kind gets DrainWorkersPerKind parallel
+        // drain backends. SingleReader=false on the bounded channels above
+        // makes Channel<T> behave as MPMC; every TryRead call atomically
+        // claims one record so workers don't race on duplicates.
+        List<Task> drainTasks = new(DrainWorkersPerKind * 10);
+        for (int w = 0; w < DrainWorkersPerKind; w++)
         {
-            Task.Run(() => DrainEntitiesAsync(_shutdown.Token)),
-            Task.Run(() => DrainEntityClassificationsAsync(_shutdown.Token)),
-            Task.Run(() => DrainEdgesAsync(_shutdown.Token)),
-            Task.Run(() => DrainEdgeMembersAsync(_shutdown.Token)),
-            Task.Run(() => DrainJunctionsAsync(_shutdown.Token)),
-            Task.Run(() => DrainPhysicalitiesAsync(_shutdown.Token)),
-            Task.Run(() => DrainSequencesAsync(_shutdown.Token)),
-            Task.Run(() => DrainEntitySignificancesAsync(_shutdown.Token)),
-            Task.Run(() => DrainEdgeSignificancesAsync(_shutdown.Token)),
-            Task.Run(() => DrainEntityModelSourcesAsync(_shutdown.Token)),
-        };
+            drainTasks.Add(Task.Run(() => DrainEntitiesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEntityClassificationsAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEdgesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEdgeMembersAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainJunctionsAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainPhysicalitiesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainSequencesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEntitySignificancesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEdgeSignificancesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEntityModelSourcesAsync(_shutdown.Token)));
+        }
+        _drainTasks = drainTasks.ToArray();
 
         // Periodic mid-phase progress snapshot. Fires every PeriodicSnapshotInterval
         // with one line per active kind: rows so far, drain elapsed, producer-wait
@@ -575,6 +597,207 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
             await Task.Delay(IdleFlushAfter, ct).ConfigureAwait(false);
         }
+    }
+
+    // ── Substrate-aware ingestion: bulk existence checks ──────────────────
+    //
+    // Decomposers compute candidate PKs locally (UCD/UCA/ISO blobs + BLAKE3,
+    // zero DB calls), then call these methods ONCE per kind per chunk. The
+    // substrate's content-addressed identity model means a btree probe over
+    // bytea(32) hashes answers a million-element ANY-array in well under a
+    // second on production hardware. The decomposer subtracts the returned
+    // existing-PK set from candidates and emits ONLY the diff — eliminating
+    // the 30:1+ redundant-emission ratios that the conversation surfaced.
+    //
+    // ON CONFLICT DO NOTHING in the drain INSERT-SELECT remains as
+    // belt-and-suspenders for the cross-session race window (decomposer A
+    // and decomposer B both compute the same candidate concurrently, both
+    // ask the substrate, both get "missing", both emit) but should fire
+    // near-zero times per phase under steady-state ingestion.
+
+    public async Task<HashSet<HashKey>> GetExistingEntityHashesAsync(
+        IReadOnlyCollection<byte[]> hashes, CancellationToken ct)
+    {
+        HashSet<HashKey> existing = new(hashes.Count);
+        if (hashes.Count == 0)
+        {
+            return existing;
+        }
+
+        byte[][] arr = new byte[hashes.Count][];
+        int i = 0;
+        foreach (byte[] h in hashes)
+        {
+            arr[i++] = h;
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingEntityHashes, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = arr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            existing.Add(new HashKey((byte[])r[0]));
+        }
+        return existing;
+    }
+
+    public async Task<HashSet<EntityClassificationKey>> GetExistingEntityClassificationsAsync(
+        IReadOnlyCollection<EntityClassificationKey> tuples, CancellationToken ct)
+    {
+        HashSet<EntityClassificationKey> existing = new(tuples.Count);
+        if (tuples.Count == 0)
+        {
+            return existing;
+        }
+
+        int n = tuples.Count;
+        byte[][] hashArr = new byte[n][];
+        int[] etArr = new int[n];
+        int[] pArr  = new int[n];
+        int i = 0;
+        foreach (EntityClassificationKey k in tuples)
+        {
+            hashArr[i] = k.EntityHash;
+            etArr[i]   = await _codeResolver.EntityTypeIdAsync(k.EntityTypeCode, ct).ConfigureAwait(false);
+            pArr[i]    = await _codeResolver.ProvenanceIdAsync(k.ProvenanceCode, ct).ConfigureAwait(false);
+            i++;
+        }
+
+        // Reverse maps: id → original code so the returned set carries the
+        // codes the decomposer originally passed in. The reference vocabularies
+        // are bounded (54 entity types, 10 provenances) so HashSet membership
+        // is O(1) and the build is negligible.
+        Dictionary<int, string> etByIdInvolved = new();
+        Dictionary<int, string> pByIdInvolved  = new();
+        foreach (EntityClassificationKey k in tuples)
+        {
+            int etid = await _codeResolver.EntityTypeIdAsync(k.EntityTypeCode, ct).ConfigureAwait(false);
+            int pid  = await _codeResolver.ProvenanceIdAsync(k.ProvenanceCode, ct).ConfigureAwait(false);
+            etByIdInvolved[etid] = k.EntityTypeCode;
+            pByIdInvolved[pid]   = k.ProvenanceCode;
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingEntityClassifications, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = hashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = etArr,   NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = pArr,    NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            byte[] h = (byte[])r[0];
+            string etCode = (string)r[1];
+            string pCode  = (string)r[2];
+            existing.Add(new EntityClassificationKey(h, etCode, pCode));
+        }
+        return existing;
+    }
+
+    public async Task<HashSet<EdgeKey>> GetExistingEdgesAsync(
+        IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct)
+    {
+        HashSet<EdgeKey> existing = new(tuples.Count);
+        if (tuples.Count == 0)
+        {
+            return existing;
+        }
+
+        int n = tuples.Count;
+        int[] etArr = new int[n];
+        byte[][] hashArr = new byte[n][];
+        int i = 0;
+        foreach (EdgeKey k in tuples)
+        {
+            etArr[i]   = await _codeResolver.EdgeTypeIdAsync(k.EdgeTypeCode, ct).ConfigureAwait(false);
+            hashArr[i] = k.EdgeHash;
+            i++;
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingEdges, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = etArr,   NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = hashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string etCode = (string)r[0];
+            byte[] h      = (byte[])r[1];
+            existing.Add(new EdgeKey(etCode, h));
+        }
+        return existing;
+    }
+
+    public async Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(
+        IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct)
+    {
+        HashSet<PhysicalityKey> existing = new(tuples.Count);
+        if (tuples.Count == 0)
+        {
+            return existing;
+        }
+
+        int n = tuples.Count;
+        int[] ptArr = new int[n];
+        byte[][] ehArr = new byte[n][];
+        byte[][] chArr = new byte[n][];
+        int i = 0;
+        foreach (PhysicalityKey k in tuples)
+        {
+            ptArr[i] = await _codeResolver.PhysicalityTypeIdAsync(k.PhysicalityTypeCode, ct).ConfigureAwait(false);
+            ehArr[i] = k.EntityHash;
+            chArr[i] = k.ContentHash;
+            i++;
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingPhysicalities, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = ptArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = ehArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = chArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string ptCode = (string)r[0];
+            byte[] eh     = (byte[])r[1];
+            byte[] ch     = (byte[])r[2];
+            existing.Add(new PhysicalityKey(ptCode, eh, ch));
+        }
+        return existing;
+    }
+
+    public async Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(
+        IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct)
+    {
+        HashSet<SequenceKey> existing = new(tuples.Count);
+        if (tuples.Count == 0)
+        {
+            return existing;
+        }
+
+        int n = tuples.Count;
+        byte[][] phArr = new byte[n][];
+        int[] ordArr = new int[n];
+        int i = 0;
+        foreach (SequenceKey k in tuples)
+        {
+            phArr[i]  = k.ParentHash;
+            ordArr[i] = k.Ordinal;
+            i++;
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingSequenceRows, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = phArr,  NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = ordArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            byte[] ph = (byte[])r[0];
+            int ord   = (int)r[1];
+            existing.Add(new SequenceKey(ph, ord));
+        }
+        return existing;
     }
 
     public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -56,4 +57,56 @@ public interface IIngestionPipeline : IAsyncDisposable
     Task PrimeAllSignificanceAsync(CancellationToken ct);
 
     PipelineStats Stats { get; }
+
+    // ── Substrate-aware ingestion: bulk existence checks ──────────────────
+    //
+    // The substrate is content-addressed; every PK a decomposer is about to
+    // emit can be precomputed locally via UCD/UCA/ISO blobs + BLAKE3. The
+    // canonical ingestion pattern is "ask before emit": the decomposer
+    // assembles candidate PKs for a chunk, calls one of the methods below
+    // (one bulk round-trip per kind per chunk), subtracts the returned
+    // existing-PK set from candidates, and emits ONLY the diff. ON CONFLICT
+    // becomes belt-and-suspenders that should never fire in steady state.
+    //
+    // PG btree on bytea(32) hash columns answers a million-element ANY-array
+    // probe in well under a second — the substrate's identity model makes
+    // this microsecond-scale by design.
+
+    /// <summary>
+    /// Of the supplied entity hashes, return the subset that already exist
+    /// in <c>substrate.entity</c>. Decomposer's missing set =
+    /// <paramref name="hashes"/> ∖ result.
+    /// </summary>
+    Task<HashSet<HashKey>> GetExistingEntityHashesAsync(
+        IReadOnlyCollection<byte[]> hashes, CancellationToken ct);
+
+    /// <summary>
+    /// Of the supplied (entity_hash, entity_type_code, provenance_code)
+    /// tuples, return the subset that already exist in
+    /// <c>substrate.entity_classification</c>.
+    /// </summary>
+    Task<HashSet<EntityClassificationKey>> GetExistingEntityClassificationsAsync(
+        IReadOnlyCollection<EntityClassificationKey> tuples, CancellationToken ct);
+
+    /// <summary>
+    /// Of the supplied (edge_type_code, edge_hash) tuples, return the subset
+    /// that already exist in <c>substrate.edge</c>.
+    /// </summary>
+    Task<HashSet<EdgeKey>> GetExistingEdgesAsync(
+        IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct);
+
+    /// <summary>
+    /// Of the supplied (physicality_type_code, entity_hash, content_hash)
+    /// tuples, return the subset that already exist in
+    /// <c>substrate.physicality</c>.
+    /// </summary>
+    Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(
+        IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct);
+
+    /// <summary>
+    /// Of the supplied (parent_hash, ordinal) tuples, return the subset that
+    /// already exist in <c>substrate.sequence</c>.
+    /// </summary>
+    Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(
+        IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct);
 }

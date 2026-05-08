@@ -479,6 +479,47 @@ COMMENT ON COLUMN substrate.edge_type.semantic_weight IS
 -- Removed (vs the original 25-row schema, none re-added):
 --   ud_sentence, ud_token, tatoeba_sentence, word_sense, wikt_sense,
 --   bpe_token, inflected_form. See prior version comments.
+--
+-- ARCHITECTURAL CORRECTION (2026-05-08): The per-role-unit / per-tensor-
+-- analysis entity types below (ids 19-54 except 16/17/18) are PHANTOMS from
+-- earlier framing where every model component became its own entity. Per
+-- the user-stated invention (every model calculation = attestation_type on
+-- edges between EXISTING token entities), these are deprecated:
+--
+--   Phantom entity types (deprecated; should become attestation_types on
+--   token↔token edges in the per-role attestation taxonomy seeded in
+--   sql/schema/seed/attestation_type.sql):
+--     attention_pattern, attention_head, attention_archetype,
+--     embedding_position, ffn_neuron, logit_projection, moe_route,
+--     moe_routing_profile, residual_direction, archetype,
+--     svd_rank_component, codec_codevector, codevector,
+--     audio_codec_filter, bbox_projection, class_projection,
+--     conformer_component, conv_filter, diffusion_component,
+--     lora_component, modality_basis_vector, moe_expert_neuron,
+--     moe_route_direction, object_query_slot, vision_feature_direction
+--
+--   Stay (per-tensor-level analysis surfaces — properly attached to the
+--   tensor entity, not to phantom row-level entities. Migrating these to
+--   physicality on the tensor entity is a follow-up):
+--     sparsity_profile, weight_distribution, eigenvalue_spectrum,
+--     svd_spectrum, activation_range, layer_norm_scale,
+--     layer_similarity_pair, rope_freq_table, codec_codebook, codebook,
+--     vocab_coverage_profile
+--
+--   Real structural artifacts (keep):
+--     tensor, model_architecture, tokenizer_model
+--
+-- The per-role attestation_types added in attestation_type.sql
+-- (model_attention_qk_pattern, model_ffn_full_path, model_input_embedding,
+-- model_lm_head_projection, etc.) are the replacement: they live on edges
+-- between token (word_form) entities, NOT as separate entity types.
+--
+-- Until decomposer passes are rewritten to emit token↔token edges instead
+-- of phantom entities, the rows below remain in the seed so existing code
+-- that looks up these codes doesn't crash. Code that creates these phantom
+-- entities is on the deprecation path (see AP-21 in
+-- .claude/rules/45-anti-patterns.md and the architectural correction
+-- note 2026-05-08).
 INSERT INTO substrate.entity_type (code, modality) VALUES
     ('codepoint',                'text'),           --  1
     ('grapheme_cluster',         'text'),           --  2
@@ -597,8 +638,19 @@ INSERT INTO substrate.significance_context (code) VALUES
     ('morphological_productivity');
 
 -- ── sql/schema/seed/attestation_type.sql ───────────────────────────────────────
--- 14 starter attestation types. Open vocabulary — runtime additions are
--- expected (e.g., per-corpus or per-model arena-attestation pairs).
+-- 32 starter attestation types: 14 base evidence kinds + 18 per-role model
+-- evidence kinds. Open vocabulary — runtime additions are expected (e.g.,
+-- per-corpus or per-model arena-attestation pairs).
+--
+-- Per-role taxonomy (lines 63+) is what the safetensors model passes
+-- reference: TokenCrossEdgePass uses model_input_embedding;
+-- TokenAttentionEdgePass uses model_attention_qk_pattern; TokenFfnEdgePass
+-- uses model_ffn_factor_alignment / model_ffn_full_path; PerRowContentPass
+-- uses model_per_role_unit_circuit; EmbeddingFireflyPass uses
+-- model_embedding_proximity. Without these rows the model decomposer's
+-- substrate.resolve_attestation_type_id calls fail with NULL → the pass
+-- raises 'attestation_type code=... missing — bootstrap not applied?'.
+-- The seed must run BEFORE any safetensors phase (M7).
 --
 -- Per-event weight defaults reflect evidence density vs confidence:
 --   curated lexical relations: 1.0 (one high-confidence event)
@@ -651,7 +703,68 @@ INSERT INTO substrate.attestation_type (code, description, default_event_weight)
      2.0),
     ('provenance_authority_corroboration',
      'Multi-source assertion resolved through provenance_edge_authority. Used when several provenances of differing trust priors agree on an edge''s rating.',
-     0.8);
+     0.8),
+
+    -- Per-role attestation taxonomy. Each kind of model component that
+    -- can attest to a token-pair relationship gets its own attestation_type.
+    -- Layer/head/position indices are metadata on the individual attestation
+    -- event, NOT separate types — that would explode the vocabulary. The
+    -- taxonomy here is at the level of "what computational role of the
+    -- model is producing this evidence."
+    ('model_attention_query_projection',
+     'Attention head Q-side projection: token T appears as a query when bound to key tokens with this attention weight. Per-(layer, head) details on the attestation row.',
+     0.5),
+    ('model_attention_key_projection',
+     'Attention head K-side projection: token S appears as a key when responded to by query tokens with this attention weight.',
+     0.5),
+    ('model_attention_value_projection',
+     'Attention head V-side projection: when key token S is attended, this is the value contribution.',
+     0.5),
+    ('model_attention_output_projection',
+     'Attention head O-side projection: residual contribution mapped through the head''s output transform.',
+     0.5),
+    ('model_attention_qk_pattern',
+     'Combined Q×K^T pattern between two tokens — what the head encodes about the token pair''s mutual attention. Strongest single-attestation kind for token-pair relationships from attention.',
+     0.6),
+    ('model_attention_vo_pattern',
+     'Combined V×O^T pattern between two tokens — what the head produces in residual when one attends to the other.',
+     0.5),
+    ('model_ffn_up_projection',
+     'FFN up-projection (input → hidden): token T''s residual direction activates which FFN dimensions.',
+     0.4),
+    ('model_ffn_gate_projection',
+     'FFN gate-projection (SwiGLU/GeGLU): token T''s gate activation pattern.',
+     0.4),
+    ('model_ffn_down_projection',
+     'FFN down-projection (hidden → output): which output token directions an FFN dimension produces.',
+     0.4),
+    ('model_ffn_full_path',
+     'Full FFN path up → activation → down composing as a token-T-to-token-U attestation.',
+     0.5),
+    ('model_lm_head_projection',
+     'LM head / unembedding: residual direction → output token logit.',
+     0.5),
+    ('model_input_embedding',
+     'Input embedding row: token → its hidden-space representation. Source of all downstream model_embedding_proximity attestations between token pairs.',
+     0.5),
+    ('model_layer_norm_evidence',
+     'Layer norm scale evidence (per-dimension parameter). Recorded on per-layer model_architecture attestations rather than token-token edges.',
+     0.3),
+    ('model_moe_router',
+     'MoE router scoring: token T''s routing weight to expert E.',
+     0.4),
+    ('model_moe_expert_response',
+     'MoE expert response: when expert E activates, which token pairs does it relate.',
+     0.4),
+    ('model_lora_adapter_evidence',
+     'LoRA adapter contribution: A·B low-rank update''s token-pair contribution.',
+     0.5),
+    ('model_position_embedding',
+     'Position embedding (absolute / RoPE / ALiBi) evidence: positional bias on token-pair attention.',
+     0.3),
+    ('model_quantization_variant_evidence',
+     'Same per-role evidence under a different quantization (FP8/AWQ/GPTQ/MXFP4). Lower-trust per-event because lossy.',
+     0.3);
 
 -- ── sql/schema/seed/provenance.sql ───────────────────────────────────────
 -- substrate.provenance seed — wide-band tier ladder.
@@ -787,6 +900,13 @@ FROM (VALUES
     ('has_token_id',             'model_derived', 'word_form',          'text_composition'),
     ('in_vocabulary',            'model_derived', 'word_form',          'model_architecture'),
     ('co_occurrence',            'model_derived', NULL,                 NULL),
+    -- Token↔token edges that capture what model weights encode about
+    -- token-pair relationships. Each model decomposed adds attestations
+    -- (with attestation_type) on these edges; cross-model consensus
+    -- emerges from accumulated agreement.
+    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),
+    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),
+    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),
     ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),
     ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),
     -- Model-derived: tensor analysis surfaces ─────────────────────────
@@ -880,7 +1000,7 @@ BEGIN
             ('substrate.provenance',            10),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            111)
+            ('substrate.edge_type',            114)
         ) AS t(table_name, expected)
     LOOP
         EXECUTE format('SELECT count(*) FROM %s', rec.table_name) INTO actual;
@@ -5328,6 +5448,211 @@ END $$;
 COMMENT ON FUNCTION substrate.initialize_entity_significance(TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
     'Initialize or reset the mu value for one entity_significance row addressed by (arena, entity, attestation_type). Default attestation_type is provenance_authority_corroboration — ingestion-time priming. Preserves sigma, volatility, and games on existing rows.';
 
+-- ── sql/schema/functions/blended_edge_mu.sql ───────────────────────────────────────
+-- substrate.blended_edge_mu(
+--     p_arena_id              INT,
+--     p_edge_type_id          INT,
+--     p_edge_hash             BYTEA,
+--     p_attestation_codes     TEXT[]   -- nullable: NULL = include all
+--     p_weights               FLOAT8[] -- nullable: NULL or empty = uniform
+-- ) RETURNS FLOAT8
+--
+-- Compute the blended μ for one edge in one arena, weighting per-attestation_type
+-- rating rows. Used by the inference engine to apply an AttestationTypeBlend
+-- recipe at traversal time without forcing the C extension's pg_traversal.c
+-- to know about per-blend dispatch.
+--
+-- Semantics:
+--   - p_attestation_codes NULL → include every attestation_type present on
+--     this (arena, edge); equal weights.
+--   - p_attestation_codes set, p_weights NULL → uniform 1.0 weights across
+--     the listed attestation_types.
+--   - p_attestation_codes set, p_weights set → SUM(es.μ × w_i) / SUM(w_i).
+--     Arrays must be the same length; mismatch raises.
+--   - No matching rows → returns the substrate default (1500.0) so callers
+--     never hit NULL.
+--
+-- STABLE: same arguments + same substrate state → same result. Used at
+-- traversal-time hot path; index-only scan over the (context_type_id,
+-- edge_type_id, edge_hash, attestation_type_id) PK suffices.
+
+CREATE OR REPLACE FUNCTION substrate.blended_edge_mu(
+    p_arena_id          INT,
+    p_edge_type_id      INT,
+    p_edge_hash         BYTEA,
+    p_attestation_codes TEXT[]   DEFAULT NULL,
+    p_weights           FLOAT8[] DEFAULT NULL
+)
+RETURNS FLOAT8
+LANGUAGE plpgsql STABLE PARALLEL SAFE
+AS $$
+DECLARE
+    v_blended FLOAT8;
+BEGIN
+    IF p_attestation_codes IS NOT NULL AND p_weights IS NOT NULL
+        AND cardinality(p_attestation_codes) <> cardinality(p_weights) THEN
+        RAISE EXCEPTION 'blended_edge_mu: attestation codes (%) and weights (%) length mismatch',
+            cardinality(p_attestation_codes), cardinality(p_weights);
+    END IF;
+
+    IF p_attestation_codes IS NULL THEN
+        -- All attestation types present on this edge; equal weights.
+        SELECT AVG(es.mu)
+          INTO v_blended
+          FROM substrate.edge_significance es
+         WHERE es.context_type_id = p_arena_id
+           AND es.edge_type_id    = p_edge_type_id
+           AND es.edge_hash       = p_edge_hash;
+    ELSIF p_weights IS NULL THEN
+        -- Listed attestation types, uniform weights.
+        SELECT AVG(es.mu)
+          INTO v_blended
+          FROM substrate.edge_significance es
+          JOIN substrate.attestation_type at ON at.id = es.attestation_type_id
+         WHERE es.context_type_id = p_arena_id
+           AND es.edge_type_id    = p_edge_type_id
+           AND es.edge_hash       = p_edge_hash
+           AND at.code = ANY(p_attestation_codes);
+    ELSE
+        -- Listed attestation types with explicit weights. Build a weight map
+        -- via unnest, JOIN to significance rows, weighted average.
+        WITH wmap AS (
+            SELECT code, weight
+              FROM unnest(p_attestation_codes, p_weights) AS u(code, weight)
+        )
+        SELECT SUM(es.mu * wmap.weight) / NULLIF(SUM(wmap.weight), 0)
+          INTO v_blended
+          FROM substrate.edge_significance es
+          JOIN substrate.attestation_type at ON at.id = es.attestation_type_id
+          JOIN wmap ON wmap.code = at.code
+         WHERE es.context_type_id = p_arena_id
+           AND es.edge_type_id    = p_edge_type_id
+           AND es.edge_hash       = p_edge_hash;
+    END IF;
+
+    RETURN COALESCE(v_blended, 1500.0);
+END $$;
+
+COMMENT ON FUNCTION substrate.blended_edge_mu(INT, INT, BYTEA, TEXT[], FLOAT8[]) IS
+    'Per-(arena, edge) blended μ across attestation_types. NULL codes = include all; NULL weights = uniform; both set = SUM(μ × w) / SUM(w). Returns 1500 default when no rows match. STABLE PARALLEL SAFE — usable inside the inference engine traversal hot path.';
+
+-- ── sql/schema/functions/consensus_token_pairs.sql ───────────────────────────────────────
+-- substrate.consensus_token_pairs(
+--     p_arena_code      TEXT,
+--     p_attestation_codes TEXT[]   DEFAULT NULL,
+--     p_min_mu          FLOAT8   DEFAULT 1500.0,
+--     p_min_attestations INT     DEFAULT 2,
+--     p_limit           INT      DEFAULT 1000
+-- )
+--
+-- Returns token↔token edges where the substrate has consensus across
+-- multiple model decompositions. "Consensus" = at least p_min_attestations
+-- distinct attestation events on the edge in the requested arena (counted
+-- by the games column on edge_significance), filtered by attestation_type
+-- if p_attestation_codes is set, mu above p_min_mu.
+--
+-- Use case: after decomposing Llama4-Maverick + Qwen3-480B (or any N
+-- models), this function surfaces the edges where the models AGREE about
+-- token-pair relationships. Edges with games=1 had only one model attest
+-- to them; edges with games >= N indicate cross-model corroboration. The
+-- recomposer's WHERE-clause distillation pulls from this consensus when
+-- producing a new student model that reflects shared knowledge.
+--
+-- Returns one row per qualifying edge: token_a (sorted lower hash for
+-- symmetric edges, source for directed), token_b, blended_mu, attestation
+-- count, list of attestation_types present.
+
+CREATE OR REPLACE FUNCTION substrate.consensus_token_pairs(
+    p_arena_code        TEXT,
+    p_attestation_codes TEXT[] DEFAULT NULL,
+    p_min_mu            FLOAT8 DEFAULT 1500.0,
+    p_min_attestations  INT    DEFAULT 2,
+    p_limit             INT    DEFAULT 1000
+)
+RETURNS TABLE (
+    edge_type_code        TEXT,
+    edge_hash             BYTEA,
+    token_a_hash          BYTEA,
+    token_b_hash          BYTEA,
+    blended_mu            FLOAT8,
+    total_games           INT,
+    attestation_types     TEXT[]
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $$
+    WITH arena AS (
+        SELECT id FROM substrate.significance_context WHERE code = p_arena_code
+    ),
+    qualifying_significance AS (
+        SELECT
+            es.edge_type_id,
+            es.edge_hash,
+            es.mu,
+            es.games,
+            at.code AS attestation_code
+          FROM substrate.edge_significance es
+          JOIN substrate.attestation_type at ON at.id = es.attestation_type_id
+         WHERE es.context_type_id = (SELECT id FROM arena)
+           AND es.mu >= p_min_mu
+           AND (p_attestation_codes IS NULL OR at.code = ANY(p_attestation_codes))
+    ),
+    aggregated AS (
+        SELECT
+            qs.edge_type_id,
+            qs.edge_hash,
+            AVG(qs.mu) AS blended_mu,
+            SUM(qs.games)::INT AS total_games,
+            array_agg(qs.attestation_code ORDER BY qs.attestation_code) AS attestation_types
+          FROM qualifying_significance qs
+         GROUP BY qs.edge_type_id, qs.edge_hash
+        HAVING SUM(qs.games) >= p_min_attestations
+    ),
+    with_members AS (
+        SELECT
+            et.code AS edge_type_code,
+            a.edge_hash,
+            a.blended_mu,
+            a.total_games,
+            a.attestation_types,
+            (
+                SELECT em.entity_hash
+                  FROM substrate.edge_member em
+                  JOIN substrate.edge_role er ON er.id = em.edge_role_id
+                 WHERE em.edge_type_id = a.edge_type_id
+                   AND em.edge_hash    = a.edge_hash
+                   AND er.code         = 'source'
+                 LIMIT 1
+            ) AS token_a_hash,
+            (
+                SELECT em.entity_hash
+                  FROM substrate.edge_member em
+                  JOIN substrate.edge_role er ON er.id = em.edge_role_id
+                 WHERE em.edge_type_id = a.edge_type_id
+                   AND em.edge_hash    = a.edge_hash
+                   AND er.code         = 'target'
+                 LIMIT 1
+            ) AS token_b_hash
+          FROM aggregated a
+          JOIN substrate.edge_type et ON et.id = a.edge_type_id
+         WHERE et.code IN ('model_concept_similarity', 'model_attention_pattern', 'model_ffn_factor', 'co_occurrence')
+    )
+    SELECT
+        edge_type_code,
+        edge_hash,
+        token_a_hash,
+        token_b_hash,
+        blended_mu,
+        total_games,
+        attestation_types
+      FROM with_members
+     WHERE token_a_hash IS NOT NULL AND token_b_hash IS NOT NULL
+     ORDER BY blended_mu DESC, total_games DESC
+     LIMIT p_limit;
+$$;
+
+COMMENT ON FUNCTION substrate.consensus_token_pairs(TEXT, TEXT[], FLOAT8, INT, INT) IS
+    'Surface token-pair edges with cross-model consensus. Filters by arena, attestation_types, mu floor, and minimum attestation count. Returns blended mu (avg across attestation_types), total games, and the full attestation_type set present. Used by the recomposer''s WHERE-clause distillation to identify the substrate''s accumulated cross-model agreement.';
+
 -- ── sql/schema/functions/create_arena.sql ───────────────────────────────────────
 -- substrate.create_arena(code TEXT, backfill BOOLEAN DEFAULT TRUE)
 --
@@ -5464,11 +5789,12 @@ RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
-    v_provenance_id    INT;
-    v_codepoint_etype  INT;
-    v_s3_phys_type     INT;
-    v_source_auth_ctx  INT;
-    v_initial_mu       FLOAT8;
+    v_provenance_id        INT;
+    v_codepoint_etype      INT;
+    v_s3_phys_type         INT;
+    v_source_auth_ctx      INT;
+    v_attestation_type_id  INT;
+    v_initial_mu           FLOAT8;
 BEGIN
 
     SELECT id, COALESCE(p_trust_mu, initial_mu)
@@ -5495,6 +5821,14 @@ BEGIN
       FROM substrate.significance_context WHERE code = 'source_authority';
     IF v_source_auth_ctx IS NULL THEN
         RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
+    END IF;
+
+    -- Resolve attestation_type_id ONCE outside the SELECT below — invoking
+    -- substrate.resolve_attestation_type_id() per row across 1.1M codepoints
+    -- is gratuitous function-call overhead (single-threaded in one backend).
+    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
     END IF;
 
     -- Warm up the composite tupdesc cache before plpgsql plans the SRF.
@@ -5529,7 +5863,7 @@ BEGIN
         mu, sigma, volatility, games)
     SELECT v_source_auth_ctx,
            a.hash,
-           substrate.resolve_attestation_type_id('provenance_authority_corroboration'),
+           v_attestation_type_id,
            v_initial_mu,
            350.0,
            0.06,
@@ -5542,6 +5876,107 @@ END $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_atoms(TEXT, FLOAT8) IS
   'Bulk-fill substrate.entity + entity_classification + physicality(s3_position) + entity_significance(source_authority) for all 1,114,112 codepoints from the hartonomous extension''s embedded UCD 17.0.0 tables using one SRF call (substrate.ucd_codepoints) per INSERT. Zero per-row scalar C invocations. Idempotent via ON CONFLICT.';
+
+-- ── sql/schema/functions/populate_codepoint_atoms_chunk.sql ───────────────────────────────────────
+-- substrate.populate_codepoint_atoms_chunk(provenance_code, trust_mu, cp_lo, cp_hi)
+--
+-- Range-partitioned variant of populate_codepoint_atoms. Same semantics —
+-- bulk-INSERT entity + entity_classification + physicality(s3_position) +
+-- entity_significance(source_authority) for codepoints in [cp_lo, cp_hi).
+-- The C# UCD seed orchestrator calls this N times concurrently with disjoint
+-- ranges, putting N PG backends on the work in parallel instead of one
+-- backend processing all 1,114,112 rows sequentially.
+--
+-- Determinism (Law #6): substrate.ucd_codepoints(cp_lo, cp_hi) is the same
+-- SRF as ucd_codepoints() restricted to the requested range. Same UCD
+-- version + same range → byte-identical substrate state across runs.
+--
+-- All resolve_*_id calls are hoisted ONCE per chunk (not per row).
+CREATE OR REPLACE FUNCTION substrate.populate_codepoint_atoms_chunk(
+    p_provenance_code TEXT,
+    p_trust_mu        FLOAT8,
+    p_cp_lo           INT,
+    p_cp_hi           INT
+)
+RETURNS BIGINT
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_provenance_id        INT;
+    v_codepoint_etype      INT;
+    v_s3_phys_type         INT;
+    v_source_auth_ctx      INT;
+    v_attestation_type_id  INT;
+    v_initial_mu           FLOAT8;
+    v_count                BIGINT;
+BEGIN
+    SELECT id, COALESCE(p_trust_mu, initial_mu)
+      INTO v_provenance_id, v_initial_mu
+      FROM substrate.provenance
+     WHERE code = p_provenance_code;
+    IF v_provenance_id IS NULL THEN
+        RAISE EXCEPTION 'unknown provenance code: %', p_provenance_code;
+    END IF;
+
+    SELECT id INTO v_codepoint_etype
+      FROM substrate.entity_type WHERE code = 'codepoint';
+    IF v_codepoint_etype IS NULL THEN
+        RAISE EXCEPTION 'entity_type code=''codepoint'' missing — bootstrap not applied?';
+    END IF;
+
+    SELECT id INTO v_s3_phys_type
+      FROM substrate.physicality_type WHERE code = 's3_position';
+    IF v_s3_phys_type IS NULL THEN
+        RAISE EXCEPTION 'physicality_type code=''s3_position'' missing — bootstrap not applied?';
+    END IF;
+
+    SELECT id INTO v_source_auth_ctx
+      FROM substrate.significance_context WHERE code = 'source_authority';
+    IF v_source_auth_ctx IS NULL THEN
+        RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
+    END IF;
+
+    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    IF v_attestation_type_id IS NULL THEN
+        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
+    END IF;
+
+    INSERT INTO substrate.entity (hash)
+    SELECT a.hash FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
+    ON CONFLICT (hash) DO NOTHING;
+
+    INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+    SELECT a.hash, v_codepoint_etype, v_provenance_id
+      FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
+    ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING;
+
+    INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+    SELECT v_s3_phys_type,
+           a.hash,
+           a.hash,
+           ST_MakePoint(a.x, a.y, a.z, a.m)
+      FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
+    ON CONFLICT DO NOTHING;
+
+    INSERT INTO substrate.entity_significance (
+        context_type_id, entity_hash, attestation_type_id,
+        mu, sigma, volatility, games)
+    SELECT v_source_auth_ctx,
+           a.hash,
+           v_attestation_type_id,
+           v_initial_mu,
+           350.0,
+           0.06,
+           0
+      FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
+    ON CONFLICT DO NOTHING;
+
+    v_count := p_cp_hi - p_cp_lo;
+    RETURN v_count;
+END $$;
+
+COMMENT ON FUNCTION substrate.populate_codepoint_atoms_chunk(TEXT, FLOAT8, INT, INT) IS
+    'Range-partitioned codepoint atom seed. Use with N concurrent C# tasks to spread the 1,114,112-row UCD seed across N PG backends. Each call processes [p_cp_lo, p_cp_hi). resolve_*_id calls hoisted once per chunk.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

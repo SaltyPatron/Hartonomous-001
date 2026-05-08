@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -34,6 +35,16 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
 {
     private readonly TextIngestionCache _textCache;
     private readonly SubstrateTextDecomposer _substrateTextDecomposer;
+
+    // Centroid sidecar for the sync EmitText path. Same-text fast-path needs
+    // the geometry on cache hit (synset LINESTRINGZM vertices, etc.) — the
+    // hash cache alone doesn't carry it. Bounded by the hash cache's capacity
+    // so memory is O(capacity); evictions on the hash cache leave stale
+    // entries here briefly, but the next miss re-populates correctly.
+    // ConcurrentDictionary so parallel-producer fan-out (ParallelChunkProcessor)
+    // is safe — multiple worker tasks may TryGet/Set the same surface form
+    // concurrently when ingesting the same content from different chunks.
+    private readonly ConcurrentDictionary<string, (double X, double Y, double Z, double M)> _centroidCache = new(StringComparer.Ordinal);
 
     protected TextIngestingDecomposer(
         DecomposerConfig config,
@@ -146,6 +157,35 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     protected override void CacheTextHash(string text, byte[] hash)
     {
         _textCache.Add(text, hash);
+    }
+
+    /// <summary>
+    /// Centroid-aware override for the sync <c>EmitText</c> path. Returns
+    /// (hash, centroid) on cache hit; both came from the same prior native
+    /// decompose call and reflect the same content's geometry in this
+    /// process.
+    /// </summary>
+    protected override bool TryGetCachedTextEntry(
+        string text, out byte[]? hash, out (double X, double Y, double Z, double M) centroid)
+    {
+        if (_textCache.TryGet(text, out byte[]? cached) && _centroidCache.TryGetValue(text, out var c))
+        {
+            hash = cached;
+            centroid = c;
+            return true;
+        }
+        hash = null;
+        centroid = default;
+        return false;
+    }
+
+    protected override void CacheTextEntry(string text, byte[] hash, (double X, double Y, double Z, double M) centroid)
+    {
+        _textCache.Add(text, hash);
+        // ConcurrentDictionary indexer is atomic; last-writer-wins is fine
+        // because identical content from any concurrent task produces an
+        // identical centroid (deterministic native decompose).
+        _centroidCache[text] = centroid;
     }
 
     private static partial class TextCacheLog

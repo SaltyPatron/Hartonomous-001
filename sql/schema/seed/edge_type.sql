@@ -81,6 +81,13 @@ FROM (VALUES
     ('has_token_id',             'model_derived', 'word_form',          'text_composition'),
     ('in_vocabulary',            'model_derived', 'word_form',          'model_architecture'),
     ('co_occurrence',            'model_derived', NULL,                 NULL),
+    -- Token↔token edges that capture what model weights encode about
+    -- token-pair relationships. Each model decomposed adds attestations
+    -- (with attestation_type) on these edges; cross-model consensus
+    -- emerges from accumulated agreement.
+    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),
+    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),
+    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),
     ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),
     ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),
     -- Model-derived: tensor analysis surfaces ─────────────────────────
