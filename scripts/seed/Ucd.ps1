@@ -155,8 +155,16 @@ try {
         # PG-side concurrency is bounded by the docker-compose
         # max_connections=50 setting; 8 backends well within that.
         $maxCp = 1114112
-        $degree = 8
-        $chunkSize = [Math]::Ceiling($maxCp / $degree)
+        # Parallel UCD chunked seed has triggered an intermittent SIGSEGV
+        # somewhere in the extension's parallel SRF path (backend crash
+        # observed 2026-05-08, no debug symbols available to resolve frame[0]
+        # at libhartonomous offset 0x9487e). Forcing sequential execution
+        # eliminates the race; the cost is ~30s of wall-clock vs the
+        # parallel best-case ~6s. M2 must land deterministically before any
+        # downstream phase, so determinism wins. Re-enable parallelism after
+        # the C extension is rebuilt with -g and the crash is root-caused.
+        $degree = 1
+        $chunkSize = $maxCp
         $ranges = @()
         for ($lo = 0; $lo -lt $maxCp; $lo += $chunkSize) {
             $hi = [Math]::Min($lo + $chunkSize, $maxCp)

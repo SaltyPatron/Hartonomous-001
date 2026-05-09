@@ -298,11 +298,13 @@ CREATE TABLE substrate.break_property (
     id       SERIAL PRIMARY KEY,
     code     VARCHAR(32) NOT NULL,
     category VARCHAR(16) NOT NULL,
-    UNIQUE(code, category)
+    enum_id  INT NOT NULL,
+    UNIQUE(code, category),
+    UNIQUE(category, enum_id)
 );
 
 COMMENT ON TABLE substrate.break_property IS
-    'UAX #29 break properties for segmentation. Four categories: GCB (grapheme), WB (word), SB (sentence), LB (line).';
+    'UAX #29 break properties for segmentation. Five categories: GCB (grapheme), WB (word), SB (sentence), LB (line), InCB (Indic conjunct break). enum_id is the per-category enum value from the embedded UCD blob (UC_GCB_*, UC_WB_*, UC_SB_*, UC_LB_*, UC_INCB_* in pg_ucd_segmentation.h). codepoint_property FK lookups use (category, enum_id) — robust against ID-offset drift when UCD versions add or reorder enum values.';
 
 -- ── sql/schema/tables/reference/language.sql ───────────────────────────────────────
 CREATE TABLE substrate.language (
@@ -6111,8 +6113,16 @@ AS $$
 DECLARE
     inserted int;
 BEGIN
-    INSERT INTO substrate.break_property (id, code, category)
-    SELECT v.id + 1, v.code, v.category
+    -- enum_id: per-category enum value (UC_GCB_Other = 0, UC_GCB_CR = 1, …,
+    -- UC_WB_Other = 0, UC_WB_CR = 1, …). codepoint_property INSERTs JOIN on
+    -- (category, enum_id) instead of the prior offset arithmetic
+    -- (a.gcb + 1, a.wb + 15, a.sb + 35, a.lb + 50) which crashed PG with
+    -- a syscache-corruption SIGSEGV in RI_FKey_check when UCD enum counts
+    -- shifted between the offset constants and what
+    -- substrate.ucd_break_properties() actually emits (2026-05-08, core
+    -- dump wsl-crash-1778290623-2791).
+    INSERT INTO substrate.break_property (id, code, category, enum_id)
+    SELECT v.id + 1, v.code, v.category, v.enum_id
     FROM substrate.ucd_break_properties() AS v
     ON CONFLICT (id) DO NOTHING;
 
@@ -6125,7 +6135,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
-    'Bulk-loads substrate.break_property with id = extension_id + 1. Each row is a (category, code) pair — GCB/WB/SB/LB/InCB enums tagged at generation time. Idempotent.';
+    'Bulk-loads substrate.break_property with id = extension_id + 1 plus per-category enum_id. Each row is a (category, code, enum_id) tuple — GCB/WB/SB/LB/InCB enums tagged at generation time. enum_id matches the UC_<category>_<code> #define in pg_ucd_segmentation.h. Idempotent.';
 
 -- ── sql/schema/functions/populate_codepoint_property_range_from_ext.sql ───────────────────────────────────────
 -- Populate a bounded codepoint_property slice from the embedded UCD catalog.
@@ -6150,6 +6160,14 @@ BEGIN
     WHILE v_lo < v_end LOOP
         v_hi := LEAST(v_lo + v_max_srf_rows, v_end);
 
+        -- FK IDs resolved via JOIN against (category, enum_id) instead of
+        -- the prior offset arithmetic (a.gcb + 1, a.wb + 15, a.sb + 35,
+        -- a.lb + 50). The offsets assumed a specific contiguous layout in
+        -- substrate.break_property; when UCD enum counts shifted, the
+        -- resulting INSERTs referenced non-existent FK IDs and PG 18.3's
+        -- RI_FKey_check trigger SIGSEGV'd in get_op_opfamily_properties /
+        -- syscache GETSTRUCT instead of returning a clean FK violation
+        -- (2026-05-08, core wsl-crash-1778290623-2791).
         WITH inserted AS (
             INSERT INTO substrate.codepoint_property (
                 entity_hash,
@@ -6170,16 +6188,24 @@ BEGIN
                 a.general_category + 1,
                 a.script + 1,
                 a.block + 1,
-                a.gcb + 1,
-                a.wb + 15,
-                a.sb + 35,
-                a.lb + 50,
+                bp_gcb.id,
+                bp_wb.id,
+                bp_sb.id,
+                bp_lb.id,
                 a.extended_pictographic,
                 a.ccc::SMALLINT,
                 a.decomposition_mapping,
                 NULLIF(a.simple_case_fold, -1),
                 a.full_case_fold
             FROM substrate.ucd_codepoints(v_lo, v_hi - v_lo) a
+            JOIN substrate.break_property bp_gcb
+              ON bp_gcb.category = 'GCB' AND bp_gcb.enum_id = a.gcb
+            JOIN substrate.break_property bp_wb
+              ON bp_wb.category  = 'WB'  AND bp_wb.enum_id  = a.wb
+            JOIN substrate.break_property bp_sb
+              ON bp_sb.category  = 'SB'  AND bp_sb.enum_id  = a.sb
+            JOIN substrate.break_property bp_lb
+              ON bp_lb.category  = 'LB'  AND bp_lb.enum_id  = a.lb
             ON CONFLICT (entity_hash) DO NOTHING
             RETURNING 1
         )

@@ -15,5 +15,6 @@
     <Project Path="tests/Hartonomous.Decomposers.Tests/Hartonomous.Decomposers.Tests.csproj" />
     <Project Path="tests/Hartonomous.Engine.Tests/Hartonomous.Engine.Tests.csproj" />
     <Project Path="tests/Hartonomous.Integration.Tests/Hartonomous.Integration.Tests.csproj" />
+    <Project Path="tests/Hartonomous.Smoke.Tests/Hartonomous.Smoke.Tests.csproj" />
   </Folder>
 </Solution>

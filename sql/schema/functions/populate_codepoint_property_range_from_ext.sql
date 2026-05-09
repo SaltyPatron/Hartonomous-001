@@ -20,6 +20,14 @@ BEGIN
     WHILE v_lo < v_end LOOP
         v_hi := LEAST(v_lo + v_max_srf_rows, v_end);
 
+        -- FK IDs resolved via JOIN against (category, enum_id) instead of
+        -- the prior offset arithmetic (a.gcb + 1, a.wb + 15, a.sb + 35,
+        -- a.lb + 50). The offsets assumed a specific contiguous layout in
+        -- substrate.break_property; when UCD enum counts shifted, the
+        -- resulting INSERTs referenced non-existent FK IDs and PG 18.3's
+        -- RI_FKey_check trigger SIGSEGV'd in get_op_opfamily_properties /
+        -- syscache GETSTRUCT instead of returning a clean FK violation
+        -- (2026-05-08, core wsl-crash-1778290623-2791).
         WITH inserted AS (
             INSERT INTO substrate.codepoint_property (
                 entity_hash,
@@ -40,16 +48,24 @@ BEGIN
                 a.general_category + 1,
                 a.script + 1,
                 a.block + 1,
-                a.gcb + 1,
-                a.wb + 15,
-                a.sb + 35,
-                a.lb + 50,
+                bp_gcb.id,
+                bp_wb.id,
+                bp_sb.id,
+                bp_lb.id,
                 a.extended_pictographic,
                 a.ccc::SMALLINT,
                 a.decomposition_mapping,
                 NULLIF(a.simple_case_fold, -1),
                 a.full_case_fold
             FROM substrate.ucd_codepoints(v_lo, v_hi - v_lo) a
+            JOIN substrate.break_property bp_gcb
+              ON bp_gcb.category = 'GCB' AND bp_gcb.enum_id = a.gcb
+            JOIN substrate.break_property bp_wb
+              ON bp_wb.category  = 'WB'  AND bp_wb.enum_id  = a.wb
+            JOIN substrate.break_property bp_sb
+              ON bp_sb.category  = 'SB'  AND bp_sb.enum_id  = a.sb
+            JOIN substrate.break_property bp_lb
+              ON bp_lb.category  = 'LB'  AND bp_lb.enum_id  = a.lb
             ON CONFLICT (entity_hash) DO NOTHING
             RETURNING 1
         )

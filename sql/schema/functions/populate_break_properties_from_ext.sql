@@ -16,8 +16,16 @@ AS $$
 DECLARE
     inserted int;
 BEGIN
-    INSERT INTO substrate.break_property (id, code, category)
-    SELECT v.id + 1, v.code, v.category
+    -- enum_id: per-category enum value (UC_GCB_Other = 0, UC_GCB_CR = 1, …,
+    -- UC_WB_Other = 0, UC_WB_CR = 1, …). codepoint_property INSERTs JOIN on
+    -- (category, enum_id) instead of the prior offset arithmetic
+    -- (a.gcb + 1, a.wb + 15, a.sb + 35, a.lb + 50) which crashed PG with
+    -- a syscache-corruption SIGSEGV in RI_FKey_check when UCD enum counts
+    -- shifted between the offset constants and what
+    -- substrate.ucd_break_properties() actually emits (2026-05-08, core
+    -- dump wsl-crash-1778290623-2791).
+    INSERT INTO substrate.break_property (id, code, category, enum_id)
+    SELECT v.id + 1, v.code, v.category, v.enum_id
     FROM substrate.ucd_break_properties() AS v
     ON CONFLICT (id) DO NOTHING;
 
@@ -30,4 +38,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
-    'Bulk-loads substrate.break_property with id = extension_id + 1. Each row is a (category, code) pair — GCB/WB/SB/LB/InCB enums tagged at generation time. Idempotent.';
+    'Bulk-loads substrate.break_property with id = extension_id + 1 plus per-category enum_id. Each row is a (category, code, enum_id) tuple — GCB/WB/SB/LB/InCB enums tagged at generation time. enum_id matches the UC_<category>_<code> #define in pg_ucd_segmentation.h. Idempotent.';

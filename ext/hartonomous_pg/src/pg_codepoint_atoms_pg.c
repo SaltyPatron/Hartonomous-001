@@ -528,7 +528,16 @@ ucd_atom_setof(PG_FUNCTION_ARGS, UcdSrfKind kind, int32_t start, int32_t end, in
     funcctx = SRF_PERCALL_SETUP();
     st = (UcdAtomState*) funcctx->user_fctx;
 
-    /* Skip non-matching codepoints inside the C loop — predicate-pushdown. */
+    /* Block-presence guard: huc_cp_hash_at(cp) returns NULL when the embedded
+     * UCD blob doesn't have a per-block file mapped for this codepoint
+     * (shipped subset deployments). Without this guard, build_atom_values
+     * runs through the full property panel, eventually triggering a postgres
+     * ereport from an indirect path whose own log formatter SIGSEGVs —
+     * crashing the backend with a misleading frame in datetime_to_char_body
+     * instead of returning a missing-block error. Per the SRF's documented
+     * contract (atoms_blob.h: "Returns NULL when the relevant block file is
+     * unavailable"), the right behavior is to skip the codepoint silently.
+     */
     while (st->cur < st->end) {
         int32_t cp = st->cur++;
         bool match;
@@ -540,6 +549,7 @@ ucd_atom_setof(PG_FUNCTION_ARGS, UcdSrfKind kind, int32_t start, int32_t end, in
             default:                  match = false; break;
         }
         if (!match) continue;
+        if (huc_cp_hash_at(cp) == NULL) continue;
 
         Datum values[ATOM_COL_COUNT];
         bool  nulls[ATOM_COL_COUNT];
