@@ -1441,28 +1441,16 @@ COMMENT ON TABLE substrate.entity_morph_feature IS
 -- ── sql/schema/tables/junctions/codepoint_property.sql ───────────────────────────────────────
 -- Codepoint properties indexed by entity hash. Phase C unification:
 -- hash-only entity reference (substrate.entity has hash-only PK).
---
--- FK constraints to general_category / script / block / break_property
--- are intentionally NOT declared on this table. PG 18.3's RI_FKey_check
--- trigger SIGSEGVs in MakeTupleTableSlot (execTuples.c:1348) when fired
--- on the bulk codepoint_property INSERT (millions of FK validations
--- queued at query end). Validated 2026-05-08 across multiple core dumps
--- (wsl-crash-1778290623, 1778292957, et al). With the JOIN-based ID
--- resolution in populate_codepoint_property_range_from_ext, every
--- written FK ID is already proven to point at a real parent row at INSERT
--- time. Post-seed integrity check via plain SELECT JOIN replaces the
--- trigger-time check. Re-add FKs after PG bug is patched upstream, or
--- after a substrate-side replacement check function lands.
 CREATE TABLE substrate.codepoint_property (
     entity_hash              substrate.hash_value PRIMARY KEY,
     codepoint_value          INT  NOT NULL,
-    general_category_id      INT  NOT NULL,
-    script_id                INT  NOT NULL,
-    block_id                 INT  NOT NULL,
-    gcb_id                   INT,
-    wb_id                    INT,
-    sb_id                    INT,
-    lb_id                    INT,
+    general_category_id      INT  NOT NULL REFERENCES substrate.general_category(id),
+    script_id                INT  NOT NULL REFERENCES substrate.script(id),
+    block_id                 INT  NOT NULL REFERENCES substrate.block(id),
+    gcb_id                   INT  REFERENCES substrate.break_property(id),
+    wb_id                    INT  REFERENCES substrate.break_property(id),
+    sb_id                    INT  REFERENCES substrate.break_property(id),
+    lb_id                    INT  REFERENCES substrate.break_property(id),
     is_extended_pictographic BOOLEAN NOT NULL DEFAULT FALSE,
     ccc                      SMALLINT NOT NULL DEFAULT 0,
     decomposition_type       VARCHAR(16),
@@ -1472,7 +1460,7 @@ CREATE TABLE substrate.codepoint_property (
 );
 
 COMMENT ON TABLE substrate.codepoint_property IS
-    'Codepoint → Unicode properties. Hash-only entity reference. FK constraints to general_category/script/block/break_property removed because PG 18.3 SIGSEGVs in RI_FKey_check trigger on bulk INSERTs. JOIN-based ID resolution in the populator + post-seed integrity SELECT preserves referential correctness.';
+    'Codepoint → Unicode properties. Hash-only entity reference.';
 
 -- ── sql/schema/tables/junctions/model_architecture_class.sql ───────────────────────────────────────
 CREATE TABLE substrate.model_architecture_class (
@@ -6167,7 +6155,15 @@ DECLARE
     v_hi INT;
     v_inserted INT;
     v_total INT := 0;
-    v_max_srf_rows CONSTANT INT := 32768;
+    -- Per-INSERT chunk small enough that the AfterTriggerEnd FK validation
+    -- queue (7 FK columns × chunk_size rows × per-event tuple slot) does
+    -- not exhaust the per-query memory context and SIGSEGV
+    -- MakeTupleTableSlot. 32768 was the prior value; it crashed PG 18.3
+    -- with ~224k queued FK events per query. 1024 keeps the queue under
+    -- ~7k events — well below any memory ceiling. The seed driver still
+    -- chunks at 32768 client-side; this caps the SQL function's INTERNAL
+    -- per-INSERT batch independently.
+    v_max_srf_rows CONSTANT INT := 1024;
 BEGIN
     WHILE v_lo < v_end LOOP
         v_hi := LEAST(v_lo + v_max_srf_rows, v_end);

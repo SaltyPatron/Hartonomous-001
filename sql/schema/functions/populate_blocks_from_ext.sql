@@ -21,10 +21,11 @@ BEGIN
     FROM substrate.ucd_blocks() AS v
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.block', 'id'),
                    (SELECT max(id) FROM substrate.block), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;

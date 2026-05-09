@@ -155,16 +155,9 @@ try {
         # PG-side concurrency is bounded by the docker-compose
         # max_connections=50 setting; 8 backends well within that.
         $maxCp = 1114112
-        # 8-way parallel chunking. The earlier SIGSEGV in the parallel SRF
-        # was root-caused to substrate.ucd_codepoints emitting tuples for
-        # codepoints whose per-block UCD blob was unmapped; the C-side
-        # block-presence guard in pg_codepoint_atoms_pg.c::ucd_atom_setof
-        # fixes that. The `degree=1` workaround that replaced parallelism
-        # with a single 1.1M-row monolithic call was actively harmful: it
-        # blew past PG's transaction memory ceiling, crashed mid-INSERT,
-        # left WAL in an inconsistent state, and PANICed recovery on a
-        # btree_xlog_insert assertion (core wsl-crash-1778292957). Eight
-        # backends × 139k codepoints each is what the schema was sized for.
+        # 8-way parallel chunking against populate_codepoint_atoms_chunk per
+        # the AP-24 rule (fan N PG backends over disjoint codepoint ranges
+        # rather than serialise on one). 8 disjoint ranges of ~139k cp each.
         $degree = 8
         $chunkSize = [Math]::Ceiling($maxCp / $degree)
         $ranges = @()

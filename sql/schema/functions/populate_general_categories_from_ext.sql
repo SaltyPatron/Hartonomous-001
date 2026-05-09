@@ -21,10 +21,11 @@ BEGIN
     FROM substrate.ucd_general_categories() AS v
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.general_category', 'id'),
                    (SELECT max(id) FROM substrate.general_category), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;

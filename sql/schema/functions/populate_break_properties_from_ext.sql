@@ -18,21 +18,19 @@ DECLARE
 BEGIN
     -- enum_id: per-category enum value (UC_GCB_Other = 0, UC_GCB_CR = 1, …,
     -- UC_WB_Other = 0, UC_WB_CR = 1, …). codepoint_property INSERTs JOIN on
-    -- (category, enum_id) instead of the prior offset arithmetic
-    -- (a.gcb + 1, a.wb + 15, a.sb + 35, a.lb + 50) which crashed PG with
-    -- a syscache-corruption SIGSEGV in RI_FKey_check when UCD enum counts
-    -- shifted between the offset constants and what
-    -- substrate.ucd_break_properties() actually emits (2026-05-08, core
-    -- dump wsl-crash-1778290623-2791).
+    -- (category, enum_id) so seed reorder / new categories don't break the
+    -- mapping the way the prior offset arithmetic (a.gcb + 1, a.wb + 15,
+    -- a.sb + 35, a.lb + 50) did when GCB count shifted.
     INSERT INTO substrate.break_property (id, code, category, enum_id)
     SELECT v.id + 1, v.code, v.category, v.enum_id
     FROM substrate.ucd_break_properties() AS v
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.break_property', 'id'),
                    (SELECT max(id) FROM substrate.break_property), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;

@@ -21,10 +21,11 @@ BEGIN
     WHERE v.code IS NOT NULL AND length(v.code) > 0
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.script', 'id'),
                    (SELECT max(id) FROM substrate.script), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;

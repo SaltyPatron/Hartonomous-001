@@ -200,16 +200,20 @@ Datum pg_ucd_version(PG_FUNCTION_ARGS)
 /* ─── Variable-length per-codepoint payloads ─────────────────────────── */
 /* Build an int[] from a slice of uc_decomp_data / uc_fcf_data / uc_uca_data.
  * Empty slices return PostgreSQL's canonical zero-dimensional empty int[]
- * (NOT NULL) so SQL callers can ARRAY_LENGTH() without nullability ceremony. */
-static ArrayType* slice_int_array(const int32_t* data, uint32_t data_len, uint32_t off, uint16_t len)
+ * (NOT NULL) so SQL callers can ARRAY_LENGTH() without nullability ceremony.
+ * cp is for diagnostics only — included in the error message so a bad slice
+ * points at a specific codepoint instead of a generic generated-table miss. */
+static ArrayType* slice_int_array(int32_t cp, const char* table_name,
+                                  const int32_t* data, uint32_t data_len,
+                                  uint32_t off, uint16_t len)
 {
     if (len == 0) {
         return construct_empty_array(INT4OID);
     }
     if (off > data_len || (uint32_t) len > data_len - off) {
         ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
-                        errmsg("generated UCD slice out of range: off=%u len=%u data_len=%u",
-                               off, (unsigned int) len, data_len)));
+                        errmsg("generated UCD %s slice out of range: cp=U+%06X off=%u len=%u data_len=%u",
+                               table_name, cp, off, (unsigned int) len, data_len)));
     }
 
     Datum* elems = (Datum*) palloc(sizeof(Datum) * len);
@@ -228,7 +232,8 @@ PG_FUNCTION_INFO_V1(pg_cp_decomp);
 Datum pg_cp_decomp(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
-    PG_RETURN_ARRAYTYPE_P(slice_int_array(uc_decomp_data,
+    PG_RETURN_ARRAYTYPE_P(slice_int_array(cp, "decomp",
+                                          uc_decomp_data,
                                           UC_DECOMP_DATA_LEN,
                                           uc_decomp_off[cp],
                                           uc_decomp_len[cp]));
@@ -238,7 +243,8 @@ PG_FUNCTION_INFO_V1(pg_cp_full_case_fold);
 Datum pg_cp_full_case_fold(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
-    PG_RETURN_ARRAYTYPE_P(slice_int_array(uc_fcf_data,
+    PG_RETURN_ARRAYTYPE_P(slice_int_array(cp, "fcf",
+                                          uc_fcf_data,
                                           UC_FCF_DATA_LEN,
                                           uc_fcf_off[cp],
                                           uc_fcf_len[cp]));
@@ -252,7 +258,8 @@ Datum pg_cp_uca_weights(PG_FUNCTION_ARGS)
      * 3 weights per tuple (primary, secondary, tertiary). Flatten. */
     uint32_t flat_off = uc_uca_off[cp] * 3;
     uint16_t flat_len = (uint16_t) (uc_uca_len[cp] * 3);
-    PG_RETURN_ARRAYTYPE_P(slice_int_array((const int32_t*) uc_uca_data,
+    PG_RETURN_ARRAYTYPE_P(slice_int_array(cp, "uca",
+                                          (const int32_t*) uc_uca_data,
                                           UC_UCA_DATA_TUPLES * 3,
                                           flat_off,
                                           flat_len));
@@ -264,9 +271,15 @@ Datum pg_cp_name(PG_FUNCTION_ARGS)
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     uint16_t len = uc_name_len[cp];
     if (len == 0) PG_RETURN_NULL();
+    uint32_t off = uc_name_off[cp];
+    if (off > UC_NAME_BLOB_LEN || (uint32_t) len > UC_NAME_BLOB_LEN - off) {
+        ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+                        errmsg("generated UCD name slice out of range: cp=U+%06X off=%u len=%u blob_len=%u",
+                               cp, off, (unsigned int) len, (unsigned int) UC_NAME_BLOB_LEN)));
+    }
     text* t = (text*) palloc(VARHDRSZ + len);
     SET_VARSIZE(t, VARHDRSZ + len);
-    memcpy(VARDATA(t), uc_name_blob + uc_name_off[cp], len);
+    memcpy(VARDATA(t), uc_name_blob + off, len);
     PG_RETURN_TEXT_P(t);
 }
 
@@ -406,16 +419,24 @@ build_atom_values(int32_t cp, Datum* values, bool* nulls)
     /* extended_pictographic — inline function over the bitmap */
     bool ext_pict = uc_extended_pictographic(cp) != 0;
 
-    /* name — NULL when len==0 */
+    /* name — NULL when len==0. Guard: uc_name_off[cp] + len must stay
+     * within uc_name_blob (UC_NAME_BLOB_LEN) or memcpy reads past the
+     * generated table and feeds garbage into the emitted tuple. */
     Datum name_datum;
     bool  name_null;
     {
         uint16_t len = uc_name_len[cp];
         if (len == 0) { name_datum = (Datum) 0; name_null = true; }
         else {
+            uint32_t off = uc_name_off[cp];
+            if (off > UC_NAME_BLOB_LEN || (uint32_t) len > UC_NAME_BLOB_LEN - off) {
+                ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
+                                errmsg("generated UCD name slice out of range: cp=U+%06X off=%u len=%u blob_len=%u",
+                                       cp, off, (unsigned int) len, (unsigned int) UC_NAME_BLOB_LEN)));
+            }
             text* t = (text*) palloc(VARHDRSZ + len);
             SET_VARSIZE(t, VARHDRSZ + len);
-            memcpy(VARDATA(t), uc_name_blob + uc_name_off[cp], len);
+            memcpy(VARDATA(t), uc_name_blob + off, len);
             name_datum = PointerGetDatum(t);
             name_null  = false;
         }
@@ -451,12 +472,14 @@ build_atom_values(int32_t cp, Datum* values, bool* nulls)
     values[i] = BoolGetDatum(ext_pict);                                  nulls[i++] = false;
     values[i] = name_datum;                                              nulls[i++] = name_null;
     /* decomposition_mapping (28): non-NULL int[], possibly empty. */
-    values[i] = PointerGetDatum(slice_int_array(uc_decomp_data,
+    values[i] = PointerGetDatum(slice_int_array(cp, "decomp",
+                                                uc_decomp_data,
                                                 UC_DECOMP_DATA_LEN,
                                                 uc_decomp_off[cp],
                                                 uc_decomp_len[cp]));     nulls[i++] = false;
     /* full_case_fold (29): non-NULL int[], possibly empty. */
-    values[i] = PointerGetDatum(slice_int_array(uc_fcf_data,
+    values[i] = PointerGetDatum(slice_int_array(cp, "fcf",
+                                                uc_fcf_data,
                                                 UC_FCF_DATA_LEN,
                                                 uc_fcf_off[cp],
                                                 uc_fcf_len[cp]));        nulls[i++] = false;

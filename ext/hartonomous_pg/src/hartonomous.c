@@ -305,6 +305,47 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
         }
 
         hartonomous_unwind_backtrace(rip);
+
+        /*
+         * RBP-chain fallback. _Unwind_Backtrace stops at the heap-RIP frame
+         * because heap pages have no .eh_frame entry, so a stack-smash crash
+         * loses the real caller chain. When rbp is intact (the corruption
+         * was on the return-address slot specifically, not the saved-rbp
+         * slot below it) the rbp linked list still walks back through the
+         * legitimate caller frames. We dump up to 16 levels — each frame is
+         * (saved_rbp, saved_ret_pc) at *(rbp), *(rbp + 8). Stops on a
+         * non-stack rbp (wraps off the stack range) or a nil saved_rbp.
+         */
+        if (rbp != NULL)
+        {
+            const char *rhdr = "=== hartonomous: rbp-chain fallback (DWARF unwind didn't reach caller) ===\n";
+            (void) write(STDERR_FILENO, rhdr, strlen(rhdr));
+
+            uintptr_t cur_rbp = (uintptr_t) rbp;
+            for (int level = 0; level < 16; level++)
+            {
+                if (cur_rbp == 0) break;
+                /* Stack-bounds heuristic: typical x86-64 user stack pointers
+                 * have the top byte 0x7f. If we walk off into another region
+                 * the chain is corrupted and dereferencing further is unsafe. */
+                if ((cur_rbp >> 56) != 0x7f) break;
+
+                uintptr_t saved_rbp = *((uintptr_t *) cur_rbp);
+                uintptr_t saved_pc  = *((uintptr_t *) (cur_rbp + 8));
+
+                char rbuf[160];
+                int rlen = snprintf(rbuf, sizeof(rbuf),
+                                    "===   rbp[%2d] frame_rbp=%p saved_rbp=%p ret_pc=%p\n",
+                                    level, (void *) cur_rbp, (void *) saved_rbp, (void *) saved_pc);
+                if (rlen > 0) { (void) write(STDERR_FILENO, rbuf, (size_t) rlen); }
+
+                /* saved_rbp must monotonically increase up the stack. */
+                if (saved_rbp <= cur_rbp) break;
+                cur_rbp = saved_rbp;
+            }
+            const char *rtail = "=== End rbp-chain fallback ===\n";
+            (void) write(STDERR_FILENO, rtail, strlen(rtail));
+        }
     }
 
     /*
