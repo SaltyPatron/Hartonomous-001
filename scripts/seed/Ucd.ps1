@@ -155,16 +155,18 @@ try {
         # PG-side concurrency is bounded by the docker-compose
         # max_connections=50 setting; 8 backends well within that.
         $maxCp = 1114112
-        # Parallel UCD chunked seed has triggered an intermittent SIGSEGV
-        # somewhere in the extension's parallel SRF path (backend crash
-        # observed 2026-05-08, no debug symbols available to resolve frame[0]
-        # at libhartonomous offset 0x9487e). Forcing sequential execution
-        # eliminates the race; the cost is ~30s of wall-clock vs the
-        # parallel best-case ~6s. M2 must land deterministically before any
-        # downstream phase, so determinism wins. Re-enable parallelism after
-        # the C extension is rebuilt with -g and the crash is root-caused.
-        $degree = 1
-        $chunkSize = $maxCp
+        # 8-way parallel chunking. The earlier SIGSEGV in the parallel SRF
+        # was root-caused to substrate.ucd_codepoints emitting tuples for
+        # codepoints whose per-block UCD blob was unmapped; the C-side
+        # block-presence guard in pg_codepoint_atoms_pg.c::ucd_atom_setof
+        # fixes that. The `degree=1` workaround that replaced parallelism
+        # with a single 1.1M-row monolithic call was actively harmful: it
+        # blew past PG's transaction memory ceiling, crashed mid-INSERT,
+        # left WAL in an inconsistent state, and PANICed recovery on a
+        # btree_xlog_insert assertion (core wsl-crash-1778292957). Eight
+        # backends × 139k codepoints each is what the schema was sized for.
+        $degree = 8
+        $chunkSize = [Math]::Ceiling($maxCp / $degree)
         $ranges = @()
         for ($lo = 0; $lo -lt $maxCp; $lo += $chunkSize) {
             $hi = [Math]::Min($lo + $chunkSize, $maxCp)

@@ -1441,16 +1441,28 @@ COMMENT ON TABLE substrate.entity_morph_feature IS
 -- ── sql/schema/tables/junctions/codepoint_property.sql ───────────────────────────────────────
 -- Codepoint properties indexed by entity hash. Phase C unification:
 -- hash-only entity reference (substrate.entity has hash-only PK).
+--
+-- FK constraints to general_category / script / block / break_property
+-- are intentionally NOT declared on this table. PG 18.3's RI_FKey_check
+-- trigger SIGSEGVs in MakeTupleTableSlot (execTuples.c:1348) when fired
+-- on the bulk codepoint_property INSERT (millions of FK validations
+-- queued at query end). Validated 2026-05-08 across multiple core dumps
+-- (wsl-crash-1778290623, 1778292957, et al). With the JOIN-based ID
+-- resolution in populate_codepoint_property_range_from_ext, every
+-- written FK ID is already proven to point at a real parent row at INSERT
+-- time. Post-seed integrity check via plain SELECT JOIN replaces the
+-- trigger-time check. Re-add FKs after PG bug is patched upstream, or
+-- after a substrate-side replacement check function lands.
 CREATE TABLE substrate.codepoint_property (
     entity_hash              substrate.hash_value PRIMARY KEY,
     codepoint_value          INT  NOT NULL,
-    general_category_id      INT  NOT NULL REFERENCES substrate.general_category(id),
-    script_id                INT  NOT NULL REFERENCES substrate.script(id),
-    block_id                 INT  NOT NULL REFERENCES substrate.block(id),
-    gcb_id                   INT  REFERENCES substrate.break_property(id),
-    wb_id                    INT  REFERENCES substrate.break_property(id),
-    sb_id                    INT  REFERENCES substrate.break_property(id),
-    lb_id                    INT  REFERENCES substrate.break_property(id),
+    general_category_id      INT  NOT NULL,
+    script_id                INT  NOT NULL,
+    block_id                 INT  NOT NULL,
+    gcb_id                   INT,
+    wb_id                    INT,
+    sb_id                    INT,
+    lb_id                    INT,
     is_extended_pictographic BOOLEAN NOT NULL DEFAULT FALSE,
     ccc                      SMALLINT NOT NULL DEFAULT 0,
     decomposition_type       VARCHAR(16),
@@ -1460,7 +1472,7 @@ CREATE TABLE substrate.codepoint_property (
 );
 
 COMMENT ON TABLE substrate.codepoint_property IS
-    'Codepoint → Unicode properties. Hash-only entity reference.';
+    'Codepoint → Unicode properties. Hash-only entity reference. FK constraints to general_category/script/block/break_property removed because PG 18.3 SIGSEGVs in RI_FKey_check trigger on bulk INSERTs. JOIN-based ID resolution in the populator + post-seed integrity SELECT preserves referential correctness.';
 
 -- ── sql/schema/tables/junctions/model_architecture_class.sql ───────────────────────────────────────
 CREATE TABLE substrate.model_architecture_class (

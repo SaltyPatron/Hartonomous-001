@@ -15,7 +15,15 @@ DECLARE
     v_hi INT;
     v_inserted INT;
     v_total INT := 0;
-    v_max_srf_rows CONSTANT INT := 32768;
+    -- Per-INSERT chunk small enough that the AfterTriggerEnd FK validation
+    -- queue (7 FK columns × chunk_size rows × per-event tuple slot) does
+    -- not exhaust the per-query memory context and SIGSEGV
+    -- MakeTupleTableSlot. 32768 was the prior value; it crashed PG 18.3
+    -- with ~224k queued FK events per query. 1024 keeps the queue under
+    -- ~7k events — well below any memory ceiling. The seed driver still
+    -- chunks at 32768 client-side; this caps the SQL function's INTERNAL
+    -- per-INSERT batch independently.
+    v_max_srf_rows CONSTANT INT := 1024;
 BEGIN
     WHILE v_lo < v_end LOOP
         v_hi := LEAST(v_lo + v_max_srf_rows, v_end);
