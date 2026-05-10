@@ -76,3 +76,11 @@ int32_t huc_cp_from_hash(const uint8_t* hash32)
     if (!hash32) { return -1; }
     return hartonomous_ucd_cp_from_hash(hash32);
 }
+
+/* Header (generated/pg_ucd_atoms_blob.h:28) declares the prefix-less
+ * variant; pg_codepoint_atoms_pg.c calls it from pg_cp_from_hash and from
+ * the with_*_predicate SRFs. Same delegation. */
+int32_t uc_cp_from_hash(const uint8_t* hash32)
+{
+    return huc_cp_from_hash(hash32);
+}

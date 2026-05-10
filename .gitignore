@@ -16,6 +16,7 @@ ext/hartonomous_pg/*.o
 ext/hartonomous_pg/*.so
 ext/hartonomous_pg/*.dll
 ext/hartonomous_pg/*.dylib
+*.obj
 
 # Runtime
 runtimes/

@@ -1,0 +1,114 @@
+/* GENERATED — UAX#29 segmentation properties. */
+#ifndef PG_UCD_SEGMENTATION_H
+#define PG_UCD_SEGMENTATION_H
+#include <stdint.h>
+#include "pg_unicode_version.h"
+
+#define UC_GCB_Other  0
+#define UC_GCB_CR  1
+#define UC_GCB_LF  2
+#define UC_GCB_Control  3
+#define UC_GCB_Extend  4
+#define UC_GCB_ZWJ  5
+#define UC_GCB_Regional_Indicator  6
+#define UC_GCB_Prepend  7
+#define UC_GCB_SpacingMark  8
+#define UC_GCB_L  9
+#define UC_GCB_V  10
+#define UC_GCB_T  11
+#define UC_GCB_LV  12
+#define UC_GCB_LVT  13
+#define UC_WB_Other  0
+#define UC_WB_CR  1
+#define UC_WB_LF  2
+#define UC_WB_Newline  3
+#define UC_WB_Extend  4
+#define UC_WB_ZWJ  5
+#define UC_WB_Format  6
+#define UC_WB_Katakana  7
+#define UC_WB_Hebrew_Letter  8
+#define UC_WB_ALetter  9
+#define UC_WB_Single_Quote  10
+#define UC_WB_Double_Quote  11
+#define UC_WB_MidNumLet  12
+#define UC_WB_MidLetter  13
+#define UC_WB_MidNum  14
+#define UC_WB_Numeric  15
+#define UC_WB_ExtendNumLet  16
+#define UC_WB_Regional_Indicator  17
+#define UC_WB_WSegSpace  18
+#define UC_WB_Extended_Pictographic  19
+#define UC_SB_Other  0
+#define UC_SB_CR  1
+#define UC_SB_LF  2
+#define UC_SB_Sep  3
+#define UC_SB_Format  4
+#define UC_SB_Sp  5
+#define UC_SB_Lower  6
+#define UC_SB_Upper  7
+#define UC_SB_OLetter  8
+#define UC_SB_Numeric  9
+#define UC_SB_ATerm  10
+#define UC_SB_STerm  11
+#define UC_SB_Close  12
+#define UC_SB_SContinue  13
+#define UC_SB_Extend  14
+#define UC_LB_XX  0
+#define UC_LB_BK  1
+#define UC_LB_CR  2
+#define UC_LB_LF  3
+#define UC_LB_CM  4
+#define UC_LB_NL  5
+#define UC_LB_SG  6
+#define UC_LB_WJ  7
+#define UC_LB_ZW  8
+#define UC_LB_GL  9
+#define UC_LB_SP  10
+#define UC_LB_B2  11
+#define UC_LB_BA  12
+#define UC_LB_BB  13
+#define UC_LB_HY  14
+#define UC_LB_CB  15
+#define UC_LB_CL  16
+#define UC_LB_CP  17
+#define UC_LB_EX  18
+#define UC_LB_IN  19
+#define UC_LB_NS  20
+#define UC_LB_OP  21
+#define UC_LB_QU  22
+#define UC_LB_IS  23
+#define UC_LB_NU  24
+#define UC_LB_PO  25
+#define UC_LB_PR  26
+#define UC_LB_SY  27
+#define UC_LB_AI  28
+#define UC_LB_AL  29
+#define UC_LB_CJ  30
+#define UC_LB_EB  31
+#define UC_LB_EM  32
+#define UC_LB_H2  33
+#define UC_LB_H3  34
+#define UC_LB_HL  35
+#define UC_LB_ID  36
+#define UC_LB_JL  37
+#define UC_LB_JV  38
+#define UC_LB_JT  39
+#define UC_LB_RI  40
+#define UC_LB_SA  41
+#define UC_LB_ZWJ  42
+#define UC_LB_AK  43
+#define UC_LB_AP  44
+#define UC_LB_AS  45
+#define UC_LB_VF  46
+#define UC_LB_VI  47
+#define UC_INCB_None  0
+#define UC_INCB_Linker  1
+#define UC_INCB_Extend  2
+#define UC_INCB_Consonant  3
+
+extern const uint8_t uc_gcb [UNICODE_CODEPOINT_MAX];
+extern const uint8_t uc_wb  [UNICODE_CODEPOINT_MAX];
+extern const uint8_t uc_sb  [UNICODE_CODEPOINT_MAX];
+extern const uint8_t uc_lb  [UNICODE_CODEPOINT_MAX];
+extern const uint8_t uc_incb[UNICODE_CODEPOINT_MAX];
+#endif
