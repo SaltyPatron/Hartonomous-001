@@ -116,6 +116,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly Channel<EntitySignificanceRecord> _entitySignificances;
     private readonly Channel<EdgeSignificanceRecord> _edgeSignificances;
     private readonly Channel<EntityModelSourceRecord> _entityModelSources;
+    private readonly Channel<EdgeRatingEventRecord> _edgeRatingEvents;
 
     // Drain tasks — one per kind. Started in constructor, awaited in dispose.
     private readonly Task[] _drainTasks;
@@ -132,6 +133,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private long _entitySignificancesEmitted;
     private long _edgeSignificancesEmitted;
     private long _entityModelSourcesEmitted;
+    private long _edgeRatingEventsEmitted;
     private long _copyCommits;
     private long _copyErrors;
     private long _producerDedupHits;
@@ -169,7 +171,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         public const int EntitySignificance = 7;
         public const int EdgeSignificance = 8;
         public const int EntityModelSource = 9;
-        public const int Count = 10;
+        public const int EdgeRatingEvent = 10;
+        public const int Count = 11;
 
         public static string Name(int idx) => idx switch
         {
@@ -183,6 +186,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             EntitySignificance => "entity_significance",
             EdgeSignificance => "edge_significance",
             EntityModelSource => "entity_model_source",
+            EdgeRatingEvent => "edge_rating_event",
             _ => $"kind_{idx}",
         };
     }
@@ -270,6 +274,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _entitySignificances = Channel.CreateBounded<EntitySignificanceRecord>(opts);
         _edgeSignificances = Channel.CreateBounded<EdgeSignificanceRecord>(opts);
         _entityModelSources = Channel.CreateBounded<EntityModelSourceRecord>(opts);
+        _edgeRatingEvents = Channel.CreateBounded<EdgeRatingEventRecord>(opts);
 
         // N workers per channel. Each kind gets DrainWorkersPerKind parallel
         // drain backends. SingleReader=false on the bounded channels above
@@ -288,6 +293,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             drainTasks.Add(Task.Run(() => DrainEntitySignificancesAsync(_shutdown.Token)));
             drainTasks.Add(Task.Run(() => DrainEdgeSignificancesAsync(_shutdown.Token)));
             drainTasks.Add(Task.Run(() => DrainEntityModelSourcesAsync(_shutdown.Token)));
+            drainTasks.Add(Task.Run(() => DrainEdgeRatingEventsAsync(_shutdown.Token)));
         }
         _drainTasks = drainTasks.ToArray();
 
@@ -321,6 +327,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _entitySignificances.Writer.TryComplete(ex);
         _edgeSignificances.Writer.TryComplete(ex);
         _entityModelSources.Writer.TryComplete(ex);
+        _edgeRatingEvents.Writer.TryComplete(ex);
     }
 
     private async Task PeriodicSnapshotAsync(CancellationToken ct)
@@ -513,6 +520,24 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
                 await EmitAsync(new EdgeSignificanceRecord(
                     arenaCode, attestation, edge.EdgeTypeCode, edgeHash, mu), ct).ConfigureAwait(false);
+            }
+
+            // Sign-bearing rating events. Distinct from the prime path above:
+            // priming (EdgeSignificanceRecord) plants an initial mu on the
+            // first observation and does nothing on subsequent observations
+            // (ON CONFLICT DO NOTHING in the drain). Rating events FIRE every
+            // time, so cross-source corroboration accumulates on the same
+            // (arena, edge, attestation_type) row. Per docs/01-tensor-primitive-spec.md
+            // §V and AP-31. Pipeline drain calls substrate.record_attestations_bulk
+            // batched by (arena, attestation_type).
+            EdgeRatingEvent[] events = edge.RatingEvents;
+            for (int e = 0; e < events.Length; e++)
+            {
+                EdgeRatingEvent ev = events[e];
+                await EmitAsync(new EdgeRatingEventRecord(
+                    ev.ContextTypeCode, ev.AttestationTypeCode,
+                    edge.EdgeTypeCode, edgeHash,
+                    ev.Score, ev.Weight), ct).ConfigureAwait(false);
             }
         }
 
@@ -931,6 +956,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             EntitySignificanceRecord r => EmitEntitySignificanceAsync(r, ct),
             EdgeSignificanceRecord r => EmitEdgeSignificanceAsync(r, ct),
             EntityModelSourceRecord r => WriteTrackedAsync(_entityModelSources.Writer, r, KindIndex.EntityModelSource, ct),
+            EdgeRatingEventRecord r => WriteTrackedAsync(_edgeRatingEvents.Writer, r, KindIndex.EdgeRatingEvent, ct),
             _ => throw new ArgumentException(
                 $"Unknown IngestionRecord subtype: {record.GetType().Name}", nameof(record)),
         };
@@ -1119,6 +1145,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _entitySignificances.Writer.TryComplete();
         _edgeSignificances.Writer.TryComplete();
         _entityModelSources.Writer.TryComplete();
+        _edgeRatingEvents.Writer.TryComplete();
 
         // Wait for all drain tasks to finish their final chunks. Each drain
         // task drains its in-flight temp table after the channel closes
@@ -1677,6 +1704,102 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 Interlocked.Increment(ref _entityModelSourcesEmitted);
             },
             ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sign-bearing rating-event drain. Distinct from the COPY-into-temp
+    /// shape every other drain uses: rating events are NOT row inserts;
+    /// they are calls to substrate.record_attestations_bulk per
+    /// (arena, attestation_type) bucket. The drain reads events from the
+    /// channel, buffers up to <see cref="RatingEventBatchSize"/> per
+    /// bucket, and flushes each bucket via ONE bulk-function call (per
+    /// AP-2: no RBAR; the SQL function is itself ONE glicko2_bulk_update
+    /// call across the entire bucket's events).
+    ///
+    /// No producer-side dedup: every event is a fresh observation. Two
+    /// emissions of the same (arena, edge, attestation_type) MUST produce
+    /// two Glicko events (cross-source corroboration). The dedup pattern
+    /// other channels use is wrong for this kind of record.
+    ///
+    /// Per docs/01-tensor-primitive-spec.md §V and AP-31.
+    /// </summary>
+    private const int RatingEventBatchSize = 16_384;
+
+    private async Task DrainEdgeRatingEventsAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+
+            // Per-bucket buffers keyed by (arena_id, attestation_type_id).
+            Dictionary<(int Arena, int Atest), List<EdgeRatingEventRecord>> buckets = new();
+
+            async ValueTask FlushBucketAsync((int Arena, int Atest) key, List<EdgeRatingEventRecord> batch)
+            {
+                if (batch.Count == 0) { return; }
+                int n = batch.Count;
+                int[] etypeIds = new int[n];
+                byte[][] hashes = new byte[n][];
+                double[] scores = new double[n];
+                double[] weights = new double[n];
+                for (int i = 0; i < n; i++)
+                {
+                    EdgeRatingEventRecord r = batch[i];
+                    etypeIds[i] = await _codeResolver.EdgeTypeIdAsync(r.EdgeTypeCode, ct).ConfigureAwait(false);
+                    hashes[i]   = r.EdgeHash;
+                    scores[i]   = r.Score;
+                    weights[i]  = r.Weight;
+                }
+                long start = Stopwatch.GetTimestamp();
+                await using NpgsqlCommand cmd = new("SELECT substrate.record_attestations_bulk($1, $2, $3, $4, $5, $6)", conn);
+                cmd.CommandTimeout = 0;
+                cmd.Parameters.Add(new NpgsqlParameter { Value = key.Arena, NpgsqlDbType = NpgsqlDbType.Integer });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = key.Atest, NpgsqlDbType = NpgsqlDbType.Integer });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = etypeIds, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = hashes, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = scores, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Double });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = weights, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Double });
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                Interlocked.Add(ref _drainElapsedTicks[KindIndex.EdgeRatingEvent], Stopwatch.GetTimestamp() - start);
+                Interlocked.Add(ref _drainRowsCommitted[KindIndex.EdgeRatingEvent], n);
+                Interlocked.Add(ref _edgeRatingEventsEmitted, n);
+                Interlocked.Increment(ref _copyCommits);
+                batch.Clear();
+            }
+
+            await foreach (EdgeRatingEventRecord rec in _edgeRatingEvents.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                int arenaId = await _codeResolver.SignificanceContextIdAsync(rec.ContextTypeCode, ct).ConfigureAwait(false);
+                int atestId = await _codeResolver.AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
+                (int, int) key = (arenaId, atestId);
+                if (!buckets.TryGetValue(key, out List<EdgeRatingEventRecord>? list))
+                {
+                    list = new List<EdgeRatingEventRecord>(RatingEventBatchSize);
+                    buckets[key] = list;
+                }
+                list.Add(rec);
+                if (list.Count >= RatingEventBatchSize)
+                {
+                    await FlushBucketAsync(key, list).ConfigureAwait(false);
+                }
+            }
+
+            // Final drain — flush every bucket left over after channel closes.
+            foreach (KeyValuePair<(int, int), List<EdgeRatingEventRecord>> kv in buckets)
+            {
+                await FlushBucketAsync(kv.Key, kv.Value).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        { // BOUNDARY: pipeline shutdown.
+        }
+        catch (Exception ex) // BOUNDARY: drain task failure must trip the writer-fail circuit so producers don't block.
+        {
+            Interlocked.Increment(ref _copyErrors);
+            Log.DrainTaskCrashed(_logger, "edge_rating_events", ex);
+            FailAllWriters(ex);
+            throw;
+        }
     }
 
     /// <summary>

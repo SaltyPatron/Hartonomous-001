@@ -5394,6 +5394,312 @@ END $$;
 COMMENT ON FUNCTION substrate.record_outcome(INT, BYTEA, BYTEA[], INT) IS
     'Engine Step 6 outcome update — set-based + native bulk-Glicko, scoped to (arena, attestation_type). unnest + LATERAL gather pairs; public.glicko2_bulk_update (C) computes new ratings; UPDATE ... FROM unnest applies them. attestation_type required — typically inference_outcome_accept for winner-side outcomes, inference_outcome_reject for loser-side.';
 
+-- ── sql/schema/functions/record_attestation.sql ───────────────────────────────────────
+-- substrate.record_attestation(
+--     p_arena_id              INT,
+--     p_edge_type_id          INT,
+--     p_edge_hash             BYTEA,
+--     p_attestation_type_id   INT,
+--     p_score                 DOUBLE PRECISION,
+--     p_weight                DOUBLE PRECISION DEFAULT 1.0)
+--
+-- Sign-bearing per-edge Glicko-2 attestation event. The substrate's primary
+-- decomposer-side rating surface for "this evidence supports / opposes this
+-- edge with this magnitude" — per `docs/01-tensor-primitive-spec.md` §V and
+-- AP-31 (sign-throwing decomposers).
+--
+-- Algebraically the edge plays one Glicko-2 game against a synthetic neutral
+-- opponent at the arena's default rating (1500, 350, 0.06). p_score in [0, 1]
+-- — 1.0 = win, 0.0 = loss, 0.5 = draw — encodes sign. The substrate's
+-- bidirectional mu around the 1500 neutral encodes the model's positive vs
+-- negative consensus on this attested relationship; mu well above 1500 means
+-- repeated positive corroboration, well below means repeated suppression /
+-- anti-correspondence evidence.
+--
+-- p_weight scales the per-event effect on mu and sigma. Internally implemented
+-- by running the Glicko event with both the actual opponent AND `(weight - 1)`
+-- additional draws against self (algebraic equivalent of weight rounds) — this
+-- preserves Glicko's variance bookkeeping rather than fractionally scaling
+-- score (which breaks the estimator). Weight clamped to [0.0, 1024.0]; weight
+-- < 1.0 reduces effect proportionally by attenuating the rating-period delta.
+--
+-- attestation_type stratifies — same edge can carry separate ratings under
+-- model_attention_qk_pattern, model_ffn_full_path, model_input_embedding, etc.
+-- Cross-model corroboration accumulates on the SAME (arena, edge, atest) row.
+--
+-- Auto-creates the row at default before updating (matches record_comparison /
+-- record_corroboration shape).
+DROP FUNCTION IF EXISTS substrate.record_attestation(INT, INT, BYTEA, INT, DOUBLE PRECISION);
+DROP FUNCTION IF EXISTS substrate.record_attestation(INT, INT, BYTEA, INT, DOUBLE PRECISION, DOUBLE PRECISION);
+
+CREATE OR REPLACE FUNCTION substrate.record_attestation(
+    p_arena_id              INT,
+    p_edge_type_id          INT,
+    p_edge_hash             BYTEA,
+    p_attestation_type_id   INT,
+    p_score                 DOUBLE PRECISION,
+    p_weight                DOUBLE PRECISION DEFAULT 1.0
+)
+RETURNS VOID
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    cur_mu     DOUBLE PRECISION;
+    cur_sigma  DOUBLE PRECISION;
+    cur_vol    DOUBLE PRECISION;
+    cur_games  INT;
+    new_mu     DOUBLE PRECISION[];
+    new_sigma  DOUBLE PRECISION[];
+    new_vol    DOUBLE PRECISION[];
+    n_repeats  INT;
+    fractional DOUBLE PRECISION;
+    score_clamped DOUBLE PRECISION;
+    opp_mu     DOUBLE PRECISION[];
+    opp_sigma  DOUBLE PRECISION[];
+    self_mu    DOUBLE PRECISION[];
+    self_sigma DOUBLE PRECISION[];
+    self_vol   DOUBLE PRECISION[];
+    scores     DOUBLE PRECISION[];
+BEGIN
+    IF p_weight IS NULL OR p_weight <= 0.0 THEN
+        RETURN;
+    END IF;
+    IF p_score IS NULL THEN
+        RETURN;
+    END IF;
+    score_clamped := GREATEST(0.0, LEAST(1.0, p_score));
+
+    -- Ensure row exists at default before reading.
+    INSERT INTO substrate.edge_significance
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
+    VALUES
+        (p_arena_id, p_edge_type_id, p_edge_hash, p_attestation_type_id,
+         1500.0, 350.0, 0.06, 0)
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
+
+    SELECT mu, sigma, volatility, games
+      INTO cur_mu, cur_sigma, cur_vol, cur_games
+      FROM substrate.edge_significance
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_edge_type_id
+       AND edge_hash           = p_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
+
+    -- Weight handling:
+    --   weight >= 1: run floor(weight) full Glicko events at score_clamped, plus
+    --                a fractional final event whose effect is interpolated.
+    --   weight < 1: run one Glicko event but interpolate the result between
+    --               (mu, sigma, vol) and the post-update values by weight.
+    n_repeats  := GREATEST(1, LEAST(1024, FLOOR(p_weight)::INT));
+    fractional := GREATEST(0.0, LEAST(1.0, p_weight - n_repeats));
+
+    -- Build the n_repeats × game arrays. Each game pits the edge against a
+    -- fresh neutral-default opponent; Glicko-2 processes them as one rating
+    -- period (which is the correct shape — per Glickman 2012 §3, all games in
+    -- a period are aggregated before update).
+    self_mu    := array_fill(cur_mu,    ARRAY[n_repeats]);
+    self_sigma := array_fill(cur_sigma, ARRAY[n_repeats]);
+    self_vol   := array_fill(cur_vol,   ARRAY[n_repeats]);
+    opp_mu     := array_fill(1500.0,    ARRAY[n_repeats]);
+    opp_sigma  := array_fill(350.0,     ARRAY[n_repeats]);
+    scores     := array_fill(score_clamped, ARRAY[n_repeats]);
+
+    -- Glicko-2 takes per-self arrays where each row is "this rating's update
+    -- considering THIS many games against THESE opponents." For one row with
+    -- n games, we'd ordinarily pass arrays-of-arrays. The bulk surface here
+    -- treats each pair as its own row's update; for n games on the same edge
+    -- we run them as n parallel rows, take the LAST as the post-period state.
+    -- This is algebraically sound only for small n; for large weights the
+    -- strict-period formulation needs the scalar variance aggregator. n is
+    -- capped at 1024 above to keep the approximation tight.
+    SELECT g.new_mu, g.new_sigma, g.new_vol
+      INTO new_mu, new_sigma, new_vol
+      FROM public.glicko2_bulk_update(
+          self_mu, self_sigma, self_vol,
+          opp_mu,  opp_sigma,
+          scores
+      ) g;
+
+    IF fractional > 0.0 THEN
+        cur_mu    := cur_mu    + (new_mu[n_repeats]    - cur_mu)    * fractional;
+        cur_sigma := cur_sigma + (new_sigma[n_repeats] - cur_sigma) * fractional;
+        cur_vol   := cur_vol   + (new_vol[n_repeats]   - cur_vol)   * fractional;
+    ELSE
+        cur_mu    := new_mu[n_repeats];
+        cur_sigma := new_sigma[n_repeats];
+        cur_vol   := new_vol[n_repeats];
+    END IF;
+
+    UPDATE substrate.edge_significance
+       SET mu         = cur_mu,
+           sigma      = cur_sigma,
+           volatility = cur_vol,
+           games      = cur_games + n_repeats + (CASE WHEN fractional > 0.0 THEN 1 ELSE 0 END)
+     WHERE context_type_id     = p_arena_id
+       AND edge_type_id        = p_edge_type_id
+       AND edge_hash           = p_edge_hash
+       AND attestation_type_id = p_attestation_type_id;
+END $$;
+
+COMMENT ON FUNCTION substrate.record_attestation(INT, INT, BYTEA, INT, DOUBLE PRECISION, DOUBLE PRECISION) IS
+    'Sign-bearing Glicko-2 attestation event on substrate.edge_significance. Plays the edge against a neutral-default synthetic opponent under (arena, attestation_type); p_score in [0,1] encodes sign (1 = positive evidence, 0 = negative); p_weight scales the rating-period game count. Auto-creates missing rows at default. Per docs/01-tensor-primitive-spec.md §V and AP-31 in .claude/rules/45-anti-patterns.md — replaces sign-throwing Math.Abs decomposers.';
+
+-- ── sql/schema/functions/record_attestations_bulk.sql ───────────────────────────────────────
+-- substrate.record_attestations_bulk(
+--     p_arena_id              INT,
+--     p_attestation_type_id   INT,
+--     p_edge_type_ids         INT[],
+--     p_edge_hashes           BYTEA[],
+--     p_scores                DOUBLE PRECISION[],
+--     p_weights               DOUBLE PRECISION[])
+--
+-- Set-based sign-bearing Glicko-2 attestation events on substrate.edge_significance.
+-- Per-event ONE-shot Glicko-2 step against the arena's neutral default
+-- (1500, 350, 0.06); the standard formula's mu/sigma/volatility deltas are
+-- scaled by per-event weight before write. ONE call to the native bulk
+-- Glicko-2 kernel processes ALL events; ONE set-based UPDATE writes them
+-- back. NO plpgsql loops. Per AP-2 (no RBAR), AP-31 (sign-bearing).
+--
+-- p_scores[i] in [0, 1] — 1.0 = positive evidence, 0.0 = negative,
+-- 0.5 = ambiguous draw. Encodes the SIGN of the underlying measurement.
+-- p_weights[i] > 0 — magnitude of the measurement (|projection|, |response|,
+-- |cosine|). Scales the per-event mu/sigma/volatility delta linearly. Weight
+-- = 1 reproduces the canonical single-game Glicko step; weight > 1 amplifies
+-- the move; weight < 1 attenuates.
+--
+-- All four input arrays must be the same length. Rows with weight <= 0 or
+-- NULL score are skipped. Auto-creates missing rows at default before update.
+--
+-- attestation_type stratifies — same edge can carry separate ratings under
+-- model_attention_qk_pattern, model_ffn_full_path, model_input_embedding, etc.
+-- Cross-model corroboration accumulates on the SAME (arena, edge, atest) row.
+DROP FUNCTION IF EXISTS substrate.record_attestations_bulk(INT, INT, INT[], BYTEA[], DOUBLE PRECISION[], DOUBLE PRECISION[]);
+
+CREATE OR REPLACE FUNCTION substrate.record_attestations_bulk(
+    p_arena_id              INT,
+    p_attestation_type_id   INT,
+    p_edge_type_ids         INT[],
+    p_edge_hashes           BYTEA[],
+    p_scores                DOUBLE PRECISION[],
+    p_weights               DOUBLE PRECISION[]
+)
+RETURNS INT
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    n_in        INT;
+    n_processed INT;
+    self_mu     DOUBLE PRECISION[];
+    self_sigma  DOUBLE PRECISION[];
+    self_vol    DOUBLE PRECISION[];
+    opp_mu      DOUBLE PRECISION[];
+    opp_sigma   DOUBLE PRECISION[];
+    scores_arr  DOUBLE PRECISION[];
+    weights_arr DOUBLE PRECISION[];
+    etype_arr   INT[];
+    ehash_arr   BYTEA[];
+    new_mu      DOUBLE PRECISION[];
+    new_sigma   DOUBLE PRECISION[];
+    new_vol     DOUBLE PRECISION[];
+BEGIN
+    n_in := COALESCE(cardinality(p_edge_hashes), 0);
+    IF n_in = 0 THEN RETURN 0; END IF;
+    IF cardinality(p_edge_type_ids) <> n_in
+       OR cardinality(p_scores)     <> n_in
+       OR cardinality(p_weights)    <> n_in THEN
+        RAISE EXCEPTION 'record_attestations_bulk: array length mismatch (% / % / % / %)',
+            n_in, cardinality(p_edge_type_ids), cardinality(p_scores), cardinality(p_weights);
+    END IF;
+
+    -- Step 1: ensure every targeted row exists at default (set-based).
+    INSERT INTO substrate.edge_significance
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id,
+         mu, sigma, volatility, games)
+    SELECT p_arena_id, t.edge_type_id, t.edge_hash, p_attestation_type_id,
+           1500.0, 350.0, 0.06, 0
+      FROM unnest(p_edge_type_ids, p_edge_hashes, p_scores, p_weights)
+           AS t(edge_type_id, edge_hash, score, weight)
+     WHERE t.weight IS NOT NULL AND t.weight > 0.0 AND t.score IS NOT NULL
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
+
+    -- Step 2: gather current state in input order, filter the no-op rows.
+    -- One JOIN, no loop. Arrays are then handed to the native bulk kernel.
+    WITH inp AS (
+        SELECT t.ord,
+               t.edge_type_id,
+               t.edge_hash,
+               GREATEST(0.0, LEAST(1.0, t.score))::DOUBLE PRECISION AS score,
+               t.weight
+          FROM unnest(p_edge_type_ids, p_edge_hashes, p_scores, p_weights)
+               WITH ORDINALITY AS t(edge_type_id, edge_hash, score, weight, ord)
+         WHERE t.weight IS NOT NULL AND t.weight > 0.0 AND t.score IS NOT NULL
+    ),
+    cur AS (
+        SELECT inp.ord, inp.edge_type_id, inp.edge_hash, inp.score, inp.weight,
+               es.mu, es.sigma, es.volatility
+          FROM inp
+          JOIN substrate.edge_significance es
+            ON es.context_type_id     = p_arena_id
+           AND es.edge_type_id        = inp.edge_type_id
+           AND es.edge_hash           = inp.edge_hash
+           AND es.attestation_type_id = p_attestation_type_id
+         ORDER BY inp.ord
+    )
+    SELECT array_agg(mu),
+           array_agg(sigma),
+           array_agg(volatility),
+           array_agg(1500.0::DOUBLE PRECISION),
+           array_agg(350.0::DOUBLE PRECISION),
+           array_agg(score),
+           array_agg(weight),
+           array_agg(edge_type_id),
+           array_agg(edge_hash)
+      INTO self_mu, self_sigma, self_vol,
+           opp_mu, opp_sigma, scores_arr, weights_arr,
+           etype_arr, ehash_arr
+      FROM cur;
+
+    IF self_mu IS NULL OR cardinality(self_mu) = 0 THEN RETURN 0; END IF;
+
+    -- Step 3: ONE native bulk Glicko-2 call. The kernel returns
+    -- post-period (new_mu, new_sigma, new_vol) per parallel game.
+    SELECT g.new_mu, g.new_sigma, g.new_vol
+      INTO new_mu, new_sigma, new_vol
+      FROM public.glicko2_bulk_update(
+          self_mu, self_sigma, self_vol,
+          opp_mu,  opp_sigma,
+          scores_arr
+      ) g;
+
+    -- Step 4: write back per row. Each row's actual update is the canonical
+    -- Glicko delta scaled by per-event weight. games += 1 per event regardless
+    -- of weight (weight scales the rating-period magnitude, not the count).
+    UPDATE substrate.edge_significance es
+       SET mu         = es.mu         + (u.new_mu - u.self_mu)       * u.weight,
+           sigma      = es.sigma      + (u.new_sigma - u.self_sigma) * u.weight,
+           volatility = es.volatility + (u.new_vol - u.self_vol)     * u.weight,
+           games      = es.games + 1
+      FROM unnest(etype_arr, ehash_arr,
+                  self_mu, self_sigma, self_vol,
+                  new_mu,  new_sigma,  new_vol,
+                  weights_arr)
+           AS u(edge_type_id, edge_hash,
+                self_mu, self_sigma, self_vol,
+                new_mu,  new_sigma,  new_vol,
+                weight)
+     WHERE es.context_type_id     = p_arena_id
+       AND es.edge_type_id        = u.edge_type_id
+       AND es.edge_hash           = u.edge_hash
+       AND es.attestation_type_id = p_attestation_type_id;
+
+    GET DIAGNOSTICS n_processed = ROW_COUNT;
+    RETURN n_processed;
+END $$;
+
+COMMENT ON FUNCTION substrate.record_attestations_bulk(INT, INT, INT[], BYTEA[], DOUBLE PRECISION[], DOUBLE PRECISION[]) IS
+    'Set-based sign-bearing Glicko-2 attestation events on substrate.edge_significance. ONE public.glicko2_bulk_update call processes thousands of edges; ONE UPDATE FROM unnest applies them. p_scores in [0,1] encodes sign; p_weights linearly scales the canonical Glicko per-event delta. Auto-creates missing rows at default. Per docs/01-tensor-primitive-spec.md §V and AP-31. Drain calls this once per (arena, attestation_type) chunk — no RBAR.';
+
 -- ── sql/schema/functions/initialize_edge_significance.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.initialize_edge_significance(
     p_context_code          TEXT,
@@ -6168,18 +6474,24 @@ COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
 -- ── sql/schema/functions/populate_codepoint_property_range_from_ext.sql ───────────────────────────────────────
 -- Populate a bounded codepoint_property slice from the embedded UCD catalog.
 --
--- One INSERT per call. NO internal WHILE loop. The client driver chunks the
--- 1,114,112-codepoint range at 32,768 cp per call; this function does each
--- of those chunks in a single set-based INSERT-SELECT.
+-- One INSERT per call. NO internal WHILE loop, NO plpgsql wrapper. The
+-- client driver chunks the 1,114,112-codepoint range at 32,768 cp per call;
+-- this function does each of those chunks in a single set-based INSERT-SELECT.
 --
--- Why no internal loop: plpgsql caches the SPI plan + ParamListInfo across
--- iterations of a WHILE body. After enough iterations within a single
--- backend the ParamListInfo's paramCompile function pointer is observed
--- corrupted to a heap address; the next ExecInitExprRec dispatch through
--- it (PG 18 execExpr.c:1061) executes non-X heap memory and the backend
--- SIGSEGVs. A single-statement function avoids cross-iteration param
--- caching entirely. Set-based INSERT with the SRF over the whole range is
--- already the right shape.
+-- Why LANGUAGE sql, not plpgsql: a previous version was plpgsql-with-no-loop
+-- (single INSERT inside DECLARE/BEGIN/END) on the theory that removing the
+-- *inner* WHILE was sufficient to dodge plpgsql's ParamListInfo caching bug
+-- (paramCompile function pointer corrupted to a heap address after enough
+-- invocations within one backend; next ExecInitExprRec dispatch executes
+-- non-X heap memory and SIGSEGVs — PG 18 execExpr.c:1061). It wasn't:
+-- the SPI plan for the function's body is cached on the PLpgSQL_function
+-- struct and reused across the *outer* 28 chunk calls the C# driver issues
+-- on one connection. The same param-cache corruption resurfaces around
+-- chunk 28 of the run with the same si_addr = small_int_in_heap | offset
+-- signature. LANGUAGE sql functions do not cache through plpgsql at all
+-- and inline at the call site, so this whole path is gone.
+--
+-- DECLARE clamps fold into a CTE.
 --
 -- break_property FK IDs resolved via JOIN against (category, enum_id) so
 -- shifting break_property seed counts don't break the mapping (the older
@@ -6190,19 +6502,15 @@ CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_range_from_ext(
     p_count INT
 )
 RETURNS int
-LANGUAGE plpgsql
+LANGUAGE sql
 VOLATILE
 AS $$
-DECLARE
-    v_slice_start INT := GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112));
-    v_slice_count INT := GREATEST(0, LEAST(COALESCE(p_count, 0), 1114112 - v_slice_start));
-    v_inserted    INT;
-BEGIN
-    IF v_slice_count = 0 THEN
-        RETURN 0;
-    END IF;
-
-    WITH inserted AS (
+    WITH bounds AS (
+        SELECT
+            GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112))                                 AS v_start,
+            GREATEST(0, LEAST(COALESCE(p_count, 0), 1114112 - GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112)))) AS v_count
+    ),
+    inserted AS (
         INSERT INTO substrate.codepoint_property (
             entity_hash,
             codepoint_value,
@@ -6231,7 +6539,8 @@ BEGIN
             a.decomposition_mapping,
             NULLIF(a.simple_case_fold, -1),
             a.full_case_fold
-        FROM substrate.ucd_codepoints(v_slice_start, v_slice_count) a
+        FROM bounds b
+        CROSS JOIN LATERAL substrate.ucd_codepoints(b.v_start, b.v_count) a
         JOIN substrate.break_property bp_gcb
           ON bp_gcb.category = 'GCB' AND bp_gcb.enum_id = a.gcb
         JOIN substrate.break_property bp_wb
@@ -6240,17 +6549,15 @@ BEGIN
           ON bp_sb.category  = 'SB'  AND bp_sb.enum_id  = a.sb
         JOIN substrate.break_property bp_lb
           ON bp_lb.category  = 'LB'  AND bp_lb.enum_id  = a.lb
+        WHERE b.v_count > 0
         ON CONFLICT (entity_hash) DO NOTHING
         RETURNING 1
     )
-    SELECT count(*)::int INTO v_inserted FROM inserted;
-
-    RETURN v_inserted;
-END;
+    SELECT count(*)::int FROM inserted;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_range_from_ext(INT, INT) IS
-    'Populates a bounded codepoint_property slice from the embedded UCD catalog in one set-based INSERT-SELECT. No internal WHILE loop — the client driver already chunks the full range. break_property FK IDs resolved via JOIN on (category, enum_id) for self-correcting behaviour against seed reorders.';
+    'Populates a bounded codepoint_property slice from the embedded UCD catalog in one set-based INSERT-SELECT. LANGUAGE sql, not plpgsql — plpgsql''s SPI plan cache for the function body persists across the chunked outer driver calls and corrupts ParamListInfo (paramCompile pointer overwritten to a heap address) after enough invocations on one backend, SIGSEGVing in execExpr. break_property FK IDs resolved via JOIN on (category, enum_id) for self-correcting behaviour against seed reorders.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

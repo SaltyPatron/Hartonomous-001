@@ -48,7 +48,10 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
     {
-        _edges.Add(new EdgeEntry(edgeTypeCode, provenanceCode, members.ToArray(), System.Array.Empty<EdgeSignificanceSpec>()));
+        _edges.Add(new EdgeEntry(
+            edgeTypeCode, provenanceCode, members.ToArray(),
+            System.Array.Empty<EdgeSignificanceSpec>(),
+            System.Array.Empty<EdgeRatingEvent>()));
     }
 
     public void AddEdge(
@@ -57,7 +60,23 @@ internal sealed class IngestionBatch : IIngestionBatch
         ReadOnlySpan<EdgeMemberSpec> members,
         ReadOnlySpan<EdgeSignificanceSpec> significance)
     {
-        _edges.Add(new EdgeEntry(edgeTypeCode, provenanceCode, members.ToArray(), significance.ToArray()));
+        _edges.Add(new EdgeEntry(
+            edgeTypeCode, provenanceCode, members.ToArray(),
+            significance.ToArray(),
+            System.Array.Empty<EdgeRatingEvent>()));
+    }
+
+    public void AddEdge(
+        string edgeTypeCode,
+        string provenanceCode,
+        ReadOnlySpan<EdgeMemberSpec> members,
+        ReadOnlySpan<EdgeSignificanceSpec> significance,
+        ReadOnlySpan<EdgeRatingEvent> events)
+    {
+        _edges.Add(new EdgeEntry(
+            edgeTypeCode, provenanceCode, members.ToArray(),
+            significance.ToArray(),
+            events.ToArray()));
     }
 
     public void AddJunction(

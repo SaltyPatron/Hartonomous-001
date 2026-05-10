@@ -184,10 +184,22 @@ static BlockEntry* find_block(int32_t cp)
     return NULL;
 }
 
-/* Lazily mmap the block's file on first access; parse and cache pointers. */
+/* Lazily map the block's file on first access. Defensive: copies the
+ * relevant data sections (hashes, centroids, hilberts) into HEAP memory
+ * and immediately unmaps the file. Pointers handed back to callers
+ * (huc_cp_hash_at, huc_cp_centroid_at, huc_cp_hilbert_at) point into
+ * stable process heap, NOT into a mmap-backed region whose underlying
+ * file or page-cache mapping can vanish (Docker/WSL bind-mount races,
+ * page eviction, file replacement, etc.). The earlier mmap-only path
+ * SEGV'd in libc memcpy when the kernel page-faulted into a no-longer-
+ * valid mapping during PG SRF iteration. Cost: ~3 MB heap per loaded
+ * block file (hashes 32B + centroids 32B + hilberts 8B = 72B per atom;
+ * a typical block has ~1k–32k atoms, so 72KB–2.3MB per block, summed
+ * only across blocks that get touched). Memory is process-lifetime —
+ * matches the existing semantics of g_blocks. */
 static int ensure_block_mapped(BlockEntry* b)
 {
-    if (b->hashes != NULL) return 0;  /* already mapped */
+    if (b->hashes != NULL) return 0;  /* already loaded */
     char path[1024];
     snprintf(path, sizeof(path), "%s%s%s",
              g_blob_dir,
@@ -197,11 +209,12 @@ static int ensure_block_mapped(BlockEntry* b)
              "/",
 #endif
              b->filename);
-    if (huc_mmap(path, &b->map) != 0) {
+    HucMap tmp;
+    if (huc_mmap(path, &tmp) != 0) {
         return -1;  /* block file unavailable; caller falls back to NULL */
     }
-    if (b->map.size < 24 + 32) { huc_munmap(&b->map); return -1; }
-    const uint8_t* p = (const uint8_t*) b->map.base;
+    if (tmp.size < 24 + 32) { huc_munmap(&tmp); return -1; }
+    const uint8_t* p = (const uint8_t*) tmp.base;
     uint32_t magic, version, rs, re_, n;
     memcpy(&magic,    p +  0, 4);
     memcpy(&version,  p +  4, 4);
@@ -212,13 +225,39 @@ static int ensure_block_mapped(BlockEntry* b)
         || (int32_t) rs != b->range_start || (int32_t) re_ != b->range_end
         || (int32_t) n  != b->atom_count) {
         fprintf(stderr, "hartonomous: block file header mismatch %s\n", b->filename);
-        huc_munmap(&b->map);
+        huc_munmap(&tmp);
         return -1;
     }
     /* Header is 24 bytes; data: hashes (n×32) + centroids (n×32) + hilberts (n×8). */
-    b->hashes    = p + 24;
-    b->centroids = p + 24 + (size_t) n * 32;
-    b->hilberts  = p + 24 + (size_t) n * 64;
+    size_t need = (size_t) n * (32 + 32 + 8);
+    if (tmp.size < 24 + need) {
+        fprintf(stderr, "hartonomous: block file truncated %s (size=%zu, need=%zu)\n",
+                b->filename, tmp.size, (size_t)(24 + need));
+        huc_munmap(&tmp);
+        return -1;
+    }
+    /* Copy each data section into heap. malloc once per section so the
+     * pointers we hand out are aligned and stable. */
+    uint8_t* heap_hashes    = (uint8_t*) malloc((size_t) n * 32);
+    uint8_t* heap_centroids = (uint8_t*) malloc((size_t) n * 32);
+    uint8_t* heap_hilberts  = (uint8_t*) malloc((size_t) n * 8);
+    if (!heap_hashes || !heap_centroids || !heap_hilberts) {
+        free(heap_hashes); free(heap_centroids); free(heap_hilberts);
+        fprintf(stderr, "hartonomous: malloc failed for block %s\n", b->filename);
+        huc_munmap(&tmp);
+        return -1;
+    }
+    memcpy(heap_hashes,    p + 24,                       (size_t) n * 32);
+    memcpy(heap_centroids, p + 24 + (size_t) n * 32,     (size_t) n * 32);
+    memcpy(heap_hilberts,  p + 24 + (size_t) n * 64,     (size_t) n *  8);
+    /* Unmap immediately. We no longer depend on the file or its mapping. */
+    huc_munmap(&tmp);
+    /* b->map stays zeroed (it was never assigned to). The unload path
+     * checks b->hashes and (now) needs to free() the heap copies; updated
+     * in hartonomous_ucd_unload below. */
+    b->hashes    = heap_hashes;
+    b->centroids = heap_centroids;
+    b->hilberts  = heap_hilberts;
     return 0;
 }
 
@@ -280,6 +319,17 @@ void hartonomous_ucd_unload(void)
 {
     if (g_blocks) {
         for (int32_t i = 0; i < g_block_count; ++i) {
+            /* Heap-copy path (current): hashes/centroids/hilberts are
+             * malloc'd; mmap is closed at load time. Free the heap copies. */
+            free((void*) g_blocks[i].hashes);
+            free((void*) g_blocks[i].centroids);
+            free((void*) g_blocks[i].hilberts);
+            g_blocks[i].hashes    = NULL;
+            g_blocks[i].centroids = NULL;
+            g_blocks[i].hilberts  = NULL;
+            /* Defensive: in case any future code path sets b->map.base, also
+             * unmap. With the heap-copy ensure_block_mapped, b->map is
+             * never assigned to, so this is a no-op today. */
             if (g_blocks[i].map.base) huc_munmap(&g_blocks[i].map);
         }
         free(g_blocks);

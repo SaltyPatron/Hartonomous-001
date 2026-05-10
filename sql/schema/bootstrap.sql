@@ -313,6 +313,8 @@
 -- @include schema/functions/record_entity_comparison.sql
 -- @include schema/functions/record_corroboration.sql
 -- @include schema/functions/record_outcome.sql
+-- @include schema/functions/record_attestation.sql
+-- @include schema/functions/record_attestations_bulk.sql
 -- @include schema/functions/initialize_edge_significance.sql
 -- @include schema/functions/initialize_entity_significance.sql
 -- @include schema/functions/blended_edge_mu.sql

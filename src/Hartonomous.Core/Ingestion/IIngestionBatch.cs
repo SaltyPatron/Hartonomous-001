@@ -60,6 +60,35 @@ public interface IIngestionBatch
         => AddEdge(edgeTypeCode, provenanceCode, members);
 
     /// <summary>
+    /// Append an n-ary edge plus sign-bearing Glicko-2 rating events. Each
+    /// event in <paramref name="events"/> fires
+    /// <c>substrate.record_attestation</c> on the resulting edge under
+    /// (event.ContextTypeCode, event.AttestationTypeCode), with score
+    /// encoding sign (1 = positive evidence, 0 = negative) and weight
+    /// scaling the per-event Glicko period.
+    ///
+    /// Distinct from the spec-only overload: spec primes default mu on
+    /// insert; event fires Glicko on every emission, so cross-model
+    /// corroboration accumulates on the same (arena, edge, attestation_type)
+    /// row instead of being ON-CONFLICT-DO-NOTHING'd into silence.
+    ///
+    /// Per docs/01-tensor-primitive-spec.md §V and AP-31. Decomposers that
+    /// extract sign-bearing measurements from tensor weights MUST use this
+    /// overload — sign-throwing is the spec's primary banned anti-pattern
+    /// for tensor decomposition.
+    ///
+    /// Default implementation falls back to the 3-arg overload — keeps test
+    /// fakes compatible without forcing event modeling per-test.
+    /// </summary>
+    void AddEdge(
+        string edgeTypeCode,
+        string provenanceCode,
+        ReadOnlySpan<EdgeMemberSpec> members,
+        ReadOnlySpan<EdgeSignificanceSpec> significance,
+        ReadOnlySpan<EdgeRatingEvent> events)
+        => AddEdge(edgeTypeCode, provenanceCode, members, significance);
+
+    /// <summary>
     /// Append a junction row (entity_pos, entity_language,
     /// entity_morph_feature, codepoint_property, model_architecture_class,
     /// entity_lexname, tensor_tensor_role, pattern_deprel). Junction tables

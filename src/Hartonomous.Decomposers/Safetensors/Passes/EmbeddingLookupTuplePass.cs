@@ -48,7 +48,6 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
     private const int TopKPerToken = 64;
-    private const double NoiseFraction = 0.10;
     private const double ModelDerivedTrustMu = 60_000.0;
     private const int FlushThreshold = 5_000;
 
@@ -156,8 +155,12 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 }
             }
 
-            // Token-pair attestation edges: cosine of embedding rows.
-            // Top-K-per-token + per-tensor adaptive noise floor (LTH per spec §V).
+            // Token-pair attestation: chunked GEMM cosine pair scoring.
+            // L2-normalize embed in place once → cosine = (E_norm @ E_norm^T).
+            // Then per source-chunk: ONE GEMM produces (chunk × vocab) cosine
+            // matrix; per-row noise floor + top-K + emit signed events.
+            // SIGN-BEARING per AP-31: positive cos = direction agreement,
+            // negative = anti-alignment/suppression/antonymy.
             double[] norms = new double[vocabSize];
             for (int row = 0; row < vocabSize; row++)
             {
@@ -167,132 +170,163 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 norms[row] = Math.Sqrt(sumSq);
             }
             bool[] usable = new bool[vocabSize];
+            byte[]?[] vocabHashByIdx = new byte[]?[vocabSize];
+            foreach (KeyValuePair<int, byte[]> kv in vocabHashes)
+            {
+                if ((uint)kv.Key < (uint)vocabSize)
+                {
+                    vocabHashByIdx[kv.Key] = kv.Value;
+                }
+            }
             for (int row = 0; row < vocabSize; row++)
             {
-                usable[row] = norms[row] > 1e-12 && vocabHashes.ContainsKey(row);
+                usable[row] = norms[row] > 1e-12 && vocabHashByIdx[row] is not null;
             }
 
-            double noiseFloor = ComputeAdaptiveCosineNoiseFloor(embed, norms, usable, vocabSize, hiddenDim);
+            double[] embedNormed = new double[(long)vocabSize * hiddenDim];
+            for (int row = 0; row < vocabSize; row++)
+            {
+                long off = (long)row * hiddenDim;
+                double inv = norms[row] > 1e-12 ? 1.0 / norms[row] : 0.0;
+                for (int d = 0; d < hiddenDim; d++)
+                {
+                    embedNormed[off + d] = embed[off + d] * inv;
+                }
+            }
 
-            (int Row, double AbsCos)[] topBuf = new (int, double)[TopKPerToken];
+            // Token-pair cosine attestation: double-chunked GEMM (source × target),
+            // sigmoid-mapped Glicko score, per-event weight = 1.0. Cosine
+            // temperature ~0.1 maps cos in [-1, 1] to score in roughly [0.05, 0.95]
+            // — the sigmoid's transition scale is the substrate's "what counts as
+            // strong evidence" knob.
+            const double CosineTemperature = 0.1;
+            const int CosineSourceChunkSize = 512;
+            const int CosineTargetChunkSize = 4096;
+            double[] sBlock = new double[(long)CosineSourceChunkSize * CosineTargetChunkSize];
+            double[] sourceGather = new double[(long)CosineSourceChunkSize * hiddenDim];
+            int[] usableTokens = CollectUsable(usable);
 
-            for (int rowT = 0; rowT < vocabSize; rowT++)
+            for (int sChunkStart = 0; sChunkStart < usableTokens.Length; sChunkStart += CosineSourceChunkSize)
             {
                 ct.ThrowIfCancellationRequested();
-                if (!usable[rowT]) { continue; }
-                if (!vocabHashes.TryGetValue(rowT, out byte[]? hashT) || hashT is null) { continue; }
+                int sChunkLen = Math.Min(CosineSourceChunkSize, usableTokens.Length - sChunkStart);
 
-                int filled = 0;
-                double minAbs = double.PositiveInfinity;
-                int minIdx = -1;
-                long offT = (long)rowT * hiddenDim;
-                double normT = norms[rowT];
-
-                for (int rowS = 0; rowS < vocabSize; rowS++)
+                for (int i = 0; i < sChunkLen; i++)
                 {
-                    if (rowS == rowT || !usable[rowS]) { continue; }
-                    long offS = (long)rowS * hiddenDim;
-                    double dot = 0;
-                    for (int d = 0; d < hiddenDim; d++)
+                    int rowT = usableTokens[sChunkStart + i];
+                    long src = (long)rowT * hiddenDim;
+                    long dst = (long)i * hiddenDim;
+                    Buffer.BlockCopy(embedNormed, (int)(src * sizeof(double)),
+                                     sourceGather, (int)(dst * sizeof(double)),
+                                     hiddenDim * sizeof(double));
+                }
+
+                // Per-source running top-K accumulator.
+                (int Tok, double SignedCos)[][] topK = new (int, double)[sChunkLen][];
+                int[] topKFilled = new int[sChunkLen];
+                for (int i = 0; i < sChunkLen; i++) { topK[i] = new (int, double)[TopKPerToken]; }
+                double[] topKMinAbs = new double[sChunkLen];
+                int[] topKMinIdx = new int[sChunkLen];
+                for (int i = 0; i < sChunkLen; i++) { topKMinAbs[i] = double.PositiveInfinity; topKMinIdx[i] = -1; }
+
+                for (int tChunkStart = 0; tChunkStart < vocabSize; tChunkStart += CosineTargetChunkSize)
+                {
+                    int tChunkLen = Math.Min(CosineTargetChunkSize, vocabSize - tChunkStart);
+
+                    int embedRowOffset = checked(tChunkStart * hiddenDim);
+                    int embedSliceLen  = checked(tChunkLen * hiddenDim);
+                    Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
+                             sChunkLen, tChunkLen, hiddenDim,
+                             1.0,
+                             sourceGather.AsSpan(0, checked(sChunkLen * hiddenDim)), hiddenDim,
+                             embedNormed.AsSpan(embedRowOffset, embedSliceLen), hiddenDim,
+                             0.0,
+                             sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
+
+                    for (int i = 0; i < sChunkLen; i++)
                     {
-                        dot += embed[offT + d] * embed[offS + d];
-                    }
-                    double absCos = Math.Abs(dot / (normT * norms[rowS]));
-                    if (absCos < noiseFloor) { continue; }
-                    if (filled < TopKPerToken)
-                    {
-                        topBuf[filled] = (rowS, absCos);
-                        filled++;
-                        if (filled == TopKPerToken)
+                        int rowT = usableTokens[sChunkStart + i];
+                        long rowOff = (long)i * tChunkLen;
+                        for (int j = 0; j < tChunkLen; j++)
                         {
-                            RecomputeMin(topBuf, filled, out minAbs, out minIdx);
+                            int rowS = tChunkStart + j;
+                            if (rowS == rowT || !usable[rowS]) { continue; }
+                            double cos = sBlock[rowOff + j];
+                            double abs = Math.Abs(cos);
+                            if (topKFilled[i] < TopKPerToken)
+                            {
+                                topK[i][topKFilled[i]] = (rowS, cos);
+                                topKFilled[i]++;
+                                if (topKFilled[i] == TopKPerToken)
+                                {
+                                    RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
+                                }
+                            }
+                            else if (abs > topKMinAbs[i])
+                            {
+                                topK[i][topKMinIdx[i]] = (rowS, cos);
+                                RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
+                            }
                         }
                     }
-                    else if (absCos > minAbs)
-                    {
-                        topBuf[minIdx] = (rowS, absCos);
-                        RecomputeMin(topBuf, filled, out minAbs, out minIdx);
-                    }
                 }
 
-                for (int k = 0; k < filled; k++)
+                for (int i = 0; i < sChunkLen; i++)
                 {
-                    (int otherRow, double absCos) = topBuf[k];
-                    if (!vocabHashes.TryGetValue(otherRow, out byte[]? hashS) || hashS is null) { continue; }
+                    int rowT = usableTokens[sChunkStart + i];
+                    byte[]? hashT = vocabHashByIdx[rowT];
+                    if (hashT is null) { continue; }
 
-                    EntityHandle a, b;
-                    if (CompareBytes(hashT, hashS) <= 0)
+                    for (int k = 0; k < topKFilled[i]; k++)
                     {
-                        a = new EntityHandle(hashT, "word_form");
-                        b = new EntityHandle(hashS, "word_form");
-                    }
-                    else
-                    {
-                        a = new EntityHandle(hashS, "word_form");
-                        b = new EntityHandle(hashT, "word_form");
-                    }
+                        (int otherRow, double signedCos) = topK[i][k];
+                        byte[]? hashS = vocabHashByIdx[otherRow];
+                        if (hashS is null) { continue; }
 
-                    double mu = Math.Clamp(1500.0 + (absCos * 1000.0), 500.0, 2500.0);
-                    EdgeSignificanceSpec[] sig =
-                    [
-                        new EdgeSignificanceSpec("model_trust", "model_input_embedding", mu),
-                        new EdgeSignificanceSpec("semantic_relevance", "model_input_embedding", mu),
-                    ];
-                    session.Batch.AddEdge("model_concept_similarity", context.ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(a, "source", 0),
-                        new EdgeMemberSpec(b, "target", 1),
-                    ], sig);
-                    edgesEmitted++;
-                    if (edgesEmitted % FlushThreshold == 0)
-                    {
-                        await session.MaybeFlushAsync(FlushThreshold, ct);
+                        EntityHandle a, b;
+                        if (CompareBytes(hashT, hashS) <= 0)
+                        {
+                            a = new EntityHandle(hashT, "word_form");
+                            b = new EntityHandle(hashS, "word_form");
+                        }
+                        else
+                        {
+                            a = new EntityHandle(hashS, "word_form");
+                            b = new EntityHandle(hashT, "word_form");
+                        }
+
+                        double score = SigmoidLocal(signedCos / CosineTemperature);
+                        EdgeRatingEvent[] events =
+                        [
+                            new EdgeRatingEvent("model_trust",        "model_input_embedding", score, 1.0),
+                            new EdgeRatingEvent("semantic_relevance", "model_input_embedding", score, 1.0),
+                        ];
+                        session.Batch.AddEdge("model_concept_similarity", context.ProvenanceCode,
+                        [
+                            new EdgeMemberSpec(a, "source", 0),
+                            new EdgeMemberSpec(b, "target", 1),
+                        ], System.Array.Empty<EdgeSignificanceSpec>(), events);
+                        edgesEmitted++;
                     }
                 }
+
+                await session.MaybeFlushAsync(FlushThreshold, ct);
             }
         }
 
         Log.Complete(_logger, context.Source.ModelId, tuplesProcessed, fireflies, edgesEmitted);
     }
 
-    private static double ComputeAdaptiveCosineNoiseFloor(
-        double[] embed, double[] norms, bool[] usable, int vocabSize, int hiddenDim)
-    {
-        int sampleEnd = Math.Min(1024, vocabSize);
-        if (sampleEnd < 2) { return 0.0; }
-        int firstUsable = -1;
-        for (int i = 0; i < vocabSize && firstUsable < 0; i++)
-        {
-            if (usable[i]) { firstUsable = i; }
-        }
-        if (firstUsable < 0) { return 0.0; }
-        long offT = (long)firstUsable * hiddenDim;
-        double normT = norms[firstUsable];
-        double sumAbs = 0.0;
-        int counted = 0;
-        for (int rowS = 0; rowS < sampleEnd; rowS++)
-        {
-            if (rowS == firstUsable || !usable[rowS]) { continue; }
-            long offS = (long)rowS * hiddenDim;
-            double dot = 0.0;
-            for (int d = 0; d < hiddenDim; d++) { dot += embed[offT + d] * embed[offS + d]; }
-            double cos = dot / (normT * norms[rowS]);
-            sumAbs += Math.Abs(cos);
-            counted++;
-        }
-        if (counted == 0) { return 0.0; }
-        return (sumAbs / counted) * NoiseFraction;
-    }
-
-    private static void RecomputeMin((int Row, double AbsCos)[] buf, int filled, out double minVal, out int minIdx)
+    private static void RecomputeMinAbs((int Row, double SignedCos)[] buf, int filled, out double minVal, out int minIdx)
     {
         minVal = double.PositiveInfinity;
         minIdx = -1;
         for (int i = 0; i < filled; i++)
         {
-            if (buf[i].AbsCos < minVal)
+            double absV = Math.Abs(buf[i].SignedCos);
+            if (absV < minVal)
             {
-                minVal = buf[i].AbsCos;
+                minVal = absV;
                 minIdx = i;
             }
         }
@@ -323,6 +357,23 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
         {
             return null;
         }
+    }
+
+    private static double SigmoidLocal(double x)
+    {
+        if (x > 35) { return 1.0; }
+        if (x < -35) { return 0.0; }
+        return 1.0 / (1.0 + Math.Exp(-x));
+    }
+
+    private static int[] CollectUsable(bool[] usable)
+    {
+        int n = 0;
+        for (int i = 0; i < usable.Length; i++) { if (usable[i]) { n++; } }
+        int[] result = new int[n];
+        int j = 0;
+        for (int i = 0; i < usable.Length; i++) { if (usable[i]) { result[j++] = i; } }
+        return result;
     }
 
     private static partial class Log

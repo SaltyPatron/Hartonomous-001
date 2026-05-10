@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
 using Hartonomous.Core.Text.Tokenizers;
@@ -12,23 +13,25 @@ namespace Hartonomous.Decomposers.Safetensors.Passes;
 
 /// <summary>
 /// Per docs/01-tensor-primitive-spec.md §II.1 + §IV. Processes AttentionBlock
-/// tuples: reads Q + K (and V + O when present) tensors, projects through the
-/// model's input embedding, and emits per-token-pair attestations on
-/// <c>model_attention_pattern</c> edges between word_form entities. Same edge
-/// identity stratified by attestation_type:
-///   - <c>model_attention_qk_pattern</c> for the Q×K pair signal
-///   - <c>model_attention_vo_pattern</c> for the V×O pair signal
+/// tuples and emits per-(source_token, target_token) Glicko-2 attestation
+/// events on <c>model_attention_pattern</c> edges between word_form entities.
 ///
-/// Math (per layer, per head when head-decomposed):
-///   1. Compute per-token Q response norm: ‖embed[v] · Q‖.
-///   2. Compute per-token K response norm: ‖embed[v] · K‖.
-///   3. Top-K-per-side above adaptive noise floor; for each (q_token, k_token):
-///      emit edge model_attention_pattern(q_token, k_token) with
-///      attestation_type=model_attention_qk_pattern, mu = clamp(1500 +
-///      (qNorm × kNorm / scale) × 200, 500, 2500).
-///   4. Same shape for V, O — different attestation_type.
+/// Each per-pair projection value IS one Glicko contest in the
+/// model_attention_qk_pattern arena. Mapping: <c>score = sigmoid(value /
+/// temperature); weight = 1.0</c>. Continuous score in [0,1] encodes both
+/// sign (above/below 0.5) and magnitude (distance from 0.5). Glicko-2
+/// absorbs the per-event scale via its variance estimator; no per-row
+/// noise floor or sign/magnitude split required.
 ///
-/// Sign-blind per spec §V (post-softmax kills sign anyway). Magnitude → mu.
+/// Memory-bounded chunk-streaming. Working set per layer per side is
+/// constant (~100 MB) regardless of vocab size or hidden dim — the
+/// previous "materialize full vocab × dProj projection matrix" shape used
+/// gigabyte working sets on Llama-class models. Per-iteration peak:
+///
+///   sourceGather (S × dProj) + targetGather (T × dProj) + S_block (S × T)
+///
+/// where S = source chunk size, T = target chunk size. ~100 MB total at
+/// S=512, T=4096, dProj=4096 (FP64).
 /// </summary>
 internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
 {
@@ -36,10 +39,12 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> Dependencies => ["tuple.embedding_lookup"];
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
-    private const int TopKPerSide = 32;
-    private const double NoiseFraction = 0.10;
+    private const int TopSourceTokens = 2048;
+    private const int TopKPerSourceRow = 64;
+    private const int SourceChunkSize = 512;
+    private const int TargetChunkSize = 4096;
     private const double ModelDerivedTrustMu = 60_000.0;
-    private const int FlushThreshold = 5_000;
+    private const int FlushThreshold = 25_000;
 
     private readonly ILogger _logger;
 
@@ -50,7 +55,6 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
 
     public async Task RunAsync(ModelPassContext context, IPassSession session, CancellationToken ct)
     {
-        // Find the input embedding tensor — needed for Q/K/V/O projection-to-token math.
         TensorHandle? embeddingTensor = FindEmbedding(context);
         if (embeddingTensor is null)
         {
@@ -62,8 +66,8 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         int hiddenDim = (int)e.Info.Shape[1];
         if (vocabSize < 2 || hiddenDim < 1) { return; }
 
-        Dictionary<int, byte[]>? vocabHashes = ResolveVocabHashes(context, session, ct);
-        if (vocabHashes is null || vocabHashes.Count == 0)
+        (bool[] usable, byte[]?[] vocabHashByIdx) = ResolveVocabArrays(context, session, vocabSize, ct);
+        if (CountTrue(usable) == 0)
         {
             Log.NoTokenizer(_logger, context.Source.ModelId);
             return;
@@ -77,8 +81,6 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         foreach (ResolvedTuple t in context.ResolvedTuples)
         {
             if (t.Tuple != ArchetypeTuple.AttentionBlock) { continue; }
-            // Self-attention only here. Cross-attention has its own TuplePass that
-            // binds Q-side and K/V-side to different content-entity types.
             if (t.Modality != ModalityHint.Text && t.Modality != ModalityHint.TextEncoder
                 && t.Modality != ModalityHint.TextDecoder)
             {
@@ -93,33 +95,34 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
             if (q is null || k is null) { continue; }
             if (q.Info.Shape.Length != 2 || k.Info.Shape.Length != 2) { continue; }
             if ((int)q.Info.Shape[0] != hiddenDim || (int)k.Info.Shape[0] != hiddenDim) { continue; }
-
-            double[] qFlat = SafetensorsReader.ReadTensorAsDouble(q.Info);
-            double[] kFlat = SafetensorsReader.ReadTensorAsDouble(k.Info);
             int qCols = (int)q.Info.Shape[1];
             int kCols = (int)k.Info.Shape[1];
 
-            // Q×K side
-            double[] qNorm = ProjectedNormsByCols(embed, vocabSize, hiddenDim, qFlat, qCols);
-            double[] kNorm = ProjectedNormsByCols(embed, vocabSize, hiddenDim, kFlat, kCols);
-            edgesEmitted += await EmitPairAttestations(
-                session, context, vocabHashes, qNorm, kNorm,
-                "model_attention_qk_pattern", ct);
+            if (qCols == kCols)
+            {
+                double[] qFlat = SafetensorsReader.ReadTensorAsDouble(q.Info);
+                double[] kFlat = SafetensorsReader.ReadTensorAsDouble(k.Info);
+                edgesEmitted += await EmitChunkedQK(
+                    session, context, usable, vocabHashByIdx,
+                    embed, qFlat, kFlat, vocabSize, hiddenDim, qCols,
+                    "model_attention_qk_pattern", ct);
+            }
 
-            // V×O side (when present)
             if (v is not null && o is not null
                 && v.Info.Shape.Length == 2 && o.Info.Shape.Length == 2
                 && (int)v.Info.Shape[0] == hiddenDim && (int)o.Info.Shape[1] == hiddenDim)
             {
-                double[] vFlat = SafetensorsReader.ReadTensorAsDouble(v.Info);
-                double[] oFlat = SafetensorsReader.ReadTensorAsDouble(o.Info);
                 int vCols = (int)v.Info.Shape[1];
                 int oRows = (int)o.Info.Shape[0];
-                double[] vNorm = ProjectedNormsByCols(embed, vocabSize, hiddenDim, vFlat, vCols);
-                double[] oNorm = ProjectedNormsByRowsTransposed(embed, vocabSize, hiddenDim, oFlat, oRows);
-                edgesEmitted += await EmitPairAttestations(
-                    session, context, vocabHashes, vNorm, oNorm,
-                    "model_attention_vo_pattern", ct);
+                if (vCols == oRows)
+                {
+                    double[] vFlat = SafetensorsReader.ReadTensorAsDouble(v.Info);
+                    double[] oFlat = SafetensorsReader.ReadTensorAsDouble(o.Info);
+                    edgesEmitted += await EmitChunkedVO(
+                        session, context, usable, vocabHashByIdx,
+                        embed, vFlat, oFlat, vocabSize, hiddenDim, vCols, oRows,
+                        "model_attention_vo_pattern", ct);
+                }
             }
 
             tuplesProcessed++;
@@ -128,59 +131,273 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         Log.Complete(_logger, context.Source.ModelId, tuplesProcessed, edgesEmitted);
     }
 
-    private static async Task<long> EmitPairAttestations(
+    private static async Task<long> EmitChunkedQK(
         IPassSession session, ModelPassContext context,
-        Dictionary<int, byte[]> vocabHashes,
-        double[] sideA, double[] sideB,
-        string attestationTypeCode,
+        bool[] usable, byte[]?[] vocabHashByIdx,
+        double[] embed, double[] qFlat, double[] kFlat,
+        int vocabSize, int hiddenDim, int dProj,
+        string attestationTypeCode, CancellationToken ct)
+    {
+        // Materialize Pq AND Pk ONCE per layer. Vocab × dProj × 8B each.
+        // Reused across ALL source chunks via slicing — no recomputation.
+        // Replaces the prior shape that recomputed Pk per source chunk
+        // (4× redundancy on MiniLM, worse on larger models — the N!
+        // pattern the user called out).
+        double[] pq = new double[(long)vocabSize * dProj];
+        Gemm.F64(TransposeOp.None, TransposeOp.None,
+                 vocabSize, dProj, hiddenDim,
+                 1.0, embed, hiddenDim, qFlat, dProj,
+                 0.0, pq, dProj);
+        double[] pk = new double[(long)vocabSize * dProj];
+        Gemm.F64(TransposeOp.None, TransposeOp.None,
+                 vocabSize, dProj, hiddenDim,
+                 1.0, embed, hiddenDim, kFlat, dProj,
+                 0.0, pk, dProj);
+
+        double[] srcNorms = new double[vocabSize];
+        for (int v = 0; v < vocabSize; v++)
+        {
+            if (!usable[v]) { continue; }
+            long off = (long)v * dProj;
+            double sq = 0;
+            for (int c = 0; c < dProj; c++) { double x = pq[off + c]; sq += x * x; }
+            srcNorms[v] = Math.Sqrt(sq);
+        }
+        int[] sources = TopNByValueArray(srcNorms, usable, TopSourceTokens);
+        if (sources.Length == 0) { return 0; }
+
+        double temperature = ComputeTemperatureFromProjections(pq, srcNorms, vocabSize, dProj, usable);
+        if (temperature <= 0) { temperature = 1.0; }
+
+        return await ChunkedPairScoringFromMaterialized(
+            session, context, usable, vocabHashByIdx,
+            pq, pk, sources, vocabSize, dProj,
+            attestationTypeCode, temperature, "model_attention_pattern", ct);
+    }
+
+    private static async Task<long> EmitChunkedVO(
+        IPassSession session, ModelPassContext context,
+        bool[] usable, byte[]?[] vocabHashByIdx,
+        double[] embed, double[] vFlat, double[] oFlat,
+        int vocabSize, int hiddenDim, int vCols, int oRows,
+        string attestationTypeCode, CancellationToken ct)
+    {
+        // Pv = embed @ V (vocab × vCols). One GEMM, materialized.
+        double[] pv = new double[(long)vocabSize * vCols];
+        Gemm.F64(TransposeOp.None, TransposeOp.None,
+                 vocabSize, vCols, hiddenDim,
+                 1.0, embed, hiddenDim, vFlat, vCols,
+                 0.0, pv, vCols);
+
+        // Po[v, r] = embed[v] · O[r, :] = embed @ O^T. O is (oRows × hidden),
+        // so contraction dim = hidden, ldb = hidden, opB = Transpose. ONE
+        // GEMM, materialized — replaces per-source-chunk recomputation that
+        // was the N! pattern.
+        double[] po = new double[(long)vocabSize * oRows];
+        Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
+                 vocabSize, oRows, hiddenDim,
+                 1.0, embed, hiddenDim, oFlat, hiddenDim,
+                 0.0, po, oRows);
+
+        double[] srcNorms = new double[vocabSize];
+        for (int v = 0; v < vocabSize; v++)
+        {
+            if (!usable[v]) { continue; }
+            long off = (long)v * vCols;
+            double sq = 0;
+            for (int c = 0; c < vCols; c++) { double x = pv[off + c]; sq += x * x; }
+            srcNorms[v] = Math.Sqrt(sq);
+        }
+        int[] sources = TopNByValueArray(srcNorms, usable, TopSourceTokens);
+        if (sources.Length == 0) { return 0; }
+
+        double temperature = ComputeTemperatureFromProjections(pv, srcNorms, vocabSize, vCols, usable);
+        if (temperature <= 0) { temperature = 1.0; }
+
+        // For V/O the projection dim of the source side (vCols) MUST equal
+        // the projection dim of the target side (oRows) for the dot product
+        // to make sense. Already validated by the caller.
+        return await ChunkedPairScoringFromMaterialized(
+            session, context, usable, vocabHashByIdx,
+            pv, po, sources, vocabSize, vCols,
+            attestationTypeCode, temperature, "model_attention_pattern", ct);
+    }
+
+    /// <summary>
+    /// Source-side chunked pair scoring + emission. BOTH Pq AND Pk are
+    /// pre-materialized (vocab × dProj each). Per (source-chunk,
+    /// target-chunk) iteration: gather source rows from Pq, slice target
+    /// rows from Pk, ONE GEMM produces S_block. No GEMM is repeated across
+    /// chunk iterations. The N! pattern (recompute Pk per source chunk)
+    /// is gone.
+    /// </summary>
+    private static async Task<long> ChunkedPairScoringFromMaterialized(
+        IPassSession session, ModelPassContext context,
+        bool[] usable, byte[]?[] vocabHashByIdx,
+        double[] pq, double[] pk,
+        int[] sources, int vocabSize, int dProj,
+        string attestationTypeCode, double temperature, string edgeTypeCode,
         CancellationToken ct)
     {
-        (double aFloor, double aMean) = NoiseStats(sideA, vocabHashes);
-        (double bFloor, double bMean) = NoiseStats(sideB, vocabHashes);
-        int[] topA = TopKByValue(sideA, vocabHashes, aFloor, TopKPerSide);
-        int[] topB = TopKByValue(sideB, vocabHashes, bFloor, TopKPerSide);
-        if (topA.Length == 0 || topB.Length == 0) { return 0; }
-        double scale = aMean * bMean;
-        if (scale <= 0) { scale = 1.0; }
-
         long emitted = 0;
-        foreach (int aTok in topA)
+        double[] sourceGather = new double[(long)SourceChunkSize * dProj];
+        double[] sBlock = new double[(long)SourceChunkSize * TargetChunkSize];
+
+        for (int sChunkStart = 0; sChunkStart < sources.Length; sChunkStart += SourceChunkSize)
         {
-            foreach (int bTok in topB)
+            ct.ThrowIfCancellationRequested();
+            int sChunkLen = Math.Min(SourceChunkSize, sources.Length - sChunkStart);
+
+            // Gather Pq rows for this source chunk into a contiguous buffer.
+            for (int i = 0; i < sChunkLen; i++)
             {
-                if (aTok == bTok) { continue; }
-                if (!vocabHashes.TryGetValue(aTok, out byte[]? aHash) || aHash is null) { continue; }
-                if (!vocabHashes.TryGetValue(bTok, out byte[]? bHash) || bHash is null) { continue; }
+                int a = sources[sChunkStart + i];
+                long src = (long)a * dProj;
+                long dst = (long)i * dProj;
+                Buffer.BlockCopy(pq, (int)(src * sizeof(double)),
+                                 sourceGather, (int)(dst * sizeof(double)),
+                                 dProj * sizeof(double));
+            }
 
-                EntityHandle aH = new(aHash, "word_form");
-                EntityHandle bH = new(bHash, "word_form");
-                double pairStrength = sideA[aTok] * sideB[bTok];
-                double mu = Math.Clamp(1500.0 + (pairStrength / scale) * 200.0, 500.0, 2500.0);
+            // Per-source running top-K accumulator (sign-bearing values
+            // reduced to score deviation from 0.5).
+            (int Tok, double SignedValue)[][] topK = new (int, double)[sChunkLen][];
+            int[] topKFilled = new int[sChunkLen];
+            for (int i = 0; i < sChunkLen; i++)
+            {
+                topK[i] = new (int, double)[TopKPerSourceRow];
+            }
+            double[] topKMinAbs = new double[sChunkLen];
+            int[] topKMinIdx = new int[sChunkLen];
+            for (int i = 0; i < sChunkLen; i++)
+            {
+                topKMinAbs[i] = double.PositiveInfinity;
+                topKMinIdx[i] = -1;
+            }
 
-                EdgeSignificanceSpec[] sig =
-                [
-                    new EdgeSignificanceSpec("model_trust", attestationTypeCode, mu),
-                    new EdgeSignificanceSpec("attention_pattern_confidence", attestationTypeCode, mu),
-                ];
+            for (int tChunkStart = 0; tChunkStart < vocabSize; tChunkStart += TargetChunkSize)
+            {
+                int tChunkLen = Math.Min(TargetChunkSize, vocabSize - tChunkStart);
 
-                session.Batch.AddEdge("model_attention_pattern", context.ProvenanceCode,
-                [
-                    new EdgeMemberSpec(aH, "source", 0),
-                    new EdgeMemberSpec(bH, "target", 1),
-                ], sig);
-                emitted++;
-                if (emitted % FlushThreshold == 0)
+                // Slice Pk[tChunkStart..tChunkStart+tChunkLen] — NO recomputation.
+                // Pk is materialized once per layer per side; this slice is
+                // free. Replaces the prior shape that did embed[t_chunk] @ K
+                // per source chunk (4× redundancy on MiniLM).
+                int pkRowOffset = checked(tChunkStart * dProj);
+                int pkSliceLen  = checked(tChunkLen * dProj);
+
+                // S_block = sourceGather (sChunkLen × dProj) @ Pk_slice^T (dProj × tChunkLen).
+                Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
+                         sChunkLen, tChunkLen, dProj,
+                         1.0, sourceGather, dProj,
+                         pk.AsSpan(pkRowOffset, pkSliceLen), dProj,
+                         0.0, sBlock, tChunkLen);
+
+                // Update per-source top-K from this column slice.
+                for (int i = 0; i < sChunkLen; i++)
                 {
-                    await session.MaybeFlushAsync(FlushThreshold, ct);
+                    int a = sources[sChunkStart + i];
+                    long rowOff = (long)i * tChunkLen;
+                    for (int j = 0; j < tChunkLen; j++)
+                    {
+                        int b = tChunkStart + j;
+                        if (b == a || !usable[b]) { continue; }
+                        double signed = sBlock[rowOff + j];
+                        double abs = Math.Abs(signed);
+                        if (topKFilled[i] < TopKPerSourceRow)
+                        {
+                            topK[i][topKFilled[i]] = (b, signed);
+                            topKFilled[i]++;
+                            if (topKFilled[i] == TopKPerSourceRow)
+                            {
+                                RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
+                            }
+                        }
+                        else if (abs > topKMinAbs[i])
+                        {
+                            topK[i][topKMinIdx[i]] = (b, signed);
+                            RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
+                        }
+                    }
                 }
             }
+
+            // Emit per-source top-K events.
+            for (int i = 0; i < sChunkLen; i++)
+            {
+                int a = sources[sChunkStart + i];
+                byte[]? aHash = vocabHashByIdx[a];
+                if (aHash is null) { continue; }
+
+                for (int j = 0; j < topKFilled[i]; j++)
+                {
+                    (int b, double signed) = topK[i][j];
+                    byte[]? bHash = vocabHashByIdx[b];
+                    if (bHash is null) { continue; }
+
+                    EntityHandle aH = new(aHash, "word_form");
+                    EntityHandle bH = new(bHash, "word_form");
+                    double score = Sigmoid(signed / temperature);
+
+                    EdgeRatingEvent[] events =
+                    [
+                        new EdgeRatingEvent("model_trust",                   attestationTypeCode, score, 1.0),
+                        new EdgeRatingEvent("attention_pattern_confidence", attestationTypeCode, score, 1.0),
+                    ];
+                    session.Batch.AddEdge(edgeTypeCode, context.ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(aH, "source", 0),
+                        new EdgeMemberSpec(bH, "target", 1),
+                    ], System.Array.Empty<EdgeSignificanceSpec>(), events);
+                    emitted++;
+                }
+            }
+
+            await session.MaybeFlushAsync(FlushThreshold, ct);
         }
+
         return emitted;
+    }
+
+    private static double ComputeTemperatureFromProjections(double[] proj, double[] norms, int vocabSize, int dim, bool[] usable)
+    {
+        // Sample-based stddev estimate: pick the first usable token's
+        // projection norm as a scale reference. Cheap, deterministic, and
+        // serves as the sigmoid's transition scale (raw values within
+        // ±temperature map to scores in roughly [0.27, 0.73]).
+        double sumSq = 0;
+        int counted = 0;
+        for (int v = 0; v < vocabSize; v++)
+        {
+            if (!usable[v]) { continue; }
+            sumSq += norms[v] * norms[v];
+            counted++;
+        }
+        if (counted == 0) { return 0; }
+        double meanNormSq = sumSq / counted;
+        double meanNorm = Math.Sqrt(meanNormSq);
+        // Pair value of two random unit-direction vectors in d-dim has
+        // stddev ~ 1/sqrt(d). For projection vectors of typical norm
+        // meanNorm, pair value stddev ~ meanNorm² / sqrt(d).
+        return (meanNorm * meanNorm) / Math.Sqrt(dim);
+    }
+
+    private static double Sigmoid(double x)
+    {
+        if (x > 35) { return 1.0; }
+        if (x < -35) { return 0.0; }
+        return 1.0 / (1.0 + Math.Exp(-x));
+    }
+
+    private static int CountTrue(bool[] arr)
+    {
+        int n = 0;
+        for (int i = 0; i < arr.Length; i++) { if (arr[i]) { n++; } }
+        return n;
     }
 
     private static TensorHandle? FindEmbedding(ModelPassContext context)
     {
-        // Find the EmbeddingLookup tuple's table member with text modality.
         foreach (ResolvedTuple t in context.ResolvedTuples)
         {
             if (t.Tuple != ArchetypeTuple.EmbeddingLookup) { continue; }
@@ -205,118 +422,55 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         return null;
     }
 
-    private static Dictionary<int, byte[]>? ResolveVocabHashes(
-        ModelPassContext context, IPassSession session, CancellationToken ct)
+    private static (bool[] Usable, byte[]?[] HashByIdx) ResolveVocabArrays(
+        ModelPassContext context, IPassSession session, int vocabSize, CancellationToken ct)
     {
+        bool[] usable = new bool[vocabSize];
+        byte[]?[] hashByIdx = new byte[]?[vocabSize];
         string snapshotDir = context.Source.ModelDirectory;
         string tokenizerJson = Path.Combine(snapshotDir, "tokenizer.json");
-        if (!File.Exists(tokenizerJson)) { return null; }
+        if (!File.Exists(tokenizerJson)) { return (usable, hashByIdx); }
         byte[] bytes;
         try { bytes = File.ReadAllBytes(tokenizerJson); }
-        catch (IOException) { return null; } // BOUNDARY: optional tokenizer absent/unreadable disables attestation enrichment for this pass.
-        if (bytes.Length == 0) { return null; }
+        catch (IOException) { return (usable, hashByIdx); } // BOUNDARY: optional tokenizer absent/unreadable disables attestation enrichment.
+        if (bytes.Length == 0) { return (usable, hashByIdx); }
         TokenizerModel model;
         try { model = HuggingFaceTokenizerParser.Parse(bytes); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { return null; } // BOUNDARY: malformed tokenizer.json disables attestation enrichment for this pass.
+        catch (Exception ex) when (ex is not OperationCanceledException) { return (usable, hashByIdx); } // BOUNDARY: malformed tokenizer.json disables attestation enrichment.
 
-        Dictionary<int, byte[]> map = new(model.Vocab.Count);
         foreach (KeyValuePair<int, VocabularyEntry> kv in model.Vocab)
         {
             ct.ThrowIfCancellationRequested();
+            if ((uint)kv.Key >= (uint)vocabSize) { continue; }
             TextDecomposeResult r = SubstrateTextDecomposer.EmitStatic(
                 session.Batch, kv.Value.TokenBytes,
                 new TextDecomposeOptions(
                     ProvenanceCode: context.ProvenanceCode,
                     TopEntityType: "word_form",
                     TrustMu: ModelDerivedTrustMu));
-            map[kv.Key] = r.RootHash;
+            hashByIdx[kv.Key] = r.RootHash;
+            usable[kv.Key] = true;
         }
-        return map;
+        return (usable, hashByIdx);
     }
 
-    private static double[] ProjectedNormsByCols(
-        double[] embed, int vocabSize, int hiddenDim,
-        double[] projection, int projCols)
+    private static int[] TopNByValueArray(double[] norm, bool[] usable, int n)
     {
-        double[] norms = new double[vocabSize];
-        for (int v = 0; v < vocabSize; v++)
-        {
-            long embOff = (long)v * hiddenDim;
-            double sumSq = 0;
-            for (int c = 0; c < projCols; c++)
-            {
-                double dot = 0;
-                for (int i = 0; i < hiddenDim; i++)
-                {
-                    dot += embed[embOff + i] * projection[(long)i * projCols + c];
-                }
-                sumSq += dot * dot;
-            }
-            norms[v] = Math.Sqrt(sumSq);
-        }
-        return norms;
-    }
-
-    private static double[] ProjectedNormsByRowsTransposed(
-        double[] embed, int vocabSize, int hiddenDim,
-        double[] projection, int projRows)
-    {
-        double[] norms = new double[vocabSize];
-        for (int v = 0; v < vocabSize; v++)
-        {
-            long embOff = (long)v * hiddenDim;
-            double sumSq = 0;
-            for (int r = 0; r < projRows; r++)
-            {
-                double dot = 0;
-                long rowOff = (long)r * hiddenDim;
-                for (int h = 0; h < hiddenDim; h++)
-                {
-                    dot += embed[embOff + h] * projection[rowOff + h];
-                }
-                sumSq += dot * dot;
-            }
-            norms[v] = Math.Sqrt(sumSq);
-        }
-        return norms;
-    }
-
-    private static (double Floor, double Mean) NoiseStats(double[] norms, Dictionary<int, byte[]> vocabHashes)
-    {
-        double sum = 0;
-        int counted = 0;
-        for (int v = 0; v < norms.Length; v++)
-        {
-            if (vocabHashes.ContainsKey(v) && norms[v] > 0)
-            {
-                sum += norms[v];
-                counted++;
-            }
-        }
-        double mean = counted > 0 ? sum / counted : 0;
-        return (mean * NoiseFraction, mean);
-    }
-
-    private static int[] TopKByValue(double[] norm, Dictionary<int, byte[]> vocabHashes, double noiseFloor, int k)
-    {
-        if (k < 1) { return Array.Empty<int>(); }
-        (int Tok, double Val)[] buf = new (int, double)[k];
+        if (n < 1) { return Array.Empty<int>(); }
+        (int Tok, double Val)[] buf = new (int, double)[n];
         int filled = 0;
         double minVal = double.PositiveInfinity;
         int minIdx = -1;
         for (int v = 0; v < norm.Length; v++)
         {
-            if (!vocabHashes.ContainsKey(v)) { continue; }
+            if (!usable[v]) { continue; }
             double val = norm[v];
-            if (val < noiseFloor) { continue; }
-            if (filled < k)
+            if (val <= 0.0) { continue; }
+            if (filled < n)
             {
                 buf[filled] = (v, val);
                 filled++;
-                if (filled == k)
-                {
-                    RecomputeMin(buf, filled, out minVal, out minIdx);
-                }
+                if (filled == n) { RecomputeMin(buf, filled, out minVal, out minIdx); }
             }
             else if (val > minVal)
             {
@@ -335,11 +489,18 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         minIdx = -1;
         for (int i = 0; i < filled; i++)
         {
-            if (buf[i].Val < minVal)
-            {
-                minVal = buf[i].Val;
-                minIdx = i;
-            }
+            if (buf[i].Val < minVal) { minVal = buf[i].Val; minIdx = i; }
+        }
+    }
+
+    private static void RecomputeMinAbs((int Tok, double Signed)[] buf, int filled, out double minAbs, out int minIdx)
+    {
+        minAbs = double.PositiveInfinity;
+        minIdx = -1;
+        for (int i = 0; i < filled; i++)
+        {
+            double abs = Math.Abs(buf[i].Signed);
+            if (abs < minAbs) { minAbs = abs; minIdx = i; }
         }
     }
 

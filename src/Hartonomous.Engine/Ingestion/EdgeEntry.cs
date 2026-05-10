@@ -13,9 +13,19 @@ namespace Hartonomous.Engine.Ingestion;
 /// emission loop consults this map first and falls back to the provenance
 /// default for arenas not covered. Empty (the common path) means every
 /// arena uses the provenance default.</para>
+///
+/// <para><see cref="RatingEvents"/> carries sign-bearing per-edge Glicko-2
+/// events (score in [0, 1], weight = magnitude of the underlying measurement).
+/// Each event is buffered into the rating-event channel at flush and drained
+/// in bulk via substrate.record_attestations_bulk per (arena, attestation_type)
+/// chunk. Per docs/01-tensor-primitive-spec.md §V and AP-31. Empty = no rating
+/// events fired (legacy prime-only emission); populated = sign-bearing
+/// observation that ALWAYS fires (cross-model accumulation), distinct from
+/// the SignificanceOverrides prime-on-conflict default.</para>
 /// </summary>
 internal readonly record struct EdgeEntry(
     string EdgeTypeCode,
     string ProvenanceCode,
     EdgeMemberSpec[] Members,
-    EdgeSignificanceSpec[] SignificanceOverrides);
+    EdgeSignificanceSpec[] SignificanceOverrides,
+    EdgeRatingEvent[] RatingEvents);

@@ -205,10 +205,25 @@ static BlockEntry* find_block(int32_t cp)
     return NULL;
 }
 
-/* Lazily mmap the block's file on first access; parse and cache pointers. */
+/* Lazily map the block's file on first access. Defensive: copies the
+ * relevant data sections (hashes, centroids, hilberts) into HEAP memory
+ * and immediately unmaps the file. Pointers handed back to callers
+ * (huc_cp_hash_at, huc_cp_centroid_at, huc_cp_hilbert_at) point into
+ * stable process heap, NOT into a mmap-backed region whose underlying
+ * file or page-cache mapping can vanish (Docker/WSL bind-mount races,
+ * page eviction, file replacement, etc.). The earlier mmap-only path
+ * SEGV'd in libc memcpy when the kernel page-faulted into a no-longer-
+ * valid mapping during PG SRF iteration over the codepoint range.
+ *
+ * Memory: malloc allocates from the libc heap (NOT a PG memory context),
+ * so it survives across PG transactions/connections within the backend
+ * process — matches the lifetime semantics of g_blocks itself. ~3 MB
+ * heap per loaded block file (hashes 32B + centroids 32B + hilberts 8B
+ * = 72B per atom; typical 1k–32k atoms → 72KB–2.3MB per block, summed
+ * only across blocks that actually get touched). */
 static int ensure_block_mapped(BlockEntry* b)
 {
-    if (b->hashes != NULL) return 0;  /* already mapped */
+    if (b->hashes != NULL) return 0;  /* already loaded */
     char path[1024];
     snprintf(path, sizeof(path), "%s%s%s",
              g_blob_dir,
@@ -218,13 +233,14 @@ static int ensure_block_mapped(BlockEntry* b)
              "/",
 #endif
              b->filename);
-    if (huc_mmap(path, &b->map) != 0) {
+    HucMap tmp;
+    if (huc_mmap(path, &tmp) != 0) {
         ereport(DEBUG1,
                 (errmsg("hartonomous: block file unavailable: %s (skipping)", path)));
         return -1;
     }
-    if (b->map.size < 24 + 32) { huc_munmap(&b->map); return -1; }
-    const uint8_t* p = (const uint8_t*) b->map.base;
+    if (tmp.size < 24 + 32) { huc_munmap(&tmp); return -1; }
+    const uint8_t* p = (const uint8_t*) tmp.base;
     uint32_t magic, version, rs, re_, n;
     memcpy(&magic,    p +  0, 4);
     memcpy(&version,  p +  4, 4);
@@ -236,13 +252,44 @@ static int ensure_block_mapped(BlockEntry* b)
         || (int32_t) n  != b->atom_count) {
         ereport(WARNING,
                 (errmsg("hartonomous: block file header mismatch %s", b->filename)));
-        huc_munmap(&b->map);
+        huc_munmap(&tmp);
         return -1;
     }
-    /* Header is 24 bytes; data follows: hashes (n×32) + centroids (n×32) + hilberts (n×8). */
-    b->hashes    = p + 24;
-    b->centroids = p + 24 + (size_t) n * 32;
-    b->hilberts  = p + 24 + (size_t) n * 64;
+    /* Header is 24 bytes; data: hashes (n×32) + centroids (n×32) + hilberts (n×8). */
+    size_t need = (size_t) n * (32 + 32 + 8);
+    if (tmp.size < (size_t) 24 + need) {
+        ereport(WARNING,
+                (errmsg("hartonomous: block file truncated %s (size=%zu, need=%zu)",
+                        b->filename, tmp.size, (size_t)(24 + need))));
+        huc_munmap(&tmp);
+        return -1;
+    }
+    /* malloc each section so pointers stay aligned and stable across the
+     * backend lifetime. Use raw malloc (NOT palloc) — palloc'd memory is
+     * tied to a PG MemoryContext that gets reset per-statement and would
+     * leave dangling pointers in g_blocks. */
+    uint8_t* heap_hashes    = (uint8_t*) malloc((size_t) n * 32);
+    uint8_t* heap_centroids = (uint8_t*) malloc((size_t) n * 32);
+    uint8_t* heap_hilberts  = (uint8_t*) malloc((size_t) n * 8);
+    if (!heap_hashes || !heap_centroids || !heap_hilberts) {
+        free(heap_hashes); free(heap_centroids); free(heap_hilberts);
+        ereport(WARNING,
+                (errmsg("hartonomous: malloc failed for block %s (n=%u)",
+                        b->filename, n)));
+        huc_munmap(&tmp);
+        return -1;
+    }
+    memcpy(heap_hashes,    p + 24,                   (size_t) n * 32);
+    memcpy(heap_centroids, p + 24 + (size_t) n * 32, (size_t) n * 32);
+    memcpy(heap_hilberts,  p + 24 + (size_t) n * 64, (size_t) n *  8);
+    /* Unmap immediately. From here on we depend only on the heap copy. */
+    huc_munmap(&tmp);
+    /* b->map stays zeroed (was never assigned to). The unload path checks
+     * b->hashes for non-NULL before treating the block as loaded; we add
+     * matching free() calls below. */
+    b->hashes    = heap_hashes;
+    b->centroids = heap_centroids;
+    b->hilberts  = heap_hilberts;
     return 0;
 }
 
@@ -299,9 +346,37 @@ int huc_load_atoms_blob(const char* dir)
         );
     if (parse_index(idx_path)   != 0) return -1;
     if (parse_reverse(rev_path) != 0) return -1;
+
+    /* Eager-load every block file into postmaster heap. This is called from
+     * _PG_init while running in the POSTMASTER process (the extension is in
+     * shared_preload_libraries per docker-compose). Forked backends inherit
+     * the loaded data via copy-on-write — they don't re-mmap, don't re-malloc,
+     * don't touch the file system on first codepoint access.
+     *
+     * Why this matters: the chunked UCD seed driver opens a NEW psql / PG
+     * backend per chunk (`docker exec psql -c '...'` × 34 chunks). With the
+     * old lazy-per-backend load, every chunk allocated 100+ MB of malloc'd
+     * heap copies of UCD block data. Concurrent autovacuum + verbose logging
+     * + WSL2/Docker memory pressure compounded this until the kernel sent
+     * SIGSEGV (si_code=128, garbage stack unwinds) at random chunks. Eager
+     * load in the postmaster eliminates per-backend allocation entirely.
+     *
+     * Cost: ~80 MB postmaster heap + page faults during load. One-time at
+     * postmaster startup, shared (CoW) across all backends for the postmaster's
+     * lifetime.
+     *
+     * Failures during eager load are non-fatal — we LOG and continue. The
+     * lazy load path remains as a fallback for blocks that fail eager load
+     * (e.g. file added after postmaster start). */
+    int loaded = 0, failed = 0;
+    for (int32_t i = 0; i < g_block_count; ++i) {
+        if (ensure_block_mapped(&g_blocks[i]) == 0) loaded++;
+        else failed++;
+    }
+
     ereport(LOG,
-            (errmsg("hartonomous: UCD atoms blob loaded (%d blocks, %u reverse entries)",
-                    g_block_count, g_reverse_count)));
+            (errmsg("hartonomous: UCD atoms blob loaded (%d blocks indexed, %d eager-loaded into postmaster heap, %d failed, %u reverse entries)",
+                    g_block_count, loaded, failed, g_reverse_count)));
     return 0;
 }
 
@@ -309,6 +384,18 @@ void huc_unload_atoms_blob(void)
 {
     if (g_blocks) {
         for (int32_t i = 0; i < g_block_count; ++i) {
+            /* Heap-copy path: each loaded block holds malloc'd hashes /
+             * centroids / hilberts. Free them with free(); only the
+             * g_blocks index itself is palloc'd and gets pfree'd below. */
+            free((void*) g_blocks[i].hashes);
+            free((void*) g_blocks[i].centroids);
+            free((void*) g_blocks[i].hilberts);
+            g_blocks[i].hashes    = NULL;
+            g_blocks[i].centroids = NULL;
+            g_blocks[i].hilberts  = NULL;
+            /* Defensive: if any code path ever populates b->map, unmap it.
+             * With the heap-copy ensure_block_mapped, b->map is never
+             * assigned to so this is a no-op today. */
             if (g_blocks[i].map.base) huc_munmap(&g_blocks[i].map);
         }
         pfree(g_blocks);
