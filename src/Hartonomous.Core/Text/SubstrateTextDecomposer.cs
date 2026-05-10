@@ -29,6 +29,8 @@ namespace Hartonomous.Core.Text;
 public sealed class SubstrateTextDecomposer
 {
     private static int s_ucdLoaded;
+    private static readonly object s_ucdLoadLock = new();
+    private static readonly TextDecomposeNative.EmitCallback s_noopEmit = static (IntPtr _, ref TextDecomposeNative.Record _) => 0;
 
     /// <summary>
     /// Constructor signature kept compatible with the prior Npgsql-backed
@@ -49,47 +51,55 @@ public sealed class SubstrateTextDecomposer
     /// </summary>
     public static void EnsureUcdLoaded()
     {
-        if (Interlocked.CompareExchange(ref s_ucdLoaded, 1, 0) != 0)
+        if (Volatile.Read(ref s_ucdLoaded) != 0)
         {
             return;
         }
-        string? envDir = Environment.GetEnvironmentVariable("HARTONOMOUS_UCD_BLOB_DIR");
-        string[] candidates =
-        [
-            envDir ?? string.Empty,
-            "/opt/pg18/share/postgresql/extension/hartonomous-ucd",
-            System.IO.Path.Combine(AppContext.BaseDirectory, "ucd"),
-            System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "ext", "hartonomous_pg", "src", "generated"),
-        ];
-        foreach (string dir in candidates)
+
+        lock (s_ucdLoadLock)
         {
-            if (string.IsNullOrEmpty(dir))
-            {
-                continue;
-            }
-            if (!System.IO.Directory.Exists(dir))
-            {
-                continue;
-            }
-            string idx = System.IO.Path.Combine(dir, "hartonomous-ucd-17.0.0.idx");
-            if (!System.IO.File.Exists(idx))
-            {
-                continue;
-            }
-            int rc = TextDecomposeNative.UcdLoad(dir);
-            if (rc == 0)
+            if (Volatile.Read(ref s_ucdLoaded) != 0)
             {
                 return;
             }
+
+            string? envDir = Environment.GetEnvironmentVariable("HARTONOMOUS_UCD_BLOB_DIR");
+            string[] candidates =
+            [
+                envDir ?? string.Empty,
+                "/opt/pg18/share/postgresql/extension/hartonomous-ucd",
+                System.IO.Path.Combine(AppContext.BaseDirectory, "ucd"),
+                System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "ext", "hartonomous_pg", "src", "generated"),
+            ];
+            foreach (string dir in candidates)
+            {
+                if (string.IsNullOrEmpty(dir))
+                {
+                    continue;
+                }
+                if (!System.IO.Directory.Exists(dir))
+                {
+                    continue;
+                }
+                string idx = System.IO.Path.Combine(dir, "hartonomous-ucd-17.0.0.idx");
+                if (!System.IO.File.Exists(idx))
+                {
+                    continue;
+                }
+                int rc = TextDecomposeNative.UcdLoad(dir);
+                if (rc == 0)
+                {
+                    Volatile.Write(ref s_ucdLoaded, 1);
+                    return;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "SubstrateTextDecomposer: could not locate the UCD blob. Set "
+                + "HARTONOMOUS_UCD_BLOB_DIR or install hartonomous-ucd to a "
+                + "discoverable path. Probed: "
+                + string.Join("; ", candidates));
         }
-        // Reset the flag so the next call retries — common in tests where
-        // the env var is set after the first ctor.
-        Interlocked.Exchange(ref s_ucdLoaded, 0);
-        throw new InvalidOperationException(
-            "SubstrateTextDecomposer: could not locate the UCD blob. Set "
-            + "HARTONOMOUS_UCD_BLOB_DIR or install hartonomous-ucd to a "
-            + "discoverable path. Probed: "
-            + string.Join("; ", candidates));
     }
 
     /// <summary>
@@ -184,6 +194,58 @@ public sealed class SubstrateTextDecomposer
             PhysicalityRowsEmitted: context.PhysicalityCount,
             SignificanceRowsEmitted: context.SignificanceCount,
             RootCentroid: (rootCentroidBuf[0], rootCentroidBuf[1], rootCentroidBuf[2], rootCentroidBuf[3]));
+    }
+
+    /// <summary>
+    /// Compute the native text root hash without emitting records into an
+    /// ingestion batch. This is for lookup/planning paths that need the exact
+    /// same content identity as <see cref="EmitStatic"/> but should not create
+    /// substrate rows.
+    /// </summary>
+    public static byte[] ComputeRootHash(
+        ReadOnlySpan<byte> utf8,
+        string topEntityType,
+        double trustMu = 1500.0)
+    {
+        EnsureUcdLoaded();
+
+        if (utf8.IsEmpty)
+        {
+            return new byte[32];
+        }
+
+        byte[] utf8Copy = utf8.ToArray();
+        byte[] rootHashBuf = new byte[32];
+        GCHandle utf8Pin = GCHandle.Alloc(utf8Copy, GCHandleType.Pinned);
+        GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
+        int rc;
+        try
+        {
+            rc = TextDecomposeNative.TextDecompose(
+                utf8Pin.AddrOfPinnedObject(),
+                (nuint) utf8Copy.Length,
+                NativeKindFor(topEntityType),
+                trustMu,
+                s_noopEmit,
+                IntPtr.Zero,
+                rootPin.AddrOfPinnedObject(),
+                out _,
+                IntPtr.Zero);
+        }
+        finally
+        {
+            utf8Pin.Free();
+            rootPin.Free();
+            GC.KeepAlive(s_noopEmit);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException(
+                $"hartonomous_text_decompose returned {rc} while computing root hash (input {utf8Copy.Length} bytes, top_kind={topEntityType})");
+        }
+
+        return rootHashBuf;
     }
 
     public static async ValueTask<TextDecomposeResult> EmitStaticAsync(
@@ -422,11 +484,23 @@ public sealed class SubstrateTextDecomposer
                         _                                   => "contour",
                     };
                     byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
+                    // Native text_decompose hands back WKB only; pipeline
+                    // needs the representative Point4D for inline edge
+                    // build, so extract it here.
+                    if (!Hartonomous.Core.Geometry.PostGisWkbReader.TryExtractCentroid(
+                            wkb, out Hartonomous.Core.Geometry.Point4D centroid))
+                    {
+                        throw new InvalidOperationException(
+                            $"text_decompose returned a {physCode} WKB whose subtype is " +
+                            $"unsupported by PostGisWkbReader (entity " +
+                            $"{Convert.ToHexString(entHash)}, {wkb.Length} bytes).");
+                    }
                     Records.Add(new PhysicalityRecord(
                         physCode,
                         entHash,
                         Blake3.Hash(wkb.AsSpan()),
-                        wkb));
+                        wkb,
+                        centroid));
                     PhysicalityCount++;
                     break;
                 }

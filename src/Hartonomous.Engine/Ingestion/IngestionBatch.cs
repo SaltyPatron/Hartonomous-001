@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Engine.Ingestion;
@@ -71,7 +72,20 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
     {
-        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb));
+        // Generic-WKB path: extract centroid from the buffer. The typed
+        // helpers below are preferred because they already know the centroid
+        // and skip the parse.
+        if (!Hartonomous.Core.Geometry.PostGisWkbReader.TryExtractCentroid(geomWkb, out Point4D centroid))
+        {
+            throw new ArgumentException(
+                $"AddPhysicality: could not extract a 4D centroid from the supplied WKB " +
+                $"(entity {Convert.ToHexString(entity.Hash)}, type {physicalityTypeCode}, " +
+                $"{geomWkb.Length} bytes). Either the WKB subtype is unsupported by " +
+                $"PostGisWkbReader or the buffer is malformed. Use AddPhysicalityPoint4d " +
+                $"or AddPhysicalityLineString4d when the centroid is already known.",
+                nameof(geomWkb));
+        }
+        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb, centroid));
     }
 
     public void AddPhysicalityPoint4d(
@@ -79,10 +93,12 @@ internal sealed class IngestionBatch : IIngestionBatch
         string physicalityTypeCode,
         double x1, double x2, double x3, double x4)
     {
+        Point4D pt = new(x1, x2, x3, x4);
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
-            PostGisWkbBuilder.PointZM(x1, x2, x3, x4)));
+            PostGisWkbBuilder.PointZM(pt),
+            pt));
     }
 
     public void AddPhysicalityLineString4d(
@@ -95,10 +111,29 @@ internal sealed class IngestionBatch : IIngestionBatch
             throw new ArgumentException(
                 "LINESTRINGZM requires at least one vertex.", nameof(vertices));
         }
+        // Promote the tuple-based decomposer surface to Point4D once; from
+        // here down everything is Point4D.
+        Span<Point4D> typed = vertices.Length <= 64
+            ? stackalloc Point4D[vertices.Length]
+            : new Point4D[vertices.Length];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            typed[i] = new Point4D(vertices[i].X1, vertices[i].X2, vertices[i].X3, vertices[i].X4);
+        }
+
+        Point4D centroid;
+        if (!Point4D.TryMean(typed, out centroid))
+        {
+            throw new ArgumentException(
+                "AddPhysicalityLineString4d: vertex span yielded no centroid.",
+                nameof(vertices));
+        }
+
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
-            PostGisWkbBuilder.LineStringZM(vertices)));
+            PostGisWkbBuilder.LineStringZM((ReadOnlySpan<Point4D>)typed),
+            centroid));
     }
 
     public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)

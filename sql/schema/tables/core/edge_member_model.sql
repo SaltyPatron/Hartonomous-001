@@ -1,2 +1,2 @@
 CREATE TABLE substrate.edge_member_model
-    PARTITION OF substrate.edge_member FOR VALUES IN (22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 38, 39);
+    PARTITION OF substrate.edge_member FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);

@@ -180,6 +180,10 @@ public interface IModelAnalysisPass
 - **DON'T** keep state across `RunAsync` invocations. Each invocation is independent and checkpointable.
 - **DON'T** call non-deterministic compute. Passes must produce identical output for identical input (Law #6).
 - **DON'T** swallow exceptions. Let them propagate so the orchestrator fails the model cleanly.
+- **DON'T** confuse "analysis pass" with "layer-type decomposer."** They are different surfaces with different output shapes:
+  - **Layer-type decomposers** (per [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md)) emit **typed attestation edges between existing content entities** with `attestation_type` distinguishing the kind of model evidence. They consume specific tensor roles (AttentionQuery + AttentionKey, FfnGate + FfnUp + FfnDown, etc.) and produce token↔token (or token↔visual_concept, etc.) edges. Working template: `TokenAttentionEdgePass.cs`.
+  - **Analysis passes** emit per-tensor analysis surfaces (sparsity profile, weight distribution, eigenvalue spectrum, activation range, layer similarity) attached to the tensor entity. They don't bind content entities; they describe the tensor itself. Examples: `SparsityAnalysisPass`, `WeightDistributionPass`, `LayerSimilarityPass`.
+- **DON'T** emit phantom per-role-unit entities** (`ffn_neuron`, `attention_head`, `attention_pattern`, `embedding_position`, `logit_projection`, `moe_*`, `lora_component`, `conv_filter`, etc., on the spec §XII removal list). These were deprecated by the 2026-05-08 architectural correction. If you find yourself wanting to emit "one entity per row of this tensor," you are writing the phantom-decomposition shape — what you actually want is a layer-type decomposer that emits attestation edges between content entities. See AP-25 and the canonical layer-type decomposer spec.
 
 ---
 

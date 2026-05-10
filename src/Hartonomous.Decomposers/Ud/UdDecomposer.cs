@@ -243,11 +243,12 @@ public sealed partial class UdDecomposer : BaseDecomposer
             UdTokenRecord tok = sent.Tokens[ti];
             tokenIdIndex[tok.Id] = ti;
 
-            // Word form entity: Merkle DAG (codepoints → grapheme_clusters → word_form).
-            // EmitWordFormMerkle emits the recursive child-centroid trajectory at
-            // every tier (codepoint POINTZM, grapheme_cluster LINESTRINGZM through
+            // Word form entity: native text DAG (codepoints → grapheme_clusters → word_form).
+            // The shared text decomposer emits the recursive child-centroid trajectory
+            // at every tier (codepoint POINTZM, grapheme_cluster LINESTRINGZM through
             // codepoint centroids, word_form LINESTRINGZM through grapheme centroids).
-            (EntityHandle wfHandle, byte[] wfHash, _) = EmitText(batch, tok.Form, _codepointProperties, "word_form", TrustPriorMu);
+            (EntityHandle wfHandle, byte[] wfHash, (double X, double Y, double Z, double M) wfCentroid) =
+                EmitText(batch, tok.Form, _codepointProperties, "word_form", TrustPriorMu);
             entityCount++;
 
             // The token IS the word_form. UD's per-token analysis (POS,
@@ -297,8 +298,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 }
             }
 
-            sentVertices.Add(PhysicalityEmitter.CodepointS3Position(
-                ComputeIntDigest(wfHash)));
+            sentVertices.Add(wfCentroid);
         }
 
         // The sentence IS a text_composition. Merkle hash of ordered token
@@ -362,23 +362,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
         }
 
         return (posWritten, morphWritten, langWritten);
-    }
-
-    /// <summary>
-    /// Deterministic index into Unicode codepoint space from a hash byte-array — pure
-    /// dispersal for Super-Fibonacci projection of sentence token trajectories. Not a
-    /// cryptographic digest; just a stable map from content hash to a repeatable S³
-    /// anchor point for the LINESTRINGZM vertex representing that token in the sentence.
-    /// </summary>
-    private static int ComputeIntDigest(byte[] hash)
-    {
-        uint acc = 0;
-        int lim = hash.Length < 8 ? hash.Length : 8;
-        for (int i = 0; i < lim; i++)
-        {
-            acc = (acc * 31u) + hash[i];
-        }
-        return (int)(acc % (uint)PhysicalityEmitter.UnicodeCodepointSpace);
     }
 
     private static partial class Log

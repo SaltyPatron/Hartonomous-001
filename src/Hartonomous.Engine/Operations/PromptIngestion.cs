@@ -2,7 +2,6 @@ using System.Text;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
-using Hartonomous.Core.Text.Segmentation;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -15,22 +14,18 @@ public sealed partial class PromptIngestion : IPromptIngestion
 
     private readonly NpgsqlDataSource _dataSource;
     private readonly IIngestionPipeline _pipeline;
-    private readonly ICodepointProperties _codepointProperties;
     private readonly ILogger<PromptIngestion> _logger;
 
     public PromptIngestion(
         NpgsqlDataSource dataSource,
         IIngestionPipeline pipeline,
-        ICodepointProperties codepointProperties,
         ILogger<PromptIngestion> logger)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         ArgumentNullException.ThrowIfNull(pipeline);
-        ArgumentNullException.ThrowIfNull(codepointProperties);
         ArgumentNullException.ThrowIfNull(logger);
         _dataSource = dataSource;
         _pipeline = pipeline;
-        _codepointProperties = codepointProperties;
         _logger = logger;
     }
 
@@ -43,8 +38,8 @@ public sealed partial class PromptIngestion : IPromptIngestion
 
         IIngestionBatch batch = _pipeline.CreateBatch();
         byte[] utf8 = Encoding.UTF8.GetBytes(promptText);
-        TextDecomposeResult ingest = CanonicalTextDecomposer.Emit(
-            batch, utf8, _codepointProperties,
+        TextDecomposeResult ingest = SubstrateTextDecomposer.EmitStatic(
+            batch, utf8,
             new TextDecomposeOptions(
                 ProvenanceCode: provenanceCode,
                 TopEntityType: "text_composition",

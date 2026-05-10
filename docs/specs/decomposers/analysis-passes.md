@@ -1,10 +1,12 @@
 # Model Analysis Passes
 
-**Status**: ✅ Implemented. `SafetensorsDecomposer.BuildPassSet()` wires 31 always-on passes (32 with `ModelTextArtifactsPass` when codepoint properties are injected). Per-role unit emission (Phase A of the build plan) is complete for every Track-2 transformation tensor family in the role-to-unit table.
+> **Authority note (2026-05-09):** Per-role-unit emission for Track-2 transformation tensors is now spec'd as the **layer-type decomposer library** at [`docs/specs/decomposers/layer-type-library.md`](layer-type-library.md), which emits typed attestation edges between existing content entities (NOT phantom per-role-unit entities). The analysis-passes catalog in this file covers the per-tensor analysis surfaces that complement the layer-type decomposers (sparsity profile, weight distribution, eigenvalue spectrum, attention archetype, MoE routing stats, layer similarity, tokenizer mapping, vocab coverage, codec analysis, grammar extraction). The previous per-role-unit-as-entity emission section is deprecated; see the boxed correction below the per-role table.
+
+**Status**: ✅ Implemented. `SafetensorsDecomposer.BuildPassSet()` wires 31 always-on passes (32 with `ModelTextArtifactsPass` when codepoint properties are injected). The Track-2 emission portion is being migrated from phantom per-role-unit entities (deprecated) to attestation edges via the layer-type decomposer library (per spec §V).
 
 The passes transform a discovered AI model into substrate entities, edges, and physicality. Called by the Safetensors decomposer (and any future model-source decomposer) as a composable, re-runnable, checkpointable pipeline. Not related to the 43 **modality** passes in `docs/specs/csharp/analysis-passes.md` — those operate on text/image/audio/video content; these operate on model weights.
 
-The pass catalogue spans both tracks of the two-track ingestion model: Track 1 (embedding wholesale → Laplacian+GSO → fireflies) via `EmbeddingFireflyPass`, and Track 2 (transformation weights → per-role unit entities + typed edges with significance) via the `*NeuronPass`, `*ComponentPass`, and `*FilterPass` families. Track 2 is the substrate's matmul-replacement: a tensor's row IS the learned function of one neuron / direction / filter, and decomposing it into row-entities + typed edges lets the recomposer scatter substrate units back into target architectures at distillation.
+The pass catalogue spans both tracks of the two-track ingestion model: **Track 1** (embedding wholesale → Laplacian+GSO → fireflies) via `EmbeddingFireflyPass` — fireflies are POINTZM physicalities attached to existing `word_form` entities, NOT separate `embedding_position` phantom entities (per spec §VII; the firefly side-channel is derived value-add, not the inference mechanism). **Track 2** (transformation weights → typed attestation edges between existing content entities) via the layer-type decomposers spec'd in [`layer-type-library.md`](layer-type-library.md) — Track 2 is the substrate's matmul-replacement: every per-role unit of a transformation tensor manifests as a `model_attention_pattern` / `model_concept_similarity` / `model_ffn_factor` edge between two `word_form` (or other content) entities, with `attestation_type` distinguishing the kind of model evidence.
 
 ---
 
@@ -238,32 +240,15 @@ All compute goes through `context.Compute` (the `Hartonomous.Core.Compute.*` fac
 
 ---
 
-## Per-role unit emission (Phase A — Track 2 transformation tensors)
+## Per-role unit emission — DEPRECATED FRAMING (see corrected vision below)
 
-Statistics passes (`SvdPass`, `WeightDistributionPass`, …) describe each tensor; they don't encode the tensor's semantic content. Per-role passes do — each Track-2 transformation tensor decomposes into one entity per meaningful unit (row, filter, slot, component) of its role's unit type, hashed by f64-canonical content only. Identical units across models collapse to one entity → cross-model Glicko-2 corroboration on shared learned functions. The recomposer's scatter path (`SafetensorsRecomposer.AssembleTensorBytesAsync`) walks substrate.sequence children of each target tensor and writes each unit's contour back into the buffer at its row position. Sparsity-filtered units (L2 below `1e-6`) are not stored — Substrate Law #11.
-
-| Tensor role | Unit | Entity | Edge | Pass |
-|---|---|---|---|---|
-| FfnGate, FfnUp, FfnDown, MoeSharedExpert | output row | `ffn_neuron` | `has_ffn_neuron` | `FfnNeuronPass` |
-| TokenEmbedding | row | `embedding_position` | `has_embedding_position` | `EmbeddingPositionPass` |
-| LogitHead | row | `logit_projection` | `has_logit_projection` | `LogitHeadPass` |
-| LayerNorm, RmsNorm, BatchNorm | scale vector | `layer_norm_scale` | `has_layer_norm_scale` | `LayerNormPass` |
-| AttentionQuery, AttentionKey, AttentionValue, AttentionOutput, CrossAttention | row | `attention_component` | `has_attention_component` | `AttentionComponentPass` |
-| MoeRouter | row (per expert direction) | `moe_route_direction` | `has_route_direction` | `MoeRouteDirectionPass` |
-| MoeExpertGate, MoeExpertUp, MoeExpertDown | row | `moe_expert_neuron` | `has_moe_neuron` | `MoeExpertNeuronPass` |
-| RopeFreq | whole tensor | `rope_freq_table` | `has_rope_freqs` | `RopeFreqPass` |
-| ObjectQuery | slot row | `object_query_slot` | `has_object_query` | `ObjectQueryPass` |
-| ClassHead | row | `class_projection` | `has_class_projection` | `ClassHeadPass` |
-| BboxHead | row | `bbox_projection` | `has_bbox_projection` | `BboxHeadPass` |
-| VisionFeature | per-patch row / outer index | `vision_feature_direction` | `has_vision_feature` | `VisionFeaturePass` |
-| VisionProjection, ModalityProjection | basis vector / outer index | `modality_basis_vector` | `has_modality_basis` | `ModalityBasisPass` |
-| LoraA, LoraB | rank component | `lora_component` | `has_lora_component` | `LoraComponentPass` |
-| ConvKernel, VaeBlock | per-output-channel filter | `conv_filter` | `has_conv_filter` | `ConvFilterPass` |
-| DiffusionBlock | per-block / per-row component | `diffusion_component` | `has_diffusion_component` | `DiffusionComponentPass` |
-| ConformerLayer | per-block / per-row component | `conformer_component` | `has_conformer_component` | `ConformerComponentPass` |
-| AudioCodecEncoder, AudioCodecDecoder | per-stage / per-channel filter | `audio_codec_filter` | `has_codec_filter` | `AudioCodecFilterPass` |
-
-Each per-row pass routes through the shared helper `PerRowContentPass.RunPerRowAsync` (2-D tensors) or `PerRowContentPass.RunPerOuterIndexAsync` (rank-N tensors with trailing dims flattened). Both helpers use the same canonical hashing, sparsity threshold, sequence placement (`parent=tensor`, `child=unit`, `position=row_index`), and contour packing — adding a new role is one new pass class plus a row in the table above.
+> **Architectural correction (2026-05-08; see [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §III, §V, §XII):** The "one entity per meaningful unit" framing previously documented in this section is the phantom-decomposition shape. **Per-role units of Track 2 transformation tensors manifest as typed attestation EDGES between existing content entities (typically two `word_form` tokens), NOT as synthetic per-role-unit entity types.** The phantom entity types previously listed here (`ffn_neuron`, `embedding_position`, `attention_component`, `logit_projection`, `attention_pattern`, `moe_route_direction`, `moe_expert_neuron`, `object_query_slot`, `class_projection`, `bbox_projection`, `vision_feature_direction`, `modality_basis_vector`, `lora_component`, `conv_filter`, `diffusion_component`, `conformer_component`, `audio_codec_filter`) are deprecated and are documented in spec §XII as the phantom debt removal list. The corresponding `*Pass` classes in `src/Hartonomous.Decomposers/Safetensors/Passes/` are deprecated and on the removal path.
+>
+> The replacement is the **layer-type decomposer library** specified in [`docs/specs/decomposers/layer-type-library.md`](layer-type-library.md). Each universal layer decomposer (`AttentionQkvLayerDecomposer`, `AttentionVoLayerDecomposer`, `FfnLayerDecomposer`, `EmbeddingLayerDecomposer`, `LmHeadLayerDecomposer`, `LayerNormLayerDecomposer`, `MoeRouterLayerDecomposer`, `MoeExpertLayerDecomposer`, `LoRAAdapterLayerDecomposer`) and specialist layer decomposer (`CrossAttentionLayerDecomposer`, `ConvLayerDecomposer`, `ViTPatchAttentionLayerDecomposer`, `CodecRvqLayerDecomposer`, `DetectionHeadLayerDecomposer`, `DiffusionUnetLayerDecomposer`) emits typed attestation edges between existing content entities, with `attestation_type` (per `sql/schema/seed/attestation_type.sql`) on the rating event distinguishing the kind of model evidence. Cross-model corroboration accumulates as separate `attestation_type`-distinguished events on the same edge hash. See AP-25 in `.claude/rules/45-anti-patterns.md` for the detection-and-rejection guidance.
+>
+> The working template for what every layer-type decomposer should look like: [`src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`](../../../src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs).
+>
+> The shared sparse-recording mechanism (per-tensor adaptive noise floor via `PerRowContentPass.ComputeAdaptiveNoiseFloor`, threshold-then-hash for cross-model dedup on signal not jitter, skip-entirely-jitter rows) is correctly implemented in the deprecated phantom passes and is preserved in the new layer-type decomposer pattern — only the emission target changes (attestation edges between content entities instead of phantom per-role-unit entities). See spec §VIII.
 
 ---
 

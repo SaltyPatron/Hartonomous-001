@@ -101,7 +101,7 @@ public sealed partial class TextDecomposer : BaseDecomposer
     }
 
     // IngestUtf8DocumentIntoBatch and its helpers removed - replaced by
-    // Hartonomous.Core.Text.CanonicalTextDecomposer.Emit. See
+    // Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic. See
     // docs/specs/text-decomposer-unification.md.
 
 

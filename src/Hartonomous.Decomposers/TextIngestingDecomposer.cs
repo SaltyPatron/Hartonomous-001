@@ -27,9 +27,8 @@ namespace Hartonomous.Decomposers;
 /// they never flow through the C# pipeline channels. Only the root entity
 /// is registered on the batch so downstream edges can FK to it.
 ///
-/// Subclasses override <see cref="CodepointProperties"/> (used by C# cold
-/// paths that still call CanonicalTextDecomposer directly) and
-/// <see cref="TrustPriorMu"/> to bind per-decomposer constants.
+/// Subclasses override <see cref="CodepointProperties"/> for legacy metadata
+/// lookup surfaces and <see cref="TrustPriorMu"/> to bind per-decomposer constants.
 /// </summary>
 public abstract partial class TextIngestingDecomposer : BaseDecomposer
 {

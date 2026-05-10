@@ -48,6 +48,8 @@ namespace Hartonomous.Decomposers.WordNet;
 /// </summary>
 public sealed partial class WordNetDecomposer : TextIngestingDecomposer
 {
+    private const int Pass1SynsetChunkSize = 512;
+
     public override string ProvenanceCode => "princeton_wordnet";
     public override string DisplayName => "WordNet 3.0 (Princeton)";
     public override IReadOnlyList<Phase> Phases => [Phase.WordNetOmw];
@@ -187,134 +189,154 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
             // ── Pass 1: emit lemmas + synsets with content-pure hashes,
             //           glosses, has_sense edges, junctions, has_wordnet_offset.
             //
-            // Parallelized via Hartonomous.Core.Decomposition.ParallelChunkProcessor.
-            // Each synset is a unit of work; each task gets its own
-            // IIngestionBatch (CreateBatch returns a new instance per call).
+            // Parallelized over chunks, not individual synsets. Each worker owns
+            // one local IIngestionBatch at a time and flushes only when the batch
+            // reaches BatchSize or the chunk ends. Submitting one batch per synset
+            // created ~100k tiny COPY/commit cycles for WordNet and made RunAll
+            // unusable before the lexical seed floor was even populated.
             // Shared mutable state is offsetToSynsetHash + edgeCountByType
             // (both ConcurrentDictionary) plus Interlocked counters. The
-            // TextIngestionCache + centroid sidecar are now thread-safe via
-            // the lock added in Phase 3 / parallel-producer wiring.
+            // TextIngestionCache + centroid sidecar are thread-safe.
             int parallelism = Hartonomous.Core.Decomposition.ParallelChunkProcessor.DefaultDegreeOfParallelism();
             await Hartonomous.Core.Decomposition.ParallelChunkProcessor.RunAsync(
-                synsets,
-                async (syn, taskCt) =>
+                synsets.Chunk(Pass1SynsetChunkSize),
+                async (synsetChunk, taskCt) =>
                 {
                     IIngestionBatch localBatch = pipeline.CreateBatch(ProvenanceCode);
-                    string offsetCode = $"{syn.Offset:D8}-{syn.SsType}";
 
-                    List<EntityHandle> memberHandles = new(syn.Words.Count);
-                    List<byte[]> memberHashes = new(syn.Words.Count);
-                    List<(byte[] Hash, (double X, double Y, double Z, double M) Centroid)> memberPhysicalityComponents = new(syn.Words.Count);
-                    foreach (SynsetWord sw in syn.Words)
+                    async ValueTask FlushLocalBatchAsync()
                     {
-                        (EntityHandle h, byte[] lemmaHash, (double X, double Y, double Z, double M) lemmaCentroid) =
-                            EmitText(localBatch, sw.Word, _codepointProperties, "lemma", TrustPriorMu);
-                        localBatch.AddSignificance(h, "source_authority", TrustPriorMu);
-                        memberHandles.Add(h);
-                        memberHashes.Add(lemmaHash);
-                        memberPhysicalityComponents.Add((lemmaHash, lemmaCentroid));
-                        System.Threading.Interlocked.Increment(ref entityCount);
-                    }
-
-                    // Synset content hash: Merkle over sorted member lemma hashes
-                    // plus core text-decomposition hashes for the authored gloss
-                    // content.
-                    (byte[] Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents = memberPhysicalityComponents
-                        .OrderBy(component => component.Hash, ByteArraySortComparer.Instance)
-                        .ToArray();
-                    byte[][] sortedLemmaHashes = sortedMemberPhysicalityComponents
-                        .Select(component => component.Hash)
-                        .ToArray();
-
-                    (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
-                    List<(string EdgeType, EntityHandle TextHandle)> glossEdges = [];
-                    List<byte[]> glossTextHashes = [];
-                    if (definition.Length > 0)
-                    {
-                        EntityHandle defDoc = IngestText(localBatch, definition);
-                        glossEdges.Add(("has_gloss", defDoc));
-                        glossTextHashes.Add(defDoc.Hash);
-                    }
-                    foreach (string example in examples)
-                    {
-                        if (example.Length == 0)
+                        if (localBatch.EntityCount == 0 && localBatch.EdgeCount == 0)
                         {
-                            continue;
+                            return;
                         }
-                        EntityHandle exDoc = IngestText(localBatch, example);
-                        glossEdges.Add(("has_example", exDoc));
-                        glossTextHashes.Add(exDoc.Hash);
-                    }
-                    if (glossTextHashes.Count == 0)
-                    {
-                        EntityHandle emptyGlossDoc = IngestText(localBatch, syn.Gloss);
-                        glossTextHashes.Add(emptyGlossDoc.Hash);
-                    }
 
-                    byte[][] synsetContent = new byte[sortedLemmaHashes.Length + glossTextHashes.Count][];
-                    Array.Copy(sortedLemmaHashes, synsetContent, sortedLemmaHashes.Length);
-                    for (int i = 0; i < glossTextHashes.Count; i++)
-                    {
-                        synsetContent[sortedLemmaHashes.Length + i] = glossTextHashes[i];
-                    }
-                    byte[] synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
-
-                    EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset");
-                    AddSynsetPhysicality(localBatch, synsetHandle, sortedMemberPhysicalityComponents);
-                    localBatch.AddSignificance(synsetHandle, "source_authority", TrustPriorMu);
-                    System.Threading.Interlocked.Increment(ref entityCount);
-
-                    offsetToSynsetHash[offsetCode] = synsetHash;
-
-                    byte[] offsetDocHash = WordNetSynsetIdentity.OffsetCodeHash(offsetCode);
-                    EntityHandle offsetDoc = localBatch.AddEntity(offsetDocHash, "text_composition");
-                    localBatch.AddEdge("has_wordnet_offset", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(synsetHandle, "source", 0),
-                        new EdgeMemberSpec(offsetDoc,    "target", 1),
-                    ]);
-                    Bump("has_wordnet_offset");
-
-                    string udPos = WordNetParser.PosCharToUdPos(WordNetParser.SsTypeToPos(syn.SsType));
-                    if (posIdMap.TryGetValue(udPos, out int posId))
-                    {
-                        localBatch.AddJunction("entity_pos", synsetHandle, posId, TrustPriorMu);
+                        int batchNumNow = System.Threading.Interlocked.Increment(ref batchNum);
+                        long entitiesNow = System.Threading.Interlocked.Read(ref entityCount);
+                        long edgesNow = System.Threading.Interlocked.Read(ref edgeCount);
+                        await ReportProgressAsync(pipeline, reporter, localBatch, entitiesNow, edgesNow,
+                            batchNumNow, "wordnet", taskCt).ConfigureAwait(false);
+                        localBatch = pipeline.CreateBatch(ProvenanceCode);
                     }
 
-                    string lexnameCode = GetLexname(syn.LexFileNum);
-                    if (lexnameIdMap.TryGetValue(lexnameCode, out int lexnameId))
+                    foreach (SynsetRecord syn in synsetChunk)
                     {
-                        localBatch.AddJunction("entity_lexname", synsetHandle, lexnameId);
-                    }
+                        string offsetCode = $"{syn.Offset:D8}-{syn.SsType}";
 
-                    for (int i = 0; i < memberHandles.Count; i++)
-                    {
-                        localBatch.AddEdge("has_sense", ProvenanceCode,
-                        [
-                            new EdgeMemberSpec(memberHandles[i], "source", 0),
-                            new EdgeMemberSpec(synsetHandle,     "target", 1),
-                        ]);
-                        Bump("has_sense");
-                        localBatch.AddJunction("entity_language", memberHandles[i], engLangId);
-                    }
+                        List<EntityHandle> memberHandles = new(syn.Words.Count);
+                        List<byte[]> memberHashes = new(syn.Words.Count);
+                        List<(byte[] Hash, (double X, double Y, double Z, double M) Centroid)> memberPhysicalityComponents = new(syn.Words.Count);
+                        foreach (SynsetWord sw in syn.Words)
+                        {
+                            (EntityHandle h, byte[] lemmaHash, (double X, double Y, double Z, double M) lemmaCentroid) =
+                                EmitText(localBatch, sw.Word, _codepointProperties, "lemma", TrustPriorMu);
+                            localBatch.AddSignificance(h, "source_authority", TrustPriorMu);
+                            memberHandles.Add(h);
+                            memberHashes.Add(lemmaHash);
+                            memberPhysicalityComponents.Add((lemmaHash, lemmaCentroid));
+                            System.Threading.Interlocked.Increment(ref entityCount);
+                        }
 
-                    foreach ((string edgeType, EntityHandle textHandle) in glossEdges)
-                    {
-                        localBatch.AddEdge(edgeType, ProvenanceCode,
+                        // Synset content hash: Merkle over sorted member lemma hashes
+                        // plus core text-decomposition hashes for the authored gloss
+                        // content.
+                        (byte[] Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents = memberPhysicalityComponents
+                            .OrderBy(component => component.Hash, ByteArraySortComparer.Instance)
+                            .ToArray();
+                        byte[][] sortedLemmaHashes = sortedMemberPhysicalityComponents
+                            .Select(component => component.Hash)
+                            .ToArray();
+
+                        (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
+                        List<(string EdgeType, EntityHandle TextHandle)> glossEdges = [];
+                        List<byte[]> glossTextHashes = [];
+                        if (definition.Length > 0)
+                        {
+                            EntityHandle defDoc = IngestText(localBatch, definition);
+                            glossEdges.Add(("has_gloss", defDoc));
+                            glossTextHashes.Add(defDoc.Hash);
+                        }
+                        foreach (string example in examples)
+                        {
+                            if (example.Length == 0)
+                            {
+                                continue;
+                            }
+                            EntityHandle exDoc = IngestText(localBatch, example);
+                            glossEdges.Add(("has_example", exDoc));
+                            glossTextHashes.Add(exDoc.Hash);
+                        }
+                        if (glossTextHashes.Count == 0)
+                        {
+                            EntityHandle emptyGlossDoc = IngestText(localBatch, syn.Gloss);
+                            glossTextHashes.Add(emptyGlossDoc.Hash);
+                        }
+
+                        byte[][] synsetContent = new byte[sortedLemmaHashes.Length + glossTextHashes.Count][];
+                        Array.Copy(sortedLemmaHashes, synsetContent, sortedLemmaHashes.Length);
+                        for (int i = 0; i < glossTextHashes.Count; i++)
+                        {
+                            synsetContent[sortedLemmaHashes.Length + i] = glossTextHashes[i];
+                        }
+                        byte[] synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
+
+                        EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset");
+                        AddSynsetPhysicality(localBatch, synsetHandle, sortedMemberPhysicalityComponents);
+                        localBatch.AddSignificance(synsetHandle, "source_authority", TrustPriorMu);
+                        System.Threading.Interlocked.Increment(ref entityCount);
+
+                        offsetToSynsetHash[offsetCode] = synsetHash;
+
+                        byte[] offsetDocHash = WordNetSynsetIdentity.OffsetCodeHash(offsetCode);
+                        EntityHandle offsetDoc = localBatch.AddEntity(offsetDocHash, "text_composition");
+                        localBatch.AddEdge("has_wordnet_offset", ProvenanceCode,
                         [
                             new EdgeMemberSpec(synsetHandle, "source", 0),
-                            new EdgeMemberSpec(textHandle,   "target", 1),
+                            new EdgeMemberSpec(offsetDoc,    "target", 1),
                         ]);
-                        Bump(edgeType);
+                        Bump("has_wordnet_offset");
+
+                        string udPos = WordNetParser.PosCharToUdPos(WordNetParser.SsTypeToPos(syn.SsType));
+                        if (posIdMap.TryGetValue(udPos, out int posId))
+                        {
+                            localBatch.AddJunction("entity_pos", synsetHandle, posId, TrustPriorMu);
+                        }
+
+                        string lexnameCode = GetLexname(syn.LexFileNum);
+                        if (lexnameIdMap.TryGetValue(lexnameCode, out int lexnameId))
+                        {
+                            localBatch.AddJunction("entity_lexname", synsetHandle, lexnameId);
+                        }
+
+                        for (int i = 0; i < memberHandles.Count; i++)
+                        {
+                            localBatch.AddEdge("has_sense", ProvenanceCode,
+                            [
+                                new EdgeMemberSpec(memberHandles[i], "source", 0),
+                                new EdgeMemberSpec(synsetHandle,     "target", 1),
+                            ]);
+                            Bump("has_sense");
+                            localBatch.AddJunction("entity_language", memberHandles[i], engLangId);
+                        }
+
+                        foreach ((string edgeType, EntityHandle textHandle) in glossEdges)
+                        {
+                            localBatch.AddEdge(edgeType, ProvenanceCode,
+                            [
+                                new EdgeMemberSpec(synsetHandle, "source", 0),
+                                new EdgeMemberSpec(textHandle,   "target", 1),
+                            ]);
+                            Bump(edgeType);
+                        }
+
+                        System.Threading.Interlocked.Increment(ref synsetsProcessed);
+                        if (localBatch.EntityCount >= BatchSize || localBatch.EdgeCount >= BatchSize)
+                        {
+                            await FlushLocalBatchAsync().ConfigureAwait(false);
+                        }
                     }
 
-                    int processedNow = System.Threading.Interlocked.Increment(ref synsetsProcessed);
-                    int batchNumNow = System.Threading.Interlocked.Increment(ref batchNum);
-
-                    long entitiesNow = System.Threading.Interlocked.Read(ref entityCount);
-                    long edgesNow = System.Threading.Interlocked.Read(ref edgeCount);
-                    await ReportProgressAsync(pipeline, reporter, localBatch, entitiesNow, edgesNow,
-                        batchNumNow, "wordnet", taskCt).ConfigureAwait(false);
+                    await FlushLocalBatchAsync().ConfigureAwait(false);
                 },
                 parallelism,
                 ct).ConfigureAwait(false);

@@ -9,6 +9,15 @@ Master table of contents and completion tracker. Every document in the project i
 | ✅ | Complete — domain model and/or implementation spec finished |
 | 🔶 | Partial — domain model exists, implementation spec missing |
 | ❌ | Missing — not written yet |
+| ⚠️ | Stale — superseded; redirects to canonical artifact |
+
+---
+
+## Canonical specification
+
+| Doc | Status | Description |
+|-----|--------|-------------|
+| [00-substrate-spec.md](00-substrate-spec.md) | ✅ | **Canonical architectural reference for the safetensors-first product slice. Supersedes prior overview docs where they conflict.** Sections I-XIII: invention, substrate model, per-role units as attestation edges (the centerpiece correction), Glicko-2 surfaces, layer-type decomposer factoring (Build-a-bear ingestion), per-layer-type synthesis recomposer (Build-a-bear synthesis), fireflies as derived value-add side-channel, sparse honest recording (Lottery Ticket), cross-modal binding, crystal-ball analytics surface, three-tier determinism boundary, phantom debt deprecation list, scope boundaries. Every other doc / rule / recipe / memory / in-source comment aligns to this. |
 
 ---
 
@@ -22,7 +31,7 @@ Master table of contents and completion tracker. Every document in the project i
 | [standards/ai-agent-workflows.md](standards/ai-agent-workflows.md) | ✅ | Shared Claude Code and Copilot workflow scaffolding. Exactness rules, semantic regression cases, finish-work expectations, hooks, prompts, and agent roles. |
 | [flow-inventory.md](flow-inventory.md) | ✅ | Complete flow inventory. 34 cataloged database operation flows (seed ingestion, runtime ingestion, inference, significance/arena, monitoring, recomposition). Every chain of operations from trigger to final state. |
 | [glossary.md](glossary.md) | ✅ | Centralized term definitions. Every domain-specific term used across all docs. |
-| [build-plan.md](build-plan.md) | ✅ | Implementation build plan. Phase-ordered work breakdown with dependencies and completion tracking. |
+| [build-plan.md](build-plan.md) | ⚠️ | **STALE** — predates the 2026-05-08 architectural correction and the 2026-05-09 documentation refactor. Items referencing phantom entity types, phantom-emitting passes, or modality-as-decomposer-axis phasing are misframed. Implementation plan will be rewritten off [00-substrate-spec.md](00-substrate-spec.md) in a separate planning conversation. Preserved for historical context only. |
 | [familiar-principle.md](familiar-principle.md) | ✅ | The conceptual frame. Laplace's Demon in the knowledge regime (why physics-Laplace fails but knowledge-Laplace is tractable). The familiar as bonded/subservient/auditable cognitive organ. Five properties + five corollaries that every design choice in the repo must satisfy. Required reading before architectural claims about the substrate. |
 
 ---
@@ -38,8 +47,9 @@ Each defines WHAT a decomposer ingests and WHAT substrate state it produces. Ent
 | [specs/decomposers/wordnet.md](specs/decomposers/wordnet.md) | ✅ | Princeton WordNet 3.0. Synsets, lemmas, word senses, semantic relation vocabulary, verb frames, morphological exceptions. |
 | [specs/decomposers/omw.md](specs/decomposers/omw.md) | ✅ | Open Multilingual Wordnet. Cross-lingual lemma-to-synset alignment edges. |
 | [specs/decomposers/ud.md](specs/decomposers/ud.md) | ✅ | Universal Dependencies. POS/deprel/morph_feature reference tables, sentence/token entities, dependency edges. |
-| [specs/decomposers/safetensors.md](specs/decomposers/safetensors.md) | ✅ | AI model weight decomposition. Architecture/tensor/attention pattern entities, SVD analysis, extracted semantic edges. |
-| [specs/decomposers/analysis-passes.md](specs/decomposers/analysis-passes.md) | 🔜 | Model analysis pass catalogue (12 passes: EmbeddingFireflies, SVD, Eigenvalues, Sparsity, WeightDistribution, ActivationRange, AttentionArchetype, MoERouting, LayerSimilarity, TokenizerMapping, VocabCoverage, CodecAnalysis, GrammarExtraction). `IModelAnalysisPass` contract. Canonical signature builder (entity-hash-content-only). Checkpointable orchestration, per-model failure isolation. |
+| [specs/decomposers/safetensors.md](specs/decomposers/safetensors.md) | ✅ | Safetensors container decomposer + per-architecture classification rules + tensor role detection. Architectural sections (per-role unit emission, recomposer semantics) are aligned to [00-substrate-spec.md](00-substrate-spec.md) §V/§VI per the 2026-05-09 refactor. |
+| [specs/decomposers/analysis-passes.md](specs/decomposers/analysis-passes.md) | ✅ | Per-tensor analysis surface passes (sparsity profile, weight distribution, eigenvalue spectrum, attention archetype, MoE routing stats, layer similarity, tokenizer mapping, vocab coverage, codec analysis, grammar extraction). The previous "per-role unit emission" section is deprecated — that surface is now spec'd in [layer-type-library.md](specs/decomposers/layer-type-library.md). |
+| [specs/decomposers/layer-type-library.md](specs/decomposers/layer-type-library.md) | ✅ | **NEW (2026-05-09)** Canonical spec for the layer-type decomposer library (universal: AttentionQKV, AttentionVO, FFN, Embedding, LmHead, LayerNorm, MoeRouter, MoeExpert, LoRA; specialist: CrossAttention, Conv, ViTPatchAttention, CodecRVQ, DetectionHead, DiffusionUnet). Per-decomposer contract: input tensor role, math, attestation_type emitted, edge participants, Glicko mu derivation, sparse-recording behavior. Working template: `TokenAttentionEdgePass.cs`. |
 | [specs/decomposers/tokenizers.md](specs/decomposers/tokenizers.md) | 🔜 | Shared text-segmentation primitives. UAX #29 grapheme/word/sentence boundaries, Unicode normalization (NFC/NFKC/casefold) as annotation not mutation, tokenizer format parsers (HuggingFace/SentencePiece/WordPiece/tiktoken) with canonicalization. First-party only — no external tokenizer library dependency. Deterministic, Unicode-version-pinned. |
 | [specs/decomposers/wiktionary.md](specs/decomposers/wiktionary.md) | ✅ | Wiktionary (via wiktextract). Lemmas, senses, inflections, translations, etymology, pronunciation. |
 | [specs/decomposers/tatoeba.md](specs/decomposers/tatoeba.md) | ✅ | Tatoeba. Attested sentences, translation links, audio recordings. |
@@ -109,7 +119,8 @@ These define interfaces, base classes, method signatures, error types, and the o
 | [specs/csharp/compute-facade.md](specs/csharp/compute-facade.md) | 🔜 | C# facade over the native compute library. `Hartonomous.Core.Compute.{Common,Ingestion,Inference}` namespaces. Single P/Invoke surface; no other project references MKL/Eigen/Spectra. Process init contract (htns_init, CBWR verification, exception hierarchy). Prohibited dependencies (HNSWLib, random projection, approximate NN) fail the build. |
 | [specs/csharp/analysis-passes.md](specs/csharp/analysis-passes.md) | ✅ | All 43 analysis passes across 4 modalities (7 text, 8 image, 22 audio, 6 video). Dependency graphs, structured tables, complete pass index. |
 | [specs/csharp/decomposers.md](specs/csharp/decomposers.md) | ✅ | Per-decomposer implementation guide. 12 decomposers (8 seed + 4 runtime: Text, Image, Audio, Video). Source formats, parsers, decomposition sequences, hash contracts, edge type mappings, volumes. |
-| [specs/csharp/recomposers.md](specs/csharp/recomposers.md) | ✅ | 5 recomposers (Text, Image, Audio, Video, SafeTensors). Traversal strategies, output types, streaming formats, round-trip fidelity guarantees, depth control. |
+| [specs/csharp/recomposers.md](specs/csharp/recomposers.md) | ✅ | 5 recomposers (Text, Image, Audio, Video, SafeTensors). Traversal strategies, output types, streaming formats, round-trip fidelity guarantees, depth control. SafetensorsRecomposer assembly precedence aligned to synthesis-from-consensus per 2026-05-09 refactor; canonical Build-a-bear synthesis spec at [specs/recomposers/synthesis-library.md](specs/recomposers/synthesis-library.md). |
+| [specs/recomposers/synthesis-library.md](specs/recomposers/synthesis-library.md) | ✅ | **NEW (2026-05-09)** Canonical spec for the per-layer-type synthesizer library (Build-a-bear). Reciprocal of [layer-type-library.md](specs/decomposers/layer-type-library.md). Per-synthesizer contract: target tensor role, substrate attestation queries, synthesis algorithm (low-rank approximation, KV-memory inversion, PCA — published research), output shape, honest abstention semantics. Output: standard safetensors loadable in HF transformers / vLLM / llama.cpp. |
 | [specs/csharp/api-layer.md](specs/csharp/api-layer.md) | ✅ | 15 HTTP API endpoints. ASP.NET Core minimal APIs, keyset pagination, RFC 7807 errors, SSE streaming traversal, binary recomposition streaming. |
 | [specs/csharp/project-structure.md](specs/csharp/project-structure.md) | ✅ | .NET solution structure. 7 projects, dependency graph, assembly boundaries, package dependencies, build configuration, .editorconfig. |
 
@@ -183,6 +194,8 @@ Each recipe answers ONE assembly question with numbered steps, exact file paths,
 | [recipes/17-add-test.md](recipes/17-add-test.md) | ✅ | Test taxonomy and per-kind patterns. Hand-written fakes, no Moq. |
 | [recipes/18-add-cli-command.md](recipes/18-add-cli-command.md) | ✅ | Add a CLI command and PowerShell entrypoint. |
 | [recipes/19-add-phase.md](recipes/19-add-phase.md) | ✅ | Add an orchestration phase to the runner. |
+| [recipes/20-add-layer-type-decomposer.md](recipes/20-add-layer-type-decomposer.md) | ✅ | **NEW (2026-05-09)** Step-by-step recipe for adding a layer-type decomposer (universal or specialist) to the library at [specs/decomposers/layer-type-library.md](specs/decomposers/layer-type-library.md). Working template: `TokenAttentionEdgePass.cs`. |
+| [recipes/21-add-layer-type-synthesizer.md](recipes/21-add-layer-type-synthesizer.md) | ✅ | **NEW (2026-05-09)** Step-by-step recipe for adding the reciprocal synthesizer to the library at [specs/recomposers/synthesis-library.md](specs/recomposers/synthesis-library.md). One synthesizer per layer-type decomposer for Build-a-bear synthesis. |
 
 ---
 

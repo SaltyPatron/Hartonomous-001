@@ -1,7 +1,7 @@
 namespace Hartonomous.Core.Text;
 
 /// <summary>
-/// Caller-supplied parameters to <see cref="CanonicalTextDecomposer.Emit"/>.
+/// Caller-supplied parameters to <see cref="SubstrateTextDecomposer.Emit"/>.
 /// All fields are required; there are no implicit defaults that would let
 /// two different callers feed the same content and get different substrate
 /// state. Determinism is in the contract: same UTF-8 + same options =

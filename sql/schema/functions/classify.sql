@@ -2,9 +2,9 @@
 --
 -- Top-k labels for an entity from a junction table, ranked by Glicko-2 mu
 -- desc, sigma asc (tighter confidence wins ties). Junction kinds:
---   'pos'           → substrate.entity_pos          (Glicko-2 native)
---   'sense'         → substrate.entity_sense        (Glicko-2 native)
---   'pattern_deprel'→ substrate.pattern_deprel      (Glicko-2 native)
+--   'pos'           → substrate.entity_pos          (Glicko-2 native, stratified)
+--   'sense'         → has_sense substrate edges     (Glicko-2 edge significance)
+--   'pattern_deprel'→ substrate.pattern_deprel      (Glicko-2 native, stratified)
 --   'language'      → substrate.entity_language     (no Glicko, single per-entity assertion)
 --   'morph_feature' → substrate.entity_morph_feature(no Glicko, per-feature assertion)
 --   'classification'→ substrate.entity_classification(entity_type provenance trail)
@@ -33,37 +33,82 @@ DECLARE
 BEGIN
     IF p_junction_kind = 'pos' THEN
         RETURN QUERY
-        SELECT p.id, p.code, ep.mu, ep.sigma, ep.games,
+         SELECT p.id,
+             p.code,
+             AVG(ep.mu)::DOUBLE PRECISION,
+             AVG(ep.sigma)::DOUBLE PRECISION,
+             COALESCE(SUM(ep.games), 0)::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_pos ep
         JOIN substrate.pos p ON p.id = ep.pos_id
         WHERE ep.entity_hash = p_seed_hash
-        ORDER BY ep.mu DESC, ep.sigma ASC
+         GROUP BY p.id, p.code
+         ORDER BY AVG(ep.mu) DESC, AVG(ep.sigma) ASC, p.code ASC
         LIMIT p_k;
 
     ELSIF p_junction_kind = 'sense' THEN
         RETURN QUERY
-        SELECT s.id, s.code, es.mu, es.sigma, es.games,
-               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
-        FROM substrate.entity_sense es
-        JOIN substrate.sense s ON s.id = es.sense_id
-        WHERE es.entity_hash = p_seed_hash
-        ORDER BY es.mu DESC, es.sigma ASC
-        LIMIT p_k;
+         WITH constants AS (
+             SELECT et.id AS edge_type_id,
+                 er_source.id AS source_role_id,
+                 er_target.id AS target_role_id,
+                 sc.id AS context_type_id
+            FROM substrate.edge_type et
+            JOIN substrate.edge_role er_source ON er_source.code = 'source'
+            JOIN substrate.edge_role er_target ON er_target.code = 'target'
+            JOIN substrate.significance_context sc ON sc.code = 'lexical_disambiguation'
+              WHERE et.code = 'has_sense'
+         ), ranked AS (
+             SELECT encode(target_member.entity_hash, 'hex') AS label_code,
+                 COALESCE(AVG(es.mu), 1500.0)::DOUBLE PRECISION AS mu,
+                 COALESCE(AVG(es.sigma), 350.0)::DOUBLE PRECISION AS sigma,
+                 COALESCE(SUM(es.games), 0)::INT AS games
+            FROM constants c
+            JOIN substrate.edge e
+              ON e.edge_type_id = c.edge_type_id
+            JOIN substrate.edge_member source_member
+              ON source_member.edge_type_id = e.edge_type_id
+             AND source_member.edge_hash = e.hash
+             AND source_member.edge_role_id = c.source_role_id
+             AND source_member.entity_hash = p_seed_hash
+            JOIN substrate.edge_member target_member
+              ON target_member.edge_type_id = e.edge_type_id
+             AND target_member.edge_hash = e.hash
+             AND target_member.edge_role_id = c.target_role_id
+            LEFT JOIN substrate.edge_significance es
+              ON es.context_type_id = c.context_type_id
+             AND es.edge_type_id = e.edge_type_id
+             AND es.edge_hash = e.hash
+              GROUP BY target_member.entity_hash
+         )
+         SELECT row_number() OVER (ORDER BY ranked.mu DESC, ranked.sigma ASC, ranked.label_code ASC)::INT AS label_id,
+             ranked.label_code,
+             ranked.mu,
+             ranked.sigma,
+             ranked.games,
+             EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+           FROM ranked
+          ORDER BY ranked.mu DESC, ranked.sigma ASC, ranked.label_code ASC
+          LIMIT p_k;
 
     ELSIF p_junction_kind = 'pattern_deprel' THEN
         RETURN QUERY
-        SELECT d.id, d.code, pd.mu, pd.sigma, pd.games,
+         SELECT d.id,
+             d.code,
+             AVG(pd.mu)::DOUBLE PRECISION,
+             AVG(pd.sigma)::DOUBLE PRECISION,
+             COALESCE(SUM(pd.games), 0)::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.pattern_deprel pd
         JOIN substrate.deprel d ON d.id = pd.deprel_id
         WHERE pd.entity_hash = p_seed_hash
-        ORDER BY pd.mu DESC, pd.sigma ASC
+         GROUP BY d.id, d.code
+         ORDER BY AVG(pd.mu) DESC, AVG(pd.sigma) ASC, d.code ASC
         LIMIT p_k;
 
     ELSIF p_junction_kind = 'language' THEN
         RETURN QUERY
-        SELECT l.id, l.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+         SELECT l.id, l.code, 1500.0::DOUBLE PRECISION, 350.0::DOUBLE PRECISION, 0::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_language el
         JOIN substrate.language l ON l.id = el.language_id
@@ -73,7 +118,7 @@ BEGIN
 
     ELSIF p_junction_kind = 'morph_feature' THEN
         RETURN QUERY
-        SELECT mf.id, mf.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+        SELECT mf.id, mf.code, 1500.0::DOUBLE PRECISION, 350.0::DOUBLE PRECISION, 0::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_morph_feature emf
         JOIN substrate.morph_feature mf ON mf.id = emf.morph_feature_id
@@ -83,7 +128,7 @@ BEGIN
 
     ELSIF p_junction_kind = 'classification' THEN
         RETURN QUERY
-        SELECT et.id, et.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+        SELECT et.id, et.code, 1500.0::DOUBLE PRECISION, 350.0::DOUBLE PRECISION, 0::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_classification ec
         JOIN substrate.entity_type et ON et.id = ec.entity_type_id
@@ -98,4 +143,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.classify(BYTEA, TEXT, INT) IS
-    'Top-k labels from a junction table for an entity, ranked by Glicko-2 mu (where present). Junction kinds: pos, sense, pattern_deprel (Glicko-2 native); language, morph_feature, classification (no Glicko, alphabetical).';
+    'Top-k labels for an entity. pos/pattern_deprel aggregate stratified junction Glicko rows; sense ranks has_sense edges in lexical_disambiguation and returns synset hashes as labels; language, morph_feature, classification return default rating values for a stable non-null result shape.';

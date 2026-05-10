@@ -1,8 +1,10 @@
 # Voronoi Consensus — Cross-Source Convergence over Firefly Clouds
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
-**Audience:** Engineers implementing the consensus update algorithm, anyone building cross-model refinement recipes, anyone who wants to understand how the substrate produces "the field's collective answer" from N source models.
+> **Authority note (2026-05-09):** The Voronoi consensus mechanism described in this document is correct in spirit (cross-model agreement on a token's hidden-space identity emerges from the geometry of its firefly cluster). The 2026-05-08 architectural correction changes one specific implementation detail: **consensus is COMPUTED at query time from the Voronoi cell over the species' firefly cluster, NOT stored as a separate `firefly_consensus` composition entity with `consensus_member` / `consensus_supersedes` edges.** Per [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VII and §X.1, fireflies are POINTZM physicalities attached to existing `word_form` content entities (the species); consensus tightness, centroid, and spread metrics are derived analytics surfaces (per spec §X — analytics caches, materialized views, rebuildable from substrate state, NOT substrate truth). Where this document references `firefly_consensus` as a stored entity type, treat as DEPRECATED — read instead as "the consensus computed from the Voronoi cell over the species' firefly POINTZM cluster." See AP-29.
+
+**Status:** Mechanism canonical; storage shape (consensus-as-entity) deprecated per the authority note above.
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
+**Audience:** Engineers implementing the consensus computation, anyone building cross-model refinement recipes, anyone who wants to understand how the substrate produces "the field's collective answer" from N source models.
 
 ---
 

@@ -6,10 +6,7 @@ using System.Threading.Tasks;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
-using Hartonomous.Core.Text.Segmentation;
-using Hartonomous.Engine.Text;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Hartonomous.Engine.Inference;
@@ -65,35 +62,22 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
             return EmptyResult(sw);
         }
 
-        // Step 0: prompt → substrate content. Same Core text segmenter
-        // Tatoeba uses; prompts are content (provenance='user_session',
+        // Step 0: prompt → substrate content. Same native text decomposer
+        // every text-bearing seed uses; prompts are content (provenance='user_session',
         // lowest trust prior). Pipeline handles arbitrary size — a word,
         // a sentence, or a Moby Dick (1.2 MB) all flow through the same
         // channels → staging → substrate machinery. Deduplication is
         // automatic: a prompt's "the" word_form collapses to the same
         // BLAKE3-keyed entity as the WordNet seed's "the".
 
-        // AP-7: load only the codepoints present in this prompt, not all 303k.
-        HashSet<int> promptCodepoints = new();
-        foreach (System.Text.Rune r in query.Text.EnumerateRunes())
-        {
-            promptCodepoints.Add(r.Value);
-        }
-        NpgsqlCodepointPropertiesCache codepointProperties =
-            await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
-                _dataSource.ConnectionString,
-                promptCodepoints,
-                NullLogger<NpgsqlCodepointPropertiesCache>.Instance,
-                ct).ConfigureAwait(false);
-
         IIngestionBatch batch = _pipeline.CreateBatch();
-        // Canonical text decomposer — same path WordNet / Wiktionary / Tatoeba
+        // Native text decomposer — same path WordNet / Wiktionary / Tatoeba
         // use. Cross-decomposer dedup is automatic: the prompt's "dog" IS the
         // WordNet "dog" IS the Wiktionary "dog" by hash equality on content.
         byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(query.Text);
         Hartonomous.Core.Text.TextDecomposeResult ingest =
-            Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                batch, utf8, codepointProperties,
+            Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
+                batch, utf8,
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: "user_session",
                     TopEntityType: "text_composition",

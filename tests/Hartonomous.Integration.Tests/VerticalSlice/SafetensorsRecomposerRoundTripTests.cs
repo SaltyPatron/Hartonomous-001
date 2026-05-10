@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -68,8 +69,93 @@ public sealed class SafetensorsRecomposerRoundTripTests
         Assert.Equal(expected, bytes.Length);
     }
 
+    [Fact]
+    public async Task RecomposeAsync_ScattersSequenceRowContoursIntoTensorBytes()
+    {
+        EntityHandle architecture = Handle(1, "model_architecture");
+        EntityHandle tensor = Handle(2, "tensor");
+        EntityHandle nameDoc = Handle(3, "text_composition");
+        EntityHandle dtypeDoc = Handle(4, "text_composition");
+        EntityHandle shapeDoc = Handle(5, "text_composition");
+        EntityHandle rowOne = Handle(6, "ffn_neuron");
+        EntityHandle rowTwo = Handle(7, "ffn_neuron");
+
+        FakeEntityReader entityReader = new();
+        entityReader.AddOutbound(architecture, "has_tensor", tensor);
+        entityReader.AddOutbound(tensor, "has_tensor_name", nameDoc);
+        entityReader.AddOutbound(tensor, "has_dtype", dtypeDoc);
+        entityReader.AddOutbound(tensor, "has_shape", shapeDoc);
+        entityReader.AddSequence(tensor, rowOne, 1);
+        entityReader.AddSequence(tensor, rowTwo, 2);
+
+        FakeTextReader textReader = new();
+        textReader.Add(nameDoc, "layers.0.mlp.up_proj.weight");
+        textReader.Add(dtypeDoc, "F32");
+        textReader.Add(shapeDoc, "[2,4]");
+
+        FakePhysicalityReader physicalityReader = new();
+        physicalityReader.AddContour(rowOne, [1.0, 2.0, 3.0, 4.0]);
+        physicalityReader.AddContour(rowTwo, [5.0, 6.0, 7.0, 8.0]);
+
+        SafetensorsRecomposer recomposer = new(entityReader, textReader, physicalityReader);
+
+        SafetensorsFile file = await recomposer.RecomposeAsync(
+            architecture,
+            new RecompositionOptions { MaxDepth = 20 },
+            CancellationToken.None);
+
+        TensorData data = Assert.Single(file.Tensors).Value;
+        Assert.Equal("F32", data.Dtype);
+        Assert.Equal([2, 4], data.Shape);
+        Assert.Equal(8 * 4, data.Data.Length);
+        Assert.Equal([1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f], ReadSingles(data.Data));
+    }
+
+    private static EntityHandle Handle(byte seed, string entityTypeCode)
+    {
+        byte[] hash = new byte[32];
+        hash[0] = seed;
+        return new EntityHandle(hash, entityTypeCode);
+    }
+
+    private static float[] ReadSingles(byte[] bytes)
+    {
+        float[] values = new float[bytes.Length / 4];
+        for (int i = 0; i < values.Length; i++)
+        {
+            values[i] = BinaryPrimitives.ReadSingleLittleEndian(bytes.AsSpan(i * 4, 4));
+        }
+        return values;
+    }
+
     private sealed class FakeEntityReader : IEntityReader
     {
+        private readonly Dictionary<(EntityHandle Source, string EdgeType), List<EntityHandle>> _outbound = [];
+        private readonly Dictionary<EntityHandle, List<(EntityHandle Child, int Position)>> _sequence = [];
+
+        public void AddOutbound(EntityHandle source, string edgeTypeCode, EntityHandle target)
+        {
+            (EntityHandle Source, string EdgeType) key = (source, edgeTypeCode);
+            if (!_outbound.TryGetValue(key, out List<EntityHandle>? targets))
+            {
+                targets = [];
+                _outbound[key] = targets;
+            }
+
+            targets.Add(target);
+        }
+
+        public void AddSequence(EntityHandle parent, EntityHandle child, int position)
+        {
+            if (!_sequence.TryGetValue(parent, out List<(EntityHandle Child, int Position)>? children))
+            {
+                children = [];
+                _sequence[parent] = children;
+            }
+
+            children.Add((child, position));
+        }
+
         public Task<IReadOnlyList<EntityHandle>> ResolveEntityHandlesAsync(
             IReadOnlyList<byte[]> hashes, IReadOnlyList<string> entityTypeCodes, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<EntityHandle>>([]);
@@ -81,7 +167,10 @@ public sealed class SafetensorsRecomposerRoundTripTests
 
         public Task<IReadOnlyList<(EntityHandle Child, int Position)>> GetCompositionChildrenAsync(
             EntityHandle parent, CancellationToken ct)
-            => Task.FromResult<IReadOnlyList<(EntityHandle, int)>>([]);
+            => Task.FromResult<IReadOnlyList<(EntityHandle, int)>>(
+                _sequence.TryGetValue(parent, out List<(EntityHandle Child, int Position)>? children)
+                    ? children
+                    : []);
 
         public Task<IReadOnlyDictionary<EdgeHandle, EdgeInfo>> GetEdgeInfoAsync(
             IReadOnlyList<EdgeHandle> edgeHandles, CancellationToken ct)
@@ -94,6 +183,38 @@ public sealed class SafetensorsRecomposerRoundTripTests
 
         public Task<IReadOnlyList<EntityHandle>> GetOutboundEdgeTargetsAsync(
             EntityHandle source, string edgeTypeCode, CancellationToken ct)
-            => Task.FromResult<IReadOnlyList<EntityHandle>>([]);
+            => Task.FromResult<IReadOnlyList<EntityHandle>>(
+                _outbound.TryGetValue((source, edgeTypeCode), out List<EntityHandle>? targets)
+                    ? targets
+                    : []);
+    }
+
+    private sealed class FakeTextReader : ITextRecompositionReader
+    {
+        private readonly Dictionary<EntityHandle, string> _texts = [];
+
+        public void Add(EntityHandle handle, string text) => _texts[handle] = text;
+
+        public Task<string?> RecomposeTextAsync(EntityHandle root, int maxDepth, CancellationToken ct)
+            => Task.FromResult(_texts.TryGetValue(root, out string? text) ? text : null);
+    }
+
+    private sealed class FakePhysicalityReader : IPhysicalityReader
+    {
+        private readonly Dictionary<EntityHandle, double[]> _contours = [];
+
+        public void AddContour(EntityHandle handle, double[] contour) => _contours[handle] = contour;
+
+        public Task<double[]?> GetLineString4dAsync(
+            EntityHandle entity, string physicalityTypeCode, CancellationToken ct)
+            => Task.FromResult(
+                string.Equals(physicalityTypeCode, "contour", StringComparison.Ordinal)
+                    && _contours.TryGetValue(entity, out double[]? contour)
+                    ? contour
+                    : null);
+
+        public Task<(double X1, double X2, double X3, double X4)?> GetPoint4dAsync(
+            EntityHandle entity, string physicalityTypeCode, CancellationToken ct)
+            => Task.FromResult<(double, double, double, double)?>(null);
     }
 }

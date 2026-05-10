@@ -132,6 +132,7 @@ internal static class PerRowContentPass
                     p + 3 < cols ? thresholded[p + 3] : 0.0);
             }
             session.Batch.AddPhysicalityLineString4d(row, "contour", verts.AsSpan());
+            session.Batch.AddSequence(t.Entity, rowIdx + 1, row);
 
             // Per-role-unit edge carries model_per_role_unit_circuit
             // attestation_type — this is structural model evidence (Track 2:
@@ -248,6 +249,7 @@ internal static class PerRowContentPass
                     p + 3 < cols ? thresholded[p + 3] : 0.0);
             }
             session.Batch.AddPhysicalityLineString4d(unit, "contour", verts.AsSpan());
+            session.Batch.AddSequence(t.Entity, outerIdx + 1, unit);
 
             // Same model_per_role_unit_circuit attestation_type as
             // RunPerRowAsync — rank-N tensors (conv kernels, codec stages,

@@ -62,7 +62,7 @@ All decomposers are idempotent by design:
 | UD sentence | Ordered token hashes (Merkle) | `ComputeMerkleHash(tokenHashes)` |
 | UD token | Token form string (UTF-8 bytes) — same as word_form | `ComputeHash(string)` |
 | Tatoeba sentence | Sentence text (UTF-8 bytes) | `ComputeHash(string)` |
-| Tensor | Model name + layer path (e.g., `"qwen2.5/model.layers.0.self_attn.q_proj"`) | `ComputeHash(string)` |
+| Tensor | Canonical content prefix (kind="tens", dtype, rank, shape) + raw tensor bytes streamed via Blake3 hasher (NOT layer path or model name — placement metadata lives on edges, not in the hash) | `Blake3Hasher.Stream(prefix + bytes)` per `ModelPassOrchestrator.HashTensorStreaming` |
 | Model architecture | Model name (e.g., `"Qwen/Qwen2.5-Coder-32B-Instruct"`) | `ComputeHash(string)` |
 | Language name | ISO 639-3 code (e.g., `"eng"`) | `ComputeHash(string)` |
 | Audio recording | File content hash (full file bytes) | `ComputeHash(fileBytes)` |
@@ -246,16 +246,17 @@ All decomposers are idempotent by design:
 
 **Phase**: `ModelDecomp` (Phase 3).
 
-**Decomposition sequence**:
+**Decomposition sequence (corrected per [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §V):**
 1. Enumerate model directories in the hub cache.
-2. Per model: create `model_architecture` composition entity.
-3. Parse safetensors header → map layer names to `tensor` entities.
-4. Create `in_model` edges (tensor → model architecture).
-5. Populate `tensor_tensor_role` junction (tensor → role classification from layer name pattern matching: `q_proj` → `attention_query`, `k_proj` → `attention_key`, etc.).
+2. Per model: create `model_architecture` composition entity (a real structural artifact entity per spec §II.1).
+3. Parse safetensors header → for each tensor, hash bytes via canonical streaming BLAKE3 (`ModelPassOrchestrator.HashTensorStreaming`) → create `tensor` entity (a real structural artifact entity).
+4. Create `in_model` and `has_tensor` edges (tensor ↔ model architecture).
+5. Populate `tensor_tensor_role` junction (tensor → role classification from layer name pattern matching via `TensorClassifier`: `q_proj` → `AttentionQuery`, `k_proj` → `AttentionKey`, etc.).
 6. Populate `model_architecture_class` junction.
-7. For attention weight tensors: perform SVD, create `attention_pattern` entities from significant singular vectors.
-8. Create `svd_spectrum` physicalities (LINESTRINGZM of singular values).
-9. Create `attention_pattern` → `deprel` junction entries (`pattern_deprel`) for attention heads that correlate with syntactic dependency patterns.
+7. **For each tensor, dispatch by `TensorRole` to the appropriate layer-type decomposer** (per [`docs/specs/decomposers/layer-type-library.md`](../decomposers/layer-type-library.md)). Each layer-type decomposer emits typed attestation EDGES between existing content entities (typically two `word_form` tokens), with `attestation_type` (per `sql/schema/seed/attestation_type.sql`) on the rating event distinguishing the kind of model evidence (`model_attention_qk_pattern`, `model_ffn_full_path`, etc.). Working template: `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`.
+8. Per-tensor analysis surfaces (sparsity profile, SVD spectrum, weight distribution, eigenvalue spectrum, etc.) attach as physicality on the tensor entity (transitionally as separate analysis-surface entities; spec §X migrates them onto tensor physicality).
+
+> **Architectural correction:** Step 7 previously read "perform SVD, create `attention_pattern` entities from significant singular vectors." That phantom-entity emission shape is deprecated by the 2026-05-08 architectural correction in `sql/schema/seed/entity_type.sql:59-98`. Per-role units of Track 2 transformation tensors manifest as **typed attestation edges between existing content entities**, never as synthetic `attention_pattern` / `attention_head` / `ffn_neuron` / etc. entities. See AP-25 in `.claude/rules/45-anti-patterns.md` and spec §III, §XII.
 
 **Large binary handling**: `SafetensorsHeaderParser` uses `Memory<byte>` and reads tensor data via file offset — no loading entire files into memory. Tensor data is processed in chunks corresponding to individual weight matrices.
 

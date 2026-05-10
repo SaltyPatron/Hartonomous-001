@@ -1,7 +1,9 @@
 # Audit Chain — Provenance Traversal, Snapshot Replay, Cryptographic Integrity
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
+> **Authority note (2026-05-09):** Audit-chain mechanism remains canonical. Where this document references `firefly_consensus` compositions as audit subjects, treat as DEPRECATED per the 2026-05-08 architectural correction — consensus is a derived analytics surface (per [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VII, §X), not a stored composition entity. The audit chain instead traces consensus computations back to their inputs: the firefly POINTZMs (with `entity_model_source` per ingested model), the word_form entity (the species), the ingestion provenance for each contributing model.
+
+**Status:** Mechanism canonical; consensus-as-entity audit references deprecated per the authority note above.
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
 **Audience:** Engineers implementing audit-chain traversal, anyone designing compliance reporting, anyone reasoning about how the substrate provides cryptographic guarantees about its own history.
 
 ---

@@ -7,7 +7,6 @@ using Hartonomous.Core.Text;
 using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Operations;
-using Hartonomous.Engine.Text;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -58,17 +57,6 @@ internal static class CompleteCommand
                 b.SetMinimumLevel(LogLevel.Information);
             });
 
-            // Subset codepoint cache to prompt — per AP-7, never full-load.
-            HashSet<int> promptCodepoints = new();
-            foreach (Rune rune in prompt.EnumerateRunes())
-            {
-                promptCodepoints.Add(rune.Value);
-            }
-            NpgsqlCodepointPropertiesCache codepointCache =
-                await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
-                    conn, promptCodepoints, lf.CreateLogger<NpgsqlCodepointPropertiesCache>(),
-                    CancellationToken.None);
-
             await using StreamingIngestionPipeline pipeline = new(
                 conn, refReader,
                 lf.CreateLogger<StreamingIngestionPipeline>());
@@ -79,8 +67,8 @@ internal static class CompleteCommand
             // the word_form / bpe_token candidates the SQL function activates.
             IIngestionBatch batch = pipeline.CreateBatch();
             byte[] utf8 = Encoding.UTF8.GetBytes(prompt);
-            TextDecomposeResult ingest = CanonicalTextDecomposer.Emit(
-                batch, utf8, codepointCache,
+            TextDecomposeResult ingest = SubstrateTextDecomposer.EmitStatic(
+                batch, utf8,
                 new TextDecomposeOptions(
                     ProvenanceCode: "user_session",
                     TopEntityType: "text_composition",

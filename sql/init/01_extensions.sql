@@ -5,4 +5,7 @@
 -- initialize MKL. _PG_init pins MKL CBWR=AUTO|STRICT for backends that DO load it.
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS postgis_topology;
-CREATE EXTENSION IF NOT EXISTS hartonomous;
+-- hartonomous depends on btree_gist (and postgis, already declared above);
+-- use CASCADE so first-boot install pulls btree_gist in instead of failing
+-- with "required extension btree_gist is not installed".
+CREATE EXTENSION IF NOT EXISTS hartonomous CASCADE;

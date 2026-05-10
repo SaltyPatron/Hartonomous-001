@@ -106,7 +106,7 @@ public sealed class GodelEngine
         List<SubQuestionResult> results = new(subQuestions.Count);
         foreach (SubQuestion sq in subQuestions)
         {
-            SubQuestionResult r = await ResolveSubQuestionAsync(sq, codepointProperties, trace, ct).ConfigureAwait(false);
+            SubQuestionResult r = await ResolveSubQuestionAsync(sq, trace, ct).ConfigureAwait(false);
             results.Add(r);
         }
 
@@ -153,7 +153,7 @@ public sealed class GodelEngine
     }
 
     private async Task<SubQuestionResult> ResolveSubQuestionAsync(
-        SubQuestion sq, NpgsqlCodepointPropertiesCache codepointProperties, StringBuilder trace, CancellationToken ct)
+        SubQuestion sq, StringBuilder trace, CancellationToken ct)
     {
         // ORIENT: classify intent, choose arena profile.
         PromptIntent intent = PromptIntentClassifier.Classify(sq.Text);
@@ -164,8 +164,8 @@ public sealed class GodelEngine
         Stopwatch sw = Stopwatch.StartNew();
         IIngestionBatch batch = _pipeline.CreateBatch();
         byte[] utf8 = Encoding.UTF8.GetBytes(sq.Text);
-        TextDecomposeResult ingest = CanonicalTextDecomposer.Emit(
-            batch, utf8, codepointProperties,
+        TextDecomposeResult ingest = SubstrateTextDecomposer.EmitStatic(
+            batch, utf8,
             new TextDecomposeOptions(
                 ProvenanceCode: "user_session",
                 TopEntityType: "text_composition",

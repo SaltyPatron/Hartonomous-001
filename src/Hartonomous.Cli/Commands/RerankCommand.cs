@@ -47,7 +47,7 @@ internal static class RerankCommand
             {
                 candidates = LoadCandidates(candidatesCsv, candidatesFile);
             }
-            catch (Exception ex) when (ex is ArgumentException or FormatException or FileNotFoundException)
+            catch (Exception ex) when (ex is ArgumentException or FormatException or FileNotFoundException) // BOUNDARY: CLI input validation maps bad candidate input to exit code 2.
             {
                 Console.Error.WriteLine($"Failed to load candidates: {ex.Message}");
                 Environment.ExitCode = 2;

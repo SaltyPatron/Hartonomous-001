@@ -848,6 +848,69 @@ HARTONOMOUS_API int hartonomous_glicko2_bulk_update(
     double* new_volatility
 );
 
+/* ── Phase A.0.4 synthesis primitives (2026-05-09) ────────────
+ *
+ * Stub entrypoints for the recomposer's exact synthesis surface.
+ * Native implementation is scheduled for Phase B.1; current returns
+ * -99 (HARTONOMOUS_ERR_NOT_IMPLEMENTED). C# callers translate that
+ * to a ComputeException via NativeError with the entrypoint name.
+ *
+ * Spec docs:
+ *   docs/specs/recomposers/algorithms/embedding-synthesis-from-fireflies.md
+ *   docs/specs/recomposers/algorithms/ffn-kv-inversion.md
+ *   docs/specs/recomposers/algorithms/lottery-ticket-foundations.md
+ */
+
+/* Solve A·X = B for X via Moore-Penrose pseudoinverse (SVD-based).
+ * All matrices row-major f64. Returns numerical rank used in *rank_out. */
+HARTONOMOUS_API int hartonomous_linear_system_solve_f64(
+    int64_t m, int64_t n, int64_t p,
+    const double* a,
+    const double* b,
+    double* x,
+    double tolerance,
+    int64_t* rank_out
+);
+
+/* Construct (W_gate, W_up, W_down) from sparse token-pair attestations.
+ * See SparseFfnInversion.cs for argument semantics. */
+HARTONOMOUS_API int hartonomous_sparse_ffn_invert_f64(
+    int64_t vocab_size, int64_t hidden_dim, int64_t intermediate_dim,
+    const double* token_embeddings,
+    int64_t nnz,
+    const int64_t* input_token_idx,
+    const int64_t* output_token_idx,
+    const double* strength,
+    double coverage_min,
+    double* w_gate_out,
+    double* w_up_out,
+    double* w_down_out,
+    double* coverage_out
+);
+
+/* Reverse-project firefly POINTZM centroids (XYZM) back to hidden_dim
+ * using stored eigenvectors and the model's native embedding. */
+HARTONOMOUS_API int hartonomous_inverse_eigenmap_f64(
+    int64_t vocab_size, int64_t hidden_dim,
+    const double* eigenvectors,
+    const double* embeddings,
+    int64_t centroid_count,
+    const double* centroids_xyzm,
+    double* hidden_out
+);
+
+/* Mask cells whose coverage is below threshold to exact zero (in-place
+ * on weights). Writes per-row mean coverage to row_coverage_out and
+ * returns the aggregate matrix coverage in *aggregate_coverage_out. */
+HARTONOMOUS_API int hartonomous_honest_abstention_f64(
+    int64_t rows, int64_t cols,
+    double* weights,
+    const double* coverage,
+    double cell_threshold,
+    double* row_coverage_out,
+    double* aggregate_coverage_out
+);
+
 #ifdef __cplusplus
 }
 #endif

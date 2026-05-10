@@ -1,7 +1,11 @@
 # Edge Types Catalog — Full Specification
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
+**Status:** Canonical for content↔content edge types. The "Model-derived edges" section below has been corrected per the 2026-05-08 architectural correction: per-role units of Track 2 transformation tensors emit **typed attestation edges between existing content entities** (token↔token, token↔visual_concept, etc.), NOT phantom-binding edges (`firefly_of_tensor`, `consensus_member`, `attention_head_in_layer`, `ffn_*_in_layer`, `expert_in_moe_router`, `lora_adapts`). The deprecated edge types are marked DEPRECATED inline; new code uses `model_attention_pattern`, `model_concept_similarity`, `model_ffn_factor` per `sql/schema/seed/edge_type.sql:84-90` with `attestation_type` on the rating event distinguishing the kind of model evidence.
+
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
+
+**Authoritative spec:** [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §III (per-role units as attestation edges) and §XII (phantom debt deprecation list).
+
 **Audience:** Engineers writing decomposers, recomposers, cognitive functions, recipes that filter by edge type, anyone debugging substrate state at the edge level.
 
 ---
@@ -265,51 +269,51 @@ Video → audio temporal alignment.
 
 Per-chunk transcription binding.
 
-## Model-derived edges (Track 1 / Track 2)
+## Model-derived edges (corrected per spec §III)
 
-### `firefly_of_tensor`
+> **Authoritative correction (2026-05-09):** The corrected model-derived edge surface centers on **token↔token attestation edges** between existing `word_form` content entities — `model_attention_pattern`, `model_concept_similarity`, `model_ffn_factor` per `sql/schema/seed/edge_type.sql:84-90`. Per-role units of Track 2 transformation tensors emit these via the layer-type decomposer library; cross-model corroboration accumulates as separate `attestation_type`-distinguished rating events on the same edge hash. The `firefly_of_tensor` / `consensus_member` / `consensus_supersedes` / `attention_head_in_layer` / `ffn_*_in_layer` / `expert_in_moe_router` edge types listed below are deprecated phantom-binding edges. They depend on phantom entities (`embedding_firefly`, `firefly_consensus`, etc.) that are themselves deprecated per spec §VII and §XII. Fireflies are POINTZM physicalities attached directly to the existing `word_form` entity, NOT separate entities; consensus is a derived analytic surface, NOT a stored edge graph.
 
-- **Roles:** source = embedding_firefly; target = tensor.
-- **Provenance:** model decomposer.
+### `firefly_of_tensor` — DEPRECATED
 
-### `consensus_member`
+> **DEPRECATED 2026-05-08.** Fireflies are POINTZM physicalities attached to existing `word_form` content entities (per spec §VII), NOT separate `embedding_firefly` entities. There is no edge from a firefly to a tensor — the firefly's `entity_model_source` and the partition's CHECK constraint declare provenance directly. The `EmbeddingLayerDecomposer` emits the POINTZMs as a side-effect; no `firefly_of_tensor` edge is needed.
 
-- **Roles:** source = firefly_consensus; target = embedding_firefly.
-- **Notes:** edge has attributes `weight_i`, `cell_volume_i`, `distance_from_consensus_i` from the Voronoi consensus computation.
+### `consensus_member` — DEPRECATED
 
-### `consensus_supersedes`
+> **DEPRECATED 2026-05-08.** Consensus is computed at query time from the Voronoi cell over the species' firefly cluster (per spec §VII), NOT stored as a graph of `consensus_member` edges. Consensus tightness, centroid, spread metrics are derived analytics surfaces (per spec §X.1). There is no `firefly_consensus` entity to be a member of.
 
-- **Roles:** source = firefly_consensus (newer); target = firefly_consensus (older).
+### `consensus_supersedes` — DEPRECATED
+
+> **DEPRECATED 2026-05-08.** Same reason as `consensus_member` above. Consensus is computed, not stored as an entity graph.
 
 ### `in_model`
 
-- **Roles:** source = tensor or bpe_token or model_architecture; target = model_root entity.
-- **Notes:** anchors any model-derived entity to its source model.
+- **Roles:** source = tensor or model_architecture; target = model_architecture entity.
+- **Notes:** anchors model-side structural artifact entities (tensor, model_architecture) to their source model. **Word_form entities (tokens) do NOT have `in_model` edges** — the same `word_form` entity is shared across all models that have that token in their vocabulary; per-model presence is recorded via `has_token_in_tokenizer` edges and rating-event metadata. Reference [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md) §V.5 for tokenizer decomposer behavior.
 
 ### `in_layer`
 
-- **Roles:** source = tensor; target = layer entity.
-- **Notes:** anchors layer-bound tensors to their layer position.
+- **Roles:** source = tensor; target = model_architecture entity (with layer_index as edge metadata).
+- **Notes:** anchors layer-bound tensors to their layer position. Layer index is rating-event metadata for downstream attestations, not a separate "layer" entity.
 
-### `attention_head_in_layer`
+### `attention_head_in_layer` — DEPRECATED
 
-- **Roles:** source = tensor (a head's QKV); target = layer entity (with head_index attribute).
+> **DEPRECATED 2026-05-08.** Per-head metadata for attention attestations lives on the `substrate.edge_significance` rating-event row (`head_index`, `layer_index`), NOT as a separate edge type. The `AttentionQkvLayerDecomposer` and `AttentionVoLayerDecomposer` emit `model_attention_pattern` edges between word_form entities with head/layer metadata on the rating event. See [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md).
 
-### `ffn_up_in_layer`, `ffn_gate_in_layer`, `ffn_down_in_layer`
+### `ffn_up_in_layer`, `ffn_gate_in_layer`, `ffn_down_in_layer` — DEPRECATED
 
-FFN tensor positioning.
+> **DEPRECATED 2026-05-08.** Same pattern as `attention_head_in_layer` above. FFN-side per-role-unit metadata lives on the `substrate.edge_significance` rating-event row for `model_ffn_factor` attestation edges between word_form entities. See `FfnLayerDecomposer` in [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md).
 
-### `residual_stream_position`
+### `residual_stream_position` — DEPRECATED
 
-A tensor's residual-stream slot.
+> **DEPRECATED 2026-05-08.** Residual-stream position metadata, when needed, lives as rating-event metadata on the relevant attestation edges, NOT as a separate edge type into a phantom `residual_direction` entity.
 
-### `expert_in_moe_router`
+### `expert_in_moe_router` — DEPRECATED
 
-For Mixture-of-Experts models, a tensor's binding to a router and an expert index.
+> **DEPRECATED 2026-05-08.** MoE expert assignment is rating-event metadata (`expert_index`) on `model_attention_pattern` / `model_ffn_factor` attestation edges via `MoeRouterLayerDecomposer` and `MoeExpertLayerDecomposer` (see [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md)). Expert IDs are NOT entities.
 
-### `lora_adapts`
+### `lora_adapts` — DEPRECATED
 
-- **Roles:** source = composition (LoRA-A/B pair); target = tensor (base tensor adapted).
+> **DEPRECATED 2026-05-08.** LoRA adapter contributions are recorded as `attestation_type = model_lora_adapter_evidence` on `model_concept_similarity` / `model_attention_pattern` edges between word_form entities. The (A, B) factorization is preserved as structured rating-event metadata so `LoRAAdapterLayerSynthesizer` can reconstruct the factorization at the target rank. See [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md) and the reciprocal synthesizer at [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md).
 
 ### `quantization_of`
 

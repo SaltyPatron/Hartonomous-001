@@ -128,9 +128,9 @@ These arenas are seeded by migration `0005_reference_seed`. They are the canonic
 
 **Purpose:** How reliable an attention pattern from a model is, based on cross-model corroboration.
 
-**Allowed edge types:** `beaten_path` edges and `attention_pattern` entities.
+**Allowed edge types:** `model_attention_pattern` edges between `word_form` content entities (per `sql/schema/seed/edge_type.sql:84-90`), with `attestation_type ∈ {model_attention_qk_pattern, model_attention_vo_pattern}` per `sql/schema/seed/attestation_type.sql`. Cross-model corroboration accumulates as separate `attestation_type`-distinguished rating events on the same edge hash. **The previous "attention_pattern entities" reference is deprecated** per the 2026-05-08 architectural correction — attention patterns are edges between content entities, NOT phantom `attention_pattern` entities. See [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §III and AP-25.
 
-**Use:** Distillation/transformation recipes that depend on attention-pattern accuracy filter by this arena.
+**Use:** Distillation/transformation recipes that depend on attention-pattern accuracy filter by this arena. The Build-a-bear `AttentionQkvLayerSynthesizer` and `AttentionVoLayerSynthesizer` query this arena's mu when synthesizing target attention tensors (per [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md)).
 
 ### `morphological_productivity`
 

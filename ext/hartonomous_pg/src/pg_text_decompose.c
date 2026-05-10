@@ -934,6 +934,247 @@ static void flush_model_source(bytea* root_hash, int model_source_id)
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_model_source: SPI_execute (%d)", rc);
 }
 
+static void ensure_hash_capacity(HashList* L)
+{
+    if (L->count < L->cap) return;
+    L->cap = L->cap > 0 ? L->cap * 2 : 64;
+    L->hashes = (bytea**) repalloc(L->hashes, sizeof(bytea*) * L->cap);
+}
+
+static void ensure_class_capacity(ClassList* L)
+{
+    if (L->count < L->cap) return;
+    L->cap = L->cap > 0 ? L->cap * 2 : 64;
+    L->entity_hashes = (bytea**) repalloc(L->entity_hashes, sizeof(bytea*) * L->cap);
+    L->entity_type_ids = (int*) repalloc(L->entity_type_ids, sizeof(int) * L->cap);
+}
+
+static void ensure_phys_capacity(PhysList* L)
+{
+    if (L->count < L->cap) return;
+    L->cap = L->cap > 0 ? L->cap * 2 : 64;
+    L->phys_type_ids = (int*) repalloc(L->phys_type_ids, sizeof(int) * L->cap);
+    L->entity_hashes = (bytea**) repalloc(L->entity_hashes, sizeof(bytea*) * L->cap);
+    L->content_hashes = (bytea**) repalloc(L->content_hashes, sizeof(bytea*) * L->cap);
+    L->wkbs = (bytea**) repalloc(L->wkbs, sizeof(bytea*) * L->cap);
+}
+
+static void ensure_seq_capacity(SeqList* L)
+{
+    if (L->count < L->cap) return;
+    L->cap = L->cap > 0 ? L->cap * 2 : 64;
+    L->parent_hashes = (bytea**) repalloc(L->parent_hashes, sizeof(bytea*) * L->cap);
+    L->ordinals = (int*) repalloc(L->ordinals, sizeof(int) * L->cap);
+    L->child_hashes = (bytea**) repalloc(L->child_hashes, sizeof(bytea*) * L->cap);
+    L->rle_counts = (int*) repalloc(L->rle_counts, sizeof(int) * L->cap);
+}
+
+static void ensure_sig_capacity(SigList* L)
+{
+    if (L->count < L->cap) return;
+    L->cap = L->cap > 0 ? L->cap * 2 : 64;
+    L->context_type_ids = (int*) repalloc(L->context_type_ids, sizeof(int) * L->cap);
+    L->entity_hashes = (bytea**) repalloc(L->entity_hashes, sizeof(bytea*) * L->cap);
+    L->mus = (double*) repalloc(L->mus, sizeof(double) * L->cap);
+}
+
+static int native_entity_type_id_for(const RefIds* ids, int native_kind)
+{
+    switch (native_kind) {
+        case HARTONOMOUS_KIND_CODEPOINT:         return ids->entity_type_codepoint;
+        case HARTONOMOUS_KIND_GRAPHEME_CLUSTER:  return ids->entity_type_grapheme_cluster;
+        case HARTONOMOUS_KIND_WORD_FORM:         return ids->entity_type_word_form;
+        case HARTONOMOUS_KIND_TEXT_COMPOSITION:  return ids->entity_type_text_composition;
+        default:                                 return ids->entity_type_text_composition;
+    }
+}
+
+static int native_physicality_type_id_for(const RefIds* ids, int native_kind)
+{
+    switch (native_kind) {
+        case HARTONOMOUS_PHYS_S3_POSITION: return ids->physicality_type_s3_position;
+        case HARTONOMOUS_PHYS_CONTOUR:     return ids->physicality_type_contour;
+        default:                           return ids->physicality_type_contour;
+    }
+}
+
+static int native_context_type_id_for(const RefIds* ids, int native_kind)
+{
+    switch (native_kind) {
+        case HARTONOMOUS_SIG_SOURCE_AUTHORITY: return ids->significance_context_source_authority;
+        default:                               return ids->significance_context_source_authority;
+    }
+}
+
+static int native_top_kind_for(const char* top_entity_type)
+{
+    if (strcmp(top_entity_type, "codepoint") == 0) return HARTONOMOUS_KIND_CODEPOINT;
+    if (strcmp(top_entity_type, "grapheme_cluster") == 0) return HARTONOMOUS_KIND_GRAPHEME_CLUSTER;
+    if (strcmp(top_entity_type, "word_form") == 0) return HARTONOMOUS_KIND_WORD_FORM;
+    return HARTONOMOUS_KIND_TEXT_COMPOSITION;
+}
+
+static int top_entity_type_id_for(const RefIds* ids, const char* top_entity_type)
+{
+    if (strcmp(top_entity_type, "text_composition") == 0) return ids->entity_type_text_composition;
+    if (strcmp(top_entity_type, "word_form") == 0)        return ids->entity_type_word_form;
+    if (strcmp(top_entity_type, "grapheme_cluster") == 0) return ids->entity_type_grapheme_cluster;
+    if (strcmp(top_entity_type, "codepoint") == 0)        return ids->entity_type_codepoint;
+    if (strcmp(top_entity_type, "lemma") == 0)            return spi_lookup_id("SELECT id FROM substrate.entity_type WHERE code = $1", "lemma");
+    return ids->entity_type_text_composition;
+}
+
+typedef struct {
+    const RefIds* ids;
+    HashList ent;
+    ClassList cls;
+    PhysList phys;
+    SeqList seq;
+    SigList sig;
+} PgTextEmitContext;
+
+static void init_emit_context(PgTextEmitContext* ctx, const RefIds* ids)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->ids = ids;
+
+    LIST_INIT(ctx->ent, 64);
+    ctx->ent.hashes = (bytea**) palloc(sizeof(bytea*) * ctx->ent.cap);
+
+    LIST_INIT(ctx->cls, 64);
+    ctx->cls.entity_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->cls.cap);
+    ctx->cls.entity_type_ids = (int*) palloc(sizeof(int) * ctx->cls.cap);
+
+    LIST_INIT(ctx->phys, 64);
+    ctx->phys.phys_type_ids = (int*) palloc(sizeof(int) * ctx->phys.cap);
+    ctx->phys.entity_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
+    ctx->phys.content_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
+    ctx->phys.wkbs = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
+
+    LIST_INIT(ctx->seq, 64);
+    ctx->seq.parent_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->seq.cap);
+    ctx->seq.ordinals = (int*) palloc(sizeof(int) * ctx->seq.cap);
+    ctx->seq.child_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->seq.cap);
+    ctx->seq.rle_counts = (int*) palloc(sizeof(int) * ctx->seq.cap);
+
+    LIST_INIT(ctx->sig, 64);
+    ctx->sig.context_type_ids = (int*) palloc(sizeof(int) * ctx->sig.cap);
+    ctx->sig.entity_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->sig.cap);
+    ctx->sig.mus = (double*) palloc(sizeof(double) * ctx->sig.cap);
+}
+
+static bytea* bytes_to_bytea(const uint8_t* bytes, size_t len)
+{
+    bytea* b = (bytea*) palloc(VARHDRSZ + len);
+    SET_VARSIZE(b, VARHDRSZ + len);
+    if (len > 0) memcpy(VARDATA(b), bytes, len);
+    return b;
+}
+
+static int pg_text_emit_callback(void* callback_ctx, const hartonomous_text_record_t* rec)
+{
+    PgTextEmitContext* ctx = (PgTextEmitContext*) callback_ctx;
+    if (ctx == NULL || rec == NULL || rec->hash_a == NULL) return 1;
+
+    switch (rec->kind) {
+        case HARTONOMOUS_REC_ENTITY:
+            ensure_hash_capacity(&ctx->ent);
+            ctx->ent.hashes[ctx->ent.count++] = hash_to_bytea(rec->hash_a);
+            return 0;
+
+        case HARTONOMOUS_REC_CLASSIFICATION:
+            ensure_class_capacity(&ctx->cls);
+            ctx->cls.entity_hashes[ctx->cls.count] = hash_to_bytea(rec->hash_a);
+            ctx->cls.entity_type_ids[ctx->cls.count] = native_entity_type_id_for(ctx->ids, rec->subkind);
+            ctx->cls.count++;
+            return 0;
+
+        case HARTONOMOUS_REC_PHYSICALITY:
+            if (rec->hash_b == NULL || rec->wkb == NULL || rec->wkb_len == 0) return 1;
+            ensure_phys_capacity(&ctx->phys);
+            ctx->phys.phys_type_ids[ctx->phys.count] = native_physicality_type_id_for(ctx->ids, rec->subkind);
+            ctx->phys.entity_hashes[ctx->phys.count] = hash_to_bytea(rec->hash_a);
+            ctx->phys.content_hashes[ctx->phys.count] = hash_to_bytea(rec->hash_b);
+            ctx->phys.wkbs[ctx->phys.count] = bytes_to_bytea(rec->wkb, rec->wkb_len);
+            ctx->phys.count++;
+            return 0;
+
+        case HARTONOMOUS_REC_SEQUENCE:
+            if (rec->hash_b == NULL) return 1;
+            ensure_seq_capacity(&ctx->seq);
+            ctx->seq.parent_hashes[ctx->seq.count] = hash_to_bytea(rec->hash_a);
+            ctx->seq.ordinals[ctx->seq.count] = rec->int_param;
+            ctx->seq.child_hashes[ctx->seq.count] = hash_to_bytea(rec->hash_b);
+            ctx->seq.rle_counts[ctx->seq.count] = 1;
+            ctx->seq.count++;
+            return 0;
+
+        case HARTONOMOUS_REC_SIGNIFICANCE:
+            ensure_sig_capacity(&ctx->sig);
+            ctx->sig.context_type_ids[ctx->sig.count] = native_context_type_id_for(ctx->ids, rec->subkind);
+            ctx->sig.entity_hashes[ctx->sig.count] = hash_to_bytea(rec->hash_a);
+            ctx->sig.mus[ctx->sig.count] = rec->double_param;
+            ctx->sig.count++;
+            return 0;
+
+        default:
+            return 1;
+    }
+}
+
+static int ensure_libhartonomous_ucd_loaded(void)
+{
+    if (hartonomous_ucd_loaded_state() == 1) return 0;
+
+    char dir[1024];
+    const char* env = getenv("HARTONOMOUS_UCD_BLOB_DIR");
+    if (env && *env) {
+        snprintf(dir, sizeof(dir), "%s", env);
+    } else {
+        char share[MAXPGPATH];
+        get_share_path(my_exec_path, share);
+        snprintf(dir, sizeof(dir), "%s/extension/hartonomous-ucd", share);
+    }
+    return hartonomous_ucd_load(dir);
+}
+
+static Datum make_text_decompose_summary(
+    FunctionCallInfo fcinfo,
+    const TextDecomposeSummary* summary,
+    bytea* root_hash,
+    int root_entity_type_id)
+{
+    TupleDesc tupdesc;
+    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
+        ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                        errmsg("pg_text_decompose: composite type expected")));
+    }
+    BlessTupleDesc(tupdesc);
+
+    Datum values[9];
+    bool  nulls[9] = { false, false, false, false, false, false, false, false, false };
+    values[0] = Int64GetDatum(summary->entity_count);
+    values[1] = Int64GetDatum(summary->edge_count);
+    values[2] = Int64GetDatum(summary->edge_member_count);
+    values[3] = Int64GetDatum(summary->physicality_count);
+    values[4] = Int64GetDatum(summary->sequence_count);
+    values[5] = Int64GetDatum(summary->significance_count);
+    values[6] = Int64GetDatum(summary->classification_count);
+
+    if (root_hash != NULL) {
+        values[7] = PointerGetDatum(root_hash);
+        values[8] = Int32GetDatum(root_entity_type_id);
+    } else {
+        values[7] = (Datum) 0;
+        values[8] = (Datum) 0;
+        nulls[7] = true;
+        nulls[8] = true;
+    }
+
+    HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
+    return HeapTupleGetDatum(tup);
+}
+
 /* ═════════════════════════════════════════════════════════════════════
  * (10) Main entry point — substrate.text_decompose
  * ═════════════════════════════════════════════════════════════════════ */
@@ -959,344 +1200,83 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
 
     int spi_owned = (SPI_connect() == SPI_OK_CONNECT);
 
-    /* Codepoint cache is no longer SPI-loaded — atoms come from the
-     * embedded extension's mmap'd blob, populated lazily per block on
-     * first access (huc_cp_hash_at / huc_cp_centroid_at). No-op kept
-     * for ABI compatibility. */
-    pg_text_decompose_cache_load();
-
     RefIds ids;
     memset(&ids, 0, sizeof(ids));
     resolve_ref_ids(&ids, provenance_code);
-    int top_entity_type_id =
-        (strcmp(top_entity_type, "text_composition") == 0) ? ids.entity_type_text_composition :
-        (strcmp(top_entity_type, "word_form") == 0)        ? ids.entity_type_word_form :
-        (strcmp(top_entity_type, "lemma") == 0)            ? spi_lookup_id("SELECT id FROM substrate.entity_type WHERE code = $1", "lemma") :
-        ids.entity_type_text_composition;
-
-    DecodedCodepoints d  = decode_utf8_buf(utf8, utf8_len);
+    int top_entity_type_id = top_entity_type_id_for(&ids, top_entity_type);
+    int native_top_kind = native_top_kind_for(top_entity_type);
+    int native_root_entity_type_id = native_entity_type_id_for(&ids, native_top_kind);
 
     TextDecomposeSummary summary;
     memset(&summary, 0, sizeof(summary));
 
-    if (d.count == 0) {
+    if (utf8_len == 0) {
         if (spi_owned) SPI_finish();
-        TupleDesc tupdesc;
-        if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
-            ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                            errmsg("pg_text_decompose: composite type expected")));
-        }
-        BlessTupleDesc(tupdesc);
-        /* 9-field summary: 7 counts + root_hash + root_entity_type_id.
-         * Empty input → counts at 0, root fields NULL. */
-        Datum values[9] = {0,0,0,0,0,0,0,0,0};
-        bool  nulls[9]  = { false,false,false,false,false,false,false, true, true };
-        for (int i=0;i<7;i++) values[i] = Int64GetDatum(0);
-        HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
-        PG_RETURN_DATUM(HeapTupleGetDatum(tup));
+        PG_RETURN_DATUM(make_text_decompose_summary(fcinfo, &summary, NULL, 0));
     }
 
-    /* Stage 1: codepoints — hashes and centroids in batch. */
-    uint8_t* cp_hashes = (uint8_t*) palloc((size_t)d.count * HASH_LEN);
-    hash_codepoints(&d, cp_hashes);
-
-    double* cp_centroids = (double*) palloc(sizeof(double) * 4 * d.count);
-    compute_codepoint_centroids(&d, cp_centroids);
-
-    /* Stage 2: grapheme cluster boundaries. */
-    BoundaryArray graphemes = grapheme_boundaries(&d);
-
-    /* Stage 3: word boundaries. */
-    WordArray words = word_boundaries(&d);
-
-    /* Allocate per-grapheme + per-word + composition hashes/centroids. */
-    int gN = graphemes.count;
-    int wN = words.count;
-
-    uint8_t* gc_hashes    = (uint8_t*) palloc((size_t)gN * HASH_LEN);
-    double*  gc_centroids = (double*)  palloc(sizeof(double) * 4 * gN);
-    uint8_t* w_hashes     = (uint8_t*) palloc((size_t)wN * HASH_LEN);
-    double*  w_centroids  = (double*)  palloc(sizeof(double) * 4 * wN);
-
-    /* Stage 2b: grapheme hashes via batched merkle, centroids via mean. */
-    for (int gi = 0; gi < gN; gi++) {
-        int firstCp = graphemes.indices[gi];
-        int endCp   = (gi + 1 < gN) ? graphemes.indices[gi + 1] : d.count;
-        int cpCount = endCp - firstCp;
-
-        merkle_chain(cp_hashes + (size_t)firstCp * HASH_LEN, (size_t)cpCount,
-                     gc_hashes + (size_t)gi * HASH_LEN);
-        mean_centroid(cp_centroids + firstCp * 4, cpCount, gc_centroids + gi * 4);
+    if (ensure_libhartonomous_ucd_loaded() != 0) {
+        ereport(ERROR,
+                (errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
+                 errmsg("pg_text_decompose: libhartonomous UCD blob is not loaded"),
+                 errhint("Install hartonomous-ucd beside the extension or set HARTONOMOUS_UCD_BLOB_DIR.")));
     }
 
-    /* Word hashes: Merkle of constituent grapheme hashes; centroid mean of theirs. */
-    for (int wi = 0; wi < wN; wi++) {
-        int firstCpW = words.indices[wi];
-        int endCpW   = (wi + 1 < wN) ? words.indices[wi + 1] : d.count;
-        /* Find grapheme cluster bounds covering [firstCpW, endCpW). */
-        int firstGc = 0, endGc = gN;
-        for (int gi = 0; gi < gN; gi++) {
-            if (graphemes.indices[gi] == firstCpW) { firstGc = gi; break; }
-        }
-        for (int gi = firstGc; gi < gN; gi++) {
-            int gStart = graphemes.indices[gi];
-            if (gStart >= endCpW) { endGc = gi; break; }
-        }
-        int gcCount = endGc - firstGc;
-        if (gcCount <= 0) gcCount = 1;
-        merkle_chain(gc_hashes + (size_t)firstGc * HASH_LEN, (size_t)gcCount,
-                     w_hashes + (size_t)wi * HASH_LEN);
-        mean_centroid(gc_centroids + firstGc * 4, gcCount, w_centroids + wi * 4);
+    PgTextEmitContext emit_ctx;
+    init_emit_context(&emit_ctx, &ids);
+
+    uint8_t root_hash[HASH_LEN];
+    int rc = hartonomous_text_decompose(
+        utf8,
+        utf8_len,
+        native_top_kind,
+        trust_mu,
+        pg_text_emit_callback,
+        &emit_ctx,
+        root_hash,
+        NULL,
+        NULL);
+
+    if (rc == -3) {
+        if (spi_owned) SPI_finish();
+        PG_RETURN_DATUM(make_text_decompose_summary(fcinfo, &summary, NULL, 0));
+    }
+    if (rc != 0) {
+        ereport(ERROR,
+                (errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
+                 errmsg("pg_text_decompose: hartonomous_text_decompose returned %d", rc)));
     }
 
-    /* Composition: Merkle of word hashes, centroid mean of word centroids. */
-    uint8_t comp_hash[HASH_LEN];
-    double  comp_centroid[4];
-    if (wN > 0) {
-        merkle_chain(w_hashes, (size_t)wN, comp_hash);
-        mean_centroid(w_centroids, wN, comp_centroid);
-    } else {
-        merkle_chain(NULL, 0, comp_hash);
-        comp_centroid[0]=comp_centroid[1]=comp_centroid[2]=comp_centroid[3]=0.0;
-    }
-
-    /* ── Build staging accumulators ─────────────────────────────── */
-    /* Capacity = N codepoints + M graphemes + K words + 1 composition. */
-    int totalEnts = d.count + gN + wN + 1;
-
-    HashList ent;       LIST_INIT(ent, totalEnts);
-    ent.hashes = (bytea**) palloc(sizeof(bytea*) * ent.cap);
-
-    ClassList cls;      LIST_INIT(cls, totalEnts);
-    cls.entity_hashes = (bytea**) palloc(sizeof(bytea*) * cls.cap);
-    cls.entity_type_ids = (int*) palloc(sizeof(int) * cls.cap);
-
-    PhysList phys;      LIST_INIT(phys, totalEnts);
-    phys.phys_type_ids = (int*) palloc(sizeof(int) * phys.cap);
-    phys.entity_hashes = (bytea**) palloc(sizeof(bytea*) * phys.cap);
-    phys.content_hashes = (bytea**) palloc(sizeof(bytea*) * phys.cap);
-    phys.wkbs = (bytea**) palloc(sizeof(bytea*) * phys.cap);
-
-    /* Sequence rows: parent → ordered children. Capacity bound = total
-     * grapheme.count + word.count + composition.count = N + M + K children. */
-    int seqCap = d.count + gN + wN + 16;
-    SeqList seq;        LIST_INIT(seq, seqCap);
-    seq.parent_hashes = (bytea**) palloc(sizeof(bytea*) * seq.cap);
-    seq.ordinals = (int*) palloc(sizeof(int) * seq.cap);
-    seq.child_hashes = (bytea**) palloc(sizeof(bytea*) * seq.cap);
-    seq.rle_counts = (int*) palloc(sizeof(int) * seq.cap);
-
-    SigList sig;        LIST_INIT(sig, totalEnts);
-    sig.context_type_ids = (int*) palloc(sizeof(int) * sig.cap);
-    sig.entity_hashes = (bytea**) palloc(sizeof(bytea*) * sig.cap);
-    sig.mus = (double*) palloc(sizeof(double) * sig.cap);
-
-    /* Codepoints: entity + classification + s3_position physicality + significance. */
-    for (int i = 0; i < d.count; i++) {
-        bytea* h = hash_to_bytea(cp_hashes + (size_t)i * HASH_LEN);
-        ent.hashes[ent.count++] = h;
-        cls.entity_hashes[cls.count] = h;
-        cls.entity_type_ids[cls.count] = ids.entity_type_codepoint;
-        cls.count++;
-        phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
-        phys.entity_hashes[phys.count] = h;
-        phys.content_hashes[phys.count] = h;
-        phys.wkbs[phys.count] = point4d_to_wkb(
-            cp_centroids[i*4+0], cp_centroids[i*4+1],
-            cp_centroids[i*4+2], cp_centroids[i*4+3]);
-        phys.count++;
-        sig.context_type_ids[sig.count] = ids.significance_context_source_authority;
-        sig.entity_hashes[sig.count] = h;
-        sig.mus[sig.count] = trust_mu;
-        sig.count++;
-    }
-
-    /* Grapheme clusters. */
-    for (int gi = 0; gi < gN; gi++) {
-        int firstCp = graphemes.indices[gi];
-        int endCp   = (gi + 1 < gN) ? graphemes.indices[gi + 1] : d.count;
-        int cpCount = endCp - firstCp;
-
-        bytea* gh = hash_to_bytea(gc_hashes + (size_t)gi * HASH_LEN);
-        ent.hashes[ent.count++] = gh;
-        cls.entity_hashes[cls.count] = gh;
-        cls.entity_type_ids[cls.count] = ids.entity_type_grapheme_cluster;
-        cls.count++;
-        sig.context_type_ids[sig.count] = ids.significance_context_source_authority;
-        sig.entity_hashes[sig.count] = gh;
-        sig.mus[sig.count] = trust_mu;
-        sig.count++;
-
-        if (cpCount == 1) {
-            phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
-            phys.entity_hashes[phys.count] = gh;
-            phys.content_hashes[phys.count] = gh;
-            phys.wkbs[phys.count] = point4d_to_wkb(
-                gc_centroids[gi*4+0], gc_centroids[gi*4+1],
-                gc_centroids[gi*4+2], gc_centroids[gi*4+3]);
-            phys.count++;
-        } else if (cpCount > 1) {
-            phys.phys_type_ids[phys.count] = ids.physicality_type_contour;
-            phys.entity_hashes[phys.count] = gh;
-            phys.content_hashes[phys.count] = gh;
-            phys.wkbs[phys.count] = linestring4d_to_wkb(cp_centroids + firstCp * 4, cpCount);
-            phys.count++;
-        }
-
-        /* Sequence rows: grapheme → codepoint child @ ordinal. */
-        for (int k = 0; k < cpCount; k++) {
-            seq.parent_hashes[seq.count] = gh;
-            seq.ordinals[seq.count] = k + 1;
-            seq.child_hashes[seq.count] = hash_to_bytea(cp_hashes + (size_t)(firstCp + k) * HASH_LEN);
-            seq.rle_counts[seq.count] = 1;
-            seq.count++;
-        }
-    }
-
-    /* Word forms / text_compositions per word range. */
-    for (int wi = 0; wi < wN; wi++) {
-        int firstCpW = words.indices[wi];
-        int endCpW   = (wi + 1 < wN) ? words.indices[wi + 1] : d.count;
-        /* Re-find grapheme bounds for sequence emission. */
-        int firstGc = 0, endGc = gN;
-        for (int gi = 0; gi < gN; gi++) {
-            if (graphemes.indices[gi] == firstCpW) { firstGc = gi; break; }
-        }
-        for (int gi = firstGc; gi < gN; gi++) {
-            int gStart = graphemes.indices[gi];
-            if (gStart >= endCpW) { endGc = gi; break; }
-        }
-        int gcCount = endGc - firstGc;
-        if (gcCount <= 0) gcCount = 1;
-
-        bytea* wh = hash_to_bytea(w_hashes + (size_t)wi * HASH_LEN);
-        ent.hashes[ent.count++] = wh;
-        cls.entity_hashes[cls.count] = wh;
-        cls.entity_type_ids[cls.count] = (words.kinds[wi] == WK_Other)
-            ? ids.entity_type_text_composition
-            : ids.entity_type_word_form;
-        cls.count++;
-        sig.context_type_ids[sig.count] = ids.significance_context_source_authority;
-        sig.entity_hashes[sig.count] = wh;
-        sig.mus[sig.count] = trust_mu;
-        sig.count++;
-
-        if (gcCount == 1) {
-            phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
-            phys.entity_hashes[phys.count] = wh;
-            phys.content_hashes[phys.count] = wh;
-            phys.wkbs[phys.count] = point4d_to_wkb(
-                w_centroids[wi*4+0], w_centroids[wi*4+1],
-                w_centroids[wi*4+2], w_centroids[wi*4+3]);
-            phys.count++;
-        } else if (gcCount > 1) {
-            phys.phys_type_ids[phys.count] = ids.physicality_type_contour;
-            phys.entity_hashes[phys.count] = wh;
-            phys.content_hashes[phys.count] = wh;
-            phys.wkbs[phys.count] = linestring4d_to_wkb(gc_centroids + firstGc * 4, gcCount);
-            phys.count++;
-        }
-
-        /* Sequence rows: word → grapheme child @ ordinal. */
-        for (int k = 0; k < gcCount; k++) {
-            seq.parent_hashes[seq.count] = wh;
-            seq.ordinals[seq.count] = k + 1;
-            seq.child_hashes[seq.count] = hash_to_bytea(gc_hashes + (size_t)(firstGc + k) * HASH_LEN);
-            seq.rle_counts[seq.count] = 1;
-            seq.count++;
-        }
-    }
-
-    /* Composition entity (root). */
-    bytea* root_hash_out = NULL;
-    {
-        bytea* ch = hash_to_bytea(comp_hash);
-        root_hash_out = ch;
-        ent.hashes[ent.count++] = ch;
-        cls.entity_hashes[cls.count] = ch;
-        cls.entity_type_ids[cls.count] = top_entity_type_id;
-        cls.count++;
-        sig.context_type_ids[sig.count] = ids.significance_context_source_authority;
-        sig.entity_hashes[sig.count] = ch;
-        sig.mus[sig.count] = trust_mu;
-        sig.count++;
-        if (wN == 1) {
-            phys.phys_type_ids[phys.count] = ids.physicality_type_s3_position;
-            phys.entity_hashes[phys.count] = ch;
-            phys.content_hashes[phys.count] = ch;
-            phys.wkbs[phys.count] = point4d_to_wkb(
-                comp_centroid[0], comp_centroid[1],
-                comp_centroid[2], comp_centroid[3]);
-            phys.count++;
-        } else if (wN > 1) {
-            phys.phys_type_ids[phys.count] = ids.physicality_type_contour;
-            phys.entity_hashes[phys.count] = ch;
-            phys.content_hashes[phys.count] = ch;
-            phys.wkbs[phys.count] = linestring4d_to_wkb(w_centroids, wN);
-            phys.count++;
-        }
-        /* Sequence rows: composition → word child @ ordinal. */
-        for (int k = 0; k < wN; k++) {
-            seq.parent_hashes[seq.count] = ch;
-            seq.ordinals[seq.count] = k + 1;
-            seq.child_hashes[seq.count] = hash_to_bytea(w_hashes + (size_t)k * HASH_LEN);
-            seq.rle_counts[seq.count] = 1;
-            seq.count++;
-        }
+    bytea* root_hash_out = hash_to_bytea(root_hash);
+    if (top_entity_type_id != native_root_entity_type_id) {
+        ensure_class_capacity(&emit_ctx.cls);
+        emit_ctx.cls.entity_hashes[emit_ctx.cls.count] = root_hash_out;
+        emit_ctx.cls.entity_type_ids[emit_ctx.cls.count] = top_entity_type_id;
+        emit_ctx.cls.count++;
     }
 
     /* ── Bulk flush directly into substrate core tables ─────────── */
-    flush_entities(&ent);
-    flush_classifications(&cls, ids.provenance_id);
-    flush_physicalities(&phys);
-    flush_sequences(&seq);
-    flush_significance(&sig);
+    flush_entities(&emit_ctx.ent);
+    flush_classifications(&emit_ctx.cls, ids.provenance_id);
+    flush_physicalities(&emit_ctx.phys);
+    flush_sequences(&emit_ctx.seq);
+    flush_significance(&emit_ctx.sig);
     /* Optional model_source linkage for the root composition (e.g.,
      * Safetensors config.json text artifacts get linked to their model). */
     if (has_model_source && root_hash_out != NULL) {
         flush_model_source(root_hash_out, model_source_id);
     }
 
-    summary.entity_count        = ent.count;
-    summary.classification_count = cls.count;
-    summary.physicality_count    = phys.count;
-    summary.sequence_count       = seq.count;
-    summary.significance_count   = sig.count;
+    summary.entity_count        = emit_ctx.ent.count;
+    summary.classification_count = emit_ctx.cls.count;
+    summary.physicality_count    = emit_ctx.phys.count;
+    summary.sequence_count       = emit_ctx.seq.count;
+    summary.significance_count   = emit_ctx.sig.count;
     summary.edge_count           = 0;
     summary.edge_member_count    = 0;
 
     if (spi_owned) SPI_finish();
-
-    TupleDesc tupdesc;
-    if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
-        ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                        errmsg("pg_text_decompose: composite type expected")));
-    }
-    BlessTupleDesc(tupdesc);
-
-    /* 9-field summary: 7 counts + root_hash (bytea) + root_entity_type_id (int).
-     * Callers that don't need the root can ignore the last two fields. */
-    Datum values[9];
-    bool  nulls[9] = { false, false, false, false, false, false, false, false, false };
-    values[0] = Int64GetDatum(summary.entity_count);
-    values[1] = Int64GetDatum(summary.edge_count);
-    values[2] = Int64GetDatum(summary.edge_member_count);
-    values[3] = Int64GetDatum(summary.physicality_count);
-    values[4] = Int64GetDatum(summary.sequence_count);
-    values[5] = Int64GetDatum(summary.significance_count);
-    values[6] = Int64GetDatum(summary.classification_count);
-    if (root_hash_out != NULL) {
-        values[7] = PointerGetDatum(root_hash_out);
-        values[8] = Int32GetDatum(top_entity_type_id);
-    } else {
-        values[7] = (Datum) 0;
-        values[8] = (Datum) 0;
-        nulls[7]  = true;
-        nulls[8]  = true;
-    }
-
-    HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
-    PG_RETURN_DATUM(HeapTupleGetDatum(tup));
+    PG_RETURN_DATUM(make_text_decompose_summary(fcinfo, &summary, root_hash_out, top_entity_type_id));
 }
 
 /* ═════════════════════════════════════════════════════════════════════

@@ -37,10 +37,10 @@ The 4D coordinates have type-specific meaning. The schema documents each type's 
 | Physicality type | Surface | Semantics |
 |---|---|---|
 | `s3_codepoint` | 4D | Unit quaternion `(qx, qy, qz, qw)` from UCA Super-Fibonacci spiral |
-| `embedding_firefly` | 4D | `(eig2, eig3, eig4, ||row||)` — three Laplacian eigenmap axes plus L2 norm magnitude |
+| `embedding_firefly` (physicality_type) | 4D | `(eig2, eig3, eig4, ||row||)` POINTZM — three Laplacian eigenmap axes plus L2 norm magnitude. **Attached to existing `word_form` content entities** (the species), with one POINTZM per ingested model (the specimens). NOT a separate atom-class entity (see [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VII). |
 | `composition_trajectory` | 4D | `linestring4d` through ordered child centroids |
-| `edge_trajectory` | 4D | `linestring4d` through ordered participant centroids in role order |
-| `attention_pattern` | 4D | `linestring4d` across S³ attention head positions |
+| `edge_trajectory` | 4D | `linestring4d` through ordered participant centroids in role order — including the per-role attestation edges (`model_attention_pattern`, `model_concept_similarity`, `model_ffn_factor`) between content entities, whose trajectory IS the unit's spectral fingerprint per spec §III |
+| ~~`attention_pattern` (physicality_type)~~ — DEPRECATED | ~~4D~~ | Per-role attention pattern geometry now lives on the `model_attention_pattern` edge's `geom` (LINESTRINGZM through participant token centroids). The phantom `attention_pattern` entity type and its physicality are deprecated per spec §XII; cross-model attention pattern comparison uses Fréchet on stored edge geometries. |
 | `svd_spectrum` | 4D | `linestring4d` of singular values paired with subspace angles |
 | `audio_waveform` | 2D/3D | LINESTRINGZ — X=time, Y=amplitude, Z=frequency band |
 | `fft_spectrum` | 2D/3D | LINESTRINGZ — X=frequency bin, Y=magnitude, Z=phase |

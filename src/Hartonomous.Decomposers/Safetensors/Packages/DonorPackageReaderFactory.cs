@@ -90,7 +90,7 @@ public sealed partial class DonorPackageReaderFactory
         {
             doc = JsonDocument.Parse(fs);
         }
-        catch (JsonException)
+        catch (JsonException) // BOUNDARY: malformed config is handled by the selected donor reader's validation path.
         {
             // A malformed config is not our concern here — the chosen reader will surface it.
             return;

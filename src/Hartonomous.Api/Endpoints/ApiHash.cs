@@ -20,7 +20,7 @@ internal static class ApiHash
             bytes = Convert.FromHexString(hash);
             return true;
         }
-        catch (FormatException)
+        catch (FormatException) // BOUNDARY: HTTP request validation returns 400 instead of throwing.
         {
             error = Results.Problem("Invalid hex encoding", statusCode: 400, type: "invalid-hash");
             return false;

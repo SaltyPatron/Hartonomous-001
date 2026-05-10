@@ -169,18 +169,25 @@ This is returned as structured `AnnotatedText` (a companion type), not as the `s
 
 **Class**: `SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>`
 
-**Status**: ✅ Implemented — wired in `BaseRecomposer<SafetensorsFile>`, exposed via the `hartonomous export-model` CLI command (with optional `--source-id`, `--min-significance`, `--context`, `--limit` filter options for distillation). Per-role unit scatter consumes the substrate units emitted by Phase A passes — every Track-2 transformation tensor's row content is reconstructed losslessly when the substrate carries it.
+**Status (corrected per [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §VI):** A `SafetensorsRecomposer` exists and is wired into the `hartonomous export-model` CLI, but the current `AssembleTensorBytesAsync` path (`src/Hartonomous.Recomposers/SafetensorsRecomposer.cs:239-373`) is **single-source phantom-scatter** — it walks `has_constituent` children that are deprecated phantom per-role-unit entities (`ffn_neuron`, `embedding_position`, `attention_component`, etc., on the §XII removal list) and scatters their stored contours into target row positions. This works only for round-tripping a model whose phantoms were stored at ingest, with the same shape, from one source. **Build-a-bear synthesis is not possible with this path.**
+
+The Build-a-bear product surface requires a **synthesis-from-consensus recomposer** (canonical specification: [`docs/specs/recomposers/synthesis-library.md`](../recomposers/synthesis-library.md)). User specifies an arbitrary `TargetArchitectureSpec` (any combination of MoE / LoRA / layer count / hidden dim / modality mix; "MiniLM-as-MoE-with-Flux" is a valid input). For each tensor in the target architecture, the recomposer dispatches by `TensorRole` to a **per-layer-type synthesizer** (reciprocal of the [layer-type decomposer library](../decomposers/layer-type-library.md)) that queries substrate consensus attestations across all ingested models filtered by user-selected arenas above significance threshold, and synthesizes weights via published algorithms.
 
 **Output type**: `SafetensorsFile` — a record wrapping `IReadOnlyDictionary<string, TensorData> Tensors`, `string ModelName`. `TensorData` contains `string Dtype`, `int[] Shape`, `byte[] Data`.
 
-**Authoritative spec for *AI model* weights (ingest and export)**: [docs/specs/decomposers/safetensors.md](../../decomposers/safetensors.md) — export is **distillation** (query the substrate, synthesize a **new** student model), not byte replay of a source checkpoint. Near-zero and below-threshold mass becomes zeros in the **student**; training artifacts do not reappear as a bit-identical rematerialization of the download.
+**Authoritative spec for AI model weights (ingest and export)**: [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §V (decomposer architecture) and §VI (recomposer architecture); [`docs/specs/decomposers/safetensors.md`](../../decomposers/safetensors.md) for the container format catalog.
 
-**Assembly precedence in `AssembleTensorBytesAsync`**:
-1. **1-D tensors**: tensor-attached contour (`OneDTensorPass`) → walk `has_layer_norm_scale` → `has_rope_freqs` → unit-attached contour. Layer norms, RoPE freq tables, biases.
-2. **≥2-D tensors (per-role unit scatter)**: walk `substrate.sequence` children of the tensor. Each row-positioned unit (`ffn_neuron`, `attention_component`, `embedding_position`, `logit_projection`, `moe_*`, `object_query_slot`, `class_projection`, `bbox_projection`, `vision_feature_direction`, `modality_basis_vector`, `lora_component`, `conv_filter`, `diffusion_component`, `conformer_component`, `audio_codec_filter`) carries its row content as a contour physicality. Scatter at row=ordinal_position. Lossless on whatever rows the substrate has; uncovered rows stay zero (Substrate Law #11).
-3. **Fallback (≥2-D, no per-role units)**: walk `has_rank_component` edges and reconstruct via `Σ σ·u·vᵀ` from SvdPass-emitted singular components. Lossy by rank truncation; only used when no per-role units have been emitted for this tensor.
+**Synthesis precedence in the new `AssembleTensorBytesAsync`** (replaces phantom-scatter):
+1. **By target tensor role** (from `TargetArchitectureSpec` or, for refinement mode, from the source architecture's tensor inventory): dispatch to the matching per-layer-type synthesizer.
+2. **Each synthesizer queries substrate consensus** for the appropriate `attestation_type` (per `sql/schema/seed/attestation_type.sql`) on the appropriate `edge_type` between content entities, filtered by arena weighting and significance threshold from `RecompositionOptions`.
+3. **Synthesis math**:
+   - `AttentionQkvLayerSynthesizer`: low-rank approximation `min ‖S - QK^T‖²` over sparse attestation matrix S where `S[a][b]` is the consensus mu of `model_attention_qk_pattern(token_a, token_b)`.
+   - `FfnLayerSynthesizer`: KV-memory inversion (solve for W_up, W_gate, W_down such that token-pair attestation constraints are best satisfied).
+   - `EmbeddingLayerSynthesizer`: PCA over per-token attestation participation; alternatively use firefly cluster centroids projected back to hidden_dim via inverse Laplacian eigenmap.
+   - Specialist synthesizers per `docs/specs/recomposers/synthesis-library.md`.
+4. **Honest abstention**: when attestation density for a tensor cell is below threshold, the cell stays at exact zero. Output stays sparse; the recomposer never invents weights to cover gaps. Per-tensor coverage statistics reported in output metadata.
 
-**Distillation queries** (`RecomposeFilteredAsync`): take a `SubstrateQueryFilter` (model_source_ids, min significance mu, arena context code, limit) and route through `ISubstrateQuery.QueryTensorsForArchitectureAsync`. Same scatter pipeline; only the tensor-selection set differs. Per architecture.md "Distillation = WHERE clause" — distillation and export are the same operation parameterized by the query. The CLI exposes this via `--source-id`, `--min-significance`, `--context`, `--limit`.
+**Distillation queries** (`RecomposeFilteredAsync`): take a `SubstrateQueryFilter` (model_source_ids, min significance mu, arena context codes, limit) and a `TargetArchitectureSpec`. The filter restricts which models contribute to the consensus; the spec defines the target tensor inventory; synthesizers project consensus into the target.
 
 **Streaming variant**: `RecomposeToStreamAsync` writes valid safetensors bytes:
 1. Build JSON header (tensor names, dtypes, shapes, byte offsets).

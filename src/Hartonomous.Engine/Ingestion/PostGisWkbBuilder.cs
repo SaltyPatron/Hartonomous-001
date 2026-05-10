@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using Hartonomous.Core.Geometry;
 
 namespace Hartonomous.Engine.Ingestion;
 
@@ -31,37 +32,53 @@ internal static class PostGisWkbBuilder
     private const uint WkbPointZM = 3001u;
     private const uint WkbLineStringZM = 3002u;
 
-    public static byte[] PointZM(double x, double y, double z, double m)
+    public static byte[] PointZM(Point4D p)
     {
-        byte[] buf = new byte[1 + 4 + 32];
+        byte[] buf = new byte[1 + 4 + Point4D.SizeBytes];
         buf[0] = LittleEndian;
         BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(1, 4), WkbPointZM);
-        BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(5, 8), x);
-        BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(13, 8), y);
-        BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(21, 8), z);
-        BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(29, 8), m);
+        p.WriteLittleEndian(buf.AsSpan(5, Point4D.SizeBytes));
         return buf;
     }
 
-    public static byte[] LineStringZM(ReadOnlySpan<(double X, double Y, double Z, double M)> vertices)
+    public static byte[] PointZM(double x, double y, double z, double m) =>
+        PointZM(new Point4D(x, y, z, m));
+
+    public static byte[] LineStringZM(ReadOnlySpan<Point4D> vertices)
     {
         if (vertices.Length < 1)
         {
             throw new ArgumentException("LINESTRINGZM requires at least one vertex.", nameof(vertices));
         }
-        byte[] buf = new byte[1 + 4 + 4 + (32 * vertices.Length)];
+        byte[] buf = new byte[1 + 4 + 4 + (Point4D.SizeBytes * vertices.Length)];
         buf[0] = LittleEndian;
         BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(1, 4), WkbLineStringZM);
         BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(5, 4), (uint)vertices.Length);
         int offset = 9;
         for (int i = 0; i < vertices.Length; i++)
         {
-            BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(offset, 8), vertices[i].X);
-            BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(offset + 8, 8), vertices[i].Y);
-            BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(offset + 16, 8), vertices[i].Z);
-            BinaryPrimitives.WriteDoubleLittleEndian(buf.AsSpan(offset + 24, 8), vertices[i].M);
-            offset += 32;
+            vertices[i].WriteLittleEndian(buf.AsSpan(offset, Point4D.SizeBytes));
+            offset += Point4D.SizeBytes;
         }
         return buf;
+    }
+
+    /// <summary>Tuple-accepting compatibility overload. Internally normalizes
+    /// every vertex to <see cref="Point4D"/>; new call sites should pass
+    /// Point4D directly.</summary>
+    public static byte[] LineStringZM(ReadOnlySpan<(double X, double Y, double Z, double M)> vertices)
+    {
+        if (vertices.Length < 1)
+        {
+            throw new ArgumentException("LINESTRINGZM requires at least one vertex.", nameof(vertices));
+        }
+        Span<Point4D> typed = vertices.Length <= 64
+            ? stackalloc Point4D[vertices.Length]
+            : new Point4D[vertices.Length];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            typed[i] = new Point4D(vertices[i].X, vertices[i].Y, vertices[i].Z, vertices[i].M);
+        }
+        return LineStringZM((ReadOnlySpan<Point4D>)typed);
     }
 }

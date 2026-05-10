@@ -1,7 +1,9 @@
 # Model Decomposer — Safetensors and PyTorch Pickle Ingestion
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
+> **Authority note (2026-05-09):** This document describes the model-decomposer surface from before the 2026-05-08 architectural correction. The container-decomposer behavior (architecture detection, tensor classification, file-format handling) remains correct. The "embedding firefly" emission (~line 21, ~line 240) describes the right MECHANISM (POINTZM physicality from Laplacian eigenmap projection of embedding rows) but with the wrong storage shape — fireflies attach to existing `word_form` content entities (the species), NOT to a separate `embedding_firefly` entity. Per-role-unit emission for Track 2 transformation tensors is now spec'd as the **layer-type decomposer library** at [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md), emitting typed attestation EDGES between existing `word_form` content entities (NOT phantom per-role-unit entities). See [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §III, §V, §VII, §XII for the canonical architecture.
+
+**Status:** Container/classification logic canonical; per-role-unit emission shape deprecated per the authority note above.
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
 **Audience:** Engineers ingesting AI models into the substrate, anyone debugging model-ingestion edge counts or refinement output quality.
 
 ---

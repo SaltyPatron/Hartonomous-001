@@ -43,7 +43,7 @@ internal static class ClassifyCommand
             {
                 seedHash = Convert.FromHexString(seedHashHex);
             }
-            catch (FormatException ex)
+            catch (FormatException ex) // BOUNDARY: CLI argument validation maps invalid hex to exit code 2.
             {
                 Console.Error.WriteLine($"Invalid hex seed hash: {ex.Message}");
                 Environment.ExitCode = 2;

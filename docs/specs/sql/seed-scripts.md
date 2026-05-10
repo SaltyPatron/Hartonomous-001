@@ -76,10 +76,18 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     -- Video modality
     ('video_frame',         'video'),
 
-    -- Model modality
+    -- Model modality (real structural artifact entities per docs/00-substrate-spec.md §II.1)
     ('tensor',              'model_weights'),
     ('model_architecture',  'model_weights'),
-    ('attention_pattern',   'model_weights');
+    ('tokenizer_model',     'model_weights');
+    -- NOTE: 'attention_pattern' was previously seeded here but is DEPRECATED by the
+    -- 2026-05-08 architectural correction (sql/schema/seed/entity_type.sql:59-98).
+    -- Per-role units of Track 2 transformation tensors (attention patterns, FFN
+    -- rows, etc.) manifest as typed attestation EDGES between existing word_form
+    -- content entities (model_attention_pattern per sql/schema/seed/edge_type.sql:84-90),
+    -- NOT as their own entity types. See AP-25 in .claude/rules/45-anti-patterns.md
+    -- and the canonical layer-type decomposer library at
+    -- docs/specs/decomposers/layer-type-library.md.
 
 COMMIT;
 ```

@@ -424,165 +424,43 @@ COMMENT ON COLUMN substrate.edge_type.semantic_weight IS
 -- junction table is created) since it INSERTs against substrate.provenance_edge_authority.
 
 -- ── sql/schema/seed/entity_type.sql ───────────────────────────────────────
--- Entity types: 54 rows in canonical insertion order. SERIAL ids 1..42 are
--- pinned to the entity_model named partition (tables/core/entity_model.sql).
--- IDs 43..54 (per-role-unit families added for the analysis-pass DAG —
--- attention components, conv/codec filters, MoE expert neurons + route
--- directions, vision/conformer/diffusion/LoRA/modality/object-query/bbox/
--- class-head per-row units) currently route through entity_default. A
--- follow-up migration can detach/extend entity_model's FOR VALUES list to
--- bring them under the named partition for index locality.
+-- Entity types. Content-only — every row classifies CONTENT.
 --
--- Content-kind only. No dataset-named, algorithm-named, or relation-shaped
--- types. The substrate's identity model (BLAKE3 over content) requires that
--- the same content collapses to the same hash regardless of source.
+-- Identity is BLAKE3 over content bytes (per docs/00-substrate-spec.md §II.1).
+-- Same content under multiple structural classifications collapses to one
+-- entity row with multiple substrate.entity_classification rows.
 --
--- Track 1 — text/audio/image/video content:
---   codepoint, grapheme_cluster, word_form, morpheme, lemma,
---   text_composition, paragraph, document, synset,
---   collation_element, language_name,
---   pixel_region, audio_recording, audio_chunk, video_frame.
---
--- Track 2 — model decomposition. Per .claude/rules/35-inference-and-godel.md
--- the per-role unit entities are what carry a model's learned function. The
--- substrate doesn't store every weight verbatim — it extracts the activated
--- semantic paths (lottery-ticket subnetwork) and discards gradient noise per
--- Law #11 (sparsity is honest recording, not approximation).
---
---   tensor                   — one safetensors entry (a whole weight matrix)
---   model_architecture       — a model's architecture identity
---   tokenizer_model          — a tokenizer instance (vocab + merges + config)
---   attention_pattern        — Q/K/V/O contribution pattern across heads
---   attention_head           — one head of multi-head attention
---   attention_archetype      — canonical pattern an attention layer encodes
---   embedding_position       — one row of the token embedding matrix (firefly)
---   ffn_neuron               — one output neuron of an FFN layer
---   logit_projection         — one row of the output unembedding matrix
---   moe_route                — a single MoE router decision
---   moe_routing_profile      — aggregate routing distribution for an MoE layer
---   residual_direction       — a principal direction in residual-stream geometry
---   archetype                — a canonical pattern that a tensor encodes
---
--- Per-tensor analysis surfaces (each is a content-addressed reduction of a
--- whole tensor's structure; identical reductions across models dedup):
---   sparsity_profile         — log-magnitude bucket histogram + near-zero fraction
---   weight_distribution      — distribution shape (mean, std, percentiles, etc.)
---   eigenvalue_spectrum      — top-K eigenvalues of weight covariance
---   svd_spectrum             — singular value spectrum
---   svd_rank_component       — one rank-1 component (u_i ⊗ v_i⊤)
---   activation_range         — observed min/max/mean activation per row/col
---   layer_norm_scale         — per-feature layer-norm γ scale parameter set
---   layer_similarity_pair    — pair of tensors with measured similarity
---   rope_freq_table          — RoPE frequency table for an attention layer
---   codec_codebook           — quantization codebook (AWQ/GPTQ etc.)
---   codec_codevector         — single centroid in a quantization codebook
---   vocab_coverage_profile   — tokenizer vocab coverage of the lemma seed
---
--- Removed (vs the original 25-row schema, none re-added):
---   ud_sentence, ud_token, tatoeba_sentence, word_sense, wikt_sense,
---   bpe_token, inflected_form. See prior version comments.
---
--- ARCHITECTURAL CORRECTION (2026-05-08): The per-role-unit / per-tensor-
--- analysis entity types below (ids 19-54 except 16/17/18) are PHANTOMS from
--- earlier framing where every model component became its own entity. Per
--- the user-stated invention (every model calculation = attestation_type on
--- edges between EXISTING token entities), these are deprecated:
---
---   Phantom entity types (deprecated; should become attestation_types on
---   token↔token edges in the per-role attestation taxonomy seeded in
---   sql/schema/seed/attestation_type.sql):
---     attention_pattern, attention_head, attention_archetype,
---     embedding_position, ffn_neuron, logit_projection, moe_route,
---     moe_routing_profile, residual_direction, archetype,
---     svd_rank_component, codec_codevector, codevector,
---     audio_codec_filter, bbox_projection, class_projection,
---     conformer_component, conv_filter, diffusion_component,
---     lora_component, modality_basis_vector, moe_expert_neuron,
---     moe_route_direction, object_query_slot, vision_feature_direction
---
---   Stay (per-tensor-level analysis surfaces — properly attached to the
---   tensor entity, not to phantom row-level entities. Migrating these to
---   physicality on the tensor entity is a follow-up):
---     sparsity_profile, weight_distribution, eigenvalue_spectrum,
---     svd_spectrum, activation_range, layer_norm_scale,
---     layer_similarity_pair, rope_freq_table, codec_codebook, codebook,
---     vocab_coverage_profile
---
---   Real structural artifacts (keep):
---     tensor, model_architecture, tokenizer_model
---
--- The per-role attestation_types added in attestation_type.sql
--- (model_attention_qk_pattern, model_ffn_full_path, model_input_embedding,
--- model_lm_head_projection, etc.) are the replacement: they live on edges
--- between token (word_form) entities, NOT as separate entity types.
---
--- Until decomposer passes are rewritten to emit token↔token edges instead
--- of phantom entities, the rows below remain in the seed so existing code
--- that looks up these codes doesn't crash. Code that creates these phantom
--- entities is on the deprecation path (see AP-21 in
--- .claude/rules/45-anti-patterns.md and the architectural correction
--- note 2026-05-08).
+-- Per docs/01-tensor-primitive-spec.md: per-role units of model tensors are
+-- attestation EDGES between content entities (NOT separate entity types).
+-- Per-tensor analytical surfaces (sparsity, weight distribution, SVD spectrum,
+-- etc.) are physicality on the tensor entity (NOT separate entity types).
 INSERT INTO substrate.entity_type (code, modality) VALUES
-    ('codepoint',                'text'),           --  1
-    ('grapheme_cluster',         'text'),           --  2
-    ('word_form',                'text'),           --  3
-    ('morpheme',                 'text'),           --  4
-    ('lemma',                    'text'),           --  5
-    ('text_composition',         'text'),           --  6
-    ('paragraph',                'text'),           --  7
-    ('document',                 'text'),           --  8
-    ('synset',                   'text'),           --  9
-    ('collation_element',        'text'),           -- 10
-    ('language_name',            'text'),           -- 11
-    ('pixel_region',             'image'),          -- 12
-    ('audio_recording',          'audio'),          -- 13
-    ('audio_chunk',              'audio'),          -- 14
-    ('video_frame',              'video'),          -- 15
-    ('tensor',                   'model_weights'),  -- 16
-    ('model_architecture',       'model_weights'),  -- 17
-    ('tokenizer_model',          'model_weights'),  -- 18
-    ('attention_pattern',        'model_weights'),  -- 19
-    ('attention_head',           'model_weights'),  -- 20
-    ('attention_archetype',      'model_weights'),  -- 21
-    ('embedding_position',       'model_weights'),  -- 22
-    ('ffn_neuron',               'model_weights'),  -- 23
-    ('logit_projection',         'model_weights'),  -- 24
-    ('moe_route',                'model_weights'),  -- 25
-    ('moe_routing_profile',      'model_weights'),  -- 26
-    ('residual_direction',       'model_weights'),  -- 27
-    ('archetype',                'model_weights'),  -- 28
-    ('sparsity_profile',         'model_weights'),  -- 29
-    ('weight_distribution',      'model_weights'),  -- 30
-    ('eigenvalue_spectrum',      'model_weights'),  -- 31
-    ('svd_spectrum',             'model_weights'),  -- 32
-    ('svd_rank_component',       'model_weights'),  -- 33
-    ('activation_range',         'model_weights'),  -- 34
-    ('layer_norm_scale',         'model_weights'),  -- 35
-    ('layer_similarity_pair',    'model_weights'),  -- 36
-    ('rope_freq_table',          'model_weights'),  -- 37
-    ('codec_codebook',           'model_weights'),  -- 38
-    ('codec_codevector',         'model_weights'),  -- 39
-    ('vocab_coverage_profile',   'model_weights'),  -- 40
-    ('codebook',                 'model_weights'),  -- 41
-    ('codevector',               'model_weights'),  -- 42
-    -- Per-role-unit entity types for analysis passes (see edge_type.sql for
-    -- the matching has_* edge codes that bind a tensor to its rows). Each
-    -- row is content-hashed via PerRowContentPass canonical f64 encoding so
-    -- identical row content across models / shards collapses to ONE entity.
-    -- (AttentionComponentPass reuses attention_pattern (id 19) as its entity
-    -- type — has_attention_component is the edge that bears the binding.)
-    ('audio_codec_filter',       'model_weights'),  -- 43 (audio codec filter row)
-    ('bbox_projection',          'model_weights'),  -- 44 (detection bbox-head projection)
-    ('class_projection',         'model_weights'),  -- 45 (classification head projection)
-    ('conformer_component',      'model_weights'),  -- 46 (conformer block component row)
-    ('conv_filter',              'model_weights'),  -- 47 (per-channel conv filter)
-    ('diffusion_component',      'model_weights'),  -- 48 (diffusion U-Net component row)
-    ('lora_component',           'model_weights'),  -- 49 (LoRA adapter rank-1 component)
-    ('modality_basis_vector',    'model_weights'),  -- 50 (cross-modal basis direction)
-    ('moe_expert_neuron',        'model_weights'),  -- 51 (per-expert FFN neuron)
-    ('moe_route_direction',      'model_weights'),  -- 52 (router gate direction)
-    ('object_query_slot',        'model_weights'),  -- 53 (object-detection query slot)
-    ('vision_feature_direction', 'model_weights');  -- 54 (vision-feature row direction)
+    -- Text
+    ('codepoint',          'text'),
+    ('grapheme_cluster',   'text'),
+    ('word_form',          'text'),
+    ('morpheme',           'text'),
+    ('lemma',              'text'),
+    ('text_composition',   'text'),
+    ('paragraph',          'text'),
+    ('document',           'text'),
+    ('synset',             'text'),
+    ('collation_element',  'text'),
+    ('language_name',      'text'),
+    -- Image
+    ('pixel_region',       'image'),
+    ('visual_concept',     'image'),
+    ('object_query',       'image'),
+    -- Audio
+    ('audio_recording',    'audio'),
+    ('audio_chunk',        'audio'),
+    ('codec_codevector',   'audio'),
+    -- Video
+    ('video_frame',        'video'),
+    -- Model package artifacts
+    ('tensor',             'model_weights'),
+    ('model_architecture', 'model_weights'),
+    ('tokenizer_model',    'model_weights');
 
 -- ── sql/schema/seed/physicality_type.sql ───────────────────────────────────────
 -- Physicality types: 13 rows, ids 1..13 must match partition declarations.
@@ -640,65 +518,43 @@ INSERT INTO substrate.significance_context (code) VALUES
     ('morphological_productivity');
 
 -- ── sql/schema/seed/attestation_type.sql ───────────────────────────────────────
--- 32 starter attestation types: 14 base evidence kinds + 18 per-role model
--- evidence kinds. Open vocabulary — runtime additions are expected (e.g.,
--- per-corpus or per-model arena-attestation pairs).
+-- Attestation types. Open vocabulary — runtime additions are expected.
 --
--- Per-role taxonomy (lines 63+) is what the safetensors model passes
--- reference: TokenCrossEdgePass uses model_input_embedding;
--- TokenAttentionEdgePass uses model_attention_qk_pattern; TokenFfnEdgePass
--- uses model_ffn_factor_alignment / model_ffn_full_path; PerRowContentPass
--- uses model_per_role_unit_circuit; EmbeddingFireflyPass uses
--- model_embedding_proximity. Without these rows the model decomposer's
--- substrate.resolve_attestation_type_id calls fail with NULL → the pass
--- raises 'attestation_type code=... missing — bootstrap not applied?'.
--- The seed must run BEFORE any safetensors phase (M7).
+-- Glicko-2 score (per docs/01-tensor-primitive-spec.md §V) and per-event
+-- weight stratify what KIND of evidence is being recorded. Sign-bearing
+-- (positive vs negative) attestation lives in the score parameter (1=win,
+-- 0=loss); per-event weight scales the magnitude of the rating update.
 --
 -- Per-event weight defaults reflect evidence density vs confidence:
---   curated lexical relations: 1.0 (one high-confidence event)
 --   corpus co-occurrence: 0.1  (high-volume, low-per-event-confidence)
---   model attention/circuit: 0.5 (medium-volume, structural-confidence)
---   inference outcomes:    1.5 (sparse, ground-truth signal)
---   expert correction:     2.0 (highest single-event impact)
---
--- These are PRIORS. Per-emission weight overrides are passed through the
--- significance-event API at call time.
+--   curated lexical:      1.0  (hand-curated)
+--   tuple-level model evidence: 0.5-0.6 (the spec §IV mapping)
+--   inference outcomes:   1.5  (sparse ground-truth signal)
+--   expert correction:    2.0  (highest single-event impact)
 INSERT INTO substrate.attestation_type (code, description, default_event_weight) VALUES
+    -- Corpus / lexicon evidence
     ('corpus_co_occurrence_window',
-     'Decomposer slid window of radius R over a parent text composition; per-pair weighted comparison event. Weight scaled by 1/distance × parent_significance × 1/RLE_count. Substrate analog of word2vec/GloVe statistics.',
+     'Decomposer slid window of radius R over a parent text composition; per-pair weighted comparison event. Substrate analog of word2vec/GloVe statistics.',
      0.1),
     ('corpus_proximity_within_sentence',
-     'Same as corpus_co_occurrence_window but strictly confined within a sentence boundary (no cross-sentence pairs). Used when sentence-level decomposition is the natural unit.',
+     'Same as corpus_co_occurrence_window but strictly within a sentence boundary.',
      0.1),
     ('lexical_curated_relation',
-     'Curated lexicon assertion (WordNet has_sense, Wiktionary etymology, OMW alignment, UD deprel labels). High per-event confidence because hand-curated.',
+     'Curated lexicon assertion (WordNet has_sense, Wiktionary etymology, OMW alignment, UD deprel labels). High per-event confidence.',
      1.0),
     ('lexical_attested_translation',
-     'Bilingual lexicon entry or aligned-sentence translation pair (Tatoeba, OPUS). One attestation per parallel pair.',
+     'Bilingual lexicon entry or aligned-sentence translation pair (Tatoeba, OPUS).',
      0.8),
-    ('model_embedding_proximity',
-     'Cosine/magnitude of two tokens'' rows in a decomposed model''s embedding or unembedding matrix. Track-1 firefly geometry binding.',
-     0.4),
-    ('model_attention_pattern',
-     'Attention head''s Q×K projection peak between two existing token entities. Track-2 per-role-unit attestation expressed as a direct token↔token edge.',
-     0.5),
-    ('model_ffn_factor_alignment',
-     'FFN per-role unit''s input/output projection alignment with two existing token entities. Track-2 attestation.',
-     0.5),
-    ('model_per_role_unit_circuit',
-     'Identified circuit binding per-role units (substrate entities) to a relation between existing token entities. Bridge edges queries_from/attends_to_class/projects_to.',
-     0.6),
-    ('cross_model_corroboration',
-     'Voronoi-cell tightness or Fréchet-trajectory similarity between per-role units across two or more decomposed models. Cross-architecture consensus event.',
-     0.7),
+    -- Cross-source evidence
     ('cross_model_divergence',
-     'Cross-model fireflies disagree; cell fragmented. Recorded as negative-evidence event so Glicko sigma stays wide and the engine''s curiosity loop targets the gap.',
+     'Cross-model fireflies disagree; cell fragmented. Recorded with score=0.5 so sigma stays wide and the engine''s curiosity loop targets the gap.',
      0.5),
+    -- Inference outcomes (Glicko Step-6 closed loop)
     ('inference_outcome_accept',
-     'Step 6 of inference: query path produced an answer the user/downstream-task accepted. Updates the path''s edge_significance positively. Closes the OODA loop.',
+     'Inference Step 6: query path produced an answer the user/downstream-task accepted. Updates path edge_significance positively (score=1, high weight).',
      1.5),
     ('inference_outcome_reject',
-     'Step 6: query path produced an answer that was rejected. Updates the path''s edge_significance negatively (loss event).',
+     'Inference Step 6: query path produced an answer that was rejected. Negative event on the path (score=0, high weight).',
      1.5),
     ('expert_correction',
      'Human-in-loop override of an edge''s rating. Highest per-event weight; used sparingly for corrections that should dominate accumulated automatic evidence.',
@@ -706,66 +562,59 @@ INSERT INTO substrate.attestation_type (code, description, default_event_weight)
     ('provenance_authority_corroboration',
      'Multi-source assertion resolved through provenance_edge_authority. Used when several provenances of differing trust priors agree on an edge''s rating.',
      0.8),
-
-    -- Per-role attestation taxonomy. Each kind of model component that
-    -- can attest to a token-pair relationship gets its own attestation_type.
-    -- Layer/head/position indices are metadata on the individual attestation
-    -- event, NOT separate types — that would explode the vocabulary. The
-    -- taxonomy here is at the level of "what computational role of the
-    -- model is producing this evidence."
-    ('model_attention_query_projection',
-     'Attention head Q-side projection: token T appears as a query when bound to key tokens with this attention weight. Per-(layer, head) details on the attestation row.',
-     0.5),
-    ('model_attention_key_projection',
-     'Attention head K-side projection: token S appears as a key when responded to by query tokens with this attention weight.',
-     0.5),
-    ('model_attention_value_projection',
-     'Attention head V-side projection: when key token S is attended, this is the value contribution.',
-     0.5),
-    ('model_attention_output_projection',
-     'Attention head O-side projection: residual contribution mapped through the head''s output transform.',
-     0.5),
+    -- Tuple-level model evidence (per docs/01-tensor-primitive-spec.md §IV).
+    -- Each tuple shape produces its own attestation_type. Sign carried via
+    -- Glicko score, magnitude via per-event weight.
     ('model_attention_qk_pattern',
-     'Combined Q×K^T pattern between two tokens — what the head encodes about the token pair''s mutual attention. Strongest single-attestation kind for token-pair relationships from attention.',
+     'AttentionBlock tuple Q×K^T projection between two content entities (token, image_patch, audio_frame).',
      0.6),
     ('model_attention_vo_pattern',
-     'Combined V×O^T pattern between two tokens — what the head produces in residual when one attends to the other.',
+     'AttentionBlock tuple V·O^T projection between two content entities.',
      0.5),
-    ('model_ffn_up_projection',
-     'FFN up-projection (input → hidden): token T''s residual direction activates which FFN dimensions.',
-     0.4),
-    ('model_ffn_gate_projection',
-     'FFN gate-projection (SwiGLU/GeGLU): token T''s gate activation pattern.',
-     0.4),
-    ('model_ffn_down_projection',
-     'FFN down-projection (hidden → output): which output token directions an FFN dimension produces.',
-     0.4),
+    ('model_cross_modal_alignment',
+     'CrossAttentionBlock tuple Q^T·K projection where Q-side and K-side bind to different content-entity-types (text↔image, text↔audio, decoder-token↔encoder-token).',
+     0.5),
     ('model_ffn_full_path',
-     'Full FFN path up → activation → down composing as a token-T-to-token-U attestation.',
-     0.5),
-    ('model_lm_head_projection',
-     'LM head / unembedding: residual direction → output token logit.',
+     'SwiGluFfn or BertFfn tuple full-path response: down(act(gate(x))⊙up(x)) or output(act(intermediate(x))) per content-entity pair.',
      0.5),
     ('model_input_embedding',
-     'Input embedding row: token → its hidden-space representation. Source of all downstream model_embedding_proximity attestations between token pairs.',
+     'EmbeddingLookup table: per-row firefly POINTZM position + cosine between vocab token rows.',
+     0.5),
+    ('model_lm_head_projection',
+     'LM head Linear (lm_head slot in EmbeddingLookup-dual): residual direction → output token logit.',
      0.5),
     ('model_layer_norm_evidence',
-     'Layer norm scale evidence (per-dimension parameter). Recorded on per-layer model_architecture attestations rather than token-token edges.',
+     'Normalization primitive γ/β contour stored as physicality on the tensor entity.',
+     0.3),
+    ('model_inference_state_evidence',
+     'BnState tuple running_mean/running_var/num_batches_tracked — derived inference-time state, not learned content. Lower per-event weight.',
+     0.2),
+    ('model_local_kernel_evidence',
+     'LocalKernel primitive (conv2d, conv1d, depthwise, pointwise) response between content-entity neighbors (pixel_region, audio_chunk).',
+     0.4),
+    ('model_position_embedding',
+     'Position embedding (absolute / RoPE / ALiBi / Swin relative-position-bias-table): positional bias contribution.',
      0.3),
     ('model_moe_router',
-     'MoE router scoring: token T''s routing weight to expert E.',
+     'MoeRouterBlock router: per-token routing strength alignment between tokens that route to the same expert.',
      0.4),
     ('model_moe_expert_response',
-     'MoE expert response: when expert E activates, which token pairs does it relate.',
+     'MoeRouterBlock expert: per-expert FFN response between content-entity pairs the expert refines together.',
      0.4),
     ('model_lora_adapter_evidence',
-     'LoRA adapter contribution: A·B low-rank update''s token-pair contribution.',
+     'LoraDelta tuple: A·B low-rank update''s response on the same edges the base attests to. Stored alongside base attestations under a distinct attestation_type so synthesizers can choose to merge or keep separate.',
      0.5),
-    ('model_position_embedding',
-     'Position embedding (absolute / RoPE / ALiBi) evidence: positional bias on token-pair attention.',
-     0.3),
+    ('model_codec_evidence',
+     'EmbeddingLookup VQ codebook: per-codeword position attestation on codec_codevector entities.',
+     0.4),
+    ('model_detection_class_attestation',
+     'DetectionHead class_proj: per-(object_query, visual_concept) class score.',
+     0.5),
+    ('model_detection_bbox_attestation',
+     'DetectionHead bbox_proj: per-object_query bbox parameter prediction recorded as physicality on the object_query entity.',
+     0.5),
     ('model_quantization_variant_evidence',
-     'Same per-role evidence under a different quantization (FP8/AWQ/GPTQ/MXFP4). Lower-trust per-event because lossy.',
+     'Same per-tuple evidence under a different quantization (FP8/AWQ/GPTQ/MXFP4). Lower per-event weight because lossy.',
      0.3);
 
 -- ── sql/schema/seed/provenance.sql ───────────────────────────────────────
@@ -819,12 +668,39 @@ INSERT INTO substrate.pos (code, parent_id) VALUES
     ('X',     NULL);
 
 -- ── sql/schema/seed/edge_type.sql ───────────────────────────────────────
--- 111 edge types. Codes 1..39 land in named partitions
--- (tables/core/edge_structural.sql, edge_cross_lingual.sql, edge_cross_modal.sql,
--- edge_unicode.sql, edge_model.sql); codes 40..111 land in edge_default.
--- Single INSERT...SELECT pattern: tuples in a VALUES CTE, resolved against
--- substrate.entity_type via JOIN once, semantic_weight derived in CASE.
--- NULL source/target codes mean polymorphic.
+-- Edge types. Single INSERT...SELECT pattern: tuples in a VALUES CTE,
+-- resolved against substrate.entity_type via JOIN. NULL source/target codes
+-- mean polymorphic.
+--
+-- semantic_weight is a structural prior on the relation strength used by
+-- engine traversal as a tie-breaker; arena-bound Glicko mu on
+-- substrate.edge_significance is the dynamic weight.
+--
+-- Categories:
+--   structural    — within-modality structural composition (text)
+--   cross_lingual — between language entities
+--   cross_modal   — between content-entity-types of different modalities
+--   unicode       — codepoint-level Unicode tables
+--   model_derived — model-package metadata + content-entity attestations
+--                   produced by safetensors decomposers (per docs/01-tensor-
+--                   primitive-spec.md §IV)
+--   semantic      — WordNet / Wiktionary semantic relations between synsets
+--                   and lemmas
+--
+-- Per docs/01-tensor-primitive-spec.md: there is no has_<phantom> edge type
+-- pointing to a phantom entity. Per-tuple attestations land on edges between
+-- content entities; per-tensor analytics live as physicality on the tensor
+-- entity. The model_derived edges below are EXACTLY:
+--   * Architecture metadata (in_model, in_layer, has_dtype, has_shape,
+--     has_hidden_size, has_num_layers, has_num_attention_heads, has_vocab_size,
+--     has_token_id, in_vocabulary, has_tensor, has_architecture_name,
+--     has_tensor_name, has_tokenizer_model, has_token_in_tokenizer)
+--   * Token↔token attestation surfaces (model_concept_similarity,
+--     model_attention_pattern, model_ffn_factor)
+--   * Cross-content attestation surfaces (model_cross_modal_pattern,
+--     model_spatial_pattern, model_detection_class)
+--   * Vocab-coverage join (covers_lemma)
+--   * co_occurrence (polymorphic — used by corpus-window decomposers)
 
 INSERT INTO substrate.edge_type (code, category, source_type_id, target_type_id, semantic_weight)
 SELECT
@@ -852,133 +728,104 @@ SELECT
         ELSE 1.0
     END AS semantic_weight
 FROM (VALUES
-    -- Structural ──────────────────────────────────────────────────────
-    ('has_sense',                'structural',    'lemma',              'synset'),
-    ('has_form',                 'structural',    'lemma',              'word_form'),
-    ('has_lemma',                'structural',    'word_form',          'lemma'),
-    ('has_morpheme',             'structural',    'word_form',          'morpheme'),
-    ('has_gloss',                'structural',    'synset',             'text_composition'),
-    ('has_example',              'structural',    'synset',             'text_composition'),
-    ('has_name',                 'structural',    'model_architecture', 'text_composition'),
-    ('inflection_of',            'structural',    'word_form',          'lemma'),
-    ('has_etymology',            'structural',    'lemma',              'text_composition'),
-    ('has_pronunciation',        'structural',    'lemma',              'text_composition'),
-    ('has_hyphenation',          'structural',    'lemma',              'text_composition'),
-    ('has_wikidata',             'structural',    'lemma',              'text_composition'),
-    ('lexicalized_compound',     'structural',    'word_form',          'word_form'),
-    ('has_frame',                'structural',    'lemma',              'text_composition'),
-    ('has_wordnet_offset',       'structural',    'synset',             'text_composition'),
-    -- Cross-lingual ───────────────────────────────────────────────────
-    ('aligned_to_synset',        'cross_lingual', 'lemma',              'synset'),
-    ('translation_of',           'cross_lingual', 'lemma',              'lemma'),
-    ('translation_link',         'cross_lingual', 'text_composition',   'text_composition'),
-    ('macrolanguage_contains',   'cross_lingual', 'language_name',      'language_name'),
-    ('has_alternate_name',       'cross_lingual', 'language_name',      'language_name'),
-    ('superseded_by',            'cross_lingual', 'language_name',      'language_name'),
-    ('etym_inherited_from',      'cross_lingual', 'lemma',              'lemma'),
-    ('etym_derived_from',        'cross_lingual', 'lemma',              'lemma'),
-    ('etym_borrowed_from',       'cross_lingual', 'lemma',              'lemma'),
-    ('etym_cognate_with',        'cross_lingual', 'lemma',              'lemma'),
-    ('etym_calque_of',           'cross_lingual', 'lemma',              'lemma'),
-    ('etym_mention',             'cross_lingual', 'lemma',              'lemma'),
-    ('etym_link',                'cross_lingual', 'lemma',              'text_composition'),
-    ('etym_etymon',              'cross_lingual', 'lemma',              'lemma'),
-    -- Cross-modal ─────────────────────────────────────────────────────
-    ('recording_of',             'cross_modal',   'audio_recording',    'text_composition'),
-    ('has_contributor',          'cross_modal',   'audio_recording',    'text_composition'),
-    -- Unicode ─────────────────────────────────────────────────────────
-    ('maps_to_lowercase',        'unicode',       'codepoint',          'codepoint'),
-    ('case_folds_to',            'unicode',       'codepoint',          'codepoint'),
-    ('has_collation_weight',     'unicode',       'codepoint',          'collation_element'),
-    -- Model-derived: architecture metadata ────────────────────────────
-    ('in_model',                 'model_derived', 'tensor',             'model_architecture'),
-    ('in_layer',                 'model_derived', 'tensor',             'model_architecture'),
-    ('has_dtype',                'model_derived', 'tensor',             'text_composition'),
-    ('has_shape',                'model_derived', 'tensor',             'text_composition'),
-    ('has_hidden_size',          'model_derived', 'model_architecture', 'text_composition'),
-    ('has_num_layers',           'model_derived', 'model_architecture', 'text_composition'),
-    ('has_num_attention_heads',  'model_derived', 'model_architecture', 'text_composition'),
-    ('has_vocab_size',           'model_derived', 'model_architecture', 'text_composition'),
-    ('has_token_id',             'model_derived', 'word_form',          'text_composition'),
-    ('in_vocabulary',            'model_derived', 'word_form',          'model_architecture'),
-    ('co_occurrence',            'model_derived', NULL,                 NULL),
-    -- Token↔token edges that capture what model weights encode about
-    -- token-pair relationships. Each model decomposed adds attestations
-    -- (with attestation_type) on these edges; cross-model consensus
-    -- emerges from accumulated agreement.
-    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),
-    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),
-    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),
-    ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),
-    ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),
-    -- Model-derived: tensor analysis surfaces ─────────────────────────
-    ('has_tensor_name',          'model_derived', 'tensor',             'text_composition'),
-    ('has_tokenizer_model',      'model_derived', 'model_architecture', 'text_composition'),
-    ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),
-    ('has_weight_distribution',  'model_derived', 'tensor',             'weight_distribution'),
-    ('has_spectrum',             'model_derived', 'tensor',             'svd_spectrum'),
-    ('has_eigenvalue_spectrum',  'model_derived', 'tensor',             'eigenvalue_spectrum'),
-    ('has_sparsity_profile',     'model_derived', 'tensor',             'sparsity_profile'),
-    ('has_activation_range',     'model_derived', 'tensor',             'activation_range'),
-    ('has_layer_norm_scale',     'model_derived', 'tensor',             'layer_norm_scale'),
-    ('has_codebook',             'model_derived', 'tensor',             'codec_codebook'),
-    ('contains_codevector',      'model_derived', 'codec_codebook',     'codec_codevector'),
-    ('encodes_archetype',        'model_derived', 'tensor',             'archetype'),
-    ('has_layer_similarity',     'model_derived', 'tensor',             'layer_similarity_pair'),
-    ('has_rope_freqs',           'model_derived', 'tensor',             'rope_freq_table'),
-    ('has_rank_component',       'model_derived', 'tensor',             'svd_rank_component'),
-    ('has_moe_routing',          'model_derived', 'tensor',             'moe_routing_profile'),
-    ('has_embedding_position',   'model_derived', 'tensor',             'embedding_position'),
-    ('has_ffn_neuron',           'model_derived', 'tensor',             'ffn_neuron'),
-    ('has_logit_projection',     'model_derived', 'tensor',             'logit_projection'),
-    ('covers_lemma',             'model_derived', 'word_form',          'lemma'),
-    ('has_vocab_coverage',       'model_derived', 'tokenizer_model',    'vocab_coverage_profile'),
-    -- Model-derived: per-role-unit binding edges ─────────────────────
-    ('has_attention_component',  'model_derived', 'tensor',             'attention_pattern'),
-    ('has_codec_filter',         'model_derived', 'tensor',             'audio_codec_filter'),
-    ('has_bbox_projection',      'model_derived', 'tensor',             'bbox_projection'),
-    ('has_class_projection',     'model_derived', 'tensor',             'class_projection'),
-    ('has_conformer_component',  'model_derived', 'tensor',             'conformer_component'),
-    ('has_conv_filter',          'model_derived', 'tensor',             'conv_filter'),
-    ('has_diffusion_component',  'model_derived', 'tensor',             'diffusion_component'),
-    ('has_lora_component',       'model_derived', 'tensor',             'lora_component'),
-    ('has_modality_basis',       'model_derived', 'tensor',             'modality_basis_vector'),
-    ('has_moe_neuron',           'model_derived', 'tensor',             'moe_expert_neuron'),
-    ('has_route_direction',      'model_derived', 'tensor',             'moe_route_direction'),
-    ('has_object_query',         'model_derived', 'tensor',             'object_query_slot'),
-    ('has_vision_feature',       'model_derived', 'tensor',             'vision_feature_direction'),
-    -- Semantic: WordNet pointers (synset ↔ synset) ────────────────────
-    ('hypernym',                 'semantic',      'synset', 'synset'),
-    ('hyponym',                  'semantic',      'synset', 'synset'),
-    ('instance_hypernym',        'semantic',      'synset', 'synset'),
-    ('instance_hyponym',         'semantic',      'synset', 'synset'),
-    ('member_holonym',           'semantic',      'synset', 'synset'),
-    ('substance_holonym',        'semantic',      'synset', 'synset'),
-    ('part_holonym',             'semantic',      'synset', 'synset'),
-    ('member_meronym',           'semantic',      'synset', 'synset'),
-    ('substance_meronym',        'semantic',      'synset', 'synset'),
-    ('part_meronym',             'semantic',      'synset', 'synset'),
-    ('attribute',                'semantic',      'synset', 'synset'),
-    ('derivationally_related',   'semantic',      'synset', 'synset'),
-    ('antonym',                  'semantic',      'synset', 'synset'),
-    ('similar_to',               'semantic',      'synset', 'synset'),
-    ('also_see',                 'semantic',      'synset', 'synset'),
-    ('verb_group',               'semantic',      'synset', 'synset'),
-    ('entailment',               'semantic',      'synset', 'synset'),
-    ('cause',                    'semantic',      'synset', 'synset'),
-    ('participle_of_verb',       'semantic',      'synset', 'synset'),
-    ('pertainym',                'semantic',      'synset', 'synset'),
-    ('domain_of_synset_topic',   'semantic',      'synset', 'synset'),
-    ('member_of_domain_topic',   'semantic',      'synset', 'synset'),
-    ('domain_of_synset_region',  'semantic',      'synset', 'synset'),
-    ('member_of_domain_region',  'semantic',      'synset', 'synset'),
-    ('domain_of_synset_usage',   'semantic',      'synset', 'synset'),
-    ('member_of_domain_usage',   'semantic',      'synset', 'synset'),
-    -- Semantic: Wiktionary lemma ↔ lemma ──────────────────────────────
-    ('synonym',                  'semantic',      'lemma',  'lemma'),
-    ('coordinate_term',          'semantic',      'lemma',  'lemma'),
-    ('derived',                  'semantic',      'lemma',  'lemma'),
-    ('related',                  'semantic',      'lemma',  'lemma')
+    -- ── Structural (within text modality) ──────────────────────────────
+    ('has_sense',                'structural',    'lemma',              'synset'),              --  1
+    ('has_form',                 'structural',    'lemma',              'word_form'),           --  2
+    ('has_lemma',                'structural',    'word_form',          'lemma'),               --  3
+    ('has_morpheme',             'structural',    'word_form',          'morpheme'),            --  4
+    ('has_gloss',                'structural',    'synset',             'text_composition'),    --  5
+    ('has_example',              'structural',    'synset',             'text_composition'),    --  6
+    ('has_name',                 'structural',    'model_architecture', 'text_composition'),    --  7
+    ('inflection_of',            'structural',    'word_form',          'lemma'),               --  8
+    ('has_etymology',            'structural',    'lemma',              'text_composition'),    --  9
+    ('has_pronunciation',        'structural',    'lemma',              'text_composition'),    -- 10
+    ('has_hyphenation',          'structural',    'lemma',              'text_composition'),    -- 11
+    ('has_wikidata',             'structural',    'lemma',              'text_composition'),    -- 12
+    ('lexicalized_compound',     'structural',    'word_form',          'word_form'),           -- 13
+    ('has_frame',                'structural',    'lemma',              'text_composition'),    -- 14
+    ('has_wordnet_offset',       'structural',    'synset',             'text_composition'),    -- 15
+    -- ── Cross-lingual ──────────────────────────────────────────────────
+    ('aligned_to_synset',        'cross_lingual', 'lemma',              'synset'),              -- 16
+    ('translation_of',           'cross_lingual', 'lemma',              'lemma'),               -- 17
+    ('translation_link',         'cross_lingual', 'text_composition',   'text_composition'),    -- 18
+    ('macrolanguage_contains',   'cross_lingual', 'language_name',      'language_name'),       -- 19
+    ('has_alternate_name',       'cross_lingual', 'language_name',      'language_name'),       -- 20
+    ('superseded_by',            'cross_lingual', 'language_name',      'language_name'),       -- 21
+    ('etym_inherited_from',      'cross_lingual', 'lemma',              'lemma'),               -- 22
+    ('etym_derived_from',        'cross_lingual', 'lemma',              'lemma'),               -- 23
+    ('etym_borrowed_from',       'cross_lingual', 'lemma',              'lemma'),               -- 24
+    ('etym_cognate_with',        'cross_lingual', 'lemma',              'lemma'),               -- 25
+    ('etym_calque_of',           'cross_lingual', 'lemma',              'lemma'),               -- 26
+    ('etym_mention',             'cross_lingual', 'lemma',              'lemma'),               -- 27
+    ('etym_link',                'cross_lingual', 'lemma',              'text_composition'),    -- 28
+    ('etym_etymon',              'cross_lingual', 'lemma',              'lemma'),               -- 29
+    -- ── Cross-modal ────────────────────────────────────────────────────
+    ('recording_of',             'cross_modal',   'audio_recording',    'text_composition'),    -- 30
+    ('has_contributor',          'cross_modal',   'audio_recording',    'text_composition'),    -- 31
+    -- ── Unicode ────────────────────────────────────────────────────────
+    ('maps_to_lowercase',        'unicode',       'codepoint',          'codepoint'),           -- 32
+    ('case_folds_to',            'unicode',       'codepoint',          'codepoint'),           -- 33
+    ('has_collation_weight',     'unicode',       'codepoint',          'collation_element'),   -- 34
+    -- ── Model-derived: architecture + tokenizer + tensor metadata ──────
+    ('in_model',                 'model_derived', 'tensor',             'model_architecture'),  -- 35
+    ('in_layer',                 'model_derived', 'tensor',             'model_architecture'),  -- 36
+    ('has_dtype',                'model_derived', 'tensor',             'text_composition'),    -- 37
+    ('has_shape',                'model_derived', 'tensor',             'text_composition'),    -- 38
+    ('has_hidden_size',          'model_derived', 'model_architecture', 'text_composition'),    -- 39
+    ('has_num_layers',           'model_derived', 'model_architecture', 'text_composition'),    -- 40
+    ('has_num_attention_heads',  'model_derived', 'model_architecture', 'text_composition'),    -- 41
+    ('has_vocab_size',           'model_derived', 'model_architecture', 'text_composition'),    -- 42
+    ('has_token_id',             'model_derived', 'word_form',          'text_composition'),    -- 43
+    ('in_vocabulary',            'model_derived', 'word_form',          'model_architecture'),  -- 44
+    ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),              -- 45
+    ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),    -- 46
+    ('has_tensor_name',          'model_derived', 'tensor',             'text_composition'),    -- 47
+    ('has_tokenizer_model',      'model_derived', 'model_architecture', 'text_composition'),    -- 48
+    ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),           -- 49
+    ('covers_lemma',             'model_derived', 'word_form',          'lemma'),               -- 50
+    ('co_occurrence',            'model_derived', NULL,                 NULL),                  -- 51
+    -- ── Model-derived: content-entity attestation surfaces ─────────────
+    -- These are the load-bearing token↔token / patch↔patch / frame↔frame
+    -- edges that accumulate per-tuple attestation events from every
+    -- ingested model. Per docs/01-tensor-primitive-spec.md §IV.
+    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),           -- 52
+    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),           -- 53
+    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),           -- 54
+    ('model_spatial_pattern',    'model_derived', NULL,                 NULL),                  -- 55  (polymorphic: pixel_region↔pixel_region or audio_chunk↔audio_chunk)
+    ('model_cross_modal_pattern','model_derived', NULL,                 NULL),                  -- 56  (polymorphic: word_form↔pixel_region, word_form↔audio_chunk, decoder-token↔encoder-token, etc.)
+    ('model_detection_class',    'model_derived', 'object_query',       'visual_concept'),      -- 57
+    -- ── Semantic: WordNet pointers (synset ↔ synset) ────────────────────
+    ('hypernym',                 'semantic',      'synset', 'synset'),                          -- 58
+    ('hyponym',                  'semantic',      'synset', 'synset'),                          -- 59
+    ('instance_hypernym',        'semantic',      'synset', 'synset'),                          -- 60
+    ('instance_hyponym',         'semantic',      'synset', 'synset'),                          -- 61
+    ('member_holonym',           'semantic',      'synset', 'synset'),                          -- 62
+    ('substance_holonym',        'semantic',      'synset', 'synset'),                          -- 63
+    ('part_holonym',             'semantic',      'synset', 'synset'),                          -- 64
+    ('member_meronym',           'semantic',      'synset', 'synset'),                          -- 65
+    ('substance_meronym',        'semantic',      'synset', 'synset'),                          -- 66
+    ('part_meronym',             'semantic',      'synset', 'synset'),                          -- 67
+    ('attribute',                'semantic',      'synset', 'synset'),                          -- 68
+    ('derivationally_related',   'semantic',      'synset', 'synset'),                          -- 69
+    ('antonym',                  'semantic',      'synset', 'synset'),                          -- 70
+    ('similar_to',               'semantic',      'synset', 'synset'),                          -- 71
+    ('also_see',                 'semantic',      'synset', 'synset'),                          -- 72
+    ('verb_group',               'semantic',      'synset', 'synset'),                          -- 73
+    ('entailment',               'semantic',      'synset', 'synset'),                          -- 74
+    ('cause',                    'semantic',      'synset', 'synset'),                          -- 75
+    ('participle_of_verb',       'semantic',      'synset', 'synset'),                          -- 76
+    ('pertainym',                'semantic',      'synset', 'synset'),                          -- 77
+    ('domain_of_synset_topic',   'semantic',      'synset', 'synset'),                          -- 78
+    ('member_of_domain_topic',   'semantic',      'synset', 'synset'),                          -- 79
+    ('domain_of_synset_region',  'semantic',      'synset', 'synset'),                          -- 80
+    ('member_of_domain_region',  'semantic',      'synset', 'synset'),                          -- 81
+    ('domain_of_synset_usage',   'semantic',      'synset', 'synset'),                          -- 82
+    ('member_of_domain_usage',   'semantic',      'synset', 'synset'),                          -- 83
+    -- ── Semantic: Wiktionary lemma ↔ lemma ─────────────────────────────
+    ('synonym',                  'semantic',      'lemma',  'lemma'),                           -- 84
+    ('coordinate_term',          'semantic',      'lemma',  'lemma'),                           -- 85
+    ('derived',                  'semantic',      'lemma',  'lemma'),                           -- 86
+    ('related',                  'semantic',      'lemma',  'lemma')                            -- 87
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;
@@ -1064,34 +911,98 @@ COMMENT ON TABLE substrate.edge IS
     'Typed n-ary substrate edges with 4D geometric trajectories. Identity = (edge_type_id, BLAKE3 of participant role-ordered hashes).';
 
 -- ── sql/schema/tables/core/edge_structural.sql ───────────────────────────────────────
--- Edge types 1..13: has_sense, has_form, has_lemma, has_morpheme, has_gloss,
--- has_example, has_name, has_text, inflection_of, has_etymology,
--- has_pronunciation, has_hyphenation, has_wikidata. Plus 37 lexicalized_compound.
+-- Partition for structural edge_types (IDs 1..15 per sql/schema/seed/edge_type.sql).
+-- Within-modality structural composition for the text stack.
 CREATE TABLE substrate.edge_structural
-    PARTITION OF substrate.edge FOR VALUES IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 37);
+    PARTITION OF substrate.edge FOR VALUES IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 
 -- ── sql/schema/tables/core/edge_cross_lingual.sql ───────────────────────────────────────
--- Edge types 14..16: aligned_to_synset, translation_of, translation_link.
--- Plus 34..36: macrolanguage_contains, has_alternate_name, superseded_by.
+-- Partition for cross_lingual edge_types (IDs 16..29 per sql/schema/seed/edge_type.sql).
+-- Translation, etymology, and language-name relations across language boundaries.
 CREATE TABLE substrate.edge_cross_lingual
-    PARTITION OF substrate.edge FOR VALUES IN (14, 15, 16, 34, 35, 36);
+    PARTITION OF substrate.edge FOR VALUES IN (16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29);
 
 -- ── sql/schema/tables/core/edge_cross_modal.sql ───────────────────────────────────────
--- Edge types 17..18: recording_of, has_contributor.
+-- Partition for cross_modal edge_types (IDs 30..31 per sql/schema/seed/edge_type.sql).
+-- Audio↔text bindings (recording_of, has_contributor). Cross-modal attestation
+-- edges produced by safetensors decomposition (model_cross_modal_pattern) live
+-- in the dedicated edge_model_cross_content partition, not here.
 CREATE TABLE substrate.edge_cross_modal
-    PARTITION OF substrate.edge FOR VALUES IN (17, 18);
+    PARTITION OF substrate.edge FOR VALUES IN (30, 31);
 
 -- ── sql/schema/tables/core/edge_unicode.sql ───────────────────────────────────────
--- Edge types 19..21: maps_to_lowercase, case_folds_to, has_collation_weight.
+-- Partition for unicode edge_types (IDs 32..34 per sql/schema/seed/edge_type.sql).
+-- Codepoint-level Unicode tables (lowercase mapping, case-folding, collation).
 CREATE TABLE substrate.edge_unicode
-    PARTITION OF substrate.edge FOR VALUES IN (19, 20, 21);
+    PARTITION OF substrate.edge FOR VALUES IN (32, 33, 34);
 
 -- ── sql/schema/tables/core/edge_model.sql ───────────────────────────────────────
--- Edge types 22..33: in_model, in_layer, has_dtype, has_shape, has_hidden_size,
--- has_num_layers, has_num_attention_heads, has_vocab_size, has_token_string,
--- has_token_id, in_vocabulary, co_occurrence. Plus 38..39: has_tensor, has_architecture_name.
+-- Partition for model_derived metadata edge_types (IDs 35..51 per
+-- sql/schema/seed/edge_type.sql). Architecture / tokenizer / tensor metadata
+-- edges. Low cardinality per ingested model — bounded by the model's
+-- structural shape (one in_model per tensor, one has_hidden_size per model,
+-- etc.) rather than per-token-pair attestation volume. The hot per-instance
+-- attestation tables (model_concept_similarity, model_attention_pattern,
+-- model_ffn_factor) and the cross-content attestation tables live in their
+-- own partitions for index locality.
 CREATE TABLE substrate.edge_model
-    PARTITION OF substrate.edge FOR VALUES IN (22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 38, 39);
+    PARTITION OF substrate.edge FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+
+-- ── sql/schema/tables/core/edge_model_concept_similarity.sql ───────────────────────────────────────
+-- Partition for the model_concept_similarity edge_type (ID 52). Per-token-pair
+-- semantic-similarity attestations from EmbeddingLookup tables (cosine of
+-- embedding rows), LM heads (model_lm_head_projection attestation), MoE
+-- routers (model_moe_router attestation), and LoRA adapters
+-- (model_lora_adapter_evidence attestation) — all stratified by attestation_type
+-- on substrate.edge_significance.
+--
+-- High-cardinality: ~K² per ingested model where K = vocab tokens per model.
+-- Isolated partition gives index locality + fast scans for both recompose
+-- (read all attestations on a target tensor's edge slice) and inference
+-- (A* expansion of similarity neighbors).
+CREATE TABLE substrate.edge_model_concept_similarity
+    PARTITION OF substrate.edge FOR VALUES IN (52);
+
+-- ── sql/schema/tables/core/edge_model_attention_pattern.sql ───────────────────────────────────────
+-- Partition for the model_attention_pattern edge_type (ID 53). Per-token-pair
+-- attention attestations from AttentionBlock tuples (Q^T·K and V·O^T) across
+-- every layer × head of every ingested model — stratified by attestation_type
+-- (model_attention_qk_pattern, model_attention_vo_pattern) on
+-- substrate.edge_significance.
+--
+-- The hottest table in the substrate. Cardinality scales with
+-- (ingested_models × layers × heads × top_k_token_pairs_per_attention) — easily
+-- billions of rows for a heavy farm. Isolated partition for maximum index
+-- locality + partition pruning during both inference traversal and recompose.
+CREATE TABLE substrate.edge_model_attention_pattern
+    PARTITION OF substrate.edge FOR VALUES IN (53);
+
+-- ── sql/schema/tables/core/edge_model_ffn_factor.sql ───────────────────────────────────────
+-- Partition for the model_ffn_factor edge_type (ID 54). Per-token-pair FFN
+-- attestations from SwiGluFfn / BertFfn tuples (model_ffn_full_path) and MoE
+-- expert FFNs (model_moe_expert_response) — stratified by attestation_type
+-- on substrate.edge_significance.
+--
+-- High cardinality: scales with (ingested_models × layers × ffn_intermediate_dim
+-- × top_k_token_pairs_per_neuron). Comparable to attention_pattern volume on
+-- non-MoE models; MoE multiplies by num_experts. Isolated partition for
+-- locality.
+CREATE TABLE substrate.edge_model_ffn_factor
+    PARTITION OF substrate.edge FOR VALUES IN (54);
+
+-- ── sql/schema/tables/core/edge_model_cross_content.sql ───────────────────────────────────────
+-- Partition for cross-content attestation edge_types (IDs 55..57 per
+-- sql/schema/seed/edge_type.sql):
+--   55 model_spatial_pattern    (pixel_region↔pixel_region or audio_chunk↔audio_chunk)
+--   56 model_cross_modal_pattern (text↔image, text↔audio, decoder-token↔encoder-token)
+--   57 model_detection_class     (object_query↔visual_concept)
+--
+-- High-cardinality when vision / audio / detection models are ingested.
+-- Co-located in one partition because the three share the cross-modality
+-- access pattern (recompose for vision tower / cross-encoder / detection
+-- head reads attestations across all three edge_types together).
+CREATE TABLE substrate.edge_model_cross_content
+    PARTITION OF substrate.edge FOR VALUES IN (55, 56, 57);
 
 -- ── sql/schema/tables/core/edge_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_default
@@ -1120,23 +1031,39 @@ COMMENT ON TABLE substrate.edge_member IS
 
 -- ── sql/schema/tables/core/edge_member_structural.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_structural
-    PARTITION OF substrate.edge_member FOR VALUES IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 37);
+    PARTITION OF substrate.edge_member FOR VALUES IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 
 -- ── sql/schema/tables/core/edge_member_cross_lingual.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_cross_lingual
-    PARTITION OF substrate.edge_member FOR VALUES IN (14, 15, 16, 34, 35, 36);
+    PARTITION OF substrate.edge_member FOR VALUES IN (16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29);
 
 -- ── sql/schema/tables/core/edge_member_cross_modal.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_cross_modal
-    PARTITION OF substrate.edge_member FOR VALUES IN (17, 18);
+    PARTITION OF substrate.edge_member FOR VALUES IN (30, 31);
 
 -- ── sql/schema/tables/core/edge_member_unicode.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_unicode
-    PARTITION OF substrate.edge_member FOR VALUES IN (19, 20, 21);
+    PARTITION OF substrate.edge_member FOR VALUES IN (32, 33, 34);
 
 -- ── sql/schema/tables/core/edge_member_model.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model
-    PARTITION OF substrate.edge_member FOR VALUES IN (22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 38, 39);
+    PARTITION OF substrate.edge_member FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+
+-- ── sql/schema/tables/core/edge_member_model_concept_similarity.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_model_concept_similarity
+    PARTITION OF substrate.edge_member FOR VALUES IN (52);
+
+-- ── sql/schema/tables/core/edge_member_model_attention_pattern.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_model_attention_pattern
+    PARTITION OF substrate.edge_member FOR VALUES IN (53);
+
+-- ── sql/schema/tables/core/edge_member_model_ffn_factor.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_model_ffn_factor
+    PARTITION OF substrate.edge_member FOR VALUES IN (54);
+
+-- ── sql/schema/tables/core/edge_member_model_cross_content.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_model_cross_content
+    PARTITION OF substrate.edge_member FOR VALUES IN (55, 56, 57);
 
 -- ── sql/schema/tables/core/edge_member_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_default
@@ -1390,6 +1317,15 @@ CREATE TABLE substrate.edge_significance_default
     PARTITION OF substrate.edge_significance DEFAULT;
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- (Removed 2026-05-09 per architectural correction: per-decomposition-event log was
+-- over-engineered. The Glicko-2 aggregation in edge_significance IS the consensus
+-- — same edge across N models = same edge hash = ONE row, with cross-source
+-- corroboration accumulating as Glicko updates on that row, not new rows.
+-- Per-event provenance/history/audit is out of scope for substrate-as-AI; if
+-- ever needed for IP attribution it becomes a per-(source, edge) aggregate
+-- counter, not a per-event log. See AP-22 for the row-vs-rating-event dedup
+-- distinction that makes this work.)
 
 -- ── Phase 8: junction tables ─────────────────────────────────────────
 
@@ -3443,7 +3379,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.populate_senses(TEXT[], TEXT[], INT[], INT[]) IS
-    'No-op: substrate.sense was removed (Phase C). Function retained as a stub for legacy callers in NpgsqlReferenceDataWriter pending C# AP-2 cleanup.';
+    'No-op: the legacy sense reference table was removed (Phase C). Function retained as a stub for legacy callers in NpgsqlReferenceDataWriter pending C# AP-2 cleanup.';
 
 -- ── sql/schema/functions/load_wordnet_offset_synset_map.sql ───────────────────────────────────────
 -- Bridge function for OMW (and any cross-lexicon decomposer) to resolve
@@ -3960,58 +3896,102 @@ COMMENT ON FUNCTION substrate.populate_sequence_physicality(INT) IS
 
 -- ── sql/schema/functions/populate_edge_trajectories.sql ───────────────────────────────────────
 -- Populate edge trajectories from participant centroids.
-CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT)
+--
+-- Performance + correctness rewrite (was: per-row UDF dispatch + ordered-set
+-- aggregate over the full join, which crashed PostGIS aggregate state when
+-- the tuplestore spilled to temp files at >800k edges).
+--
+-- Three changes vs prior:
+--   1. LIMIT is pushed onto the edge-selection CTE first. Only the chosen
+--      edges' members are joined against physicality, instead of joining
+--      ALL members on every call and discarding all but `p_limit` at the
+--      end. Cuts the per-call work from O(total_edges × avg_members) to
+--      O(p_limit × avg_members).
+--   2. `substrate.entity_centroid_4d(entity_hash)` UDF call is replaced
+--      with a LATERAL JOIN onto substrate.physicality. plpgsql + PG cannot
+--      amortize STABLE-function calls across rows; an explicit JOIN can.
+--   3. `ST_MakeLine(... ORDER BY ...)` ordered-set aggregate is replaced by
+--      a pre-sorted subquery feeding a plain `ST_MakeLine(arr)` over the
+--      array form. PostGIS's ordered-set aggregate path spills to temp
+--      files under memory pressure and was the SIGSEGV site (NULL deref at
+--      offset 0x17 in tuplestore recovery). The array form materializes in
+--      a single pass without spill state.
+CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT DEFAULT NULL)
 RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
     v_updated BIGINT;
+    v_effective_limit INT := COALESCE(p_limit, 2147483647);
 BEGIN
-        WITH per_edge_pts AS (
-                SELECT e.edge_type_id, e.hash AS edge_hash,
-                             em.edge_role_id, em.role_position, em.entity_hash,
-                             substrate.geom_to_pointzm(
-                                     substrate.entity_centroid_4d(em.entity_hash)) AS cgeom
-          FROM substrate.edge e
-                    JOIN substrate.edge_member em
-                        ON em.edge_type_id = e.edge_type_id
-                     AND em.edge_hash    = e.hash
-                 WHERE e.geom IS NULL
-        ),
-        candidates AS (
-                SELECT edge_type_id, edge_hash
-                    FROM per_edge_pts
-                 GROUP BY edge_type_id, edge_hash
-                HAVING count(*) >= 2
-                     AND count(cgeom) = count(*)
-                 ORDER BY edge_type_id, edge_hash
-         LIMIT p_limit
+    WITH null_edges AS (
+        SELECT edge_type_id, hash AS edge_hash
+          FROM substrate.edge
+         WHERE geom IS NULL
+         ORDER BY edge_type_id, hash
+         LIMIT v_effective_limit
+    ),
+    per_edge_pts AS MATERIALIZED (
+        SELECT em.edge_type_id,
+               em.edge_hash,
+               em.edge_role_id,
+               em.role_position,
+               em.entity_hash,
+               substrate.geom_to_pointzm(p.geom) AS cgeom
+          FROM null_edges ne
+          JOIN substrate.edge_member em
+            ON em.edge_type_id = ne.edge_type_id
+           AND em.edge_hash    = ne.edge_hash
+          LEFT JOIN LATERAL (
+              SELECT geom
+                FROM substrate.physicality ph
+               WHERE ph.entity_hash = em.entity_hash
+               ORDER BY ph.physicality_type_id
+               LIMIT 1
+          ) p ON true
+    ),
+    candidates AS (
+        SELECT edge_type_id, edge_hash
+          FROM per_edge_pts
+         GROUP BY edge_type_id, edge_hash
+        HAVING count(*) >= 2
+           AND count(cgeom) = count(*)
+    ),
+    sorted_pts AS (
+        SELECT p.edge_type_id, p.edge_hash, p.cgeom,
+               row_number() OVER (
+                   PARTITION BY p.edge_type_id, p.edge_hash
+                   ORDER BY p.edge_role_id, p.role_position, p.entity_hash
+               ) AS rn
+          FROM per_edge_pts p
+          JOIN candidates c
+            ON c.edge_type_id = p.edge_type_id
+           AND c.edge_hash    = p.edge_hash
     ),
     aggregated AS (
-                SELECT p.edge_type_id, p.edge_hash,
-                             ST_MakeLine(p.cgeom ORDER BY p.edge_role_id, p.role_position, p.entity_hash) AS line_geom,
-                             count(*) AS member_count
-                    FROM per_edge_pts p
-                    JOIN candidates c
-                        ON c.edge_type_id = p.edge_type_id
-                     AND c.edge_hash    = p.edge_hash
-                 GROUP BY p.edge_type_id, p.edge_hash
+        SELECT edge_type_id,
+               edge_hash,
+               ST_MakeLine(array_agg(cgeom ORDER BY rn)) AS line_geom,
+               count(*) AS member_count
+          FROM sorted_pts
+         GROUP BY edge_type_id, edge_hash
     )
     UPDATE substrate.edge e
-             SET geom = a.line_geom
+       SET geom = a.line_geom
       FROM aggregated a
      WHERE e.edge_type_id = a.edge_type_id
        AND e.hash         = a.edge_hash
        AND e.geom IS NULL
-             AND a.member_count >= 2
-             AND ST_NumPoints(a.line_geom) >= 2;
+       AND a.member_count >= 2
+       AND a.line_geom IS NOT NULL
+       AND ST_NumPoints(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with LINESTRINGZM through all participant centroids in role order. Edges with missing participant centroids are left NULL so the phase can fail truthfully.';
+    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. LATERAL JOIN onto substrate.physicality (no per-row UDF), pre-sorted array_agg feeding ST_MakeLine (no ordered-set aggregate spill). Edges with missing participant centroids are left NULL.';
 
 -- ── sql/schema/functions/count_missing_edge_trajectories.sql ───────────────────────────────────────
 -- Count edges whose relation trajectory has not been populated.
@@ -4902,7 +4882,6 @@ COMMENT ON FUNCTION substrate.prune_significance_for_context(TEXT, DOUBLE PRECIS
 -- Implementation: ONE call to public.glicko2_bulk_update (native C —
 -- ext/libhartonomous/src/glicko_bulk.c via ext/hartonomous_pg/src/pg_glicko_bulk.c).
 
-DROP FUNCTION IF EXISTS substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION);
 DROP FUNCTION IF EXISTS substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA);
 
 CREATE OR REPLACE FUNCTION substrate.record_comparison(
@@ -6013,10 +5992,11 @@ BEGIN
     FROM substrate.ucd_general_categories() AS v
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.general_category', 'id'),
                    (SELECT max(id) FROM substrate.general_category), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;
@@ -6048,10 +6028,11 @@ BEGIN
     WHERE v.code IS NOT NULL AND length(v.code) > 0
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.script', 'id'),
                    (SELECT max(id) FROM substrate.script), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;
@@ -6083,10 +6064,11 @@ BEGIN
     FROM substrate.ucd_blocks() AS v
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.block', 'id'),
                    (SELECT max(id) FROM substrate.block), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;
@@ -6115,21 +6097,19 @@ DECLARE
 BEGIN
     -- enum_id: per-category enum value (UC_GCB_Other = 0, UC_GCB_CR = 1, …,
     -- UC_WB_Other = 0, UC_WB_CR = 1, …). codepoint_property INSERTs JOIN on
-    -- (category, enum_id) instead of the prior offset arithmetic
-    -- (a.gcb + 1, a.wb + 15, a.sb + 35, a.lb + 50) which crashed PG with
-    -- a syscache-corruption SIGSEGV in RI_FKey_check when UCD enum counts
-    -- shifted between the offset constants and what
-    -- substrate.ucd_break_properties() actually emits (2026-05-08, core
-    -- dump wsl-crash-1778290623-2791).
+    -- (category, enum_id) so seed reorder / new categories don't break the
+    -- mapping the way the prior offset arithmetic (a.gcb + 1, a.wb + 15,
+    -- a.sb + 35, a.lb + 50) did when GCB count shifted.
     INSERT INTO substrate.break_property (id, code, category, enum_id)
     SELECT v.id + 1, v.code, v.category, v.enum_id
     FROM substrate.ucd_break_properties() AS v
     ON CONFLICT (id) DO NOTHING;
 
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
     PERFORM setval(pg_get_serial_sequence('substrate.break_property', 'id'),
                    (SELECT max(id) FROM substrate.break_property), true);
 
-    GET DIAGNOSTICS inserted = ROW_COUNT;
     RETURN inserted;
 END;
 $$;
@@ -6139,6 +6119,24 @@ COMMENT ON FUNCTION substrate.populate_break_properties_from_ext() IS
 
 -- ── sql/schema/functions/populate_codepoint_property_range_from_ext.sql ───────────────────────────────────────
 -- Populate a bounded codepoint_property slice from the embedded UCD catalog.
+--
+-- One INSERT per call. NO internal WHILE loop. The client driver chunks the
+-- 1,114,112-codepoint range at 32,768 cp per call; this function does each
+-- of those chunks in a single set-based INSERT-SELECT.
+--
+-- Why no internal loop: plpgsql caches the SPI plan + ParamListInfo across
+-- iterations of a WHILE body. After enough iterations within a single
+-- backend the ParamListInfo's paramCompile function pointer is observed
+-- corrupted to a heap address; the next ExecInitExprRec dispatch through
+-- it (PG 18 execExpr.c:1061) executes non-X heap memory and the backend
+-- SIGSEGVs. A single-statement function avoids cross-iteration param
+-- caching entirely. Set-based INSERT with the SRF over the whole range is
+-- already the right shape.
+--
+-- break_property FK IDs resolved via JOIN against (category, enum_id) so
+-- shifting break_property seed counts don't break the mapping (the older
+-- offset arithmetic a.gcb + 1, a.wb + 15, a.sb + 35, a.lb + 50 silently
+-- desynchronised whenever the inventory's per-category counts shifted).
 CREATE OR REPLACE FUNCTION substrate.populate_codepoint_property_range_from_ext(
     p_start INT,
     p_count INT
@@ -6149,86 +6147,62 @@ VOLATILE
 AS $$
 DECLARE
     v_slice_start INT := GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112));
-    v_slice_count INT := GREATEST(0, LEAST(COALESCE(p_count, 0), 1114112 - GREATEST(0, LEAST(COALESCE(p_start, 0), 1114112))));
-    v_end INT := v_slice_start + v_slice_count;
-    v_lo INT := v_slice_start;
-    v_hi INT;
-    v_inserted INT;
-    v_total INT := 0;
-    -- Per-INSERT chunk small enough that the AfterTriggerEnd FK validation
-    -- queue (7 FK columns × chunk_size rows × per-event tuple slot) does
-    -- not exhaust the per-query memory context and SIGSEGV
-    -- MakeTupleTableSlot. 32768 was the prior value; it crashed PG 18.3
-    -- with ~224k queued FK events per query. 1024 keeps the queue under
-    -- ~7k events — well below any memory ceiling. The seed driver still
-    -- chunks at 32768 client-side; this caps the SQL function's INTERNAL
-    -- per-INSERT batch independently.
-    v_max_srf_rows CONSTANT INT := 1024;
+    v_slice_count INT := GREATEST(0, LEAST(COALESCE(p_count, 0), 1114112 - v_slice_start));
+    v_inserted    INT;
 BEGIN
-    WHILE v_lo < v_end LOOP
-        v_hi := LEAST(v_lo + v_max_srf_rows, v_end);
+    IF v_slice_count = 0 THEN
+        RETURN 0;
+    END IF;
 
-        -- FK IDs resolved via JOIN against (category, enum_id) instead of
-        -- the prior offset arithmetic (a.gcb + 1, a.wb + 15, a.sb + 35,
-        -- a.lb + 50). The offsets assumed a specific contiguous layout in
-        -- substrate.break_property; when UCD enum counts shifted, the
-        -- resulting INSERTs referenced non-existent FK IDs and PG 18.3's
-        -- RI_FKey_check trigger SIGSEGV'd in get_op_opfamily_properties /
-        -- syscache GETSTRUCT instead of returning a clean FK violation
-        -- (2026-05-08, core wsl-crash-1778290623-2791).
-        WITH inserted AS (
-            INSERT INTO substrate.codepoint_property (
-                entity_hash,
-                codepoint_value,
-                general_category_id,
-                script_id,
-                block_id,
-                gcb_id, wb_id, sb_id, lb_id,
-                is_extended_pictographic,
-                ccc,
-                decomposition_mapping,
-                simple_case_fold,
-                full_case_fold
-            )
-            SELECT
-                a.hash,
-                a.cp,
-                a.general_category + 1,
-                a.script + 1,
-                a.block + 1,
-                bp_gcb.id,
-                bp_wb.id,
-                bp_sb.id,
-                bp_lb.id,
-                a.extended_pictographic,
-                a.ccc::SMALLINT,
-                a.decomposition_mapping,
-                NULLIF(a.simple_case_fold, -1),
-                a.full_case_fold
-            FROM substrate.ucd_codepoints(v_lo, v_hi - v_lo) a
-            JOIN substrate.break_property bp_gcb
-              ON bp_gcb.category = 'GCB' AND bp_gcb.enum_id = a.gcb
-            JOIN substrate.break_property bp_wb
-              ON bp_wb.category  = 'WB'  AND bp_wb.enum_id  = a.wb
-            JOIN substrate.break_property bp_sb
-              ON bp_sb.category  = 'SB'  AND bp_sb.enum_id  = a.sb
-            JOIN substrate.break_property bp_lb
-              ON bp_lb.category  = 'LB'  AND bp_lb.enum_id  = a.lb
-            ON CONFLICT (entity_hash) DO NOTHING
-            RETURNING 1
+    WITH inserted AS (
+        INSERT INTO substrate.codepoint_property (
+            entity_hash,
+            codepoint_value,
+            general_category_id,
+            script_id,
+            block_id,
+            gcb_id, wb_id, sb_id, lb_id,
+            is_extended_pictographic,
+            ccc,
+            decomposition_mapping,
+            simple_case_fold,
+            full_case_fold
         )
-        SELECT count(*)::int INTO v_inserted FROM inserted;
+        SELECT
+            a.hash,
+            a.cp,
+            a.general_category + 1,
+            a.script + 1,
+            a.block + 1,
+            bp_gcb.id,
+            bp_wb.id,
+            bp_sb.id,
+            bp_lb.id,
+            a.extended_pictographic,
+            a.ccc::SMALLINT,
+            a.decomposition_mapping,
+            NULLIF(a.simple_case_fold, -1),
+            a.full_case_fold
+        FROM substrate.ucd_codepoints(v_slice_start, v_slice_count) a
+        JOIN substrate.break_property bp_gcb
+          ON bp_gcb.category = 'GCB' AND bp_gcb.enum_id = a.gcb
+        JOIN substrate.break_property bp_wb
+          ON bp_wb.category  = 'WB'  AND bp_wb.enum_id  = a.wb
+        JOIN substrate.break_property bp_sb
+          ON bp_sb.category  = 'SB'  AND bp_sb.enum_id  = a.sb
+        JOIN substrate.break_property bp_lb
+          ON bp_lb.category  = 'LB'  AND bp_lb.enum_id  = a.lb
+        ON CONFLICT (entity_hash) DO NOTHING
+        RETURNING 1
+    )
+    SELECT count(*)::int INTO v_inserted FROM inserted;
 
-        v_total := v_total + v_inserted;
-        v_lo := v_hi;
-    END LOOP;
-
-    RETURN v_total;
+    RETURN v_inserted;
 END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_range_from_ext(INT, INT) IS
-    'Populates a bounded codepoint_property slice from the embedded UCD catalog. Internally caps native SRF scans at 32,768 rows; seed callers provide client-side chunk boundaries.';
+    'Populates a bounded codepoint_property slice from the embedded UCD catalog in one set-based INSERT-SELECT. No internal WHILE loop — the client driver already chunks the full range. break_property FK IDs resolved via JOIN on (category, enum_id) for self-correcting behaviour against seed reorders.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -7075,9 +7049,9 @@ COMMENT ON FUNCTION substrate.embed_lookup(BYTEA, TEXT, INT, TEXT, DOUBLE PRECIS
 --
 -- Top-k labels for an entity from a junction table, ranked by Glicko-2 mu
 -- desc, sigma asc (tighter confidence wins ties). Junction kinds:
---   'pos'           → substrate.entity_pos          (Glicko-2 native)
---   'sense'         → substrate.entity_sense        (Glicko-2 native)
---   'pattern_deprel'→ substrate.pattern_deprel      (Glicko-2 native)
+--   'pos'           → substrate.entity_pos          (Glicko-2 native, stratified)
+--   'sense'         → has_sense substrate edges     (Glicko-2 edge significance)
+--   'pattern_deprel'→ substrate.pattern_deprel      (Glicko-2 native, stratified)
 --   'language'      → substrate.entity_language     (no Glicko, single per-entity assertion)
 --   'morph_feature' → substrate.entity_morph_feature(no Glicko, per-feature assertion)
 --   'classification'→ substrate.entity_classification(entity_type provenance trail)
@@ -7106,37 +7080,82 @@ DECLARE
 BEGIN
     IF p_junction_kind = 'pos' THEN
         RETURN QUERY
-        SELECT p.id, p.code, ep.mu, ep.sigma, ep.games,
+         SELECT p.id,
+             p.code,
+             AVG(ep.mu)::DOUBLE PRECISION,
+             AVG(ep.sigma)::DOUBLE PRECISION,
+             COALESCE(SUM(ep.games), 0)::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_pos ep
         JOIN substrate.pos p ON p.id = ep.pos_id
         WHERE ep.entity_hash = p_seed_hash
-        ORDER BY ep.mu DESC, ep.sigma ASC
+         GROUP BY p.id, p.code
+         ORDER BY AVG(ep.mu) DESC, AVG(ep.sigma) ASC, p.code ASC
         LIMIT p_k;
 
     ELSIF p_junction_kind = 'sense' THEN
         RETURN QUERY
-        SELECT s.id, s.code, es.mu, es.sigma, es.games,
-               EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
-        FROM substrate.entity_sense es
-        JOIN substrate.sense s ON s.id = es.sense_id
-        WHERE es.entity_hash = p_seed_hash
-        ORDER BY es.mu DESC, es.sigma ASC
-        LIMIT p_k;
+         WITH constants AS (
+             SELECT et.id AS edge_type_id,
+                 er_source.id AS source_role_id,
+                 er_target.id AS target_role_id,
+                 sc.id AS context_type_id
+            FROM substrate.edge_type et
+            JOIN substrate.edge_role er_source ON er_source.code = 'source'
+            JOIN substrate.edge_role er_target ON er_target.code = 'target'
+            JOIN substrate.significance_context sc ON sc.code = 'lexical_disambiguation'
+              WHERE et.code = 'has_sense'
+         ), ranked AS (
+             SELECT encode(target_member.entity_hash, 'hex') AS label_code,
+                 COALESCE(AVG(es.mu), 1500.0)::DOUBLE PRECISION AS mu,
+                 COALESCE(AVG(es.sigma), 350.0)::DOUBLE PRECISION AS sigma,
+                 COALESCE(SUM(es.games), 0)::INT AS games
+            FROM constants c
+            JOIN substrate.edge e
+              ON e.edge_type_id = c.edge_type_id
+            JOIN substrate.edge_member source_member
+              ON source_member.edge_type_id = e.edge_type_id
+             AND source_member.edge_hash = e.hash
+             AND source_member.edge_role_id = c.source_role_id
+             AND source_member.entity_hash = p_seed_hash
+            JOIN substrate.edge_member target_member
+              ON target_member.edge_type_id = e.edge_type_id
+             AND target_member.edge_hash = e.hash
+             AND target_member.edge_role_id = c.target_role_id
+            LEFT JOIN substrate.edge_significance es
+              ON es.context_type_id = c.context_type_id
+             AND es.edge_type_id = e.edge_type_id
+             AND es.edge_hash = e.hash
+              GROUP BY target_member.entity_hash
+         )
+         SELECT row_number() OVER (ORDER BY ranked.mu DESC, ranked.sigma ASC, ranked.label_code ASC)::INT AS label_id,
+             ranked.label_code,
+             ranked.mu,
+             ranked.sigma,
+             ranked.games,
+             EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
+           FROM ranked
+          ORDER BY ranked.mu DESC, ranked.sigma ASC, ranked.label_code ASC
+          LIMIT p_k;
 
     ELSIF p_junction_kind = 'pattern_deprel' THEN
         RETURN QUERY
-        SELECT d.id, d.code, pd.mu, pd.sigma, pd.games,
+         SELECT d.id,
+             d.code,
+             AVG(pd.mu)::DOUBLE PRECISION,
+             AVG(pd.sigma)::DOUBLE PRECISION,
+             COALESCE(SUM(pd.games), 0)::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.pattern_deprel pd
         JOIN substrate.deprel d ON d.id = pd.deprel_id
         WHERE pd.entity_hash = p_seed_hash
-        ORDER BY pd.mu DESC, pd.sigma ASC
+         GROUP BY d.id, d.code
+         ORDER BY AVG(pd.mu) DESC, AVG(pd.sigma) ASC, d.code ASC
         LIMIT p_k;
 
     ELSIF p_junction_kind = 'language' THEN
         RETURN QUERY
-        SELECT l.id, l.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+         SELECT l.id, l.code, 1500.0::DOUBLE PRECISION, 350.0::DOUBLE PRECISION, 0::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_language el
         JOIN substrate.language l ON l.id = el.language_id
@@ -7146,7 +7165,7 @@ BEGIN
 
     ELSIF p_junction_kind = 'morph_feature' THEN
         RETURN QUERY
-        SELECT mf.id, mf.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+        SELECT mf.id, mf.code, 1500.0::DOUBLE PRECISION, 350.0::DOUBLE PRECISION, 0::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_morph_feature emf
         JOIN substrate.morph_feature mf ON mf.id = emf.morph_feature_id
@@ -7156,7 +7175,7 @@ BEGIN
 
     ELSIF p_junction_kind = 'classification' THEN
         RETURN QUERY
-        SELECT et.id, et.code, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION, NULL::INT,
+        SELECT et.id, et.code, 1500.0::DOUBLE PRECISION, 350.0::DOUBLE PRECISION, 0::INT,
                EXTRACT(MILLISECONDS FROM (clock_timestamp() - v_started))::INT
         FROM substrate.entity_classification ec
         JOIN substrate.entity_type et ON et.id = ec.entity_type_id
@@ -7171,7 +7190,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.classify(BYTEA, TEXT, INT) IS
-    'Top-k labels from a junction table for an entity, ranked by Glicko-2 mu (where present). Junction kinds: pos, sense, pattern_deprel (Glicko-2 native); language, morph_feature, classification (no Glicko, alphabetical).';
+    'Top-k labels for an entity. pos/pattern_deprel aggregate stratified junction Glicko rows; sense ranks has_sense edges in lexical_disambiguation and returns synset hashes as labels; language, morph_feature, classification return default rating values for a stable non-null result shape.';
 
 -- ── sql/schema/functions/rerank.sql ───────────────────────────────────────
 -- substrate.rerank(candidate_hashes, arena_code, k)

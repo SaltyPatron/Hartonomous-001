@@ -1,7 +1,9 @@
 # Frayed-Edge Detection — Discovering Knowledge Gaps from Geometric Anomalies
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
+> **Authority note (2026-05-09):** Frayed-edge detection mechanism remains canonical. Where this document references `firefly_consensus` as a stored composition entity, treat as DEPRECATED per the 2026-05-08 architectural correction — consensus is computed at query time from Voronoi cells over firefly POINTZM clusters attached to existing `word_form` entities (per [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VII), NOT stored as a separate entity. Frayed-edge detection still works the same way (regions where the geometry says relations should exist but no model has attested them are flagged); the storage shape is just analytics-cache rather than entity graph.
+
+**Status:** Mechanism canonical; consensus-as-entity references deprecated per the authority note above.
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
 **Audience:** Engineers implementing the macro-OODA observe phase, anyone designing ingestion priority recipes, anyone reasoning about how the substrate proposes its own improvements without inventing knowledge it does not have.
 
 ---

@@ -74,9 +74,16 @@ CREATE TABLE substrate.entity_audio PARTITION OF substrate.entity
 CREATE TABLE substrate.entity_video PARTITION OF substrate.entity
     FOR VALUES IN (22);  -- video_frame
 
--- Model entities
+-- Model-side structural artifact entities (real entities per docs/00-substrate-spec.md §II.1)
 CREATE TABLE substrate.entity_model PARTITION OF substrate.entity
-    FOR VALUES IN (23, 24, 25);  -- tensor, model_architecture, attention_pattern
+    FOR VALUES IN (23, 24, 25);  -- tensor, model_architecture, tokenizer_model
+    -- NOTE: 'attention_pattern' (and other phantom per-role-unit entity types) are
+    -- DEPRECATED by the 2026-05-08 architectural correction (sql/schema/seed/entity_type.sql:59-98).
+    -- Per spec §V, per-role units are typed attestation edges between content entities,
+    -- not phantom entities. The 25 phantom entity_type rows seeded transitionally route
+    -- through entity_default partition; the entity_model partition's FOR VALUES list
+    -- here pins the real structural artifact types only. See AP-25 and spec §XII for
+    -- the removal sequence.
 
 -- Default partition for future entity types
 CREATE TABLE substrate.entity_default PARTITION OF substrate.entity DEFAULT;

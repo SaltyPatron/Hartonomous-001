@@ -69,7 +69,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// **Do NOT call this on user-visible natural-language text.** Sentences,
     /// paragraphs, glosses, captions, transcripts, model config JSON values,
     /// and any other natural-language string MUST be routed through
-    /// <see cref="Hartonomous.Core.Text.CanonicalTextDecomposer"/>. That
+    /// <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/>. That
     /// produces the canonical text-AST hash so the same content from any
     /// source (Tatoeba, WordNet examples, Wiktionary citations, user
     /// prompts, model outputs) collapses to ONE <c>text_composition</c>
@@ -78,7 +78,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// seed-uses-core (AP-9).
     ///
     /// If you are unsure whether your string is an atomic identifier or
-    /// user-visible content, route it through CanonicalTextDecomposer.
+    /// user-visible content, route it through SubstrateTextDecomposer.
     /// </summary>
     public static byte[] ComputeAtomicStringHash(string atomicIdentifier)
         => Blake3.Hash(Encoding.UTF8.GetBytes(atomicIdentifier).AsSpan());
@@ -298,12 +298,20 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// of the geometry (POINTZM, LINESTRINGZM, MULTILINESTRINGZM, etc.) —
     /// see PostGisWkbBuilder. ContentHash is BLAKE3 of the WKB so identical
     /// geometries deduplicate at the substrate level.
+    /// <para>
+    /// Caller must supply the entity's representative Point4D centroid. For
+    /// POINTZM physicality this is the point itself; for LINESTRINGZM and
+    /// other composite shapes it is the unweighted 4D mean of the vertex
+    /// stream. The pipeline uses this value to construct inline edge
+    /// LINESTRINGZM trajectories without re-parsing the WKB.
+    /// </para>
     /// </summary>
     protected static ValueTask EmitPhysicalityAsync(
         IRecordSink sink,
         string physicalityTypeCode,
         EntityHandle entity,
         byte[] wkb,
+        Hartonomous.Core.Geometry.Point4D centroid,
         CancellationToken ct)
     {
         byte[] contentHash = Blake3.Hash(wkb.AsSpan());
@@ -311,7 +319,8 @@ public abstract partial class BaseDecomposer : IDecomposer
             physicalityTypeCode,
             entity.Hash,
             contentHash,
-            wkb), ct);
+            wkb,
+            centroid), ct);
     }
 
     /// <summary>
@@ -408,7 +417,7 @@ public abstract partial class BaseDecomposer : IDecomposer
             },
             ct);
 
-    // EmitWordFormMerkle removed — replaced by Hartonomous.Core.Text.CanonicalTextDecomposer.Emit
+    // EmitWordFormMerkle removed — replaced by Hartonomous.Core.Text.SubstrateTextDecomposer
     // and the BaseDecomposer.EmitText helper. See docs/specs/text-decomposer-unification.md.
 
     /// <summary>
@@ -495,7 +504,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     // EmitLemmaMaybeCompound and EmitLexicalizedCompound removed — replaced by
-    // Hartonomous.Core.Text.CanonicalTextDecomposer.Emit and the BaseDecomposer.EmitText
+    // Hartonomous.Core.Text.SubstrateTextDecomposer and the BaseDecomposer.EmitText
     // helper. Compound handling (lexicalized_compound edges between the whole
     // form and its constituent word_forms) is now caller-controlled: emit the
     // whole as a lemma via EmitText, emit each constituent as a word_form via
@@ -503,26 +512,14 @@ public abstract partial class BaseDecomposer : IDecomposer
     // See docs/specs/text-decomposer-unification.md.
 
     /// <summary>
-    /// Compute the canonical Merkle hash for a surface form string without emitting entities.
-    /// This produces the same hash as <see cref="EmitWordFormMerkle"/> so that any decomposer
-    /// can pre-compute a word's identity hash for dedup lookups before deciding whether to emit.
+    /// Compute the native canonical text root hash for a surface form string without emitting entities.
+    /// This produces the same hash as <see cref="EmitText"/> so that any decomposer can pre-compute
+    /// a word's identity hash for dedup lookups before deciding whether to emit.
     /// </summary>
     public static byte[] ComputeWordFormHash(string form)
-    {
-        List<byte[]> gcHashes = [];
-        TextElementEnumerator tee = StringInfo.GetTextElementEnumerator(form);
-        while (tee.MoveNext())
-        {
-            string gc = tee.GetTextElement();
-            List<byte[]> cpHashes = [];
-            foreach (Rune rune in gc.EnumerateRunes())
-            {
-                cpHashes.Add(HashCodepoint(rune.Value));
-            }
-            gcHashes.Add(ComputeMerkleHash(cpHashes.ToArray().AsSpan()));
-        }
-        return ComputeMerkleHash(gcHashes.ToArray().AsSpan());
-    }
+        => Hartonomous.Core.Text.SubstrateTextDecomposer.ComputeRootHash(
+            Encoding.UTF8.GetBytes(form).AsSpan(),
+            "word_form");
 
     /// <summary>
     /// Content-hash for a Unicode codepoint. 4 big-endian bytes → BLAKE3. Shared across every
@@ -545,11 +542,11 @@ public abstract partial class BaseDecomposer : IDecomposer
 
     /// <summary>
     /// THE single text-emission helper for all decomposers. Routes
-    /// <paramref name="text"/> through <see cref="Hartonomous.Core.Text.CanonicalTextDecomposer.Emit"/>
-    /// — the substrate's canonical text decomposer per
+    /// <paramref name="text"/> through <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/>
+    /// — the substrate's shared native text decomposer per
     /// <c>docs/specs/text-decomposer-unification.md</c>. Replaces every prior
-    /// per-decomposer text-emit path (<see cref="EmitWordFormMerkle"/>,
-    /// <see cref="EmitLemmaMaybeCompound"/>, <see cref="EmitLexicalizedCompound"/>,
+    /// per-decomposer text-emit path (<c>EmitWordFormMerkle</c>,
+    /// <c>EmitLemmaMaybeCompound</c>, <c>EmitLexicalizedCompound</c>,
     /// <c>TextSegmentationEmitter.EmitTextComposition</c>,
     /// <c>TextDecomposer.IngestUtf8DocumentIntoBatch</c>). Same content from
     /// any decomposer collapses to the same hash — content IS the entity.

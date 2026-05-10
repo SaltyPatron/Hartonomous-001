@@ -1,7 +1,14 @@
 # Track 1 & Track 2 — Two-Track Model Ingestion
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
+> **Authority note (2026-05-09):** The two-track conceptual framing in this document remains correct (Track 1 = firefly side-channel for cross-model consensus visualization; Track 2 = load-bearing edge graph for inference). Several specific implementation claims have been corrected by the 2026-05-08 architectural correction and are now spec'd in [`docs/00-substrate-spec.md`](../00-substrate-spec.md):
+>
+> - **Track 2 storage shape:** Per-role units of transformation tensors are typed attestation EDGES between existing content entities (typically `word_form` tokens), NOT phantom per-role-unit entities. Sections that describe `attention_head_in_layer`, `ffn_up_in_layer`, `expert_in_moe_router` as edges from tensor to phantom-entity are deprecated; the corrected pattern is `model_attention_pattern` / `model_concept_similarity` / `model_ffn_factor` edges between word_form entities, with layer/head/expert metadata on the rating event. See spec §III, AP-25.
+> - **Track 1 storage shape:** Fireflies are POINTZM physicalities attached to existing `word_form` content entities (one POINTZM per ingested model per token; the species is the entity, the specimens are the per-model fireflies). There is no `embedding_firefly` separate atom-class entity, no `firefly_consensus` separate composition entity. Consensus is computed at query time from the Voronoi cell over the species' firefly cluster (per spec §VII), not stored as a graph of `consensus_member` edges. See AP-29.
+>
+> This document remains useful for the conceptual framing; treat the specific entity-type and edge-type implementation details as deprecated where they describe the phantom shape. Cross-references to canonical implementation: [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md), [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md).
+
+**Status:** Conceptual framing canonical; implementation details deprecated where they describe pre-correction shape (see authority note above).
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
 **Audience:** Engineers implementing the model decomposer, anyone building cross-model analysis recipes, anyone reasoning about how the substrate relates to conventional transformer weights.
 
 ---

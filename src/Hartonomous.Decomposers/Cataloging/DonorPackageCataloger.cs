@@ -135,7 +135,7 @@ public sealed partial class DonorPackageCataloger
             {
                 reader = DonorPackageReaderFactory.Open(effectivePackageRoot, _loggerFactory);
             }
-            catch (NotSupportedException ex)
+            catch (NotSupportedException ex) // BOUNDARY: donor catalog discovery records unsupported package status and continues scanning siblings.
             {
                 LogPackageRejected(_logger, packageRoot, ex.Message);
                 return new DonorManifest
@@ -148,7 +148,7 @@ public sealed partial class DonorPackageCataloger
                     RejectionReason = ex.Message,
                 };
             }
-            catch (Exception ex) when (ex is InvalidDataException or DirectoryNotFoundException or FileNotFoundException)
+            catch (Exception ex) when (ex is InvalidDataException or DirectoryNotFoundException or FileNotFoundException) // BOUNDARY: donor catalog discovery records failed package status and continues scanning siblings.
             {
                 LogPackageDiscoveryFailed(_logger, packageRoot, ex.Message);
                 return new DonorManifest
@@ -167,7 +167,7 @@ public sealed partial class DonorPackageCataloger
             {
                 config = reader.ReadConfig();
             }
-            catch (Exception ex)
+            catch (Exception ex) // BOUNDARY: donor catalog config is optional metadata; tensor discovery below still records package status.
             {
                 LogConfigReadFailed(_logger, packageRoot, ex.Message);
                 config = new EmptyConfigSnapshot();
@@ -179,7 +179,7 @@ public sealed partial class DonorPackageCataloger
             {
                 tensors = reader.EnumerateTensors();
             }
-            catch (Exception ex)
+            catch (Exception ex) // BOUNDARY: donor catalog discovery records failed tensor enumeration for this package and continues scanning siblings.
             {
                 LogEnumerateFailed(_logger, packageRoot, ex.Message);
                 return new DonorManifest

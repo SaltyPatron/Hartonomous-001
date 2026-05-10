@@ -1,9 +1,36 @@
--- 111 edge types. Codes 1..39 land in named partitions
--- (tables/core/edge_structural.sql, edge_cross_lingual.sql, edge_cross_modal.sql,
--- edge_unicode.sql, edge_model.sql); codes 40..111 land in edge_default.
--- Single INSERT...SELECT pattern: tuples in a VALUES CTE, resolved against
--- substrate.entity_type via JOIN once, semantic_weight derived in CASE.
--- NULL source/target codes mean polymorphic.
+-- Edge types. Single INSERT...SELECT pattern: tuples in a VALUES CTE,
+-- resolved against substrate.entity_type via JOIN. NULL source/target codes
+-- mean polymorphic.
+--
+-- semantic_weight is a structural prior on the relation strength used by
+-- engine traversal as a tie-breaker; arena-bound Glicko mu on
+-- substrate.edge_significance is the dynamic weight.
+--
+-- Categories:
+--   structural    — within-modality structural composition (text)
+--   cross_lingual — between language entities
+--   cross_modal   — between content-entity-types of different modalities
+--   unicode       — codepoint-level Unicode tables
+--   model_derived — model-package metadata + content-entity attestations
+--                   produced by safetensors decomposers (per docs/01-tensor-
+--                   primitive-spec.md §IV)
+--   semantic      — WordNet / Wiktionary semantic relations between synsets
+--                   and lemmas
+--
+-- Per docs/01-tensor-primitive-spec.md: there is no has_<phantom> edge type
+-- pointing to a phantom entity. Per-tuple attestations land on edges between
+-- content entities; per-tensor analytics live as physicality on the tensor
+-- entity. The model_derived edges below are EXACTLY:
+--   * Architecture metadata (in_model, in_layer, has_dtype, has_shape,
+--     has_hidden_size, has_num_layers, has_num_attention_heads, has_vocab_size,
+--     has_token_id, in_vocabulary, has_tensor, has_architecture_name,
+--     has_tensor_name, has_tokenizer_model, has_token_in_tokenizer)
+--   * Token↔token attestation surfaces (model_concept_similarity,
+--     model_attention_pattern, model_ffn_factor)
+--   * Cross-content attestation surfaces (model_cross_modal_pattern,
+--     model_spatial_pattern, model_detection_class)
+--   * Vocab-coverage join (covers_lemma)
+--   * co_occurrence (polymorphic — used by corpus-window decomposers)
 
 INSERT INTO substrate.edge_type (code, category, source_type_id, target_type_id, semantic_weight)
 SELECT
@@ -31,133 +58,104 @@ SELECT
         ELSE 1.0
     END AS semantic_weight
 FROM (VALUES
-    -- Structural ──────────────────────────────────────────────────────
-    ('has_sense',                'structural',    'lemma',              'synset'),
-    ('has_form',                 'structural',    'lemma',              'word_form'),
-    ('has_lemma',                'structural',    'word_form',          'lemma'),
-    ('has_morpheme',             'structural',    'word_form',          'morpheme'),
-    ('has_gloss',                'structural',    'synset',             'text_composition'),
-    ('has_example',              'structural',    'synset',             'text_composition'),
-    ('has_name',                 'structural',    'model_architecture', 'text_composition'),
-    ('inflection_of',            'structural',    'word_form',          'lemma'),
-    ('has_etymology',            'structural',    'lemma',              'text_composition'),
-    ('has_pronunciation',        'structural',    'lemma',              'text_composition'),
-    ('has_hyphenation',          'structural',    'lemma',              'text_composition'),
-    ('has_wikidata',             'structural',    'lemma',              'text_composition'),
-    ('lexicalized_compound',     'structural',    'word_form',          'word_form'),
-    ('has_frame',                'structural',    'lemma',              'text_composition'),
-    ('has_wordnet_offset',       'structural',    'synset',             'text_composition'),
-    -- Cross-lingual ───────────────────────────────────────────────────
-    ('aligned_to_synset',        'cross_lingual', 'lemma',              'synset'),
-    ('translation_of',           'cross_lingual', 'lemma',              'lemma'),
-    ('translation_link',         'cross_lingual', 'text_composition',   'text_composition'),
-    ('macrolanguage_contains',   'cross_lingual', 'language_name',      'language_name'),
-    ('has_alternate_name',       'cross_lingual', 'language_name',      'language_name'),
-    ('superseded_by',            'cross_lingual', 'language_name',      'language_name'),
-    ('etym_inherited_from',      'cross_lingual', 'lemma',              'lemma'),
-    ('etym_derived_from',        'cross_lingual', 'lemma',              'lemma'),
-    ('etym_borrowed_from',       'cross_lingual', 'lemma',              'lemma'),
-    ('etym_cognate_with',        'cross_lingual', 'lemma',              'lemma'),
-    ('etym_calque_of',           'cross_lingual', 'lemma',              'lemma'),
-    ('etym_mention',             'cross_lingual', 'lemma',              'lemma'),
-    ('etym_link',                'cross_lingual', 'lemma',              'text_composition'),
-    ('etym_etymon',              'cross_lingual', 'lemma',              'lemma'),
-    -- Cross-modal ─────────────────────────────────────────────────────
-    ('recording_of',             'cross_modal',   'audio_recording',    'text_composition'),
-    ('has_contributor',          'cross_modal',   'audio_recording',    'text_composition'),
-    -- Unicode ─────────────────────────────────────────────────────────
-    ('maps_to_lowercase',        'unicode',       'codepoint',          'codepoint'),
-    ('case_folds_to',            'unicode',       'codepoint',          'codepoint'),
-    ('has_collation_weight',     'unicode',       'codepoint',          'collation_element'),
-    -- Model-derived: architecture metadata ────────────────────────────
-    ('in_model',                 'model_derived', 'tensor',             'model_architecture'),
-    ('in_layer',                 'model_derived', 'tensor',             'model_architecture'),
-    ('has_dtype',                'model_derived', 'tensor',             'text_composition'),
-    ('has_shape',                'model_derived', 'tensor',             'text_composition'),
-    ('has_hidden_size',          'model_derived', 'model_architecture', 'text_composition'),
-    ('has_num_layers',           'model_derived', 'model_architecture', 'text_composition'),
-    ('has_num_attention_heads',  'model_derived', 'model_architecture', 'text_composition'),
-    ('has_vocab_size',           'model_derived', 'model_architecture', 'text_composition'),
-    ('has_token_id',             'model_derived', 'word_form',          'text_composition'),
-    ('in_vocabulary',            'model_derived', 'word_form',          'model_architecture'),
-    ('co_occurrence',            'model_derived', NULL,                 NULL),
-    -- Token↔token edges that capture what model weights encode about
-    -- token-pair relationships. Each model decomposed adds attestations
-    -- (with attestation_type) on these edges; cross-model consensus
-    -- emerges from accumulated agreement.
-    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),
-    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),
-    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),
-    ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),
-    ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),
-    -- Model-derived: tensor analysis surfaces ─────────────────────────
-    ('has_tensor_name',          'model_derived', 'tensor',             'text_composition'),
-    ('has_tokenizer_model',      'model_derived', 'model_architecture', 'text_composition'),
-    ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),
-    ('has_weight_distribution',  'model_derived', 'tensor',             'weight_distribution'),
-    ('has_spectrum',             'model_derived', 'tensor',             'svd_spectrum'),
-    ('has_eigenvalue_spectrum',  'model_derived', 'tensor',             'eigenvalue_spectrum'),
-    ('has_sparsity_profile',     'model_derived', 'tensor',             'sparsity_profile'),
-    ('has_activation_range',     'model_derived', 'tensor',             'activation_range'),
-    ('has_layer_norm_scale',     'model_derived', 'tensor',             'layer_norm_scale'),
-    ('has_codebook',             'model_derived', 'tensor',             'codec_codebook'),
-    ('contains_codevector',      'model_derived', 'codec_codebook',     'codec_codevector'),
-    ('encodes_archetype',        'model_derived', 'tensor',             'archetype'),
-    ('has_layer_similarity',     'model_derived', 'tensor',             'layer_similarity_pair'),
-    ('has_rope_freqs',           'model_derived', 'tensor',             'rope_freq_table'),
-    ('has_rank_component',       'model_derived', 'tensor',             'svd_rank_component'),
-    ('has_moe_routing',          'model_derived', 'tensor',             'moe_routing_profile'),
-    ('has_embedding_position',   'model_derived', 'tensor',             'embedding_position'),
-    ('has_ffn_neuron',           'model_derived', 'tensor',             'ffn_neuron'),
-    ('has_logit_projection',     'model_derived', 'tensor',             'logit_projection'),
-    ('covers_lemma',             'model_derived', 'word_form',          'lemma'),
-    ('has_vocab_coverage',       'model_derived', 'tokenizer_model',    'vocab_coverage_profile'),
-    -- Model-derived: per-role-unit binding edges ─────────────────────
-    ('has_attention_component',  'model_derived', 'tensor',             'attention_pattern'),
-    ('has_codec_filter',         'model_derived', 'tensor',             'audio_codec_filter'),
-    ('has_bbox_projection',      'model_derived', 'tensor',             'bbox_projection'),
-    ('has_class_projection',     'model_derived', 'tensor',             'class_projection'),
-    ('has_conformer_component',  'model_derived', 'tensor',             'conformer_component'),
-    ('has_conv_filter',          'model_derived', 'tensor',             'conv_filter'),
-    ('has_diffusion_component',  'model_derived', 'tensor',             'diffusion_component'),
-    ('has_lora_component',       'model_derived', 'tensor',             'lora_component'),
-    ('has_modality_basis',       'model_derived', 'tensor',             'modality_basis_vector'),
-    ('has_moe_neuron',           'model_derived', 'tensor',             'moe_expert_neuron'),
-    ('has_route_direction',      'model_derived', 'tensor',             'moe_route_direction'),
-    ('has_object_query',         'model_derived', 'tensor',             'object_query_slot'),
-    ('has_vision_feature',       'model_derived', 'tensor',             'vision_feature_direction'),
-    -- Semantic: WordNet pointers (synset ↔ synset) ────────────────────
-    ('hypernym',                 'semantic',      'synset', 'synset'),
-    ('hyponym',                  'semantic',      'synset', 'synset'),
-    ('instance_hypernym',        'semantic',      'synset', 'synset'),
-    ('instance_hyponym',         'semantic',      'synset', 'synset'),
-    ('member_holonym',           'semantic',      'synset', 'synset'),
-    ('substance_holonym',        'semantic',      'synset', 'synset'),
-    ('part_holonym',             'semantic',      'synset', 'synset'),
-    ('member_meronym',           'semantic',      'synset', 'synset'),
-    ('substance_meronym',        'semantic',      'synset', 'synset'),
-    ('part_meronym',             'semantic',      'synset', 'synset'),
-    ('attribute',                'semantic',      'synset', 'synset'),
-    ('derivationally_related',   'semantic',      'synset', 'synset'),
-    ('antonym',                  'semantic',      'synset', 'synset'),
-    ('similar_to',               'semantic',      'synset', 'synset'),
-    ('also_see',                 'semantic',      'synset', 'synset'),
-    ('verb_group',               'semantic',      'synset', 'synset'),
-    ('entailment',               'semantic',      'synset', 'synset'),
-    ('cause',                    'semantic',      'synset', 'synset'),
-    ('participle_of_verb',       'semantic',      'synset', 'synset'),
-    ('pertainym',                'semantic',      'synset', 'synset'),
-    ('domain_of_synset_topic',   'semantic',      'synset', 'synset'),
-    ('member_of_domain_topic',   'semantic',      'synset', 'synset'),
-    ('domain_of_synset_region',  'semantic',      'synset', 'synset'),
-    ('member_of_domain_region',  'semantic',      'synset', 'synset'),
-    ('domain_of_synset_usage',   'semantic',      'synset', 'synset'),
-    ('member_of_domain_usage',   'semantic',      'synset', 'synset'),
-    -- Semantic: Wiktionary lemma ↔ lemma ──────────────────────────────
-    ('synonym',                  'semantic',      'lemma',  'lemma'),
-    ('coordinate_term',          'semantic',      'lemma',  'lemma'),
-    ('derived',                  'semantic',      'lemma',  'lemma'),
-    ('related',                  'semantic',      'lemma',  'lemma')
+    -- ── Structural (within text modality) ──────────────────────────────
+    ('has_sense',                'structural',    'lemma',              'synset'),              --  1
+    ('has_form',                 'structural',    'lemma',              'word_form'),           --  2
+    ('has_lemma',                'structural',    'word_form',          'lemma'),               --  3
+    ('has_morpheme',             'structural',    'word_form',          'morpheme'),            --  4
+    ('has_gloss',                'structural',    'synset',             'text_composition'),    --  5
+    ('has_example',              'structural',    'synset',             'text_composition'),    --  6
+    ('has_name',                 'structural',    'model_architecture', 'text_composition'),    --  7
+    ('inflection_of',            'structural',    'word_form',          'lemma'),               --  8
+    ('has_etymology',            'structural',    'lemma',              'text_composition'),    --  9
+    ('has_pronunciation',        'structural',    'lemma',              'text_composition'),    -- 10
+    ('has_hyphenation',          'structural',    'lemma',              'text_composition'),    -- 11
+    ('has_wikidata',             'structural',    'lemma',              'text_composition'),    -- 12
+    ('lexicalized_compound',     'structural',    'word_form',          'word_form'),           -- 13
+    ('has_frame',                'structural',    'lemma',              'text_composition'),    -- 14
+    ('has_wordnet_offset',       'structural',    'synset',             'text_composition'),    -- 15
+    -- ── Cross-lingual ──────────────────────────────────────────────────
+    ('aligned_to_synset',        'cross_lingual', 'lemma',              'synset'),              -- 16
+    ('translation_of',           'cross_lingual', 'lemma',              'lemma'),               -- 17
+    ('translation_link',         'cross_lingual', 'text_composition',   'text_composition'),    -- 18
+    ('macrolanguage_contains',   'cross_lingual', 'language_name',      'language_name'),       -- 19
+    ('has_alternate_name',       'cross_lingual', 'language_name',      'language_name'),       -- 20
+    ('superseded_by',            'cross_lingual', 'language_name',      'language_name'),       -- 21
+    ('etym_inherited_from',      'cross_lingual', 'lemma',              'lemma'),               -- 22
+    ('etym_derived_from',        'cross_lingual', 'lemma',              'lemma'),               -- 23
+    ('etym_borrowed_from',       'cross_lingual', 'lemma',              'lemma'),               -- 24
+    ('etym_cognate_with',        'cross_lingual', 'lemma',              'lemma'),               -- 25
+    ('etym_calque_of',           'cross_lingual', 'lemma',              'lemma'),               -- 26
+    ('etym_mention',             'cross_lingual', 'lemma',              'lemma'),               -- 27
+    ('etym_link',                'cross_lingual', 'lemma',              'text_composition'),    -- 28
+    ('etym_etymon',              'cross_lingual', 'lemma',              'lemma'),               -- 29
+    -- ── Cross-modal ────────────────────────────────────────────────────
+    ('recording_of',             'cross_modal',   'audio_recording',    'text_composition'),    -- 30
+    ('has_contributor',          'cross_modal',   'audio_recording',    'text_composition'),    -- 31
+    -- ── Unicode ────────────────────────────────────────────────────────
+    ('maps_to_lowercase',        'unicode',       'codepoint',          'codepoint'),           -- 32
+    ('case_folds_to',            'unicode',       'codepoint',          'codepoint'),           -- 33
+    ('has_collation_weight',     'unicode',       'codepoint',          'collation_element'),   -- 34
+    -- ── Model-derived: architecture + tokenizer + tensor metadata ──────
+    ('in_model',                 'model_derived', 'tensor',             'model_architecture'),  -- 35
+    ('in_layer',                 'model_derived', 'tensor',             'model_architecture'),  -- 36
+    ('has_dtype',                'model_derived', 'tensor',             'text_composition'),    -- 37
+    ('has_shape',                'model_derived', 'tensor',             'text_composition'),    -- 38
+    ('has_hidden_size',          'model_derived', 'model_architecture', 'text_composition'),    -- 39
+    ('has_num_layers',           'model_derived', 'model_architecture', 'text_composition'),    -- 40
+    ('has_num_attention_heads',  'model_derived', 'model_architecture', 'text_composition'),    -- 41
+    ('has_vocab_size',           'model_derived', 'model_architecture', 'text_composition'),    -- 42
+    ('has_token_id',             'model_derived', 'word_form',          'text_composition'),    -- 43
+    ('in_vocabulary',            'model_derived', 'word_form',          'model_architecture'),  -- 44
+    ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),              -- 45
+    ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),    -- 46
+    ('has_tensor_name',          'model_derived', 'tensor',             'text_composition'),    -- 47
+    ('has_tokenizer_model',      'model_derived', 'model_architecture', 'text_composition'),    -- 48
+    ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),           -- 49
+    ('covers_lemma',             'model_derived', 'word_form',          'lemma'),               -- 50
+    ('co_occurrence',            'model_derived', NULL,                 NULL),                  -- 51
+    -- ── Model-derived: content-entity attestation surfaces ─────────────
+    -- These are the load-bearing token↔token / patch↔patch / frame↔frame
+    -- edges that accumulate per-tuple attestation events from every
+    -- ingested model. Per docs/01-tensor-primitive-spec.md §IV.
+    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),           -- 52
+    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),           -- 53
+    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),           -- 54
+    ('model_spatial_pattern',    'model_derived', NULL,                 NULL),                  -- 55  (polymorphic: pixel_region↔pixel_region or audio_chunk↔audio_chunk)
+    ('model_cross_modal_pattern','model_derived', NULL,                 NULL),                  -- 56  (polymorphic: word_form↔pixel_region, word_form↔audio_chunk, decoder-token↔encoder-token, etc.)
+    ('model_detection_class',    'model_derived', 'object_query',       'visual_concept'),      -- 57
+    -- ── Semantic: WordNet pointers (synset ↔ synset) ────────────────────
+    ('hypernym',                 'semantic',      'synset', 'synset'),                          -- 58
+    ('hyponym',                  'semantic',      'synset', 'synset'),                          -- 59
+    ('instance_hypernym',        'semantic',      'synset', 'synset'),                          -- 60
+    ('instance_hyponym',         'semantic',      'synset', 'synset'),                          -- 61
+    ('member_holonym',           'semantic',      'synset', 'synset'),                          -- 62
+    ('substance_holonym',        'semantic',      'synset', 'synset'),                          -- 63
+    ('part_holonym',             'semantic',      'synset', 'synset'),                          -- 64
+    ('member_meronym',           'semantic',      'synset', 'synset'),                          -- 65
+    ('substance_meronym',        'semantic',      'synset', 'synset'),                          -- 66
+    ('part_meronym',             'semantic',      'synset', 'synset'),                          -- 67
+    ('attribute',                'semantic',      'synset', 'synset'),                          -- 68
+    ('derivationally_related',   'semantic',      'synset', 'synset'),                          -- 69
+    ('antonym',                  'semantic',      'synset', 'synset'),                          -- 70
+    ('similar_to',               'semantic',      'synset', 'synset'),                          -- 71
+    ('also_see',                 'semantic',      'synset', 'synset'),                          -- 72
+    ('verb_group',               'semantic',      'synset', 'synset'),                          -- 73
+    ('entailment',               'semantic',      'synset', 'synset'),                          -- 74
+    ('cause',                    'semantic',      'synset', 'synset'),                          -- 75
+    ('participle_of_verb',       'semantic',      'synset', 'synset'),                          -- 76
+    ('pertainym',                'semantic',      'synset', 'synset'),                          -- 77
+    ('domain_of_synset_topic',   'semantic',      'synset', 'synset'),                          -- 78
+    ('member_of_domain_topic',   'semantic',      'synset', 'synset'),                          -- 79
+    ('domain_of_synset_region',  'semantic',      'synset', 'synset'),                          -- 80
+    ('member_of_domain_region',  'semantic',      'synset', 'synset'),                          -- 81
+    ('domain_of_synset_usage',   'semantic',      'synset', 'synset'),                          -- 82
+    ('member_of_domain_usage',   'semantic',      'synset', 'synset'),                          -- 83
+    -- ── Semantic: Wiktionary lemma ↔ lemma ─────────────────────────────
+    ('synonym',                  'semantic',      'lemma',  'lemma'),                           -- 84
+    ('coordinate_term',          'semantic',      'lemma',  'lemma'),                           -- 85
+    ('derived',                  'semantic',      'lemma',  'lemma'),                           -- 86
+    ('related',                  'semantic',      'lemma',  'lemma')                            -- 87
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;

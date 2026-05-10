@@ -10,7 +10,6 @@ using Hartonomous.Core.Text;
 using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Ingestion;
 using Hartonomous.Engine.Query;
-using Hartonomous.Engine.Text;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -43,19 +42,6 @@ internal sealed class RecallCommand(NpgsqlDataSource dataSource, ILoggerFactory 
 
             NpgsqlReferenceDataReader refReader = new(dataSource);
 
-            // Subset codepoint cache to prompt — per AP-7, never full-load.
-            HashSet<int> promptCodepoints = new();
-            foreach (System.Text.Rune rune in text.EnumerateRunes())
-            {
-                promptCodepoints.Add(rune.Value);
-            }
-            NpgsqlCodepointPropertiesCache codepointCache =
-                await NpgsqlCodepointPropertiesCache.LoadForCodepointsAsync(
-                    dataSource.ConnectionString,
-                    promptCodepoints,
-                    loggerFactory.CreateLogger<NpgsqlCodepointPropertiesCache>(),
-                    CancellationToken.None);
-
             await using StreamingIngestionPipeline pipeline = new(
                 dataSource.ConnectionString,
                 refReader,
@@ -65,8 +51,8 @@ internal sealed class RecallCommand(NpgsqlDataSource dataSource, ILoggerFactory 
             IIngestionBatch batch = pipeline.CreateBatch();
             byte[] utf8 = Encoding.UTF8.GetBytes(text);
             TextDecomposeResult ingest =
-                CanonicalTextDecomposer.Emit(
-                    batch, utf8, codepointCache,
+                SubstrateTextDecomposer.EmitStatic(
+                    batch, utf8,
                     new TextDecomposeOptions(
                         ProvenanceCode: "user_session",
                         TopEntityType: "text_composition",

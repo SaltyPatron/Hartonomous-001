@@ -1,6 +1,8 @@
 # Hartonomous: Universal Substrate Architecture
 
-This document is the authoritative architecture reference. Individual decomposer specs live in `specs/decomposers/`. Engine specs live in `specs/engine/`. Modality specs live in `specs/modalities/`.
+> **Authority note (2026-05-09):** For the safetensors-first product slice (Build-a-bear synthesis recomposer + crystal-ball analytics), the canonical architectural reference is now [`docs/00-substrate-spec.md`](00-substrate-spec.md). This `architecture.md` document remains useful for the broader substrate context but several entries (the entity_type code list at line 260, the `pattern_deprel` description at line 440, the `attention_pattern` references throughout) describe the pre-correction phantom shape and have been updated inline with DEPRECATED markers and redirects. Where this document and the spec disagree on architecture (per-role units, layer-type decomposer factoring, recomposer synthesis, phantom debt), the spec is correct.
+
+This document is the authoritative architecture reference. Individual decomposer specs live in `specs/decomposers/`. Engine specs live in `specs/engine/`. Modality specs live in `specs/modalities/`. The canonical layer-type decomposer library is at [`specs/decomposers/layer-type-library.md`](specs/decomposers/layer-type-library.md); the canonical Build-a-bear synthesizer library is at [`specs/recomposers/synthesis-library.md`](specs/recomposers/synthesis-library.md).
 
 ## What This Is
 
@@ -257,7 +259,7 @@ The entity table does NOT self-reference for types. Entity types are a reference
 | Column | Type | Purpose |
 |--------|------|---------|
 | `id` | `SERIAL` | Primary key. |
-| `code` | `VARCHAR UNIQUE` | Structural type code: `codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `ud_sentence`, `ud_token`, `tatoeba_sentence`, `text_composition`, `paragraph`, `document`, `pixel_region`, `audio_recording`, `audio_chunk`, `video_frame`, `tensor`, `model_architecture`, `attention_pattern`, `bpe_token`, `synset`, `word_sense`, `wikt_sense`, `inflected_form`, `collation_element`, `language_name`, etc. |
+| `code` | `VARCHAR UNIQUE` | Structural type code: `codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `text_composition`, `paragraph`, `document`, `pixel_region`, `audio_recording`, `audio_chunk`, `video_frame`, `tensor`, `model_architecture`, `tokenizer_model`, `synset`, `collation_element`, `language_name`. **Phantom entity types previously listed here (`attention_pattern`, `bpe_token`, `ud_sentence`, `ud_token`, `tatoeba_sentence`, `word_sense`, `wikt_sense`, `inflected_form`) are deprecated by the 2026-05-08 architectural correction** — per-role units of Track 2 transformation tensors are typed attestation EDGES between existing content entities (per [`docs/00-substrate-spec.md`](00-substrate-spec.md) §III), NOT phantom per-role-unit entity types. The phantom types remain transitionally seeded so existing code lookups don't crash; new code MUST emit attestation edges via the layer-type decomposer library. See AP-25 in `.claude/rules/45-anti-patterns.md`. |
 | `modality` | `VARCHAR` | Which modality: `text`, `image`, `audio`, `video`, `model`, `universal`. |
 
 Small table. Populated during Phase 1 (core algebra). Rarely changed after.
@@ -437,7 +439,7 @@ One-to-many mappings from entities to their classifications. Direct indexed JOIN
 | `codepoint_property` | codepoint → general_category, script, block, break values | U+0041 → Lu, Latin, Basic_Latin, GCB=XX, WB=LE |
 | `model_architecture_class` | model → architecture_class(es) | qwen2.5-coder → [Qwen2ForCausalLM] |
 | `tensor_tensor_role` | tensor → tensor_role(s) | layer0_qproj → [attention_query] |
-| `pattern_deprel` | attention_pattern → deprel(s) | attn_head_3 → [nsubj] |
+| `pattern_deprel` | entity (typically a `word_form` content entity that the model attests on; phantom `attention_pattern` entity references are deprecated per spec §XII) → deprel(s) | "King" → [nsubj] (Glicko-2 mu confidence on the binding) |
 
 Each junction table carries significance where relevant. `entity_pos.mu` tells you the frequency-weighted POS distribution. `entity_sense.mu` tells you the most common vs rare senses. These are INITIAL PRIORS from seed data — inference updates them as usage evidence accumulates.
 

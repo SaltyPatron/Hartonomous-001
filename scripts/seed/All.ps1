@@ -52,10 +52,12 @@ try {
     $commonArgs = @('-SourceRoot', $SourceRoot)
     if ($NoBuild) { $commonArgs += '-NoBuild' }
 
-    # Lexical floor first: codepoints + collation, languages, lemmas/senses,
-    # syntactic structure, lexicon depth, attested sentences. AI models in
-    # ModelDecomp ingest LAST because their typed-edge extractions reference
-    # the lemmas/word_forms/synsets the lexical floor produced.
+    # Semantic seed floor first for a full enriched seed run: codepoints +
+    # collation, languages, lemmas/senses, syntactic structure, lexicon depth,
+    # attested sentences. ModelDecomp only hard-requires the foundation
+    # substrate (UCD/UCA + ISO), but seed.All runs it after semantic seeds when
+    # -WithModel is requested so model-derived entities immediately converge
+    # with the richest available grounding evidence.
     Invoke-HartStep -Name 'seed.Ucd'           -Action { Invoke-Sub 'Ucd.ps1'           $commonArgs }
     Invoke-HartStep -Name 'seed.Iso639'        -Action { Invoke-Sub 'Iso639.ps1'        $commonArgs }
     Invoke-HartStep -Name 'seed.WordNetOmw'    -Action { Invoke-Sub 'WordNetOmw.ps1'    $commonArgs }
@@ -64,8 +66,9 @@ try {
     Invoke-HartStep -Name 'seed.Tatoeba'       -Action { Invoke-Sub 'Tatoeba.ps1'       $commonArgs }
 
     if ($WithModel) {
-        # ModelDecomp runs after the lexical floor — model edges reference
-        # lemmas/word_forms/synsets that must already exist.
+        # Full seed mode runs ModelDecomp after semantic enrichment. The phase
+        # DAG itself still allows targeted Safetensors ingestion after the
+        # foundation phases only.
         Invoke-HartStep -Name 'seed.Safetensors' -Action { Invoke-Sub 'Safetensors.ps1' $commonArgs }
     }
 

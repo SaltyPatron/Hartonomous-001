@@ -18,7 +18,9 @@ public sealed record ModelPassContext(
     IComputeFacade Compute,
     IReadOnlyDictionary<string, int> TensorRoleMap,
     string CheckpointKey,
-    string ProvenanceCode)
+    string ProvenanceCode,
+    IReadOnlyDictionary<TensorHandle, TensorClassification> TensorClassifications,
+    IReadOnlyList<ResolvedTuple> ResolvedTuples)
 {
     /// <summary>
     /// Per-pass deterministic seed: BLAKE3(<see cref="CheckpointKey"/> || passId).

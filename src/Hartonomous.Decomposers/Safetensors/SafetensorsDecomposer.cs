@@ -39,9 +39,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
-    private readonly Hartonomous.Core.Text.Segmentation.ICodepointProperties? _codepointProperties;
     private readonly NpgsqlDataSource? _alignmentDataSource;
-    private readonly Hartonomous.Core.Text.SubstrateTextDecomposer? _substrateTextDecomposer;
+    private readonly Hartonomous.Core.Text.SubstrateTextDecomposer _substrateTextDecomposer;
 
     public SafetensorsDecomposer(
         DecomposerConfig config,
@@ -51,7 +50,6 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null,
-        Hartonomous.Core.Text.Segmentation.ICodepointProperties? codepointProperties = null,
         NpgsqlDataSource? alignmentDataSource = null,
         Hartonomous.Core.Text.SubstrateTextDecomposer? substrateTextDecomposer = null)
         : base(config, logger)
@@ -63,9 +61,8 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
-        _codepointProperties = codepointProperties;
         _alignmentDataSource = alignmentDataSource;
-        _substrateTextDecomposer = substrateTextDecomposer;
+        _substrateTextDecomposer = substrateTextDecomposer ?? new Hartonomous.Core.Text.SubstrateTextDecomposer();
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() => [_hubRoot];
@@ -120,8 +117,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 passes: passes,
                 logger: _loggerFactory.CreateLogger<ModelPassOrchestrator>(),
                 batchSize: BatchSize,
-                provenanceCode: ProvenanceCode,
-                codepointProperties: _codepointProperties);
+                provenanceCode: ProvenanceCode);
 
             int modelIdx = 0;
             int successfulModels = 0;
@@ -170,7 +166,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
                 {
                     await m.Reader.DisposeAsync();
                 }
-                catch (Exception ex)
+                catch (Exception ex) // BOUNDARY: dispose cleanup logs reader release failures after decomposition outcome is already decided.
                 {
                     Log.ReaderDisposeFailed(Logger, ex, m.ModelId);
                 }
@@ -211,54 +207,34 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
 
     private List<IModelAnalysisPass> BuildPassSet()
     {
+        // Per docs/01-tensor-primitive-spec.md §VI: dispatch is per-primitive +
+        // per-tuple, driven by TupleResolver-produced ResolvedTuples. Per-tensor
+        // singleton dispatch is gone; per-architecture decomposer files are gone;
+        // phantom-emitting passes are gone; analytics-as-separate-entity passes
+        // are gone. The remaining passes are substrate-correct producers:
+        //
+        //   ModelConfigPass         — parametric architecture metadata edges
+        //   ModelTextArtifactsPass  — model package text artifact ingestion (config.json, tokenizer.json, README.md)
+        //
+        // PrimitivePasses + TuplePasses (per spec §VI) are added here as they
+        // ship — they consume the ResolvedTuples list and the per-tensor
+        // classifications produced by TupleResolver, fire attestation events
+        // on substrate edges between content entities.
         List<IModelAnalysisPass> passes =
         [
-            new EmbeddingFireflyPass(_loggerFactory.CreateLogger<EmbeddingFireflyPass>()),
-            new SparsityAnalysisPass(_loggerFactory.CreateLogger<SparsityAnalysisPass>()),
-            new WeightDistributionPass(_loggerFactory.CreateLogger<WeightDistributionPass>()),
-            new ActivationRangePass(_loggerFactory.CreateLogger<ActivationRangePass>()),
-            new MoERoutingStatsPass(_loggerFactory.CreateLogger<MoERoutingStatsPass>()),
-            new SvdPass(_loggerFactory.CreateLogger<SvdPass>()),
-            new EigenvaluePass(_loggerFactory.CreateLogger<EigenvaluePass>()),
-            new AttentionArchetypePass(_loggerFactory.CreateLogger<AttentionArchetypePass>()),
-            new LayerSimilarityPass(_loggerFactory.CreateLogger<LayerSimilarityPass>()),
-            new CodecAnalysisPass(_loggerFactory.CreateLogger<CodecAnalysisPass>()),
-            new TokenizerMappingPass(_loggerFactory.CreateLogger<TokenizerMappingPass>()),
-            new TokenCrossEdgePass(_loggerFactory.CreateLogger<TokenCrossEdgePass>()),
-            new TokenFfnEdgePass(_loggerFactory.CreateLogger<TokenFfnEdgePass>()),
-            new TokenAttentionEdgePass(_loggerFactory.CreateLogger<TokenAttentionEdgePass>()),
-            new VocabCoveragePass(_loggerFactory.CreateLogger<VocabCoveragePass>()),
-            new OneDTensorPass(_loggerFactory.CreateLogger<OneDTensorPass>()),
-            new FfnNeuronPass(_loggerFactory.CreateLogger<FfnNeuronPass>()),
-            new EmbeddingPositionPass(_loggerFactory.CreateLogger<EmbeddingPositionPass>()),
-            new LogitHeadPass(_loggerFactory.CreateLogger<LogitHeadPass>()),
-            new LayerNormPass(_loggerFactory.CreateLogger<LayerNormPass>()),
-            new AttentionComponentPass(_loggerFactory.CreateLogger<AttentionComponentPass>()),
-            new MoeRouteDirectionPass(_loggerFactory.CreateLogger<MoeRouteDirectionPass>()),
-            new MoeExpertNeuronPass(_loggerFactory.CreateLogger<MoeExpertNeuronPass>()),
-            new RopeFreqPass(_loggerFactory.CreateLogger<RopeFreqPass>()),
-            new ObjectQueryPass(_loggerFactory.CreateLogger<ObjectQueryPass>()),
-            new ClassHeadPass(_loggerFactory.CreateLogger<ClassHeadPass>()),
-            new BboxHeadPass(_loggerFactory.CreateLogger<BboxHeadPass>()),
-            new VisionFeaturePass(_loggerFactory.CreateLogger<VisionFeaturePass>()),
-            new ModalityBasisPass(_loggerFactory.CreateLogger<ModalityBasisPass>()),
-            new LoraComponentPass(_loggerFactory.CreateLogger<LoraComponentPass>()),
-            new ConvFilterPass(_loggerFactory.CreateLogger<ConvFilterPass>()),
-            new DiffusionComponentPass(_loggerFactory.CreateLogger<DiffusionComponentPass>()),
-            new ConformerComponentPass(_loggerFactory.CreateLogger<ConformerComponentPass>()),
-            new AudioCodecFilterPass(_loggerFactory.CreateLogger<AudioCodecFilterPass>()),
-            new EmbeddingAlignmentPass(_loggerFactory.CreateLogger<EmbeddingAlignmentPass>(), _alignmentDataSource),
-            new GrammarExtractionPass(_loggerFactory.CreateLogger<GrammarExtractionPass>(), _alignmentDataSource),
-            new FfnEdgeDecompositionPass(_loggerFactory.CreateLogger<FfnEdgeDecompositionPass>()),
+            new ModelConfigPass(_loggerFactory.CreateLogger<ModelConfigPass>()),
+            // EmbeddingLookup runs first — produces the word_form bridge entities that
+            // every downstream attestation pass references.
+            new EmbeddingLookupTuplePass(_loggerFactory.CreateLogger<EmbeddingLookupTuplePass>()),
+            new AttentionBlockTuplePass(_loggerFactory.CreateLogger<AttentionBlockTuplePass>()),
+            new FfnTuplePass(_loggerFactory.CreateLogger<FfnTuplePass>()),
+            new LoraDeltaTuplePass(_loggerFactory.CreateLogger<LoraDeltaTuplePass>()),
+            new NormalizationPrimitivePass(_loggerFactory.CreateLogger<NormalizationPrimitivePass>()),
         ];
 
-        if (_codepointProperties is not null && _substrateTextDecomposer is not null)
-        {
-            passes.Add(new ModelTextArtifactsPass(
-                _loggerFactory.CreateLogger<ModelTextArtifactsPass>(),
-                _codepointProperties,
-                _substrateTextDecomposer));
-        }
+        passes.Add(new ModelTextArtifactsPass(
+            _loggerFactory.CreateLogger<ModelTextArtifactsPass>(),
+            _substrateTextDecomposer));
 
         return passes;
     }
@@ -345,19 +321,19 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         {
             reader = DonorPackageReaderFactory.Open(effectiveRoot, loggerFactory);
         }
-        catch (NotSupportedException)
+        catch (NotSupportedException) // BOUNDARY: polymorphic model discovery ignores roots that are not supported donor packages.
         {
             return;
         }
-        catch (InvalidDataException)
+        catch (InvalidDataException) // BOUNDARY: polymorphic model discovery ignores malformed roots while scanning siblings.
         {
             return;
         }
-        catch (DirectoryNotFoundException)
+        catch (DirectoryNotFoundException) // BOUNDARY: polymorphic model discovery ignores disappearing roots while scanning siblings.
         {
             return;
         }
-        catch (FileNotFoundException)
+        catch (FileNotFoundException) // BOUNDARY: polymorphic model discovery ignores incomplete roots while scanning siblings.
         {
             return;
         }
@@ -365,7 +341,7 @@ public sealed partial class SafetensorsDecomposer : BaseDecomposer
         DiscoveredModel? built = TryBuildPolymorphicDiscoveredModel(packageRoot, effectiveRoot, reader);
         if (built is null)
         {
-            try { reader.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
+            try { reader.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { } // BOUNDARY: best-effort cleanup after rejected polymorphic reader.
             return;
         }
         sink.Add(built);

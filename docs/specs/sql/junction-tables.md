@@ -208,9 +208,9 @@ COMMENT ON TABLE substrate.pattern_deprel IS 'Attention pattern entity → depre
 COMMENT ON COLUMN substrate.pattern_deprel.mu IS 'Confidence that this attention head encodes this deprel. Default 1200 (model_derived trust prior).';
 ```
 
-**Populated by**: Safetensors decomposer (attention head analysis comparing attention patterns to UD treebank dependency structures).
-**Significance updated by**: `attention_pattern_confidence` arena — comparison of attention pattern edge geometries against known syntactic patterns.
-**Example**: `attention_head_3_layer_7` → `[(nsubj, mu=1400), (obj, mu=1100)]` — this attention head primarily tracks subject relations.
+**Populated by**: Layer-type decomposers in the Safetensors container decomposer (per [`docs/specs/decomposers/layer-type-library.md`](../decomposers/layer-type-library.md)) — `AttentionQkvLayerDecomposer` and `AttentionVoLayerDecomposer` analyze attention patterns and bind them to UD deprel hypotheses.
+**Significance updated by**: `attention_pattern_confidence` arena — comparison of `model_attention_pattern` edge trajectory geometries against known syntactic-pattern archetypes via Fréchet distance.
+**Example (corrected per [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §III):** `pattern_deprel(entity_hash=word_form('King').hash, deprel_id=nsubj, mu=1400)` — the model's attention attests that the `word_form` "King" is bound to `nsubj` with confidence 1400 in the source contexts the model trained on. The previous `attention_head_3_layer_7` example (a phantom per-head entity) is deprecated; the same attestation now lives on the `model_attention_pattern` edge between word_form pairs with `attestation_type = model_attention_qk_pattern` and layer/head metadata on the rating event.
 
 ---
 

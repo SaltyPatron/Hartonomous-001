@@ -6,7 +6,6 @@ using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
-using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Core.Text;
 using Hartonomous.Decomposers.Safetensors.Packages;
 using Microsoft.Extensions.Logging;
@@ -46,7 +45,6 @@ internal sealed partial class ModelPassOrchestrator
     private readonly ILogger _logger;
     private readonly int _batchSize;
     private readonly string _provenanceCode;
-    private readonly ICodepointProperties? _codepointProperties;
 
     public ModelPassOrchestrator(
         IComputeFacade compute,
@@ -57,8 +55,7 @@ internal sealed partial class ModelPassOrchestrator
         IReadOnlyList<IModelAnalysisPass> passes,
         ILogger logger,
         int batchSize,
-        string provenanceCode,
-        ICodepointProperties? codepointProperties = null)
+        string provenanceCode)
     {
         _compute = compute;
         _checkpointStore = checkpointStore;
@@ -69,7 +66,6 @@ internal sealed partial class ModelPassOrchestrator
         _logger = logger;
         _batchSize = batchSize;
         _provenanceCode = provenanceCode;
-        _codepointProperties = codepointProperties;
     }
 
     public async Task RunAsync(
@@ -152,24 +148,21 @@ internal sealed partial class ModelPassOrchestrator
         // Architecture class name as a substrate document (seed-uses-core).
         // Two snapshots that share an architecture class collapse to ONE
         // document with TWO has_architecture_name edges.
-        if (_codepointProperties is not null)
+        if (!string.IsNullOrEmpty(arch.ArchitectureClass))
         {
             byte[] archNameBytes = Encoding.UTF8.GetBytes(arch.ArchitectureClass);
-            if (archNameBytes.Length > 0)
-            {
-                Hartonomous.Core.Text.TextDecomposeResult archNameResult =
-                    Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                        batch, archNameBytes, _codepointProperties,
-                        new Hartonomous.Core.Text.TextDecomposeOptions(
-                            ProvenanceCode: _provenanceCode,
-                            TopEntityType: "text_composition",
-                            TrustMu: ModelDerivedTrustMu));
-                batch.AddEdge("has_architecture_name", _provenanceCode,
-                [
-                    new EdgeMemberSpec(modelEntity, "source", 0),
-                    new EdgeMemberSpec(archNameResult.RootHandle, "target", 1),
-                ]);
-            }
+            TextDecomposeResult archNameResult =
+                SubstrateTextDecomposer.EmitStatic(
+                    batch, archNameBytes,
+                    new TextDecomposeOptions(
+                        ProvenanceCode: _provenanceCode,
+                        TopEntityType: "text_composition",
+                        TrustMu: ModelDerivedTrustMu));
+            batch.AddEdge("has_architecture_name", _provenanceCode,
+            [
+                new EdgeMemberSpec(modelEntity, "source", 0),
+                new EdgeMemberSpec(archNameResult.RootHandle, "target", 1),
+            ]);
         }
 
         List<SafetensorsTensorInfo> rawTensors = [];
@@ -210,12 +203,15 @@ internal sealed partial class ModelPassOrchestrator
         {
             ct.ThrowIfCancellationRequested();
             tensorIdx++;
-            TensorClassification cls = TensorClassifier.Classify(tensor.Name, arch.ArchitectureClass);
-            if (cls.Role == TensorRole.Unknown)
-            {
-                Log.TensorSkippedUnknown(_logger, tensorIdx, rawTensors.Count, tensor.Name);
-                continue;
-            }
+            // Classification deferred to TupleResolver below — we hash + create
+            // every tensor entity unconditionally; classification + tuple grouping
+            // happens after the bootstrap loop and drives downstream TuplePass dispatch.
+            // The Unknown filter previously here is gone: every tensor is content;
+            // an unrecognized name just doesn't participate in any tuple.
+            TensorClassification cls = new(
+                PrimitiveKind.Unknown, ArchetypeTuple.Unknown, TupleSlot.Unknown,
+                LayerIndex: null, HeadIndex: null, ExpertIndex: null,
+                Modality: ModalityHint.Unknown, AdaptationOf: null);
 
             Stopwatch hashSw = Stopwatch.StartNew();
             byte[] tensorHash = HashTensorStreaming(tensor);
@@ -224,10 +220,10 @@ internal sealed partial class ModelPassOrchestrator
 
             EntityHandle tensorH = batch.AddEntity(tensorHash, "tensor");
             batch.AddEntityModelSource(tensorH, modelSourceId);
-            if (tensorRoleMap.TryGetValue(cls.Role.ToCode(), out int roleId))
-            {
-                batch.AddJunction("tensor_tensor_role", tensorH, roleId);
-            }
+            // tensor_tensor_role junction will be re-emitted in §IX.3b math layer
+            // once the classification dictionary from TupleResolver maps tensors
+            // to (PrimitiveKind, ArchetypeTuple, TupleSlot) triples and the junction
+            // is migrated to record the new vocabulary.
             batch.AddEdge("has_tensor", _provenanceCode,
             [
                 new EdgeMemberSpec(modelEntity, "source", 0),
@@ -239,10 +235,7 @@ internal sealed partial class ModelPassOrchestrator
             // edges. Recomposer reads these to reconstruct the safetensors
             // header on export — without them the substrate cannot be
             // round-tripped from UCD/UCA + AI model alone.
-            if (_codepointProperties is not null)
-            {
-                EmitTensorMetadataDocuments(batch, tensorH, tensor, ct);
-            }
+            EmitTensorMetadataDocuments(batch, tensorH, tensor, ct);
             staged.Add((tensor, cls, tensorHash, tensorH));
 
             if (batch.EntityCount >= _batchSize || batch.EdgeCount >= _batchSize)
@@ -275,6 +268,14 @@ internal sealed partial class ModelPassOrchestrator
             Path.GetDirectoryName(model.ConfigPath)!);
         string checkpointKey = $"model_source:{modelSourceId}";
 
+        // Resolve tensor classifications + tuple groupings via TupleResolver
+        // (per docs/01-tensor-primitive-spec.md §III). This produces the
+        // ResolvedTuple list that TuplePass implementations dispatch on, plus
+        // the per-tensor classification dictionary that PrimitivePasses use
+        // (NormalizationPass for γ/β contour emission, etc.).
+        TupleResolution.TupleResolver resolver = new();
+        (var classifications, var tuples) = resolver.Resolve(arch.ArchitectureClass, tensorHandles);
+
         return new ModelPassContext(
             Source: sourceHandle,
             Architecture: archHandle,
@@ -282,7 +283,9 @@ internal sealed partial class ModelPassOrchestrator
             Compute: _compute,
             TensorRoleMap: tensorRoleMap,
             CheckpointKey: checkpointKey,
-            ProvenanceCode: _provenanceCode);
+            ProvenanceCode: _provenanceCode,
+            TensorClassifications: classifications,
+            ResolvedTuples: tuples);
     }
 
     // LookupId removed — hash-as-PK substrate eliminates surrogate-id resolution.
@@ -409,11 +412,6 @@ internal sealed partial class ModelPassOrchestrator
     private void EmitTensorMetadataDocuments(
         IIngestionBatch batch, EntityHandle tensorH, SafetensorsTensorInfo tensor, CancellationToken ct)
     {
-        if (_codepointProperties is null)
-        {
-            return;
-        }
-
         EmitMetadataEdge(batch, tensorH, "has_tensor_name", tensor.Name, ct);
         EmitMetadataEdge(batch, tensorH, "has_dtype", DtypeToWireFormat(tensor.Dtype), ct);
         EmitMetadataEdge(batch, tensorH, "has_shape", FormatShape(tensor.Shape), ct);
@@ -422,15 +420,15 @@ internal sealed partial class ModelPassOrchestrator
     private void EmitMetadataEdge(
         IIngestionBatch batch, EntityHandle source, string edgeCode, string text, CancellationToken ct)
     {
-        if (_codepointProperties is null || string.IsNullOrEmpty(text))
+        if (string.IsNullOrEmpty(text))
         {
             return;
         }
         byte[] bytes = Encoding.UTF8.GetBytes(text);
-        Hartonomous.Core.Text.TextDecomposeResult result =
-            Hartonomous.Core.Text.CanonicalTextDecomposer.Emit(
-                batch, bytes, _codepointProperties,
-                new Hartonomous.Core.Text.TextDecomposeOptions(
+        TextDecomposeResult result =
+            SubstrateTextDecomposer.EmitStatic(
+                batch, bytes,
+                new TextDecomposeOptions(
                     ProvenanceCode: _provenanceCode,
                     TopEntityType: "text_composition",
                     TrustMu: ModelDerivedTrustMu));

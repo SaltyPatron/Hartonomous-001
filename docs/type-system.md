@@ -1,5 +1,7 @@
 # Hartonomous Classification Vocabulary
 
+> **Authority note (2026-05-09):** Phantom entity types previously listed in this document (`attention_pattern` and similar per-role-unit-as-entity types) are deprecated by the 2026-05-08 architectural correction. The corrected vision is documented in [`docs/00-substrate-spec.md`](00-substrate-spec.md) §III: per-role units of Track 2 transformation tensors manifest as typed attestation EDGES between existing content entities, NOT as phantom entity types. Inline DEPRECATED markers below identify the affected rows.
+
 The classification vocabulary is the substrate's grammar. It defines every category, type, and property value that the system uses to classify entities and type edges. These are **reference tables** — properly normalized relational tables populated during seed ingestion. They are NOT entities in the entity table. They are the infrastructure that enables the substrate to process, not substrate content themselves.
 
 ## Principle
@@ -198,7 +200,7 @@ Every entity has exactly one type. Types are grouped by modality and seeding pha
 | `audio_recording` | audio | 2f | Tatoeba |
 | `tensor` | model_weights | 3 | SafeTensors |
 | `model_architecture` | model_weights | 3 | SafeTensors |
-| `attention_pattern` | model_weights | 3 | SafeTensors |
+| ~~`attention_pattern`~~ | ~~model_weights~~ | ~~3~~ | **DEPRECATED 2026-05-08** — phantom entity type per spec §XII. Per-role units (attention patterns, FFN rows, etc.) of Track 2 transformation tensors are typed attestation EDGES between existing `word_form` content entities (`model_attention_pattern` per `sql/schema/seed/edge_type.sql:84-90`) with `attestation_type = model_attention_qk_pattern` (or `model_attention_vo_pattern`) on the rating event. See [`docs/00-substrate-spec.md`](00-substrate-spec.md) §III, AP-25. |
 
 **Runtime entity types** (created by runtime decomposers):
 
@@ -265,6 +267,6 @@ Domain/range validation fails loud. You cannot create a `hypernym` edge from a c
 | `codepoint_property` | codepoint → general_category, script, block, break values | Unicode properties |
 | `model_architecture_class` | model → architecture_class reference table | Model classification |
 | `tensor_tensor_role` | tensor → tensor_role reference table | Tensor classification |
-| `pattern_deprel` | attention_pattern → deprel reference table | What pattern encodes |
+| `pattern_deprel` | entity (typically a word_form, formerly attention_pattern phantom) → deprel reference table | What attention pattern encodes (Glicko-2 mu confidence on the binding). With the phantom `attention_pattern` entity type deprecated per spec §XII, `pattern_deprel` rows now bind to `word_form` content entities the model attests on, with the dependency-relation hypothesis as the junction value. |
 
 The junction tables and edges can coexist — the junction table is the fast indexed path, the edge is the significance-weighted traversal path.

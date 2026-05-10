@@ -80,19 +80,22 @@ For each tensor in the target architecture, the recomposer:
 
 The naive projection is `weight = mu / 3000` (Glicko mu in [0, 3000+] range, mapping to [0, 1+] scalar). This is too crude for production refinement; quality depends on a proper projection function.
 
-Per-tensor-role projection rules (initial):
+Per-tensor-role projection rules (corrected per [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VI; reciprocal of the layer-type decomposer library; canonical synthesis-library spec at [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md)):
 
-| Tensor role | Projection |
-|---|---|
-| Embedding (vocab × hidden) | Per-token row from substrate `physicality(embedding_firefly)` aggregated across all source provenance. Dimension reduction from 4D back to native hidden via stored full-resolution embedding (preserved at ingestion). |
-| Attention Q/K/V | `mu_consensus * sign(original_weight) / normalization` for sparse positions; zero for below-threshold. Normalization preserves spectral characteristics of the matrix. |
-| Attention O | Similar to Q/K/V; substrate edges for output projection are typed as `beaten_path` with `output_proj` role tag. |
-| FFN gate / up / down | `transformation` edges' mu projected with role-specific normalization (gate is multiplicative-contribution, up is expansion, down is reduction). |
-| LM head | `hidden_to_token` edges; analogous to embedding (vocab × hidden) but with output-projection norm. |
-| Layer norm | RMS-norm scale parameters: substrate stores per-layer norm scale evidence; recomposer reads as a small (hidden,) tensor. |
-| Position encoding | RoPE: not stored as substrate edges; recomposer applies target's chosen scheme (RoPE base, NTK scaling) at recompose time. |
-| Token embedding (input) | Same as Embedding above. |
-| MoE router | Per-input routing pattern edges; recomposer projects to (hidden × num_experts) router matrix. |
+| Tensor role | Synthesizer | Projection |
+|---|---|---|
+| Embedding (vocab × hidden) | `EmbeddingLayerSynthesizer` | Two complementary substrate sources: (a) `model_concept_similarity` attestations between word_form pairs with `attestation_type = model_embedding_proximity` (PCA over per-token attestation participation gives the row), OR (b) firefly POINTZM cluster centroids per token (POINTZMs attached to the existing `word_form` entity per spec §VII; project back to hidden_dim via inverse Laplacian eigenmap). Honest abstention: tokens with no attestations stay at zero rows. |
+| Attention Q / K | `AttentionQkvLayerSynthesizer` | Low-rank approximation `min ‖S - QK^T‖²` over the sparse attestation matrix S where `S[a][b]` is consensus mu of `model_attention_pattern(token_a, token_b)` with `attestation_type = model_attention_qk_pattern`, filtered by target layer/head/arena/threshold. |
+| Attention V / O | `AttentionVoLayerSynthesizer` | Same low-rank fit pattern with `attestation_type = model_attention_vo_pattern`. |
+| FFN gate / up / down | `FfnLayerSynthesizer` | KV-memory inversion: solve for (W_up, W_gate, W_down) such that the `model_ffn_factor` attestations between token pairs (with `attestation_type ∈ {model_ffn_full_path, model_ffn_up_projection, model_ffn_gate_projection, model_ffn_down_projection}`) are best satisfied. Honest abstention: under-attested intermediate dimensions stay at zero. |
+| LM head | `LmHeadLayerSynthesizer` | PCA / least-squares over `model_lm_head_projection` attestations on word_form entities. Often tied to TokenEmbedding (shared weights). |
+| Layer norm / RMS norm | `LayerNormLayerSynthesizer` | Per-feature γ scale from `model_layer_norm_evidence` attestations on tensor entities (analysis-surface attestation, scoped to layer position). Default identity-norm initialization when attestation density insufficient. |
+| Position encoding (RoPE / ALiBi) | (deterministic from architecture spec) | Not learned content; recomposer applies target's chosen scheme (RoPE base, NTK scaling) at recompose time per `TargetArchitectureSpec`. |
+| Token embedding (input) | `EmbeddingLayerSynthesizer` | Same as Embedding above. |
+| MoE router | `MoeRouterLayerSynthesizer` | Synthesize routing matrix from per-token routing-strength consensus across ingested models (`model_moe_router` attestations). Map substrate's accumulated expert IDs to target's expert count via clustering when target has fewer experts; expert duplication when target has more. |
+| MoE expert (gate / up / down) | `MoeExpertLayerSynthesizer` | Per-expert FFN synthesis using FfnLayerSynthesizer's algorithm scoped to the expert's `model_moe_expert_response` attestation set. |
+| LoRA (A / B) | `LoRAAdapterLayerSynthesizer` | Low-rank synthesis preserving the A·B factorization at the user-specified `TargetArchitectureSpec.LoRARank` from `model_lora_adapter_evidence` attestations. |
+| Cross-attention | `CrossAttentionLayerSynthesizer` | Same low-rank fit as AttentionQkv/Vo synthesizers but with content entities from two different modalities (text↔visual_concept, text↔audio_chunk, etc.). |
 
 The projection rules per tensor role are themselves a small body of code (not a learned model). Each rule is independently testable. Each rule's correctness is verified by golden tests: ingest a known model, recompose, compare against original on a curated test set, expect refined to match or beat.
 

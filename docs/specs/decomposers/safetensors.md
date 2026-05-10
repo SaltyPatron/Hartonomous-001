@@ -1,8 +1,10 @@
 # Safetensors Model Decomposer Specification
 
+> **Authority note (2026-05-09):** Architectural sections of this document — particularly the entity-model examples, the per-role unit emission framing, the analysis-pass list, and the recomposer description — have been brought into alignment with the canonical [`docs/00-substrate-spec.md`](../../00-substrate-spec.md). Where this document and the spec disagree on architecture (per-role units, layer-type decomposer factoring, recomposer synthesis semantics, phantom entity deprecation), the spec is correct. The architecture-detection / per-architecture-classification content (sections "Source Package Structure", "Architecture Family Coverage", "Consolidated Tensor Role Coverage", "Decomposer Strategy") remains valid as the catalog of model layouts the container decomposer must handle.
+
 ## Identity
 
-- **Decomposer class**: `SafetensorsDecomposer` extends `BaseDecomposer`
+- **Decomposer class**: `SafetensorsContainerDecomposer` (today's `SafetensorsDecomposer`, scope-narrowed per spec §V.1) extends `BaseDecomposer`
 - **Source path**: `D:\Models\hub\` (HuggingFace cache structure)
 - **Trust prior**: Provenance-based (publisher identity, not benchmark score). A model from Anthropic, Meta, Google, Mistral, etc. is a known corpus; its trust prior reflects who produced it, not how it scored on leaderboards. Benchmarks reflect task-specific performance under a specific evaluation harness — they do not measure whether a model's internal representations carry truth. Trust priors only seed the Glicko-2 mu; inference-time arena competition adjusts from there.
 - **Provenance**: Per-model: `huggingface/{org}/{model}/{snapshot_hash}`
@@ -327,27 +329,53 @@ tensor_tensor_role: entity_id=qwen3b_layer0_qproj_weight, tensor_role_id→tenso
 physicality: entity_id=qwen3b_layer0_qproj_weight, type='weight_distribution', geom=LINESTRINGZM
 ```
 
-### Extracted Semantic Edges
-```
-// From attention weight analysis:
-entity: hash=BLAKE3('attention_pattern_layer0_head3'), entity_type_id→entity_type('attention_pattern')
+### Extracted Semantic Edges (corrected per spec §III)
 
-// Junction table entry for what this pattern encodes (classification, not edge target):
-pattern_deprel: entity_id=attention_pattern_layer0_head3, deprel_id→deprel('nsubj')
-  //⇠ this head learned subject detection
-  significance: context='attention_pattern_confidence', mu=derived_from_weight_magnitude
+Per-role units of Track 2 transformation tensors manifest as **typed attestation edges between existing content entities** (typically two `word_form` tokens), NOT as synthetic `attention_pattern` / `attention_head` / `ffn_neuron` / `embedding_position` / etc. entities. The phantom entity types listed in `sql/schema/seed/entity_type.sql:99-159` (rows 19-54 except 16-18) are deprecated by the 2026-05-08 architectural correction; new code emits attestation edges. See AP-25 in `.claude/rules/45-anti-patterns.md`.
+
+```
+// From attention weight analysis (the working pattern from TokenAttentionEdgePass.cs):
+//   For each per-layer (Q, K) tensor pair, identify top-K (q_token, k_token) pairs above per-tensor noise floor.
+//   Each surviving pair emits an attestation edge between the two EXISTING word_form entities.
+
+edge: edge_type_id→edge_type('model_attention_pattern'),
+      hash=ComputeEdgeHash('model_attention_pattern', [word_form_q_hash, word_form_k_hash]),
+      provenance_id→provenance('huggingface_model'),
+      geom=LINESTRINGZM(...spectral fingerprint of the head's QK pattern between these tokens...)
+
+edge_member: (edge, word_form_q, role='source', position=0)
+edge_member: (edge, word_form_k, role='target', position=1)
+
+edge_significance: context_type_id→significance_context('model_trust'),
+                   edge_type_id→edge_type('model_attention_pattern'),
+                   edge_hash=...,
+                   attestation_type_id→attestation_type('model_attention_qk_pattern'),
+                   mu=derived_from_qk_pair_strength,
+                   sigma=initial,
+                   layer_index=N, head_index=H  -- rating-event metadata, not entity types
 ```
 
-### Tokenizer Mapping
-```
--- Entity table row:
-entity: hash=BLAKE3('token_15234'), entity_type_id→entity_type('bpe_token')
+When a second model (Llama, Qwen, etc.) decomposes into the same `(model_attention_pattern, [word_form_q, word_form_k])`, the second model fires another `model_attention_qk_pattern` rating event on the SAME edge hash. Cross-model corroboration accumulates as separate `attestation_type`-distinguished events; sigma tightens; no duplicate edge spawns.
 
--- Edges:
-edge(type='has_token_string', source=token_15234, target=Entity('the'))
-edge(type='has_token_id', source=token_15234, target=Entity(15234))
-edge(type='in_vocabulary', source=token_15234, target=qwen2.5-coder-3b-instruct)
-// "the" as text_composition links to existing substrate codepoint entities and WordNet/Wiktionary lemma entities
+See `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs` for the working template, and [`docs/specs/decomposers/layer-type-library.md`](layer-type-library.md) for the full layer-type decomposer library specification.
+
+### Tokenizer Mapping (corrected per spec §V.5)
+
+Tokens map to **existing `word_form` entities** content-addressed via BLAKE3 of the token bytes through `SubstrateTextDecomposer.EmitStatic`. The same vocab token across two models that share it collapses to ONE `word_form` entity. There is no synthetic `bpe_token` entity type; the corresponding row in `entity_type.sql` is part of the phantom deprecation list.
+
+```
+-- Token bytes (e.g. "the" as UTF-8) are routed through SubstrateTextDecomposer:
+SubstrateTextDecomposer.EmitStatic(batch, "the".AsBytes(), TextDecomposeOptions(
+    ProvenanceCode: "huggingface_model",
+    TopEntityType: "word_form",
+    TrustMu: ModelDerivedTrustMu));
+-- Returns word_form entity hash = BLAKE3 of UTF-8 bytes of "the".
+-- Same hash regardless of which model's tokenizer surfaced it.
+
+-- Edges binding tokenizer + model + token:
+edge(type='has_token_id', source=word_form_the, target=Entity(15234))
+edge(type='has_token_in_tokenizer', source=qwen_arch, target=word_form_the)
+-- The word_form_the entity links to the existing substrate codepoint compositions, WordNet/Wiktionary lemma entities, etc.
 ```
 
 ## Decomposer Strategy
@@ -389,7 +417,11 @@ All pre-computed at ingestion. All stored as edges.
 
 ## Distillation (Recomposer)
 
-**Implementation status**: ✅ The `SafetensorsRecomposer` is wired and exposed via the `hartonomous export-model` CLI. The substrate's per-role unit emission (Phase A passes — `FfnNeuronPass`, `AttentionComponentPass`, `EmbeddingPositionPass`, `LogitHeadPass`, `LayerNormPass`, `RopeFreqPass`, `MoeRouteDirectionPass`, `MoeExpertNeuronPass`, `ConvFilterPass`, `VisionFeaturePass`, `ModalityBasisPass`, `ObjectQueryPass`, `ClassHeadPass`, `BboxHeadPass`, `LoraComponentPass`, `DiffusionComponentPass`, `ConformerComponentPass`, `AudioCodecFilterPass`) populates the substrate units the recomposer's scatter path consumes. CLI form:
+**Implementation status (corrected per spec §VI):** A `SafetensorsRecomposer` exists today (`src/Hartonomous.Recomposers/SafetensorsRecomposer.cs`) and is wired into the `hartonomous export-model` CLI, but its current `AssembleTensorBytesAsync` path (lines 239-373) is **single-source phantom-scatter**: it walks `has_constituent` children of a tensor (the deprecated phantom per-role-unit entities — `ffn_neuron`, `embedding_position`, etc., all on the §XII removal list), reads their stored `contour` physicality, and scatters values into target row positions. This works only for round-tripping a model whose phantoms were stored at ingest with the same shape from one source. **Build-a-bear synthesis is impossible with this path.**
+
+The replacement is a **per-layer-type synthesizer library** (canonical specification: [`docs/specs/recomposers/synthesis-library.md`](../recomposers/synthesis-library.md)). Each universal / specialist layer-type decomposer (`AttentionQkvLayerDecomposer`, `FfnLayerDecomposer`, etc., per [`docs/specs/decomposers/layer-type-library.md`](layer-type-library.md)) has a reciprocal synthesizer (`AttentionQkvLayerSynthesizer`, `FfnLayerSynthesizer`, etc.). The recomposer accepts an arbitrary `TargetArchitectureSpec` (any combination of MoE / LoRA / layer count / hidden dim / modality mix; "MiniLM-as-MoE-with-Flux" is a valid input), dispatches each tensor in the target to its layer-type synthesizer, queries substrate consensus attestations across all ingested models filtered by user-selected arenas above significance threshold, and synthesizes weights via published algorithms (low-rank approximation `min ‖S - QK^T‖²` for attention, KV-memory inversion for FFN, PCA over per-token attestation participation for embeddings). Honest abstention when attestation density insufficient — output stays sparse / zeros for under-attested cells.
+
+CLI form (transitional; will accept `--target-arch` and `--recipe` once the synthesis recomposer lands):
 
 ```
 hartonomous export-model \

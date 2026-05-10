@@ -12,20 +12,14 @@ namespace Hartonomous.Engine.Text;
 /// <see cref="ICodepointProperties"/> / <see cref="ICaseFoldingProperties"/>
 /// lookup is an O(1) array index.
 ///
-/// LEGACY SURFACE (post-W3B). The hot ingestion path (WordNet, Wiktionary,
-/// Safetensors text artifacts) now goes through
-/// <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/> which
-/// hands UTF-8 to <c>substrate.text_decompose</c> — properties come from the
-/// embedded UCD blob baked into the C extension at build time. This cache
-/// is retained ONLY for cold paths still calling
-/// <see cref="Hartonomous.Core.Text.CanonicalTextDecomposer.Emit"/> directly:
-/// Iso639 / UD / OMW / Tatoeba / Text decomposers, plus the inference-side
-/// label-rendering surfaces (GodelEngine, SubQuestionDecomposer,
-/// SubstrateInferenceEngine, Api/Program.cs). When those paths migrate to
-/// <c>substrate.cp_*</c> SQL functions or
-/// <c>substrate.recompose_text(entity_hash)</c>, this class plus the entire
-/// <c>Hartonomous.Core.Text.Segmentation</c> + <c>ICaseFoldingProperties</c>
-/// surface can be deleted (~1330 LOC of UAX #29 in C#).
+/// LEGACY SURFACE (post-native text unification). Text ingestion now goes
+/// through <see cref="Hartonomous.Core.Text.SubstrateTextDecomposer"/>, whose
+/// in-process native implementation reads the embedded UCD blob directly.
+/// This cache remains for reference/junction lookup paths that still need
+/// UCD break and case-folding metadata outside text decomposition. When those
+/// paths migrate to <c>substrate.cp_*</c> SQL functions or native UCD helpers,
+/// this class plus the <c>Hartonomous.Core.Text.Segmentation</c> and
+/// <c>ICaseFoldingProperties</c> surfaces can be removed.
 ///
 /// Per AP-7: callers that only need a small working set MUST use
 /// <see cref="LoadForCodepointsAsync"/>; the eager <see cref="LoadAsync"/>

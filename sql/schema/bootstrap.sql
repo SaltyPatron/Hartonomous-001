@@ -91,6 +91,10 @@
 -- @include schema/tables/core/edge_cross_modal.sql
 -- @include schema/tables/core/edge_unicode.sql
 -- @include schema/tables/core/edge_model.sql
+-- @include schema/tables/core/edge_model_concept_similarity.sql
+-- @include schema/tables/core/edge_model_attention_pattern.sql
+-- @include schema/tables/core/edge_model_ffn_factor.sql
+-- @include schema/tables/core/edge_model_cross_content.sql
 -- @include schema/tables/core/edge_default.sql
 -- @include schema/tables/core/edge_member.sql
 -- @include schema/tables/core/edge_member_structural.sql
@@ -98,6 +102,10 @@
 -- @include schema/tables/core/edge_member_cross_modal.sql
 -- @include schema/tables/core/edge_member_unicode.sql
 -- @include schema/tables/core/edge_member_model.sql
+-- @include schema/tables/core/edge_member_model_concept_similarity.sql
+-- @include schema/tables/core/edge_member_model_attention_pattern.sql
+-- @include schema/tables/core/edge_member_model_ffn_factor.sql
+-- @include schema/tables/core/edge_member_model_cross_content.sql
 -- @include schema/tables/core/edge_member_default.sql
 -- @include schema/tables/core/physicality.sql
 -- @include schema/tables/core/physicality_s3.sql
@@ -131,6 +139,15 @@
 -- @include schema/tables/core/edge_significance_attention.sql
 -- @include schema/tables/core/edge_significance_morphological.sql
 -- @include schema/tables/core/edge_significance_default.sql
+
+-- (Removed 2026-05-09 per architectural correction: per-decomposition-event log was
+-- over-engineered. The Glicko-2 aggregation in edge_significance IS the consensus
+-- — same edge across N models = same edge hash = ONE row, with cross-source
+-- corroboration accumulating as Glicko updates on that row, not new rows.
+-- Per-event provenance/history/audit is out of scope for substrate-as-AI; if
+-- ever needed for IP attribution it becomes a per-(source, edge) aggregate
+-- counter, not a per-event log. See AP-22 for the row-vs-rating-event dedup
+-- distinction that makes this work.)
 
 -- ── Phase 8: junction tables ─────────────────────────────────────────
 -- @include schema/tables/junctions/entity_pos.sql

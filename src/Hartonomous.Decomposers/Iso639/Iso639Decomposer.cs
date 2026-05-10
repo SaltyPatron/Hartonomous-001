@@ -103,11 +103,10 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             {
                 ct.ThrowIfCancellationRequested();
 
-                // language_name identity = canonical Merkle of codepoint children.
-                // EmitWordFormMerkle creates codepoint + grapheme_cluster + language_name
-                // entities and sequence rows in one pass; same content from any decomposer
-                // (e.g. text_composition "English" from TextDecomposer) yields the same
-                // Merkle hash → same entity row with language_name classification.
+                // language_name identity = native text root hash over the same text DAG.
+                // The shared text decomposer creates codepoint + grapheme_cluster +
+                // language_name entities and sequence rows in one pass; same content from
+                // any decomposer yields the same entity row with language_name classification.
                 (EntityHandle nameEntity, byte[] nameHash, _) =
                     EmitText(batch, rec.RefName, _codepointProperties, "language_name", TrustPriorMu);
                 codeToNameHash[rec.Id] = nameHash;

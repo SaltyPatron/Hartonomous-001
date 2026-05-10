@@ -209,4 +209,53 @@ internal static partial class NativeCompute
         out long outSimplexCount,
         Span<long> outSimplices,
         long outCapacity);
+
+    // ── Phase A.0.4 synthesis primitives (2026-05-09) ────────────────────
+    // Native implementations land in Phase B.1 (`ext/libhartonomous/src/synth_*.c`).
+    // The C entrypoints are declared here so the C# surface compiles and
+    // synthesizers (Phase C.1) can be authored against the stable signatures.
+    // Until B.1 ships the implementations, calls return
+    // HARTONOMOUS_ERR_NOT_IMPLEMENTED (-99); NativeError translates that to a
+    // ComputeException with the entrypoint name.
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_linear_system_solve_f64")]
+    internal static partial int LinearSystemSolveF64(
+        long m, long n, long p,
+        ReadOnlySpan<double> a,
+        ReadOnlySpan<double> b,
+        Span<double> x,
+        double tolerance,
+        ref long rankOut);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_sparse_ffn_invert_f64")]
+    internal static partial int SparseFfnInvertF64(
+        long vocabSize, long hiddenDim, long intermediateDim,
+        ReadOnlySpan<double> tokenEmbeddings,
+        long nnz,
+        ReadOnlySpan<long> inputTokenIdx,
+        ReadOnlySpan<long> outputTokenIdx,
+        ReadOnlySpan<double> strength,
+        double coverageMin,
+        Span<double> wGateOut,
+        Span<double> wUpOut,
+        Span<double> wDownOut,
+        Span<double> coverageOut);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_inverse_eigenmap_f64")]
+    internal static partial int InverseEigenmapF64(
+        long vocabSize, long hiddenDim,
+        ReadOnlySpan<double> eigenvectors,
+        ReadOnlySpan<double> embeddings,
+        long centroidCount,
+        ReadOnlySpan<double> centroidsXyzm,
+        Span<double> hiddenOut);
+
+    [LibraryImport(Library, EntryPoint = "hartonomous_honest_abstention_f64")]
+    internal static partial int HonestAbstentionF64(
+        long rows, long cols,
+        Span<double> weights,
+        ReadOnlySpan<double> coverage,
+        double cellThreshold,
+        Span<double> rowCoverageOut,
+        ref double aggregateCoverageOut);
 }

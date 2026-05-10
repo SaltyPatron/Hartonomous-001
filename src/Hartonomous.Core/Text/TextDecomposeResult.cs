@@ -3,7 +3,7 @@ using Hartonomous.Core.Ingestion;
 namespace Hartonomous.Core.Text;
 
 /// <summary>
-/// What <see cref="CanonicalTextDecomposer.Emit"/> returns to the caller.
+/// What <see cref="SubstrateTextDecomposer.Emit"/> returns to the caller.
 /// The <see cref="RootHandle"/> + <see cref="RootHash"/> identify the
 /// top-level entity in the substrate; counts are diagnostic and gate
 /// determinism tests (same UTF-8 input must produce identical counts).

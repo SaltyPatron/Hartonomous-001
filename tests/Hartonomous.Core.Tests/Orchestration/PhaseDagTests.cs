@@ -31,6 +31,20 @@ public sealed class PhaseDagTests
     }
 
     [Fact]
+    public void GetDependencies_ModelDecomp_RequiresFoundationOnly()
+    {
+        IReadOnlyList<Phase> deps = PhaseDag.GetDependencies(Phase.ModelDecomp);
+
+        Phase onlyDependency = Assert.Single(deps);
+        Assert.Equal(Phase.Iso639, onlyDependency);
+        Assert.DoesNotContain(Phase.WordNetOmw, deps);
+        Assert.DoesNotContain(Phase.UniversalDeps, deps);
+        Assert.DoesNotContain(Phase.Wiktionary, deps);
+        Assert.DoesNotContain(Phase.Tatoeba, deps);
+        Assert.DoesNotContain(Phase.TextDecomp, deps);
+    }
+
+    [Fact]
     public void GetDependencies_UnknownPhase_ReturnsEmpty()
     {
         IReadOnlyList<Phase> deps = PhaseDag.GetDependencies((Phase)999);
@@ -97,9 +111,10 @@ public sealed class PhaseDagTests
     [InlineData(Phase.Iso639)]
     [InlineData(Phase.WordNetOmw)]
     [InlineData(Phase.UniversalDeps)]
-    [InlineData(Phase.ModelDecomp)]
     [InlineData(Phase.Wiktionary)]
     [InlineData(Phase.Tatoeba)]
+    [InlineData(Phase.TextDecomp)]
+    [InlineData(Phase.ModelDecomp)]
     [InlineData(Phase.SignificanceField)]
     [InlineData(Phase.InferenceEngine)]
     [InlineData(Phase.Validation)]

@@ -23,7 +23,6 @@
 -- Implementation: ONE call to public.glicko2_bulk_update (native C —
 -- ext/libhartonomous/src/glicko_bulk.c via ext/hartonomous_pg/src/pg_glicko_bulk.c).
 
-DROP FUNCTION IF EXISTS substrate._glicko2_volatility(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION);
 DROP FUNCTION IF EXISTS substrate.record_comparison(INT, INT, BYTEA, INT, BYTEA);
 
 CREATE OR REPLACE FUNCTION substrate.record_comparison(

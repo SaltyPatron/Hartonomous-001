@@ -227,6 +227,21 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly ConcurrentDictionary<Hash32, byte> _entitySignificanceDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _edgeSignificanceDedup = new();
 
+    // Phase-scoped centroid index. Every PhysicalityEntry processed by
+    // SubmitBatchAsync drops its (entity_hash → Point4D) here. Edges built
+    // in subsequent batches look up their participants' centroids here so
+    // cross-batch references (an edge whose participants were emitted in
+    // earlier batches) get inline LINESTRINGZM at submit time — no DB
+    // round-trip, no end-of-phase populate_edge_trajectories post-pass
+    // needed.
+    //
+    // Memory bound: 32 bytes (Hash32 key) + 32 bytes (Point4D value) ≈
+    // 64 B/entry, plus dictionary overhead. 10M entities ≈ 640 MB worst
+    // case on a fully-seeded substrate; bounded by phase scope (cleared
+    // when a new pipeline is constructed) so it does not survive
+    // process-wide.
+    private readonly ConcurrentDictionary<Hash32, Hartonomous.Core.Geometry.Point4D> _centroids = new();
+
     public StreamingIngestionPipeline(
         string connectionString,
         IReferenceDataReader referenceDataReader,
@@ -318,7 +333,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 {
                     await Task.Delay(PeriodicSnapshotInterval, ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) { return; }
+                catch (OperationCanceledException) { return; } // BOUNDARY: periodic telemetry loop exits on pipeline shutdown.
 
                 if (!_logger.IsEnabled(LogLevel.Information))
                 {
@@ -346,7 +361,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 #pragma warning restore CA1873
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) // BOUNDARY: periodic telemetry must never take down ingestion; it logs and exits.
         {
             // Snapshot loop must NEVER take down the pipeline. Log and exit.
             Log.SnapshotLoopCrashed(_logger, ex);
@@ -395,39 +410,19 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             await EmitAsync(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance), ct).ConfigureAwait(false);
         }
 
-        // Build a within-batch centroid map from any POINTZM physicalities
-        // emitted by the decomposer. When an edge's participants are all
-        // atoms with POINTZM physicality (the common case for codepoint /
-        // word_form / lemma edges), we can attach the LINESTRINGZM EWKB
-        // inline so the drain INSERT writes geom directly. Edges whose
-        // participants don't have POINTZM here (compositions whose physicality
-        // is LINESTRINGZM, or participants from prior batches) leave geom
-        // NULL for PopulateEdgeTrajectoriesAsync.
-        Dictionary<Hash32, (double X, double Y, double Z, double M)>? centroidMap = null;
+        // Drop every physicality's centroid into the phase-scoped persistent
+        // index. The decomposer already computed each centroid (it had to,
+        // to build the WKB); IngestionBatch.AddPhysicality* carries it on the
+        // PhysicalityEntry. The edge build below looks centroids up by
+        // entity_hash, regardless of whether the participant's physicality
+        // was emitted in THIS batch or a previous batch in the same phase.
+        // Cross-batch participants (the case the prior implementation
+        // deferred to the populate_edge_trajectories post-pass) work without
+        // a DB round-trip because their centroids are still in _centroids
+        // from when they were first emitted.
         foreach (PhysicalityEntry p in b.Physicalities)
         {
-            // POINTZM EWKB layout: byte_order(1) + type(4) + 4*float8(32) = 37 bytes.
-            // Type word: 0xC0000001 (PostGIS EWKB POINT|Z|M) or 3001 (ISO).
-            if (p.Wkb.Length != 37)
-            {
-                continue;
-            }
-            if (p.Wkb[0] != 0x01)
-            {
-                continue; // require little-endian
-            }
-            uint typeWord = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Wkb.AsSpan(1, 4));
-            bool isPointZM = (typeWord == 0xC0000001u) || (typeWord == 3001u);
-            if (!isPointZM)
-            {
-                continue;
-            }
-            double x = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(5, 8));
-            double y = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(13, 8));
-            double z = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(21, 8));
-            double m = System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(p.Wkb.AsSpan(29, 8));
-            centroidMap ??= new Dictionary<Hash32, (double, double, double, double)>();
-            centroidMap[new Hash32(p.Entity.Hash)] = (x, y, z, m);
+            _centroids[new Hash32(p.Entity.Hash)] = p.Centroid;
         }
 
         foreach (EdgeEntry edge in b.Edges)
@@ -444,18 +439,21 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             }
             byte[] edgeHash = ComputeEdgeHash(edgeTypeId, orderedHashes);
 
-            // Try to build inline LINESTRINGZM EWKB if every participant has
-            // a POINTZM centroid in the batch. Otherwise leave geom NULL for
-            // the post-pass populate.
+            // Inline LINESTRINGZM build. Every participant's centroid lives
+            // in the phase-scoped _centroids index. If a participant is
+            // missing it means the decomposer emitted an edge referencing an
+            // entity whose physicality was never produced — leave geom NULL
+            // and let the post-pass UPDATE catch it as a fallback (and
+            // surface it as a phase failure if anything is left over).
             byte[]? inlineGeomWkb = null;
-            if (centroidMap is not null && sorted.Length >= 2)
+            if (sorted.Length >= 2)
             {
-                (double X, double Y, double Z, double M)[] verts =
-                    new (double, double, double, double)[sorted.Length];
+                Hartonomous.Core.Geometry.Point4D[] verts =
+                    new Hartonomous.Core.Geometry.Point4D[sorted.Length];
                 bool allPresent = true;
                 for (int j = 0; j < sorted.Length; j++)
                 {
-                    if (!centroidMap.TryGetValue(new Hash32(sorted[j].Entity.Hash), out var c))
+                    if (!_centroids.TryGetValue(new Hash32(sorted[j].Entity.Hash), out var c))
                     {
                         allPresent = false;
                         break;
@@ -464,7 +462,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
                 if (allPresent)
                 {
-                    inlineGeomWkb = PostGisWkbBuilder.LineStringZM(verts.AsSpan());
+                    inlineGeomWkb = PostGisWkbBuilder.LineStringZM((ReadOnlySpan<Hartonomous.Core.Geometry.Point4D>)verts);
                 }
             }
 
@@ -533,7 +531,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             await EmitAsync(new PhysicalityRecord(
                 p.PhysicalityTypeCode,
                 p.Entity.Hash,
-                contentHash, p.Wkb), ct).ConfigureAwait(false);
+                contentHash,
+                p.Wkb,
+                p.Centroid), ct).ConfigureAwait(false);
         }
 
         foreach (SequenceEntry s in b.Sequences)
@@ -838,7 +838,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     lastEx = null;
                     break;
                 }
-                catch (Exception ex) when (
+                catch (Exception ex) when ( // BOUNDARY: transient post-pass connection failure is retried before fail-loud exhaustion.
                     ex is NpgsqlException ||
                     ex is System.IO.IOException ||
                     ex is System.Net.Sockets.SocketException ||
@@ -1207,7 +1207,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     lastEx = null;
                     break;
                 }
-                catch (Exception ex) when (
+                catch (Exception ex) when ( // BOUNDARY: transient post-pass connection failure is retried before fail-loud exhaustion.
                     ex is NpgsqlException ||
                     ex is System.IO.IOException ||
                     ex is System.Net.Sockets.SocketException ||
@@ -1277,7 +1277,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 arenaListException = null;
                 break;
             }
-            catch (Exception ex) when (
+            catch (Exception ex) when ( // BOUNDARY: transient post-pass connection failure is retried before fail-loud exhaustion.
                 ex is NpgsqlException || ex is System.IO.IOException ||
                 ex is System.Net.Sockets.SocketException ||
                 (ex.InnerException is System.Net.Sockets.SocketException))
@@ -1344,7 +1344,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                         lastEx = null;
                         break;
                     }
-                    catch (Exception ex) when (
+                    catch (Exception ex) when ( // BOUNDARY: transient post-pass connection failure is retried before fail-loud exhaustion.
                         ex is NpgsqlException || ex is System.IO.IOException ||
                         ex is System.Net.Sockets.SocketException ||
                         (ex.InnerException is System.Net.Sockets.SocketException))
@@ -1383,14 +1383,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             await FlushAsync(default).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { /* shutdown */ }
+        catch (OperationCanceledException) { /* shutdown */ } // BOUNDARY: dispose ignores cancellation caused by pipeline shutdown.
 
         _shutdown.Cancel();
         try
         {
             await _periodicSnapshotTask.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { /* shutdown */ }
+        catch (OperationCanceledException) { /* shutdown */ } // BOUNDARY: dispose ignores cancellation caused by pipeline shutdown.
         _shutdown.Dispose();
         await _dataSource.DisposeAsync().ConfigureAwait(false);
     }
@@ -1757,7 +1757,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                             {
                                 hasMore = await reader.WaitToReadAsync(idleCts.Token).ConfigureAwait(false);
                             }
-                            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                            catch (OperationCanceledException) when (!ct.IsCancellationRequested) // BOUNDARY: idle flush timeout drains partial COPY chunk.
                             {
                                 // Idle timeout — drain whatever we have.
                                 break;
@@ -1777,7 +1777,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     Interlocked.Increment(ref _copyErrors);
                     Log.ChunkFailed(_logger, kindName, rowsInChunk, chunkSw.Elapsed, ex);
                     try { await importer.CloseAsync(ct).ConfigureAwait(false); }
-                    catch { /* importer may already be in failed state */ }
+                    catch { /* importer may already be in failed state */ } // BOUNDARY: cleanup after importer failure must preserve original exception.
                     throw;
                 }
                 finally
@@ -1811,7 +1811,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) // BOUNDARY: drain task exits on requested pipeline shutdown.
         {
             // Shutdown — fine.
         }
@@ -1824,7 +1824,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             // every writer with the exception and trip the shutdown token so all
             // EmitAsync calls and sibling drains unwind immediately.
             FailAllWriters(ex);
-            try { _shutdown.Cancel(); } catch { /* already disposed */ }
+            try { _shutdown.Cancel(); } catch { /* already disposed */ } // BOUNDARY: fail-fast cancellation may race pipeline disposal.
             throw;
         }
     }

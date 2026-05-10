@@ -1,8 +1,8 @@
-using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Text;
 
 namespace Hartonomous.Core.Decomposition;
 
@@ -109,23 +109,9 @@ public static class EntityContentHashResolver
     }
 
     private static byte[] ComputeWordFormHash(string form)
-    {
-        List<byte[]> gcHashes = [];
-        TextElementEnumerator textElements = StringInfo.GetTextElementEnumerator(form);
-        while (textElements.MoveNext())
-        {
-            string graphemeCluster = textElements.GetTextElement();
-            List<byte[]> codepointHashes = [];
-            foreach (Rune rune in graphemeCluster.EnumerateRunes())
-            {
-                codepointHashes.Add(HashCodepoint(rune.Value));
-            }
-
-            gcHashes.Add(ComputeMerkleHash(codepointHashes));
-        }
-
-        return ComputeMerkleHash(gcHashes);
-    }
+        => SubstrateTextDecomposer.ComputeRootHash(
+            Encoding.UTF8.GetBytes(form).AsSpan(),
+            "word_form");
 
     private static byte[] HashCodepoint(int cpValue)
     {
@@ -137,14 +123,4 @@ public static class EntityContentHashResolver
         return Blake3.Hash(cpBytes);
     }
 
-    private static byte[] ComputeMerkleHash(List<byte[]> childHashes)
-    {
-        byte[] concat = new byte[childHashes.Count * Blake3.HashLen];
-        for (int i = 0; i < childHashes.Count; i++)
-        {
-            childHashes[i].CopyTo(concat.AsSpan(i * Blake3.HashLen));
-        }
-
-        return Merkle.Hash(concat.AsSpan());
-    }
 }

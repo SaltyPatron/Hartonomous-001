@@ -2,9 +2,10 @@ namespace Hartonomous.Core.Orchestration;
 
 public enum Phase
 {
-    // Lexical floor ingests first. Models reference lemmas/word_forms/synsets
-    // produced by these phases — they must exist before model decomposition
-    // emits edges into them.
+    // Foundation phases seed substrate invariants first. Semantic seed phases
+    // add truth-grounding evidence; model decomposition can create its own
+    // token/lemma/model entities from content and later converge with those
+    // semantic seeds by hash identity.
     CoreAlgebra,
     UcdUca,
     Iso639,
@@ -13,8 +14,9 @@ public enum Phase
     Wiktionary,
     Tatoeba,
     TextDecomp,
-    // Model decomposition runs AFTER the lexical floor is in place. AI models
-    // are not lexical seed — they are content that references the seed.
+    // Model decomposition requires the foundation substrate, not the whole
+    // semantic seed floor. WordNet/UD/Wiktionary/Tatoeba enrich model-derived
+    // entities when present; they do not hard-block safetensors ingestion.
     ModelDecomp,
     SignificanceField,
     InferenceEngine,

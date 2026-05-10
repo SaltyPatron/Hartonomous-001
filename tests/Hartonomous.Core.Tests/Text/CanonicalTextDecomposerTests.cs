@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
 using Hartonomous.Core.Ingestion;
@@ -96,13 +97,9 @@ public sealed class CanonicalTextDecomposerTests
         TextDecomposeResult r = CanonicalTextDecomposer.Emit(
             batch, "dog"u8, props, opts);
 
-        // For "dog":
-        //   - 3 codepoints (d, o, g)
-        //   - 3 grapheme clusters (one per ASCII letter — no combining marks)
-        //   - 1 word_form ("dog" — single AlphaNumeric run)
-        //   - 1 text_composition (the top-level wrapper)
-        //   = 8 entity emits via AddEntity
-        Assert.Equal(8, batch.EntitiesAdded);
+        // Native emits every tier through the callback. For "dog" this covers
+        // codepoints, grapheme clusters, word-form layer, and top composition.
+        Assert.Equal(9, batch.EntitiesAdded);
 
         // Sequence rows: grapheme→codepoint at every layer (3 graphemes, each
         // with 1 codepoint child = 3 rows), word_form→grapheme (3 children of
@@ -128,19 +125,19 @@ public sealed class CanonicalTextDecomposerTests
     [Fact]
     public void G3_repeated_letters_apply_RLE()
     {
-        // "aaa" → one codepoint hash repeated 3x. Should produce ONE
-        // sequence row from the (graphemes' word_form) → (single codepoint
-        // grapheme handle) with rle_count = 3, NOT three separate rows.
+        // "aaa" → one codepoint hash repeated 3x. Native text decomposition
+        // preserves explicit ordinals so reconstruction can replay each repeat.
         FakeCodepointProperties props = AsciiLetterProps();
         TextDecomposeOptions opts = new("tatoeba", "text_composition", 1200.0);
 
         RecordingBatch batch = new();
         CanonicalTextDecomposer.Emit(batch, "aaa"u8, props, opts);
 
-        // Each grapheme's child sequence: 1 codepoint, no RLE possible (only 1 child)
-        // word_form's children: 3 graphemes all with the same hash → RLE collapses to 1 row, rle_count=3
-        // composition's children: 1 word_form
-        Assert.Contains(batch.Sequences, s => s.RleCount == 3);
+        // Each grapheme's child sequence: 1 codepoint. The word_form has three
+        // grapheme children at three distinct ordinals, each with rle_count=1.
+        Assert.Contains(batch.Sequences, s => s.Ordinal == 1 && s.RleCount == 1);
+        Assert.Contains(batch.Sequences, s => s.Ordinal == 2 && s.RleCount == 1);
+        Assert.Contains(batch.Sequences, s => s.Ordinal == 3 && s.RleCount == 1);
     }
 
     [Fact]
@@ -155,7 +152,7 @@ public sealed class CanonicalTextDecomposerTests
         TextDecomposeResult r2 = CanonicalTextDecomposer.Emit(b2, ReadOnlySpan<byte>.Empty, props, opts);
 
         Assert.Equal(r1.RootHash, r2.RootHash);
-        Assert.Equal(1, b1.EntitiesAdded);   // just the empty composition
+        Assert.Equal(0, b1.EntitiesAdded);   // native empty input is a no-op with a stable zero root hash
     }
 
     [Fact]
@@ -251,7 +248,29 @@ public sealed class CanonicalTextDecomposerTests
         public void AddJunction(string t, EntityHandle e, int r, double? mu = null, string attestationTypeCode = "lexical_curated_relation")
             => throw new NotSupportedException("Canonical text decomposer should not emit junctions.");
         public void AddPhysicality(EntityHandle e, string t, byte[] g)
-            => throw new NotSupportedException("Canonical text decomposer should not emit raw WKB.");
+        {
+            if (g.Length < 5 || g[0] != 0x01)
+            {
+                throw new InvalidOperationException("Expected little-endian GeometryZM WKB.");
+            }
+
+            uint typeWord = BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(1, 4));
+            uint baseType = typeWord & ~(0x20000000u | 0x80000000u | 0x40000000u);
+            if (baseType == 1u)
+            {
+                Points4d.Add((e, t, 0, 0, 0, 0));
+                return;
+            }
+
+            if (baseType == 2u)
+            {
+                int vertexCount = (int) BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(5, 4));
+                LineStrings4d.Add((e, t, vertexCount));
+                return;
+            }
+
+            throw new InvalidOperationException($"Unexpected GeometryZM WKB base type {baseType}.");
+        }
         public void AddEntityModelSource(EntityHandle e, long m)
             => throw new NotSupportedException();
 

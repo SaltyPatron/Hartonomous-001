@@ -1,4 +1,4 @@
--- Edge types 14..16: aligned_to_synset, translation_of, translation_link.
--- Plus 34..36: macrolanguage_contains, has_alternate_name, superseded_by.
+-- Partition for cross_lingual edge_types (IDs 16..29 per sql/schema/seed/edge_type.sql).
+-- Translation, etymology, and language-name relations across language boundaries.
 CREATE TABLE substrate.edge_cross_lingual
-    PARTITION OF substrate.edge FOR VALUES IN (14, 15, 16, 34, 35, 36);
+    PARTITION OF substrate.edge FOR VALUES IN (16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29);

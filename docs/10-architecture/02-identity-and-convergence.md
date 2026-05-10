@@ -41,7 +41,7 @@ Other modalities may admit additional atom types if their canonical content has 
 | `pixel_value` (optional) | RGBA channels (4× u8) | `(r, g, b, a)` |
 | `audio_sample` (optional) | Single PCM sample (i16 or i32) | sample bytes in canonical endianness |
 | `tensor_element` (optional) | Single tensor scalar | dtype + value bytes (BF16, F32, F64) |
-| `embedding_firefly` | Token entity post-Laplacian projection | `(eig2, eig3, eig4, ||row||)` as 4× f64 |
+| ~~`embedding_firefly`~~ — DEPRECATED | ~~Token entity post-Laplacian projection~~ — fireflies are POINTZM physicalities attached to existing `word_form` content entities (one POINTZM per ingested model per token, per [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VII), NOT separate atom-class entities. The 4-coordinate projection still holds; what changes is the storage shape — physicality on the species, not a new species. See AP-29. | ~~`(eig2, eig3, eig4, ||row||)` as 4× f64~~ — same projection coords, stored as POINTZM in the firefly partition of `substrate.physicality` attached to `entity_hash` of the token's `word_form`. |
 
 Whether to admit modality-specific atom types is a design decision (see `Atom vocabulary` below). Text content always bottoms at codepoint atoms.
 

@@ -53,7 +53,7 @@ internal static class QuoteCommand
                 recipeJson = LoadJson(recipeArg);
                 targetSpecJson = LoadJson(targetSpecArg);
             }
-            catch (Exception ex) when (ex is FileNotFoundException or JsonException)
+            catch (Exception ex) when (ex is FileNotFoundException or JsonException) // BOUNDARY: CLI input validation maps bad recipe/spec JSON to exit code 2.
             {
                 Console.Error.WriteLine($"Failed to load recipe/target-spec: {ex.Message}");
                 Environment.ExitCode = 2;
@@ -67,7 +67,7 @@ internal static class QuoteCommand
                 {
                     archHash = Convert.FromHexString(archHex);
                 }
-                catch (FormatException ex)
+                catch (FormatException ex) // BOUNDARY: CLI argument validation maps invalid hex to exit code 2.
                 {
                     Console.Error.WriteLine($"Invalid hex model-arch-hash: {ex.Message}");
                     Environment.ExitCode = 2;

@@ -1,14 +1,13 @@
 using System.IO;
 using Hartonomous.Core.Ingestion;
-using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Safetensors.Passes;
 
 /// <summary>
-/// Funnels a model package's on-disk text artifacts through the text decomposer's
-/// segmentation stack so the model's tokenizer / config / chat template / etc.
+/// Funnels a model package's on-disk text artifacts through the shared native
+/// text decomposer so the model's tokenizer / config / chat template / etc.
 /// enter the substrate as full text DAGs that dedup against the rest of the
 /// substrate by content (codepoint → grapheme → word_form → text_composition →
 /// document, all Merkle-hashed).
@@ -53,16 +52,13 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
     ];
 
     private readonly ILogger _logger;
-    private readonly ICodepointProperties _codepointProperties;
     private readonly SubstrateTextDecomposer _substrateTextDecomposer;
 
     public ModelTextArtifactsPass(
         ILogger logger,
-        ICodepointProperties codepointProperties,
         SubstrateTextDecomposer substrateTextDecomposer)
     {
         _logger = logger;
-        _codepointProperties = codepointProperties;
         _substrateTextDecomposer = substrateTextDecomposer;
     }
 

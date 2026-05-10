@@ -241,7 +241,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             ],
             [Phase.ModelDecomp] =
             [
-                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, codepointProperties: cpProps, alignmentDataSource: phaseDs, substrateTextDecomposer: substrateTextDecomposer),
+                new SafetensorsDecomposer(modelConfig, logFactory.CreateLogger<SafetensorsDecomposer>(), logFactory, checkpointStore: new NpgsqlCheckpointStore(phaseDs), referenceDataReader: refDataReader, junctionWriter: junctionWriter, referenceDataWriter: refDataWriter, alignmentDataSource: phaseDs, substrateTextDecomposer: substrateTextDecomposer),
             ],
             [Phase.Wiktionary] =
             [

@@ -22,4 +22,4 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.populate_senses(TEXT[], TEXT[], INT[], INT[]) IS
-    'No-op: substrate.sense was removed (Phase C). Function retained as a stub for legacy callers in NpgsqlReferenceDataWriter pending C# AP-2 cleanup.';
+    'No-op: the legacy sense reference table was removed (Phase C). Function retained as a stub for legacy callers in NpgsqlReferenceDataWriter pending C# AP-2 cleanup.';

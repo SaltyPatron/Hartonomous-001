@@ -17,7 +17,9 @@
 #include "hartonomous.h"
 #include "generated/pg_unicode_version.h"
 #include "generated/pg_ucd_segmentation.h"
+#include "generated/pg_ucd_classification.h"
 #include "generated/pg_ucd_pictographic.h"
+#include "generated/pg_ucd_decomp.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -53,6 +55,12 @@ extern int            hartonomous_ucd_loaded(void);
 #pragma weak uc_gcb
 #pragma weak uc_wb
 #pragma weak uc_incb
+#pragma weak uc_ccc
+#pragma weak uc_decomp_type
+#pragma weak uc_decomp_off
+#pragma weak uc_decomp_len
+#pragma weak uc_decomp_data
+#pragma weak uc_composition_pairs
 #pragma weak uc_ext_pictographic_bitmap
 #endif
 
@@ -130,6 +138,213 @@ typedef struct {
     int32_t* codepoints;
     int32_t  count;
 } TdDecoded;
+
+typedef struct {
+    int32_t* items;
+    int32_t  count;
+    int32_t  cap;
+} TdCpBuffer;
+
+static int td_buf_push(TdCpBuffer* b, int32_t cp)
+{
+    if (b->count >= b->cap) {
+        int32_t new_cap = b->cap > 0 ? b->cap * 2 : 32;
+        int32_t* new_items = (int32_t*) realloc(b->items, sizeof(int32_t) * (size_t) new_cap);
+        if (!new_items) return -1;
+        b->items = new_items;
+        b->cap = new_cap;
+    }
+    b->items[b->count++] = cp;
+    return 0;
+}
+
+static inline uint8_t td_ccc(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return 0;
+    if (uc_ccc == NULL) return 0;
+    return uc_ccc[cp];
+}
+
+static inline uint8_t td_decomp_type(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_DECOMP_TYPE_None;
+    if (uc_decomp_type == NULL) return UC_DECOMP_TYPE_None;
+    return uc_decomp_type[cp];
+}
+
+static inline uint16_t td_decomp_len(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return 0;
+    if (uc_decomp_len == NULL) return 0;
+    return uc_decomp_len[cp];
+}
+
+static inline const int32_t* td_decomp_mapping(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return NULL;
+    if (uc_decomp_off == NULL || uc_decomp_data == NULL) return NULL;
+    return uc_decomp_data + uc_decomp_off[cp];
+}
+
+#define TD_HANGUL_SBASE  0xAC00
+#define TD_HANGUL_LBASE  0x1100
+#define TD_HANGUL_VBASE  0x1161
+#define TD_HANGUL_TBASE  0x11A7
+#define TD_HANGUL_LCOUNT 19
+#define TD_HANGUL_VCOUNT 21
+#define TD_HANGUL_TCOUNT 28
+#define TD_HANGUL_NCOUNT (TD_HANGUL_VCOUNT * TD_HANGUL_TCOUNT)
+#define TD_HANGUL_SCOUNT (TD_HANGUL_LCOUNT * TD_HANGUL_NCOUNT)
+
+static int td_decompose_hangul(int32_t cp, TdCpBuffer* out)
+{
+    int32_t s_index = cp - TD_HANGUL_SBASE;
+    if (s_index < 0 || s_index >= TD_HANGUL_SCOUNT) return 0;
+
+    int32_t l = TD_HANGUL_LBASE + s_index / TD_HANGUL_NCOUNT;
+    int32_t v = TD_HANGUL_VBASE + (s_index % TD_HANGUL_NCOUNT) / TD_HANGUL_TCOUNT;
+    int32_t t = s_index % TD_HANGUL_TCOUNT;
+    if (td_buf_push(out, l) != 0) return -1;
+    if (td_buf_push(out, v) != 0) return -1;
+    if (t != 0 && td_buf_push(out, TD_HANGUL_TBASE + t) != 0) return -1;
+    return 1;
+}
+
+static int td_canonical_decompose_cp(int32_t cp, TdCpBuffer* out)
+{
+    int hangul = td_decompose_hangul(cp, out);
+    if (hangul != 0) return hangul < 0 ? -1 : 0;
+
+    if (td_decomp_type(cp) == UC_DECOMP_TYPE_canonical) {
+        uint16_t len = td_decomp_len(cp);
+        const int32_t* mapping = td_decomp_mapping(cp);
+        if (len > 0 && mapping != NULL) {
+            for (uint16_t i = 0; i < len; i++) {
+                if (td_canonical_decompose_cp(mapping[i], out) != 0) return -1;
+            }
+            return 0;
+        }
+    }
+
+    return td_buf_push(out, cp);
+}
+
+static void td_canonical_order(TdCpBuffer* buf)
+{
+    for (int32_t i = 1; i < buf->count; i++) {
+        int32_t cp = buf->items[i];
+        uint8_t cp_ccc = td_ccc(cp);
+        if (cp_ccc == 0) continue;
+
+        int32_t j = i;
+        while (j > 0) {
+            uint8_t prev_ccc = td_ccc(buf->items[j - 1]);
+            if (prev_ccc == 0 || prev_ccc <= cp_ccc) break;
+            buf->items[j] = buf->items[j - 1];
+            j--;
+        }
+        buf->items[j] = cp;
+    }
+}
+
+static int32_t td_compose_hangul(int32_t a, int32_t b)
+{
+    int32_t l_index = a - TD_HANGUL_LBASE;
+    if (l_index >= 0 && l_index < TD_HANGUL_LCOUNT) {
+        int32_t v_index = b - TD_HANGUL_VBASE;
+        if (v_index >= 0 && v_index < TD_HANGUL_VCOUNT) {
+            return TD_HANGUL_SBASE + (l_index * TD_HANGUL_VCOUNT + v_index) * TD_HANGUL_TCOUNT;
+        }
+    }
+
+    int32_t s_index = a - TD_HANGUL_SBASE;
+    if (s_index >= 0 && s_index < TD_HANGUL_SCOUNT && (s_index % TD_HANGUL_TCOUNT) == 0) {
+        int32_t t_index = b - TD_HANGUL_TBASE;
+        if (t_index > 0 && t_index < TD_HANGUL_TCOUNT) {
+            return a + t_index;
+        }
+    }
+
+    return 0;
+}
+
+static int32_t td_compose_pair(int32_t first, int32_t second)
+{
+    int32_t hangul = td_compose_hangul(first, second);
+    if (hangul != 0) return hangul;
+    if (uc_composition_pairs == NULL) return 0;
+
+    int lo = 0;
+    int hi = UC_COMPOSITION_PAIR_COUNT - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        const UcCompositionPair* pair = &uc_composition_pairs[mid];
+        if (first < pair->first || (first == pair->first && second < pair->second)) {
+            hi = mid - 1;
+        } else if (first > pair->first || (first == pair->first && second > pair->second)) {
+            lo = mid + 1;
+        } else {
+            return pair->composite;
+        }
+    }
+    return 0;
+}
+
+static int td_canonical_compose(const TdCpBuffer* decomposed, TdCpBuffer* out)
+{
+    int32_t starter_index = -1;
+    int32_t starter_cp = 0;
+    uint8_t last_ccc = 0;
+
+    for (int32_t i = 0; i < decomposed->count; i++) {
+        int32_t cp = decomposed->items[i];
+        uint8_t cp_ccc = td_ccc(cp);
+
+        if (starter_index >= 0 && (last_ccc < cp_ccc || last_ccc == 0)) {
+            int32_t composite = td_compose_pair(starter_cp, cp);
+            if (composite != 0) {
+                out->items[starter_index] = composite;
+                starter_cp = composite;
+                continue;
+            }
+        }
+
+        if (td_buf_push(out, cp) != 0) return -1;
+        if (cp_ccc == 0) {
+            starter_index = out->count - 1;
+            starter_cp = cp;
+        }
+        last_ccc = cp_ccc;
+    }
+
+    return 0;
+}
+
+static int td_normalize_nfc(TdDecoded* d)
+{
+    TdCpBuffer decomposed = {0};
+    TdCpBuffer composed = {0};
+
+    for (int32_t i = 0; i < d->count; i++) {
+        if (td_canonical_decompose_cp(d->codepoints[i], &decomposed) != 0) {
+            xfree(decomposed.items);
+            return -1;
+        }
+    }
+
+    td_canonical_order(&decomposed);
+    if (td_canonical_compose(&decomposed, &composed) != 0) {
+        xfree(decomposed.items);
+        xfree(composed.items);
+        return -1;
+    }
+
+    xfree(decomposed.items);
+    xfree(d->codepoints);
+    d->codepoints = composed.items;
+    d->count = composed.count;
+    return 0;
+}
 
 static int td_decode(const uint8_t* utf8, size_t len, TdDecoded* out)
 {
@@ -472,6 +687,7 @@ int hartonomous_text_decompose(
     uint8_t* ls_buf   = NULL;
 
     if (td_decode(utf8, utf8_len, &d) != 0) { rc_final = -9; goto out_cleanup; }
+    if (td_normalize_nfc(&d) != 0) { rc_final = -9; goto out_cleanup; }
     if (d.count == 0) { rc_final = -3; goto out_cleanup; }
 
     cp_h = (uint8_t*) malloc((size_t) d.count * HASH_LEN);

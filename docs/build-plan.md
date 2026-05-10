@@ -1,6 +1,12 @@
 # Hartonomous — Build Plan (Invention, not Docs)
 
-## Context — What we're actually doing
+> **STALE 2026-05-09. Do not execute.** This build plan predates the 2026-05-08 architectural correction (per-role units of Track 2 transformation tensors are typed attestation EDGES between existing content entities, NOT phantom per-role-unit entities) and the 2026-05-09 documentation refactor. Items in this plan that reference phantom entity types (`attention_pattern`, `ffn_neuron`, `embedding_position`, etc.), phantom-emitting passes, single-source phantom-scatter recomposer paths, or modality-as-decomposer-axis phasing are misframed.
+>
+> **Canonical architectural reference:** [`docs/00-substrate-spec.md`](00-substrate-spec.md). The implementation plan that follows from the spec will be built in a separate planning conversation off the spec, not by patching this file. This file is preserved for historical context only.
+>
+> **What's still useful here:** the conceptual framing in lines 9-17 (substrate IS the AI, two-track ingestion, content addressing, evidence accumulation) is correct in spirit and aligns with spec §I-§IV. The minimal-doc-fixes / phasing / milestone breakdown below is superseded by the documentation refactor and by the future implementation plan.
+
+## Context — What we're actually doing (HISTORICAL)
 
 **The deliverable is the invention.** Not the documentation, not a refactor of the documentation. The substrate — PostgreSQL+PostGIS + native extension + C# pipeline + API — running end-to-end, functionally perfect, start to finish.
 

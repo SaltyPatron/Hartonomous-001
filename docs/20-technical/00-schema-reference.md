@@ -1,7 +1,9 @@
 # Schema Reference
 
-**Status:** Canonical
-**Last verified:** 2026-04-29
+> **Authority note (2026-05-09):** The `substrate.firefly_consensus` table description below (~line 656) describes a denormalized view that is now **deprecated** by the 2026-05-08 architectural correction. Per [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §VII and §X.1, fireflies are POINTZM physicalities attached to existing `word_form` content entities (the species), and consensus is **computed at query time** from Voronoi cells over the species' firefly cluster — NOT stored as a separate `firefly_consensus` composition entity. The `firefly_consensus` table, if present in deployed schema, is on the removal path; new code computes consensus on demand from `substrate.physicality` filtered by the firefly partition and `entity_hash` of the target word_form. Cross-reference [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md) for how `EmbeddingLayerSynthesizer` reads firefly clusters during Build-a-bear synthesis.
+
+**Status:** Canonical for the entity/edge/physicality core. The `firefly_consensus` table is deprecated per the authority note above.
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
 **Audience:** Engineers writing migrations, decomposers, recomposers, or any SQL touching the substrate.
 
 ---

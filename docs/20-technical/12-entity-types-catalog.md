@@ -1,8 +1,12 @@
 # Entity Types Catalog — Full Specification
 
-**Status:** Canonical
-**Last verified:** 2026-04-30
+**Status:** Canonical for content entity types. Several entries below describe the per-role-unit-as-entity (`attention_pattern`) and embedding-firefly-as-entity (`embedding_firefly`, `firefly_consensus`) shapes that were deprecated by the 2026-05-08 architectural correction. Those entries are now marked **DEPRECATED** with redirects to the corrected attestation-edge model in [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §III, §VII, and §XII. New code MUST NOT instantiate the deprecated types; they remain in the catalog only for transitional code that still references the existing seed rows.
+
+**Last verified:** 2026-05-09 (post architectural-correction sweep).
+
 **Audience:** Engineers extending the entity-type system, decomposer authors, anyone designing recipes that depend on entity-type semantics, anyone debugging type-related substrate state.
+
+> **Authoritative correction (2026-05-09):** Per-role units of Track 2 transformation tensors (FFN rows, attention head Q/K patterns, MoE expert neurons, LoRA rank components, etc.) **manifest as typed attestation EDGES between existing content entities** (typically two `word_form` tokens), NOT as their own entity types. Phantom entity types previously listed in this catalog (`attention_pattern`, `attention_head`, `ffn_neuron`, `embedding_position`, `logit_projection`, `moe_route`, `moe_routing_profile`, `moe_expert_neuron`, `moe_route_direction`, `residual_direction`, `archetype`, `attention_archetype`, `svd_rank_component`, `codec_codevector`, `audio_codec_filter`, `bbox_projection`, `class_projection`, `conformer_component`, `conv_filter`, `diffusion_component`, `lora_component`, `modality_basis_vector`, `object_query_slot`, `vision_feature_direction`) are deprecated. See spec §III for the corrected attestation-edge model and AP-25 in `.claude/rules/45-anti-patterns.md` for the detection-and-rejection guidance. Embedding fireflies are POINTZM physicalities attached to existing `word_form` entities (see spec §VII), NOT separate `embedding_firefly` / `firefly_consensus` entities.
 
 ---
 
@@ -287,11 +291,11 @@ A Wiktionary-derived sense entry distinct from WordNet's `word_sense`. Wiktionar
 
 ### `tensor`
 
-- **Class:** composition (Track 2; see `10-architecture/11-track1-track2-model-ingestion.md`)
-- **Identity:** BLAKE3 of (model_id || tensor_path_in_safetensors || quantization_round || tensor_payload_atom_id).
+- **Class:** composition (a real model-side structural artifact entity per spec §II.1)
+- **Identity:** Canonical content prefix (kind="tens", dtype, rank, shape) + raw tensor bytes streamed via Blake3 hasher. **NOT model_id, tensor path in safetensors, or quantization round** — those are placement metadata that lives on edges, not in the hash (per spec §II.1, AP-9 in `.claude/rules/45-anti-patterns.md`). Identity computed by `ModelPassOrchestrator.HashTensorStreaming`.
 - **Required state:** `physicality_4d`, `tensor_role`, `tensor_shape`, `tensor_dtype`, `quantization`, `payload_atom_id`.
-- **Required edges:** `in_model`, `in_layer` (for layer-bound tensors), `has_dtype`, `has_shape`, `tensor_payload_is`.
-- **Common edges:** `attention_head_in_layer`, `ffn_*_in_layer`, `quantization_of` (linking to non-quantized counterpart), `lora_adapts` (for LoRA adapter tensors).
+- **Required edges:** `in_model`, `in_layer` (for layer-bound tensors), `has_dtype`, `has_shape`, `tensor_payload_is`. Per-role unit attestation edges (`model_attention_pattern`, `model_concept_similarity`, `model_ffn_factor`) fan out from this tensor's per-role units to the content entities they bind via the layer-type decomposers (per [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md)).
+- **Common edges:** `quantization_of` (linking to non-quantized counterpart). Per-role-unit binding edges (`attention_head_in_layer`, `ffn_*_in_layer`, `lora_adapts`) are deprecated — use attestation edges from the layer-type decomposer library instead.
 - **Validation gate:** payload atom exists; payload byte length matches expected for shape+dtype+quantization.
 
 ### `tensor_element`
@@ -306,26 +310,17 @@ A scalar atom for very-fine-grained tensor analysis. Rarely used; admitted only 
 - **Required edges:** `architecture_of_model`, `has_hidden_size`, `has_num_layers`, `has_num_attention_heads`, `has_vocab_size`.
 - **Validation gate:** architecture class registered; required architecture-class-specific fields present.
 
-### `attention_pattern`
+### `attention_pattern` — DEPRECATED
 
-A composition representing an observed or analytical attention pattern (e.g., for cross-model head-comparison studies). Identity includes the source model, layer, head, and pattern hash. Required edges: `pattern_for_head`, `pattern_observed_on_input`.
+> **DEPRECATED 2026-05-08 (phantom entity type per spec §XII).** Attention patterns from cross-model head-comparison studies are now expressed as **typed attestation edges between existing word_form entities** with `attestation_type = model_attention_qk_pattern` (or `model_attention_vo_pattern`) per `sql/schema/seed/attestation_type.sql`. Layer/head/source-model indices are rating-event metadata on the `substrate.edge_significance` row, NOT separate entity types. The seed row for `attention_pattern` remains transitionally so existing code lookups don't crash; new code MUST emit attestation edges via the layer-type decomposer library (per [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md), working template: `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`). See AP-25 in `.claude/rules/45-anti-patterns.md`.
 
-### `embedding_firefly`
+### `embedding_firefly` — DEPRECATED (no longer a separate entity type)
 
-- **Class:** atom (Track 1; see `10-architecture/11-track1-track2-model-ingestion.md`)
-- **Identity:** BLAKE3 of (model_id || tensor_path || tensor_index || quantization_round).
-- **Required state:** `centroid_4d` (the firefly position), `tier`, `provenance`.
-- **Required edges:** `firefly_of_tensor` (to Track 2 tensor), `firefly_in_arena` (when arena binding is explicit), participation in `consensus_member` edges from `firefly_consensus` compositions.
-- **Validation gate:** centroid_4d present; tier valid.
+> **DEPRECATED 2026-05-08 (per spec §VII).** Fireflies are NOT separate entities. Each ingested model's embedding row for a token contributes one POINTZM physicality (a "firefly") attached to the EXISTING `word_form` content entity for that token, in the firefly partition of `substrate.physicality`. Llama-4's firefly for "King," Qwen-3's firefly for "King," etc. — N POINTZMs in the 4D jar, all attached to the same `word_form` entity (the species), distinguishable by `entity_model_source`. There is no `embedding_firefly` entity type. The firefly POINTZMs are emitted as a side-effect of `EmbeddingLayerDecomposer` on any model with an embedding tensor (per [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md)). See AP-27 / AP-29 in `.claude/rules/45-anti-patterns.md`.
 
-### `firefly_consensus`
+### `firefly_consensus` — DEPRECATED (computed, not stored as an entity)
 
-- **Class:** composition
-- **Identity:** BLAKE3 of (arena || conceptual_position || tier || sorted_contributing_firefly_ids).
-- **Required state:** `physicality_4d` (LINESTRING4D over contributing fireflies, ordered by descending weight), `centroid_4d` (authority-weighted consensus centroid), spread metrics.
-- **Required edges:** `consensus_member` to each contributing firefly; `consensus_supersedes` to predecessor consensus if any.
-- **Provenance:** macro-OODA or ingestion-time consensus computation.
-- **Validation gate:** at least 2 contributing fireflies; consensus centroid and physicality consistent; spread metrics computed.
+> **DEPRECATED 2026-05-08 (per spec §VII).** Cross-model consensus on a token's hidden-space identity is computed at query time from the Voronoi cell over the species' firefly cluster (the POINTZMs in the firefly partition attached to the existing `word_form` entity). It is NOT stored as a separate `firefly_consensus` entity. Consensus tightness, centroid, spread metrics are derived analytics surfaces (per spec §X.1) — materialized views / caches, rebuildable from substrate state, not substrate truth. See spec §VII for the firefly model and §X for the analytics-cache pattern.
 
 ## Code modality
 
