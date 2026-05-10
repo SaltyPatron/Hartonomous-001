@@ -1,8 +1,8 @@
 #@echo off
 .\scripts\Docker\Down.ps1 -RemoveVolumes -Force *>&1 > logs\ShutDockerDown.log
+.\scripts\build\UnicodeTables.ps1               *>&1 > logs\BuildUnicodeTables.log
 .\scripts\build\All.ps1                         *>&1 > logs\BuildAll.log
 .\scripts\Docker\Build.ps1                      *>&1 > logs\BuildContainer.log
-.\scripts\build\UnicodeTables.ps1 *>&1
 .\scripts\Docker\Up.ps1   -Rebuild              *>&1 > logs\BringDockerUp.log
 .\scripts/build/ExtensionSql.ps1                *>&1 > logs\BuildExtensionSql.log
 .\scripts\db\Drop.ps1     -Force                *>&1 > logs\DropDatabase.log
