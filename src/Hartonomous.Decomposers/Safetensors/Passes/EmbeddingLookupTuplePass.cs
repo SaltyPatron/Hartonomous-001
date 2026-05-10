@@ -319,7 +319,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
             if (bytes.Length == 0) { return null; }
             return HuggingFaceTokenizerParser.Parse(bytes);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException) // BOUNDARY: malformed tokenizer.json or transient I/O — pass yields without firefly emission.
         {
             return null;
         }

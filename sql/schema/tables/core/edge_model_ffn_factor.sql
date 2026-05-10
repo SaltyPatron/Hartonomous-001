@@ -8,4 +8,4 @@
 -- non-MoE models; MoE multiplies by num_experts. Isolated partition for
 -- locality.
 CREATE TABLE substrate.edge_model_ffn_factor
-    PARTITION OF substrate.edge FOR VALUES IN (54);
+    PARTITION OF substrate.edge FOR VALUES IN (62);

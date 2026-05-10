@@ -114,6 +114,17 @@ FROM (VALUES
     ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),           -- 49
     ('covers_lemma',             'model_derived', 'word_form',          'lemma'),               -- 50
     ('co_occurrence',            'model_derived', NULL,                 NULL),                  -- 51
+    -- Model-package text artifact bindings: model_architecture → text_composition
+    -- for the artifact's content. Same artifact across model snapshots collapses
+    -- to ONE document with N has_*_artifact edges via content-addressed identity.
+    ('has_config_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 52
+    ('has_tokenizer_artifact',          'model_derived', 'model_architecture', 'text_composition'),  -- 53
+    ('has_tokenizer_config_artifact',   'model_derived', 'model_architecture', 'text_composition'),  -- 54
+    ('has_special_tokens_artifact',     'model_derived', 'model_architecture', 'text_composition'),  -- 55
+    ('has_merges_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 56
+    ('has_chat_template_artifact',      'model_derived', 'model_architecture', 'text_composition'),  -- 57
+    ('has_generation_config_artifact',  'model_derived', 'model_architecture', 'text_composition'),  -- 58
+    ('has_readme_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 59
     -- ── Model-derived: content-entity attestation surfaces ─────────────
     -- These are the load-bearing token↔token / patch↔patch / frame↔frame
     -- edges that accumulate per-tuple attestation events from every

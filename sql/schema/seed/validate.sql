@@ -9,14 +9,15 @@ DECLARE
 BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
-            ('substrate.entity_type',           54),
+            ('substrate.entity_type',           21),
             ('substrate.physicality_type',      14),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
             ('substrate.provenance',            10),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            114)
+            ('substrate.edge_type',             95),
+            ('substrate.attestation_type',      27)
         ) AS t(table_name, expected)
     LOOP
         EXECUTE format('SELECT count(*) FROM %s', rec.table_name) INTO actual;

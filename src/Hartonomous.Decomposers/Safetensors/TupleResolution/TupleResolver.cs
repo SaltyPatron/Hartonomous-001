@@ -153,14 +153,21 @@ public sealed class TupleResolver
 
     private static string BuildTupleId(TensorClassification c)
     {
-        // Same tuple at the same placement gets the same ID — members of one
-        // attention block all bucket together; per-expert FFNs bucket per
-        // (layer, expert).
+        // Same tuple at the same placement and modality gets the same ID.
+        // Members of one attention block bucket together; per-expert FFNs
+        // bucket per (layer, expert). Modality is part of the key so that
+        // tuples whose only distinguishing axis is modality (e.g. distinct
+        // EmbeddingLookup tables for text vs position vs codebook) do not
+        // collide into one bucket and hand the downstream pass a Table member
+        // from the wrong modality. The original BERT bug was three embedding
+        // tables (word/position/token_type) all bucketing into one tuple and
+        // the pass picking position_embeddings (vocab=512) instead of
+        // word_embeddings (vocab=30522) by alphabetical tensor order.
         System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
         string layer = c.LayerIndex?.ToString(inv) ?? "_";
         string head = c.HeadIndex?.ToString(inv) ?? "_";
         string expert = c.ExpertIndex?.ToString(inv) ?? "_";
-        return $"{c.Tuple}:L{layer}:H{head}:E{expert}";
+        return $"{c.Tuple}:L{layer}:H{head}:E{expert}:M{c.Modality}";
     }
 
     private static bool DetectPeftWrap(IReadOnlyList<TensorHandle> tensors)

@@ -218,11 +218,11 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
         if (!File.Exists(tokenizerJson)) { return null; }
         byte[] bytes;
         try { bytes = File.ReadAllBytes(tokenizerJson); }
-        catch (IOException) { return null; }
+        catch (IOException) { return null; } // BOUNDARY: optional tokenizer absent/unreadable disables attestation enrichment for this pass.
         if (bytes.Length == 0) { return null; }
         TokenizerModel model;
         try { model = HuggingFaceTokenizerParser.Parse(bytes); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return null; } // BOUNDARY: malformed tokenizer.json disables attestation enrichment for this pass.
 
         Dictionary<int, byte[]> map = new(model.Vocab.Count);
         foreach (KeyValuePair<int, VocabularyEntry> kv in model.Vocab)

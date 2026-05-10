@@ -580,6 +580,9 @@ INSERT INTO substrate.attestation_type (code, description, default_event_weight)
     ('model_input_embedding',
      'EmbeddingLookup table: per-row firefly POINTZM position + cosine between vocab token rows.',
      0.5),
+    ('model_embedding_proximity',
+     'Per-(model, token) firefly POINTZM position attestation on the word_form entity. Track-1 firefly geometry binding — entity_significance event recording where model M places token T in 4D space.',
+     0.4),
     ('model_lm_head_projection',
      'LM head Linear (lm_head slot in EmbeddingLookup-dual): residual direction → output token logit.',
      0.5),
@@ -784,6 +787,17 @@ FROM (VALUES
     ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),           -- 49
     ('covers_lemma',             'model_derived', 'word_form',          'lemma'),               -- 50
     ('co_occurrence',            'model_derived', NULL,                 NULL),                  -- 51
+    -- Model-package text artifact bindings: model_architecture → text_composition
+    -- for the artifact's content. Same artifact across model snapshots collapses
+    -- to ONE document with N has_*_artifact edges via content-addressed identity.
+    ('has_config_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 52
+    ('has_tokenizer_artifact',          'model_derived', 'model_architecture', 'text_composition'),  -- 53
+    ('has_tokenizer_config_artifact',   'model_derived', 'model_architecture', 'text_composition'),  -- 54
+    ('has_special_tokens_artifact',     'model_derived', 'model_architecture', 'text_composition'),  -- 55
+    ('has_merges_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 56
+    ('has_chat_template_artifact',      'model_derived', 'model_architecture', 'text_composition'),  -- 57
+    ('has_generation_config_artifact',  'model_derived', 'model_architecture', 'text_composition'),  -- 58
+    ('has_readme_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 59
     -- ── Model-derived: content-entity attestation surfaces ─────────────
     -- These are the load-bearing token↔token / patch↔patch / frame↔frame
     -- edges that accumulate per-tuple attestation events from every
@@ -842,14 +856,15 @@ DECLARE
 BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
-            ('substrate.entity_type',           54),
+            ('substrate.entity_type',           21),
             ('substrate.physicality_type',      14),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
             ('substrate.provenance',            10),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            114)
+            ('substrate.edge_type',             95),
+            ('substrate.attestation_type',      27)
         ) AS t(table_name, expected)
     LOOP
         EXECUTE format('SELECT count(*) FROM %s', rec.table_name) INTO actual;
@@ -937,16 +952,14 @@ CREATE TABLE substrate.edge_unicode
     PARTITION OF substrate.edge FOR VALUES IN (32, 33, 34);
 
 -- ── sql/schema/tables/core/edge_model.sql ───────────────────────────────────────
--- Partition for model_derived metadata edge_types (IDs 35..51 per
+-- Partition for model_derived metadata edge_types (IDs 35..59 per
 -- sql/schema/seed/edge_type.sql). Architecture / tokenizer / tensor metadata
--- edges. Low cardinality per ingested model — bounded by the model's
--- structural shape (one in_model per tensor, one has_hidden_size per model,
--- etc.) rather than per-token-pair attestation volume. The hot per-instance
--- attestation tables (model_concept_similarity, model_attention_pattern,
--- model_ffn_factor) and the cross-content attestation tables live in their
--- own partitions for index locality.
+-- + per-model-package text artifact bindings. Low cardinality per ingested
+-- model — bounded by model structural shape, not per-token attestation
+-- volume. Hot per-instance attestation tables live in their own partitions
+-- below.
 CREATE TABLE substrate.edge_model
-    PARTITION OF substrate.edge FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+    PARTITION OF substrate.edge FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59);
 
 -- ── sql/schema/tables/core/edge_model_concept_similarity.sql ───────────────────────────────────────
 -- Partition for the model_concept_similarity edge_type (ID 52). Per-token-pair
@@ -961,7 +974,7 @@ CREATE TABLE substrate.edge_model
 -- (read all attestations on a target tensor's edge slice) and inference
 -- (A* expansion of similarity neighbors).
 CREATE TABLE substrate.edge_model_concept_similarity
-    PARTITION OF substrate.edge FOR VALUES IN (52);
+    PARTITION OF substrate.edge FOR VALUES IN (60);
 
 -- ── sql/schema/tables/core/edge_model_attention_pattern.sql ───────────────────────────────────────
 -- Partition for the model_attention_pattern edge_type (ID 53). Per-token-pair
@@ -975,7 +988,7 @@ CREATE TABLE substrate.edge_model_concept_similarity
 -- billions of rows for a heavy farm. Isolated partition for maximum index
 -- locality + partition pruning during both inference traversal and recompose.
 CREATE TABLE substrate.edge_model_attention_pattern
-    PARTITION OF substrate.edge FOR VALUES IN (53);
+    PARTITION OF substrate.edge FOR VALUES IN (61);
 
 -- ── sql/schema/tables/core/edge_model_ffn_factor.sql ───────────────────────────────────────
 -- Partition for the model_ffn_factor edge_type (ID 54). Per-token-pair FFN
@@ -988,21 +1001,21 @@ CREATE TABLE substrate.edge_model_attention_pattern
 -- non-MoE models; MoE multiplies by num_experts. Isolated partition for
 -- locality.
 CREATE TABLE substrate.edge_model_ffn_factor
-    PARTITION OF substrate.edge FOR VALUES IN (54);
+    PARTITION OF substrate.edge FOR VALUES IN (62);
 
 -- ── sql/schema/tables/core/edge_model_cross_content.sql ───────────────────────────────────────
--- Partition for cross-content attestation edge_types (IDs 55..57 per
+-- Partition for cross-content attestation edge_types (IDs 63..65 per
 -- sql/schema/seed/edge_type.sql):
---   55 model_spatial_pattern    (pixel_region↔pixel_region or audio_chunk↔audio_chunk)
---   56 model_cross_modal_pattern (text↔image, text↔audio, decoder-token↔encoder-token)
---   57 model_detection_class     (object_query↔visual_concept)
+--   63 model_spatial_pattern    (pixel_region↔pixel_region or audio_chunk↔audio_chunk)
+--   64 model_cross_modal_pattern (text↔image, text↔audio, decoder-token↔encoder-token)
+--   65 model_detection_class     (object_query↔visual_concept)
 --
 -- High-cardinality when vision / audio / detection models are ingested.
 -- Co-located in one partition because the three share the cross-modality
 -- access pattern (recompose for vision tower / cross-encoder / detection
 -- head reads attestations across all three edge_types together).
 CREATE TABLE substrate.edge_model_cross_content
-    PARTITION OF substrate.edge FOR VALUES IN (55, 56, 57);
+    PARTITION OF substrate.edge FOR VALUES IN (63, 64, 65);
 
 -- ── sql/schema/tables/core/edge_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_default
@@ -1047,23 +1060,23 @@ CREATE TABLE substrate.edge_member_unicode
 
 -- ── sql/schema/tables/core/edge_member_model.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model
-    PARTITION OF substrate.edge_member FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51);
+    PARTITION OF substrate.edge_member FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59);
 
 -- ── sql/schema/tables/core/edge_member_model_concept_similarity.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model_concept_similarity
-    PARTITION OF substrate.edge_member FOR VALUES IN (52);
+    PARTITION OF substrate.edge_member FOR VALUES IN (60);
 
 -- ── sql/schema/tables/core/edge_member_model_attention_pattern.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model_attention_pattern
-    PARTITION OF substrate.edge_member FOR VALUES IN (53);
+    PARTITION OF substrate.edge_member FOR VALUES IN (61);
 
 -- ── sql/schema/tables/core/edge_member_model_ffn_factor.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model_ffn_factor
-    PARTITION OF substrate.edge_member FOR VALUES IN (54);
+    PARTITION OF substrate.edge_member FOR VALUES IN (62);
 
 -- ── sql/schema/tables/core/edge_member_model_cross_content.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model_cross_content
-    PARTITION OF substrate.edge_member FOR VALUES IN (55, 56, 57);
+    PARTITION OF substrate.edge_member FOR VALUES IN (63, 64, 65);
 
 -- ── sql/schema/tables/core/edge_member_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_default

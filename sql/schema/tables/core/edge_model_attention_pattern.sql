@@ -9,4 +9,4 @@
 -- billions of rows for a heavy farm. Isolated partition for maximum index
 -- locality + partition pruning during both inference traversal and recompose.
 CREATE TABLE substrate.edge_model_attention_pattern
-    PARTITION OF substrate.edge FOR VALUES IN (53);
+    PARTITION OF substrate.edge FOR VALUES IN (61);

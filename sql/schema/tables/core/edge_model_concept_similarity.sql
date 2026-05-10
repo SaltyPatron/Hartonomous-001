@@ -10,4 +10,4 @@
 -- (read all attestations on a target tensor's edge slice) and inference
 -- (A* expansion of similarity neighbors).
 CREATE TABLE substrate.edge_model_concept_similarity
-    PARTITION OF substrate.edge FOR VALUES IN (52);
+    PARTITION OF substrate.edge FOR VALUES IN (60);

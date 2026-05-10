@@ -18,20 +18,36 @@ public sealed class BertArchitectureProfile : IArchitectureProfile
     public string? PrefixToStrip => null;
 
     private static readonly Regex EmbedWord = new(@"^embeddings\.word_embeddings\.weight$", RegexOptions.Compiled);
-    private static readonly Regex EmbedPos = new(@"^embeddings\.position_embeddings\.weight$", RegexOptions.Compiled);
-    private static readonly Regex EmbedType = new(@"^embeddings\.token_type_embeddings\.weight$", RegexOptions.Compiled);
+    // NOTE: position_embeddings and token_type_embeddings are NOT classified.
+    //   - position_embeddings (vocab=max_seq_len, e.g. 512) binds to sequence
+    //     position, not to word_form entities. Treating it as an EmbeddingLookup
+    //     table would route 512 position-axis rows through the firefly /
+    //     model_concept_similarity path as if they were word vocabulary entries
+    //     (which is what produced the 512-firefly bug observed during MiniLM
+    //     ingest). Position is a separate substrate concern.
+    //   - token_type_embeddings (vocab=2) is a per-segment indicator (sentence-A
+    //     / sentence-B). It binds to segment indicators, not word_form, and a
+    //     2-row table cannot survive the Laplacian eigenmap's n>=4 precondition.
+    // If/when the substrate gains position-axis or segment-axis content
+    // entities, these get rules pointing at those entity types — not at
+    // EmbeddingLookup.
     private static readonly Regex EmbedLnScale = new(@"^embeddings\.LayerNorm\.weight$", RegexOptions.Compiled);
     private static readonly Regex EmbedLnBias = new(@"^embeddings\.LayerNorm\.bias$", RegexOptions.Compiled);
 
-    private static readonly Regex AttnQ = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.self\.query\.(weight|bias)$", RegexOptions.Compiled);
-    private static readonly Regex AttnK = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.self\.key\.(weight|bias)$", RegexOptions.Compiled);
-    private static readonly Regex AttnV = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.self\.value\.(weight|bias)$", RegexOptions.Compiled);
-    private static readonly Regex AttnO = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.output\.dense\.(weight|bias)$", RegexOptions.Compiled);
+    // Match weight only — bias tensors are 1-D and would collide with the 2-D weight in
+    // the Q/K/V/O slot buckets (FindMember(Q) might return the bias by accident, then
+    // the 2-D shape check fails and the tuple gets skipped). Bias tensors still get
+    // hashed as substrate.tensor entities by orchestrator pre-pass; they just don't
+    // participate in the attention attestation projection math.
+    private static readonly Regex AttnQ = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.self\.query\.weight$", RegexOptions.Compiled);
+    private static readonly Regex AttnK = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.self\.key\.weight$", RegexOptions.Compiled);
+    private static readonly Regex AttnV = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.self\.value\.weight$", RegexOptions.Compiled);
+    private static readonly Regex AttnO = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.output\.dense\.weight$", RegexOptions.Compiled);
     private static readonly Regex AttnLnScale = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.output\.LayerNorm\.weight$", RegexOptions.Compiled);
     private static readonly Regex AttnLnBias = new(@"^encoder\.layer\.(?<L>\d+)\.attention\.output\.LayerNorm\.bias$", RegexOptions.Compiled);
 
-    private static readonly Regex FfnIntermediate = new(@"^encoder\.layer\.(?<L>\d+)\.intermediate\.dense\.(weight|bias)$", RegexOptions.Compiled);
-    private static readonly Regex FfnOutput = new(@"^encoder\.layer\.(?<L>\d+)\.output\.dense\.(weight|bias)$", RegexOptions.Compiled);
+    private static readonly Regex FfnIntermediate = new(@"^encoder\.layer\.(?<L>\d+)\.intermediate\.dense\.weight$", RegexOptions.Compiled);
+    private static readonly Regex FfnOutput = new(@"^encoder\.layer\.(?<L>\d+)\.output\.dense\.weight$", RegexOptions.Compiled);
     private static readonly Regex FfnLnScale = new(@"^encoder\.layer\.(?<L>\d+)\.output\.LayerNorm\.weight$", RegexOptions.Compiled);
     private static readonly Regex FfnLnBias = new(@"^encoder\.layer\.(?<L>\d+)\.output\.LayerNorm\.bias$", RegexOptions.Compiled);
 
@@ -40,8 +56,6 @@ public sealed class BertArchitectureProfile : IArchitectureProfile
     public IReadOnlyList<NamePatternRule> Rules { get; } = new List<NamePatternRule>
     {
         new(EmbedWord,         PrimitiveKind.Lookup,        ArchetypeTuple.EmbeddingLookup,  TupleSlot.Table,         ModalityHint.Text),
-        new(EmbedPos,          PrimitiveKind.Lookup,        ArchetypeTuple.EmbeddingLookup,  TupleSlot.Table,         ModalityHint.Position),
-        new(EmbedType,         PrimitiveKind.Lookup,        ArchetypeTuple.EmbeddingLookup,  TupleSlot.Table,         ModalityHint.Text),
         new(EmbedLnScale,      PrimitiveKind.Normalization, ArchetypeTuple.EmbeddingLookup,  TupleSlot.Scale,         ModalityHint.Text),
         new(EmbedLnBias,       PrimitiveKind.Normalization, ArchetypeTuple.EmbeddingLookup,  TupleSlot.Offset,        ModalityHint.Text),
 
