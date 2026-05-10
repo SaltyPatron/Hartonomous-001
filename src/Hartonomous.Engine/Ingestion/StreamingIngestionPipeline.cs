@@ -79,7 +79,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     /// and ~2k rows/s on entity. With 4× workers the bulk seed phases become
     /// CPU-bound on the host instead of single-backend-bound on PG.
     /// </summary>
-    private const int DrainWorkersPerKind = 1;
+    private const int DrainWorkersPerKind = 4;
 
     /// <summary>
     /// COPY chunk threshold. Each drain task COPY-loads up to this many rows
