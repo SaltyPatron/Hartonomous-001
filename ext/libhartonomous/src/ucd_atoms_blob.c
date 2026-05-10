@@ -311,6 +311,19 @@ int hartonomous_ucd_load(const char* dir)
         );
     if (parse_index(idx_path)   != 0) return -1;
     if (parse_reverse(rev_path) != 0) return -1;
+
+    /* Eager-load every block file into heap. Same fix as the PG extension's
+     * pg_ucd_atoms_blob.c — the lazy-mmap path SEGV'd in libc memcpy when
+     * the kernel page-faulted into a no-longer-valid mapping during long
+     * SRF iteration. Heap copies stay valid for the process lifetime.
+     * Cost: ~80 MB resident; one-time at load. */
+    for (int32_t i = 0; i < g_block_count; ++i) {
+        (void) ensure_block_mapped(&g_blocks[i]);
+        /* Failures (missing block files) leave that block's pointers NULL;
+         * accessor functions return NULL for cps in those blocks. Same
+         * graceful-degradation as before. */
+    }
+
     g_loaded = 1;
     return 0;
 }
