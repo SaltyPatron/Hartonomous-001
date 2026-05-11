@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+usage() {
+    cat <<'USAGE'
+Hartonomous Linux command surface. No PowerShell.
+
+Usage:
+  scripts/hart preflight [--require-docker] [--skip-cmake]
+  scripts/hart ci [--skip-seed]
+  scripts/hart clean [--managed|--native|--all]
+  scripts/hart codegen [unicode] [--ucd-root PATH] [--force]
+  scripts/hart install [pg-extension] [--copy|--symlink]
+
+  scripts/hart build [all|dotnet|native|extension-sql|pg-extension] [args...]
+  scripts/hart test  [all|unit|native|pg|smoke|integration] [args...]
+
+  scripts/hart docker [build|up|down|status|logs|psql|exec] [args...]  # optional legacy Windows parity runtime
+  scripts/hart db     [create|bootstrap|reset] [args...]
+  scripts/hart phase  [list|status|run] [args...]
+  scripts/hart seed   [all|validate|PHASE] [args...]
+  scripts/hart ops    status
+
+Examples:
+  scripts/hart build dotnet --no-restore
+  scripts/hart test unit --no-build
+  scripts/hart test native
+  scripts/hart db bootstrap
+  scripts/hart phase run --phase UcdUca --no-build
+  scripts/hart seed all --no-build
+
+Environment:
+  HARTONOMOUS_DB
+  HARTONOMOUS_DOTNET__CONFIGURATION
+  HARTONOMOUS_NATIVE__CONFIGURATION
+  HARTONOMOUS_PATHS__SOURCEROOT
+  HARTONOMOUS_UCD_ROOT
+  HARTONOMOUS_DB_RUNTIME=local|docker
+  HARTONOMOUS_PG_CONFIG
+USAGE
+}
+
+run() {
+    local script="$1"
+    shift
+    exec "$ROOT/$script" "$@"
+}
+
+cmd="${1:-help}"
+if (($#)); then
+    shift
+fi
+
+case "$cmd" in
+    help|-h|--help)
+        usage
+        ;;
+
+    preflight)
+        run scripts/linux/ci-preflight.sh "$@"
+        ;;
+
+    ci|pipeline)
+        run scripts/linux/ci-pipeline.sh "$@"
+        ;;
+
+    clean)
+        run scripts/linux/clean.sh "$@"
+        ;;
+
+    build)
+        sub="${1:-all}"
+        if [[ "$sub" == --* ]]; then
+            sub="all"
+        elif (($#)); then
+            shift
+        fi
+        case "$sub" in
+            all) run scripts/linux/build-all.sh "$@" ;;
+            dotnet|managed) run scripts/linux/build-dotnet.sh "$@" ;;
+            native) run scripts/linux/build-native.sh "$@" ;;
+            extension-sql|sql) run scripts/linux/build-extension-sql.sh "$@" ;;
+            pg-extension|pgext) run scripts/linux/build-pg-extension.sh "$@" ;;
+            *) printf 'ERROR: unknown build action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    codegen)
+        sub="${1:-unicode}"
+        if [[ "$sub" == --* ]]; then
+            sub="unicode"
+        elif (($#)); then
+            shift
+        fi
+        case "$sub" in
+            unicode|unicode-tables|ucd-tables) run scripts/linux/codegen-unicode.sh "$@" ;;
+            *) printf 'ERROR: unknown codegen action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    install)
+        sub="${1:-pg-extension}"
+        if [[ "$sub" == --* ]]; then
+            sub="pg-extension"
+        elif (($#)); then
+            shift
+        fi
+        case "$sub" in
+            pg-extension|pgext) run scripts/linux/install-pg-extension.sh "$@" ;;
+            *) printf 'ERROR: unknown install action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    test)
+        sub="${1:-all}"
+        if [[ "$sub" == --* ]]; then
+            sub="all"
+        elif (($#)); then
+            shift
+        fi
+        case "$sub" in
+            all) run scripts/linux/test-all.sh "$@" ;;
+            unit|dotnet|managed) run scripts/linux/test-dotnet-unit.sh "$@" ;;
+            native) run scripts/linux/test-native.sh "$@" ;;
+            pg|pg-regress) run scripts/linux/test-pg.sh "$@" ;;
+            smoke) run scripts/linux/test-smoke.sh "$@" ;;
+            integration) run scripts/linux/test-integration.sh "$@" ;;
+            *) printf 'ERROR: unknown test action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    docker)
+        if (($# == 0)); then
+            usage >&2
+            printf '\nERROR: missing docker action\n' >&2
+            exit 64
+        fi
+        sub="$1"
+        shift
+        case "$sub" in
+            build) run scripts/linux/docker-build.sh "$@" ;;
+            up) run scripts/linux/docker-up.sh "$@" ;;
+            down) run scripts/linux/docker-down.sh "$@" ;;
+            status) run scripts/linux/docker-status.sh "$@" ;;
+            logs) run scripts/linux/docker-logs.sh "$@" ;;
+            psql) run scripts/linux/docker-psql.sh "$@" ;;
+            exec) run scripts/linux/docker-exec.sh "$@" ;;
+            *) printf 'ERROR: unknown docker action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    db)
+        if (($# == 0)); then
+            usage >&2
+            printf '\nERROR: missing db action\n' >&2
+            exit 64
+        fi
+        sub="$1"
+        shift
+        case "$sub" in
+            create) run scripts/linux/db-create.sh "$@" ;;
+            bootstrap|install-extension) run scripts/linux/db-bootstrap.sh "$@" ;;
+            reset) run scripts/linux/db-reset.sh "$@" ;;
+            *) printf 'ERROR: unknown db action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    phase|phases)
+        action="${1:-list}"
+        if (($#)); then shift; fi
+        run scripts/linux/phases.sh "$action" "$@"
+        ;;
+
+    seed)
+        sub="${1:-all}"
+        if [[ "$sub" == --* ]]; then
+            sub="all"
+        elif (($#)); then
+            shift
+        fi
+        case "$sub" in
+            all) run scripts/linux/seed-all.sh "$@" ;;
+            validate) run scripts/linux/seed-validate.sh "$@" ;;
+            UcdUca|Iso639|WordNetOmw|UniversalDeps|ModelDecomp|Wiktionary|Tatoeba|TextDecomp|SignificanceField|InferenceEngine|Validation)
+                run scripts/linux/seed-phase.sh "$sub" "$@"
+                ;;
+            *) printf 'ERROR: unknown seed phase/action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    ops|status)
+        sub="${1:-status}"
+        if (($#)); then shift; fi
+        case "$sub" in
+            status) run scripts/linux/ops-status.sh "$@" ;;
+            *) printf 'ERROR: unknown ops action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
+        esac
+        ;;
+
+    *)
+        printf 'ERROR: unknown command: %s\n\n' "$cmd" >&2
+        usage >&2
+        exit 64
+        ;;
+esac

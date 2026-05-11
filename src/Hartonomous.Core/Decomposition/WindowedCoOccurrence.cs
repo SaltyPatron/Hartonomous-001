@@ -114,8 +114,8 @@ public static class WindowedCoOccurrence
                 }
 
                 // Sorted participants → symmetric edge identity.
-                byte[] first;
-                byte[] second;
+                Hash32 first;
+                Hash32 second;
                 EntityHandle firstHandle;
                 EntityHandle secondHandle;
                 if (CompareBytes(a.Hash, b.Hash) <= 0)
@@ -129,7 +129,7 @@ public static class WindowedCoOccurrence
                     firstHandle = b; secondHandle = a;
                 }
 
-                byte[] edgeHash = ComputeEdgeHash(coOccurrenceTypeId, first, second);
+                Hash32 edgeHash = ComputeEdgeHash(coOccurrenceTypeId, first, second);
                 EdgeKey key = new(CoOccurrenceEdgeType, edgeHash);
 
                 double pairWeight = parentSignificanceFactor / distance;
@@ -210,39 +210,16 @@ public static class WindowedCoOccurrence
         return specs;
     }
 
-    private static byte[] ComputeEdgeHash(int edgeTypeId, byte[] first, byte[] second)
+    private static Hash32 ComputeEdgeHash(int edgeTypeId, Hash32 first, Hash32 second)
     {
-        byte[] buffer = new byte[4 + first.Length + second.Length];
+        Span<byte> buffer = stackalloc byte[4 + Hash32.Length + Hash32.Length];
         BitConverter.TryWriteBytes(buffer, edgeTypeId);
-        first.CopyTo(buffer.AsSpan(4));
-        second.CopyTo(buffer.AsSpan(4 + first.Length));
-        return Blake3.Hash(buffer.AsSpan());
+        first.CopyTo(buffer.Slice(4, Hash32.Length));
+        second.CopyTo(buffer.Slice(4 + Hash32.Length, Hash32.Length));
+        return Blake3.Hash32(buffer);
     }
 
-    private static bool HashesEqual(byte[] a, byte[] b)
-    {
-        if (ReferenceEquals(a, b))
-        {
-            return true;
-        }
-        if (a.Length != b.Length)
-        {
-            return false;
-        }
-        return MemoryExtensions.SequenceEqual<byte>(a, b);
-    }
+    private static bool HashesEqual(Hash32 a, Hash32 b) => a == b;
 
-    private static int CompareBytes(byte[] a, byte[] b)
-    {
-        int min = Math.Min(a.Length, b.Length);
-        for (int i = 0; i < min; i++)
-        {
-            int c = a[i].CompareTo(b[i]);
-            if (c != 0)
-            {
-                return c;
-            }
-        }
-        return a.Length.CompareTo(b.Length);
-    }
+    private static int CompareBytes(Hash32 a, Hash32 b) => a.CompareTo(b);
 }

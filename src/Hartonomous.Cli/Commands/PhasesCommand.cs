@@ -11,6 +11,7 @@ using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Orchestration;
 using Hartonomous.Core.Text;
+using Hartonomous.Decomposers.Ucd;
 using Hartonomous.Decomposers.Iso639;
 using Hartonomous.Decomposers.Omw;
 using Hartonomous.Decomposers.Safetensors;
@@ -60,10 +61,9 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             CliConfiguration.ConnAliases,
             getDefaultValue: CliConfiguration.DefaultConnectionString,
             description: "Npgsql connection string.");
-        Option<string> sourceOpt = new(
+        Option<string?> sourceOpt = new(
             aliases: ["--source", "-s"],
-            getDefaultValue: () => @"D:\Models",
-            description: "Root directory containing all source data (UCD, ISO639, etc.).");
+            description: "Root directory containing all source data. Omit to use Hartonomous:DataRoot from appsettings/env.");
         Option<bool> skipDepsOpt = new(
             aliases: ["--skip-deps"],
             getDefaultValue: () => false,
@@ -85,7 +85,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             string? phaseStr = ic.ParseResult.GetValueForOption(phaseOpt);
             bool dryRun = ic.ParseResult.GetValueForOption(dryRunOpt);
             string conn = ic.ParseResult.GetValueForOption(connOpt)!;
-            string source = ic.ParseResult.GetValueForOption(sourceOpt)!;
+            string? source = ic.ParseResult.GetValueForOption(sourceOpt);
             bool skipDeps = ic.ParseResult.GetValueForOption(skipDepsOpt);
             bool force = ic.ParseResult.GetValueForOption(forceOpt);
 
@@ -137,7 +137,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
     }
 
     private async Task<int> RunPhasesAsync(
-        string? phaseStr, string conn, string sourceRoot,
+        string? phaseStr, string conn, string? sourceRoot,
         bool skipDeps, bool force, CancellationToken ct)
     {
         int exitCode = 0;
@@ -175,12 +175,9 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         }
         string dataRoot = opts.DataRoot;
 
-        string Resolve(string p) =>
-            string.IsNullOrEmpty(p) ? dataRoot
-            : Path.IsPathRooted(p) ? p
-            : Path.Combine(dataRoot, p);
+        string Resolve(string p) => CliPathResolver.Resolve(dataRoot, p);
 
-        // Ucd phase is owned by scripts/seed/Ucd.ps1 (substrate-side, embedded UCD blob).
+        DecomposerConfig ucdConfig = new() { SourceDirectory = Resolve(opts.Decomposers.Ucd.SourcePath), ConnectionString = conn };
         DecomposerConfig iso639Config = new() { SourceDirectory = Resolve(opts.Decomposers.Iso639.SourcePath), ConnectionString = conn };
         DecomposerConfig wordnetConfig = new() { SourceDirectory = Resolve(opts.Decomposers.WordNet.SourcePath), ConnectionString = conn };
         DecomposerConfig omwConfig = new() { SourceDirectory = Resolve(opts.Decomposers.Omw.SourcePath), ConnectionString = conn, LanguageFilter = opts.Decomposers.Omw.LanguageFilter };
@@ -202,10 +199,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
 
         SubstrateTextDecomposer substrateTextDecomposer = new(phaseDs);
 
-        NpgsqlCodepointPropertiesCache cpProps = await NpgsqlCodepointPropertiesCache.LoadAsync(
-            conn,
-            logFactory.CreateLogger<NpgsqlCodepointPropertiesCache>(),
-            ct);
+        ThrowingCodepointProperties cpProps = ThrowingCodepointProperties.Instance;
 
         List<IDecomposer> textDecomposers = [];
         string[] textFiles = Directory.Exists(textSourceDir)
@@ -224,16 +218,16 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             }
         }
 
+        WordNetSynsetBridge wordNetSynsetBridge = new();
+
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
-            // Phase.UcdUca is owned end-to-end by scripts/seed/Ucd.ps1 calling
-            // substrate.populate_*_from_ext() against the embedded UCD catalog.
-            // No C# decomposer participates in this phase.
+            [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>())],
             [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [
-                new WordNetDecomposer(wordnetConfig, substrateTextDecomposer, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
-                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
+                new WordNetDecomposer(wordnetConfig, substrateTextDecomposer, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, wordNetSynsetBridge, refDataReader, junctionWriter, refDataWriter),
+                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), cpProps, wordNetSynsetBridge, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.UniversalDeps] =
             [

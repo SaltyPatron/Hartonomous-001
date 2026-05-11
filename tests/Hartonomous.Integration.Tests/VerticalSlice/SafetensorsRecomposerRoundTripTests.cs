@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
@@ -157,7 +158,7 @@ public sealed class SafetensorsRecomposerRoundTripTests
         }
 
         public Task<IReadOnlyList<EntityHandle>> ResolveEntityHandlesAsync(
-            IReadOnlyList<byte[]> hashes, IReadOnlyList<string> entityTypeCodes, CancellationToken ct)
+            IReadOnlyList<Hash32> hashes, IReadOnlyList<string> entityTypeCodes, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<EntityHandle>>([]);
 
         public Task<IReadOnlyDictionary<EntityHandle, EntityInfo>> GetEntityInfoAsync(

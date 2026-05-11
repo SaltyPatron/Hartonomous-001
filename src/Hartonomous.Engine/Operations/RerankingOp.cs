@@ -1,4 +1,5 @@
 using System.Globalization;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Operations;
 using Hartonomous.Core.Operations.Results;
 using Hartonomous.Engine.Data;
@@ -47,7 +48,7 @@ public sealed partial class RerankingOp : BaseAiOperation
         }
 
         int k = request.MaxResults ?? DefaultK;
-        byte[][] candidates = rr.Candidates is byte[][] arr ? arr : [.. rr.Candidates];
+        byte[][] candidates = ToByteaArray(rr.Candidates);
 
         IReadOnlyList<RerankResult> rows = await _repository
             .RerankAsync(candidates, rr.ArenaCode, k, ct)
@@ -71,7 +72,7 @@ public sealed partial class RerankingOp : BaseAiOperation
 
         Log.RerankComplete(Logger, rr.ArenaCode, rr.Candidates.Count, rows.Count, sqlElapsedMs);
 
-        byte[] best = trace.Count > 0 ? trace[0].EntityHash : rr.Candidates[0];
+        byte[] best = trace.Count > 0 ? trace[0].EntityHash : rr.Candidates[0].ToByteArray();
         return new RerankingResponse
         {
             OutputCompositionHash = best,
@@ -86,6 +87,17 @@ public sealed partial class RerankingOp : BaseAiOperation
                 ["candidate_count"] = rr.Candidates.Count.ToString(CultureInfo.InvariantCulture),
             },
         };
+    }
+
+    private static byte[][] ToByteaArray(IReadOnlyList<Hash32> hashes)
+    {
+        byte[][] values = new byte[hashes.Count][];
+        for (int i = 0; i < hashes.Count; i++)
+        {
+            values[i] = hashes[i].ToByteArray();
+        }
+
+        return values;
     }
 
     private static partial class Log

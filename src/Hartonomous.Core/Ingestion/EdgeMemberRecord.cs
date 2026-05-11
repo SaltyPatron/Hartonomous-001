@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -14,7 +16,7 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record EdgeMemberRecord(
     string EdgeTypeCode,
-    byte[] EdgeHash,
-    byte[] EntityHash,
+    Hash32 EdgeHash,
+    Hash32 EntityHash,
     string RoleCode,
     int RolePosition = 0) : IngestionRecord;

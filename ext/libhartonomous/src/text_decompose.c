@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #define HASH_LEN 32
 
@@ -32,40 +33,27 @@ extern const uint8_t* huc_cp_hash_at(int32_t cp);
 extern const double*  huc_cp_centroid_at(int32_t cp);
 extern int            hartonomous_ucd_loaded(void);
 
-/*
- * UCD property tables are defined in pg_ucd_segmentation.c +
- * pg_ucd_pictographic.c. On Windows libhartonomous compiles those .c
- * files into itself (see CMakeLists.txt WIN32 branch). On Linux the PG
- * extension hartonomous.so owns the only copy and libhartonomous.so
- * leaves the symbols undefined.
- *
- * Declaring them weak here prevents the dynamic linker from failing the
- * libhartonomous.so load when it's pulled in as a DT_NEEDED dependency
- * of hartonomous.so — at that point hartonomous.so's symbols aren't yet
- * in the global scope, so eager resolution of the strong externs fails
- * (FATAL: undefined symbol: uc_gcb during PG startup).
- *
- * With weak bindings the runtime addresses come from hartonomous.so once
- * its RTLD_GLOBAL load completes; calls into td_gcb / td_wb / td_incb /
- * td_pict from outside a PG backend (e.g. standalone C# P/Invoke on
- * Linux) get NULL symbols, so each helper checks before dereferencing
- * and falls back to an Other / non-pictographic class.
- */
-#if !defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
-#pragma weak uc_gcb
-#pragma weak uc_wb
-#pragma weak uc_incb
-#pragma weak uc_ccc
-#pragma weak uc_decomp_type
-#pragma weak uc_decomp_off
-#pragma weak uc_decomp_len
-#pragma weak uc_decomp_data
-#pragma weak uc_composition_pairs
-#pragma weak uc_ext_pictographic_bitmap
-#endif
-
 /* Free helper that tolerates NULL. */
 static inline void xfree(void* p) { if (p) free(p); }
+
+static int td_ucd_tables_ready(void)
+{
+    return uc_gcb != NULL
+        && uc_wb != NULL
+        && uc_incb != NULL
+        && uc_ccc != NULL
+        && uc_decomp_type != NULL
+        && uc_decomp_off != NULL
+        && uc_decomp_len != NULL
+        && uc_decomp_data != NULL
+        && uc_composition_pairs != NULL
+        && uc_ext_pictographic_bitmap != NULL;
+}
+
+HARTONOMOUS_API int hartonomous_ucd_tables_ready(void)
+{
+    return td_ucd_tables_ready();
+}
 
 /* ─────────────────────────────────────────────────────────────────────
  * (1) UTF-8 decode
@@ -108,26 +96,17 @@ static size_t td_utf8_decode_one(const uint8_t* p, size_t len, int32_t* out)
  * the helper returns the default-Other class. */
 static inline uint8_t td_gcb(int32_t cp) {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_GCB_Other;
-    if (uc_gcb == NULL) return UC_GCB_Other;
     return uc_gcb[cp];
 }
 static inline uint8_t td_wb(int32_t cp) {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_WB_Other;
-    if (uc_wb == NULL) return UC_WB_Other;
     return uc_wb[cp];
 }
 static inline uint8_t td_incb(int32_t cp) {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_INCB_None;
-    if (uc_incb == NULL) return UC_INCB_None;
     return uc_incb[cp];
 }
 static inline int td_pict(int32_t cp) {
-    /* uc_extended_pictographic() is a function in
-     * pg_ucd_pictographic.c that internally indexes
-     * uc_ext_pictographic_bitmap. The bitmap is weak-bound above; the
-     * function symbol itself remains a normal extern, so we guard the
-     * call site by checking the bitmap (and fall back to non-pict). */
-    if (uc_ext_pictographic_bitmap == NULL) return 0;
     return uc_extended_pictographic(cp);
 }
 
@@ -161,28 +140,24 @@ static int td_buf_push(TdCpBuffer* b, int32_t cp)
 static inline uint8_t td_ccc(int32_t cp)
 {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return 0;
-    if (uc_ccc == NULL) return 0;
     return uc_ccc[cp];
 }
 
 static inline uint8_t td_decomp_type(int32_t cp)
 {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_DECOMP_TYPE_None;
-    if (uc_decomp_type == NULL) return UC_DECOMP_TYPE_None;
     return uc_decomp_type[cp];
 }
 
 static inline uint16_t td_decomp_len(int32_t cp)
 {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return 0;
-    if (uc_decomp_len == NULL) return 0;
     return uc_decomp_len[cp];
 }
 
 static inline const int32_t* td_decomp_mapping(int32_t cp)
 {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return NULL;
-    if (uc_decomp_off == NULL || uc_decomp_data == NULL) return NULL;
     return uc_decomp_data + uc_decomp_off[cp];
 }
 
@@ -272,7 +247,6 @@ static int32_t td_compose_pair(int32_t first, int32_t second)
 {
     int32_t hangul = td_compose_hangul(first, second);
     if (hangul != 0) return hangul;
-    if (uc_composition_pairs == NULL) return 0;
 
     int lo = 0;
     int hi = UC_COMPOSITION_PAIR_COUNT - 1;
@@ -670,7 +644,9 @@ int hartonomous_text_decompose(
 {
     if (!utf8 || !emit || !out_root_hash) return -1;
     if (!hartonomous_ucd_loaded()) return -2;
+    if (!td_ucd_tables_ready()) return -4;
     if (utf8_len == 0) return -3;
+    if (utf8_len > (size_t)INT32_MAX - 1) return -5;
 
     int rc_final = 0;
 

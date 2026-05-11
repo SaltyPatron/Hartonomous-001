@@ -124,21 +124,4 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         return map;
     }
 
-    public async Task<Dictionary<byte[], byte[]>> LoadWordNetOffsetSynsetMapAsync(
-        CancellationToken ct)
-    {
-        Dictionary<byte[], byte[]> map = new(120_000, ByteArrayEqualityComparer.Instance);
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
-            conn,
-            SubstrateFunctionNames.LoadWordNetOffsetSynsetMap);
-        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            byte[] offsetDocHash = (byte[])reader[0];
-            byte[] synsetHash = (byte[])reader[1];
-            map[offsetDocHash] = synsetHash;
-        }
-        return map;
-    }
 }

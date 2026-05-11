@@ -1,0 +1,1 @@
+CREATE INDEX idx_codepoint_property_eaw ON substrate.codepoint_property(east_asian_width_id);

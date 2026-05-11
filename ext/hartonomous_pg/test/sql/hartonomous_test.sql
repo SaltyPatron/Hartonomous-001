@@ -2,17 +2,56 @@
 -- Validates: extension loads, types round-trip, distance is correct,
 -- aggregates work end-to-end. GiST/SP-GiST kNN tests deferred to P1a.3.
 
-CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis WITH VERSION '3.6.3';
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS hartonomous;
 
 -- Version
 SELECT length(hartonomous_version()) > 0 AS has_version;
 
--- BLAKE3 (regression-stable subset).
+-- BLAKE3 byte/text primitives. Raw text identity is produced by UAX #29
+-- text decomposition/Merkle composition, not by hashing a multi-character string.
 SELECT length(blake3_hash('\x48656c6c6f'::bytea)) AS blake3_len;
 SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
-SELECT blake3_hash_text('hello') = blake3_hash_text('hello') AS blake3_deterministic;
-SELECT blake3_hash_text('hello') != blake3_hash_text('world') AS blake3_distinct;
+
+-- UAX #29/Merkle text identity for "hello": deterministic root, raw hash is
+-- not the text composition hash, and the repeated "l" is stored as RLE
+-- occurrence counts in substrate.sequence.
+CREATE TEMP TABLE hello_text_roots AS
+SELECT
+    (substrate.text_decompose(convert_to('hello', 'UTF8'), 'text_composition', 95000.0, 'unicode_consortium')).root_hash AS root_a,
+    (substrate.text_decompose(convert_to('hello', 'UTF8'), 'text_composition', 95000.0, 'unicode_consortium')).root_hash AS root_b,
+    blake3_hash(convert_to('hello', 'UTF8')) AS raw_hash,
+    blake3_hash_text('hello') AS raw_text_hash;
+
+WITH root_children AS (
+    SELECT s.ordinal, s.child_hash, s.rle_count
+    FROM hello_text_roots r
+    JOIN substrate.sequence s ON s.parent_hash = r.root_a
+),
+word_graphemes AS (
+    SELECT s.ordinal, s.child_hash, s.rle_count
+    FROM root_children rc
+    JOIN substrate.sequence s ON s.parent_hash = rc.child_hash
+),
+grapheme_codepoints AS (
+    SELECT s.ordinal, s.child_hash, wg.rle_count * s.rle_count AS rle_count
+    FROM word_graphemes wg
+    JOIN substrate.sequence s ON s.parent_hash = wg.child_hash
+)
+SELECT
+    length(root.root_a) AS root_len,
+    root.root_a = root.root_b AS deterministic,
+    root.root_a <> root.raw_hash AS not_raw_byte_hash,
+    root.root_a <> root.raw_text_hash AS not_raw_text_hash,
+    (SELECT count(*) FROM root_children) AS root_rows,
+    (SELECT COALESCE(sum(rle_count), 0) FROM root_children) AS root_occurrences,
+    (SELECT count(*) FROM word_graphemes) AS grapheme_rows,
+    (SELECT COALESCE(sum(rle_count), 0) FROM word_graphemes) AS grapheme_occurrences,
+    (SELECT count(*) FROM grapheme_codepoints) AS codepoint_rows,
+    (SELECT COALESCE(sum(rle_count), 0) FROM grapheme_codepoints) AS codepoint_occurrences
+FROM hello_text_roots root;
 
 -- point4d round-trip via text I/O.
 SELECT '(1, 2, 3, 4)'::point4d AS p_in;

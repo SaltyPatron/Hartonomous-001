@@ -42,7 +42,6 @@ public static class SubstrateFunctionNames
     public const string GetOutboundEdgeTargets = "substrate.get_outbound_edge_targets";
     public const string GetCompletedModelPasses = "substrate.get_completed_model_passes";
     public const string HealthSummary = "substrate.health_summary";
-    public const string LoadWordNetOffsetSynsetMap = "substrate.load_wordnet_offset_synset_map";
     public const string ModelInventory = "substrate.model_inventory";
     public const string ModelVocabRecovered = "substrate.model_vocab_recovered";
     public const string PhysicalityLineString4d = "substrate.physicality_linestring4d";
@@ -125,7 +124,6 @@ public static class SubstrateFunctionNames
         GetOutboundEdgeTargets,
         GetCompletedModelPasses,
         HealthSummary,
-        LoadWordNetOffsetSynsetMap,
         ModelInventory,
         ModelVocabRecovered,
         PhysicalityLineString4d,

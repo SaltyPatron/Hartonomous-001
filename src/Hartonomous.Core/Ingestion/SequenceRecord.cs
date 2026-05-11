@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -10,7 +12,7 @@ namespace Hartonomous.Core.Ingestion;
 /// ON CONFLICT DO NOTHING is for re-ingestion idempotence.
 /// </summary>
 public sealed record SequenceRecord(
-    byte[] ParentEntityHash,
+    Hash32 ParentEntityHash,
     int Ordinal,
-    byte[] ChildEntityHash,
+    Hash32 ChildEntityHash,
     int RleCount = 1) : IngestionRecord;

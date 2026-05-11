@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -13,5 +15,5 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record EntityRecord(
     string EntityTypeCode,
-    byte[] Hash,
+    Hash32 Hash,
     string ProvenanceCode) : IngestionRecord;

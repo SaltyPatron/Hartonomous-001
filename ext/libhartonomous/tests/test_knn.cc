@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <random>
 #include <set>
 #include <utility>
@@ -37,6 +38,24 @@ TEST(Knn, RejectsBadArgs) {
     EXPECT_EQ(-2, hartonomous_knn_cosine_graph_f64(4, 4, &d, 4, &ip, &ci, &v, &nnz));
     // null rows
     EXPECT_EQ(-1, hartonomous_knn_cosine_graph_f64(4, 4, nullptr, 1, &ip, &ci, &v, &nnz));
+}
+
+TEST(Knn, RejectsPairStorageOverflowBeforeLinearizedKeyWrap) {
+    double row = 1.0;
+    int64_t rowPtr = 0;
+    int64_t colIdx = 0;
+    double value = 0.0;
+    int64_t nnz = 0;
+
+    EXPECT_EQ(-3, hartonomous_knn_cosine_graph_f64(
+        std::numeric_limits<int64_t>::max() / 2,
+        1,
+        &row,
+        3,
+        &rowPtr,
+        &colIdx,
+        &value,
+        &nnz));
 }
 
 TEST(Knn, SmallGraphCorrectness) {

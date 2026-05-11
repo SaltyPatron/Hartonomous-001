@@ -35,6 +35,7 @@ ext/hartonomous_pg/*.o
 ext/hartonomous_pg/*.so
 ext/hartonomous_pg/*.dll
 ext/hartonomous_pg/*.dylib
+ext/hartonomous_pg/src/**/*.bc
 *.obj
 
 # Runtime
@@ -86,16 +87,11 @@ exports/
 .claude/ide/
 .claude/logs/
 
-# Generator outputs — math-derived UCD/UCA atom blob (per-block files
-# total ~91 MB across 397 files). Reproducible from
-# scripts/build/generate_unicode_tables.py given the same UCD source.
-# Modular property C source (pg_ucd_*.c) IS committed because those
-# tables are the API surface and benefit from compile-time inlining.
-ext/hartonomous_pg/src/generated/blocks/
-ext/hartonomous_pg/src/generated/hartonomous-ucd-*.bin
-ext/hartonomous_pg/src/generated/hartonomous-ucd-*.bin.zst
-ext/hartonomous_pg/src/generated/hartonomous-ucd-*.bundle.tar.zst
-ext/hartonomous_pg/src/generated/hartonomous-ucd-*.idx
+# NOTE: ext/hartonomous_pg/src/generated/blocks/, *.bin, *.bin.zst,
+# *.bundle.tar.zst, *.idx are committed — they are the Layer B distribution
+# surface (per-Unicode-block C arrays + minimal perfect hash sets compiled
+# INTO the extension binary). Fresh clone → build → CREATE EXTENSION
+# hartonomous → working substrate, no network, no codegen on the consumer.
 
 # Consolidated extension SQL — assembled at build time from sql/schema/*
 # + ext/hartonomous_pg/sql/hartonomous--1.0.sql.in via

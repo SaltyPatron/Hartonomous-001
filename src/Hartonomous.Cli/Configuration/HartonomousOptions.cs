@@ -14,7 +14,7 @@ namespace Hartonomous.Cli.Configuration;
 /// </summary>
 public sealed class HartonomousOptions
 {
-    public string DataRoot { get; set; } = "D:\\Models";
+    public string DataRoot { get; set; } = "/vault/Data";
     public string? ConnectionString { get; set; }
     public DecomposersOptions Decomposers { get; set; } = new();
 }

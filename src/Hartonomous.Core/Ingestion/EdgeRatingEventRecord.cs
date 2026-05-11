@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -24,6 +26,6 @@ public sealed record EdgeRatingEventRecord(
     string ContextTypeCode,
     string AttestationTypeCode,
     string EdgeTypeCode,
-    byte[] EdgeHash,
+    Hash32 EdgeHash,
     double Score,
     double Weight) : IngestionRecord;

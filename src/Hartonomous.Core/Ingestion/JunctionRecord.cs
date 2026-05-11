@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -19,7 +21,7 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record JunctionRecord(
     string JunctionTable,
-    byte[] EntityHash,
+    Hash32 EntityHash,
     int ReferenceId,
     string AttestationTypeCode,
     double? Mu = null) : IngestionRecord;

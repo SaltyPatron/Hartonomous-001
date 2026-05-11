@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Engine.Ingestion;
 
 /// <summary>
@@ -6,4 +8,4 @@ namespace Hartonomous.Engine.Ingestion;
 /// with ON CONFLICT DO NOTHING; same content from any decomposer collapses
 /// to one row.
 /// </summary>
-internal readonly record struct EntityEntry(byte[] Hash, string EntityTypeCode);
+internal readonly record struct EntityEntry(Hash32 Hash, string EntityTypeCode);

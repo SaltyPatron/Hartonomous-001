@@ -25,6 +25,13 @@ public static class Blake3
         return output;
     }
 
+    public static Hash32 Hash32(ReadOnlySpan<byte> input)
+    {
+        Span<byte> output = stackalloc byte[HashLen];
+        NativeCompute.Blake3(input, (nuint)input.Length, output);
+        return new Hash32(output);
+    }
+
     /// <summary>
     /// Batched BLAKE3 for N inputs in a single FFI call. Eliminates per-record
     /// P/Invoke trampoline cost — for 1M short inputs, this is ~1ms vs ~500ms
@@ -102,5 +109,26 @@ public static class Blake3
             flat.AsSpan(i * HashLen, HashLen).CopyTo(result[i]);
         }
         return result;
+    }
+
+    public static Hash32[] HashMany32(ReadOnlySpan<ReadOnlyMemory<byte>> inputs)
+    {
+        int n = inputs.Length;
+        byte[] flat = ArrayPool<byte>.Shared.Rent(n * HashLen);
+        try
+        {
+            Span<byte> output = flat.AsSpan(0, n * HashLen);
+            HashMany(inputs, output);
+            Hash32[] result = new Hash32[n];
+            for (int i = 0; i < n; i++)
+            {
+                result[i] = new Hash32(output.Slice(i * HashLen, HashLen));
+            }
+            return result;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(flat);
+        }
     }
 }

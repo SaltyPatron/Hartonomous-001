@@ -16,8 +16,12 @@ namespace Hartonomous.Core.Compute.Common;
 /// <see cref="GetHashCode"/> mixes those 4 ulongs via <see cref="HashCode"/>.
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Size = 32, Pack = 8)]
-public readonly struct Hash32 : IEquatable<Hash32>
+public readonly struct Hash32 : IEquatable<Hash32>, IComparable<Hash32>
 {
+    public const int Length = Blake3.HashLen;
+
+    public static Hash32 Zero => default;
+
     private readonly ulong _a;
     private readonly ulong _b;
     private readonly ulong _c;
@@ -25,9 +29,9 @@ public readonly struct Hash32 : IEquatable<Hash32>
 
     public Hash32(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.Length != 32)
+        if (bytes.Length != Length)
         {
-            throw new ArgumentException($"Hash32 requires exactly 32 bytes (got {bytes.Length}).", nameof(bytes));
+            throw new ArgumentException($"Hash32 requires exactly {Length} bytes (got {bytes.Length}).", nameof(bytes));
         }
         _a = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(0, 8));
         _b = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(8, 8));
@@ -37,6 +41,20 @@ public readonly struct Hash32 : IEquatable<Hash32>
 
     public Hash32(byte[] bytes) : this(bytes.AsSpan()) { }
 
+    public static Hash32 FromBytes(ReadOnlySpan<byte> bytes) => new(bytes);
+
+    public static bool TryCreate(ReadOnlySpan<byte> bytes, out Hash32 hash)
+    {
+        if (bytes.Length != Length)
+        {
+            hash = default;
+            return false;
+        }
+
+        hash = new Hash32(bytes);
+        return true;
+    }
+
     public bool Equals(Hash32 other)
         => _a == other._a && _b == other._b && _c == other._c && _d == other._d;
 
@@ -44,16 +62,49 @@ public readonly struct Hash32 : IEquatable<Hash32>
 
     public override int GetHashCode() => HashCode.Combine(_a, _b, _c, _d);
 
+    public int CompareTo(Hash32 other)
+    {
+        int c = _a.CompareTo(other._a);
+        if (c != 0) { return c; }
+        c = _b.CompareTo(other._b);
+        if (c != 0) { return c; }
+        c = _c.CompareTo(other._c);
+        if (c != 0) { return c; }
+        return _d.CompareTo(other._d);
+    }
+
     public static bool operator ==(Hash32 left, Hash32 right) => left.Equals(right);
     public static bool operator !=(Hash32 left, Hash32 right) => !left.Equals(right);
+    public static bool operator <(Hash32 left, Hash32 right) => left.CompareTo(right) < 0;
+    public static bool operator <=(Hash32 left, Hash32 right) => left.CompareTo(right) <= 0;
+    public static bool operator >(Hash32 left, Hash32 right) => left.CompareTo(right) > 0;
+    public static bool operator >=(Hash32 left, Hash32 right) => left.CompareTo(right) >= 0;
+    public void CopyTo(Span<byte> destination)
+    {
+        if (destination.Length < Length)
+        {
+            throw new ArgumentException($"Destination must be at least {Length} bytes.", nameof(destination));
+        }
+
+        BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(0, 8), _a);
+        BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(8, 8), _b);
+        BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(16, 8), _c);
+        BinaryPrimitives.WriteUInt64LittleEndian(destination.Slice(24, 8), _d);
+    }
 
     public byte[] ToByteArray()
     {
-        byte[] result = new byte[32];
-        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(0, 8), _a);
-        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(8, 8), _b);
-        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(16, 8), _c);
-        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(24, 8), _d);
+        byte[] result = new byte[Length];
+        CopyTo(result);
         return result;
     }
+
+    public string ToHexString()
+    {
+        Span<byte> bytes = stackalloc byte[Length];
+        CopyTo(bytes);
+        return Convert.ToHexString(bytes);
+    }
+
+    public override string ToString() => ToHexString();
 }

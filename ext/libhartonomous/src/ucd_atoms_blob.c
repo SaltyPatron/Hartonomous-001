@@ -13,11 +13,13 @@
  * never page in those bytes.
  */
 #include "hartonomous.h"
+#include "generated/pg_ucd_casing.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -97,6 +99,17 @@ static void huc_munmap(HucMap* m)
     memset(m, 0, sizeof(*m));
 }
 
+static int huc_file_exists(const char* path)
+{
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
 /* ── Per-block range table ────────────────────────────────────────── */
 typedef struct {
     int32_t   range_start;
@@ -115,7 +128,17 @@ static int32_t    g_block_count = 0;
 static HucMap     g_reverse_map = {0};
 static const uint8_t* g_reverse_entries = NULL;
 static uint32_t   g_reverse_count = 0;
+static void*      g_reverse_heap = NULL;
 static int        g_loaded = 0;
+
+typedef struct {
+    uint8_t hash[HUC_HASH_LEN];
+    uint32_t cp;
+} HucReverseEntry;
+
+typedef char huc_reverse_entry_size_check[
+    (sizeof(HucReverseEntry) == HUC_CP_REVERSE_ENTRY_SIZE) ? 1 : -1
+];
 
 /* ── Index parser ─────────────────────────────────────────────────── */
 static int parse_index(const char* path)
@@ -286,6 +309,96 @@ static int parse_reverse(const char* path)
     return 0;
 }
 
+static int compare_reverse_entries(const void* left, const void* right)
+{
+    const HucReverseEntry* a = (const HucReverseEntry*) left;
+    const HucReverseEntry* b = (const HucReverseEntry*) right;
+    int cmp = memcmp(a->hash, b->hash, HUC_HASH_LEN);
+    if (cmp != 0) return cmp;
+    if (a->cp < b->cp) return -1;
+    if (a->cp > b->cp) return 1;
+    return 0;
+}
+
+static void write_codepoint_hash(int32_t cp, uint8_t out[HUC_HASH_LEN])
+{
+    uint8_t rune_be32[4];
+    rune_be32[0] = (uint8_t) (((uint32_t) cp >> 24) & 0xFF);
+    rune_be32[1] = (uint8_t) (((uint32_t) cp >> 16) & 0xFF);
+    rune_be32[2] = (uint8_t) (((uint32_t) cp >> 8) & 0xFF);
+    rune_be32[3] = (uint8_t) ((uint32_t) cp & 0xFF);
+    hartonomous_blake3(rune_be32, sizeof(rune_be32), out);
+}
+
+static int build_embedded_atoms(void)
+{
+    static const int HUC_HILBERT_ORDER = 16;
+    BlockEntry* blocks = (BlockEntry*) calloc(1, sizeof(BlockEntry));
+    uint8_t* hashes = NULL;
+    uint8_t* centroids = NULL;
+    uint8_t* hilberts = NULL;
+    HucReverseEntry* reverse = NULL;
+    if (!blocks) return -1;
+
+    hashes = (uint8_t*) malloc((size_t) HUC_CP_MAX * HUC_HASH_LEN);
+    centroids = (uint8_t*) malloc((size_t) HUC_CP_MAX * 4 * sizeof(double));
+    hilberts = (uint8_t*) malloc((size_t) HUC_CP_MAX * sizeof(uint64_t));
+    reverse = (HucReverseEntry*) malloc((size_t) HUC_CP_MAX * sizeof(HucReverseEntry));
+    if (!hashes || !centroids || !hilberts || !reverse) {
+        free(reverse);
+        free(hilberts);
+        free(centroids);
+        free(hashes);
+        free(blocks);
+        return -1;
+    }
+
+    blocks[0].range_start = 0;
+    blocks[0].range_end = HUC_CP_MAX - 1;
+    blocks[0].atom_count = HUC_CP_MAX;
+    snprintf(blocks[0].filename, sizeof(blocks[0].filename), "%s", "<embedded>");
+    blocks[0].hashes = hashes;
+    blocks[0].centroids = centroids;
+    blocks[0].hilberts = hilberts;
+
+    for (int32_t cp = 0; cp < HUC_CP_MAX; ++cp) {
+        uint8_t* hash = hashes + (size_t) cp * HUC_HASH_LEN;
+        double centroid[4];
+        double sf_params[2];
+        uint64_t hilbert;
+
+        write_codepoint_hash(cp, hash);
+
+        sf_params[0] = (double) uc_uca_index[cp];
+        sf_params[1] = (double) UC_UCA_TOTAL;
+        if (hartonomous_super_fibonacci(sf_params, 2, centroid) != 0) {
+            free(reverse);
+            free(hilberts);
+            free(centroids);
+            free(hashes);
+            free(blocks);
+            return -1;
+        }
+
+        memcpy(centroids + (size_t) cp * 4 * sizeof(double), centroid, 4 * sizeof(double));
+        hilbert = hartonomous_hilbert_index(centroid, HUC_HILBERT_ORDER);
+        memcpy(hilberts + (size_t) cp * sizeof(uint64_t), &hilbert, sizeof(uint64_t));
+
+        memcpy(reverse[cp].hash, hash, HUC_HASH_LEN);
+        reverse[cp].cp = (uint32_t) cp;
+    }
+
+    qsort(reverse, (size_t) HUC_CP_MAX, sizeof(HucReverseEntry), compare_reverse_entries);
+
+    g_blocks = blocks;
+    g_block_count = 1;
+    g_reverse_heap = reverse;
+    g_reverse_entries = (const uint8_t*) reverse;
+    g_reverse_count = HUC_CP_MAX;
+    g_loaded = 1;
+    return 0;
+}
+
 /* ── Public loader (libhartonomous API, declared in hartonomous.h) ── */
 int hartonomous_ucd_load(const char* dir)
 {
@@ -309,23 +422,41 @@ int hartonomous_ucd_load(const char* dir)
              "/"
 #endif
         );
-    if (parse_index(idx_path)   != 0) return -1;
-    if (parse_reverse(rev_path) != 0) return -1;
 
-    /* Eager-load every block file into heap. Same fix as the PG extension's
-     * pg_ucd_atoms_blob.c — the lazy-mmap path SEGV'd in libc memcpy when
-     * the kernel page-faulted into a no-longer-valid mapping during long
-     * SRF iteration. Heap copies stay valid for the process lifetime.
-     * Cost: ~80 MB resident; one-time at load. */
-    for (int32_t i = 0; i < g_block_count; ++i) {
-        (void) ensure_block_mapped(&g_blocks[i]);
-        /* Failures (missing block files) leave that block's pointers NULL;
-         * accessor functions return NULL for cps in those blocks. Same
-         * graceful-degradation as before. */
+    int have_idx = huc_file_exists(idx_path);
+    int have_rev = huc_file_exists(rev_path);
+    if (!have_idx && !have_rev) {
+        return build_embedded_atoms();
+    }
+    if (!have_idx || !have_rev) {
+        fprintf(stderr,
+                "hartonomous: incomplete UCD blob catalog in %s (idx=%d reverse=%d)\n",
+                g_blob_dir, have_idx, have_rev);
+        return -1;
     }
 
-    g_loaded = 1;
-    return 0;
+    if (parse_index(idx_path) == 0 && parse_reverse(rev_path) == 0) {
+        /* Eager-load every block file into heap. Same fix as the PG extension's
+         * pg_ucd_atoms_blob.c — the lazy-mmap path SEGV'd in libc memcpy when
+         * the kernel page-faulted into a no-longer-valid mapping during long
+         * SRF iteration. Heap copies stay valid for the process lifetime.
+         * Cost: ~80 MB resident; one-time at load. */
+        for (int32_t i = 0; i < g_block_count; ++i) {
+            if (ensure_block_mapped(&g_blocks[i]) != 0) {
+                fprintf(stderr,
+                        "hartonomous: incomplete UCD block catalog in %s; refusing partial Unicode atom catalog\n",
+                        g_blob_dir);
+                hartonomous_ucd_unload();
+                return -1;
+            }
+        }
+
+        g_loaded = 1;
+        return 0;
+    }
+
+    hartonomous_ucd_unload();
+    return -1;
 }
 
 void hartonomous_ucd_unload(void)
@@ -350,6 +481,8 @@ void hartonomous_ucd_unload(void)
         g_block_count = 0;
     }
     if (g_reverse_map.base) huc_munmap(&g_reverse_map);
+    free(g_reverse_heap);
+    g_reverse_heap = NULL;
     g_reverse_entries = NULL;
     g_reverse_count = 0;
     g_loaded = 0;
@@ -408,6 +541,39 @@ int hartonomous_ucd_loaded(void) { return g_loaded; }
 /* ── Public C ABI exports for in-process consumers ─────────────────── */
 
 HARTONOMOUS_API int hartonomous_ucd_loaded_state(void) { return g_loaded; }
+
+HARTONOMOUS_API int hartonomous_ucd_catalog_ready(void)
+{
+    if (!g_loaded || !g_blocks || g_block_count <= 0 || !g_reverse_entries || g_reverse_count == 0) {
+        return 0;
+    }
+
+    const int32_t samples[] = {0x0000, 0x0041, 0x0301, 0x1F600, 0x10FFFF};
+    for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
+        int32_t cp = samples[i];
+        const uint8_t* hash = huc_cp_hash_at(cp);
+        const double* centroid = huc_cp_centroid_at(cp);
+        if (!hash || !centroid) {
+            return 0;
+        }
+
+        double norm2 = centroid[0] * centroid[0]
+            + centroid[1] * centroid[1]
+            + centroid[2] * centroid[2]
+            + centroid[3] * centroid[3];
+        if (!isfinite(norm2) || norm2 < 0.999999 || norm2 > 1.000001) {
+            return 0;
+        }
+
+        if (huc_cp_from_hash(hash) != cp) {
+            return 0;
+        }
+
+        (void) huc_cp_hilbert_at(cp);
+    }
+
+    return 1;
+}
 
 HARTONOMOUS_API int hartonomous_ucd_cp_centroid(int32_t cp, double out[4])
 {

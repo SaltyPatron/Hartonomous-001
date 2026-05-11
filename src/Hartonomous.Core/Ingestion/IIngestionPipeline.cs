@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -16,10 +17,8 @@ public interface IIngestionPipeline : IAsyncDisposable
     IIngestionBatch CreateBatch(string provenanceCode);
 
     /// <summary>
-    /// Backwards-compatible factory for callers that haven't migrated to
-    /// per-batch provenance. Defaults to "system_computed" — anything
-    /// classified through this path is admitting "no decomposer is
-    /// asserting this", which is honest but rarely correct.
+    /// Create a system-computed batch for pipeline-owned records that are not
+    /// asserted by a named source decomposer.
     /// </summary>
     IIngestionBatch CreateBatch();
 
@@ -60,17 +59,10 @@ public interface IIngestionPipeline : IAsyncDisposable
 
     // ── Substrate-aware ingestion: bulk existence checks ──────────────────
     //
-    // The substrate is content-addressed; every PK a decomposer is about to
-    // emit can be precomputed locally via UCD/UCA/ISO blobs + BLAKE3. The
-    // canonical ingestion pattern is "ask before emit": the decomposer
-    // assembles candidate PKs for a chunk, calls one of the methods below
-    // (one bulk round-trip per kind per chunk), subtracts the returned
-    // existing-PK set from candidates, and emits ONLY the diff. ON CONFLICT
-    // becomes belt-and-suspenders that should never fire in steady state.
-    //
-    // PG btree on bytea(32) hash columns answers a million-element ANY-array
-    // probe in well under a second — the substrate's identity model makes
-    // this microsecond-scale by design.
+    // The pipeline uses these probes at the funnel boundary: deterministic
+    // producer records are buffered into chunks, PostgreSQL returns the
+    // existing substrate PK subset, and only missing identity rows proceed to
+    // COPY drains. ON CONFLICT remains a race guard for concurrent producers.
 
     /// <summary>
     /// Of the supplied entity hashes, return the subset that already exist
@@ -78,7 +70,7 @@ public interface IIngestionPipeline : IAsyncDisposable
     /// <paramref name="hashes"/> ∖ result.
     /// </summary>
     Task<HashSet<HashKey>> GetExistingEntityHashesAsync(
-        IReadOnlyCollection<byte[]> hashes, CancellationToken ct);
+        IReadOnlyCollection<Hash32> hashes, CancellationToken ct);
 
     /// <summary>
     /// Of the supplied (entity_hash, entity_type_code, provenance_code)
@@ -94,6 +86,13 @@ public interface IIngestionPipeline : IAsyncDisposable
     /// </summary>
     Task<HashSet<EdgeKey>> GetExistingEdgesAsync(
         IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct);
+
+    /// <summary>
+    /// Of the supplied edge member PK tuples, return the subset that already
+    /// exists in <c>substrate.edge_member</c>.
+    /// </summary>
+    Task<HashSet<EdgeMemberKey>> GetExistingEdgeMembersAsync(
+        IReadOnlyCollection<EdgeMemberKey> tuples, CancellationToken ct);
 
     /// <summary>
     /// Of the supplied (physicality_type_code, entity_hash, content_hash)

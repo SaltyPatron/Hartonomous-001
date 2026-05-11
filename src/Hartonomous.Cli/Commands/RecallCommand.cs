@@ -58,7 +58,7 @@ internal sealed class RecallCommand(NpgsqlDataSource dataSource, ILoggerFactory 
                         TopEntityType: "text_composition",
                         TrustMu: 1000.0));
             await pipeline.SubmitBatchAsync(batch, CancellationToken.None);
-            byte[] promptHash = ingest.RootHash;
+            byte[] promptHash = ingest.RootHash.ToByteArray();
 
             System.Diagnostics.Stopwatch barrierSw = System.Diagnostics.Stopwatch.StartNew();
             await pipeline.FlushAsync(CancellationToken.None);

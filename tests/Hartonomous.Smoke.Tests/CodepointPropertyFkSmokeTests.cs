@@ -26,7 +26,8 @@ namespace Hartonomous.Smoke.Tests;
 ///   3. The full populator sequence
 ///      (populate_general_categories_from_ext + populate_scripts_from_ext
 ///       + populate_blocks_from_ext + populate_break_properties_from_ext
-///       + populate_codepoint_property_range_from_ext on a small chunk)
+///       + populate_codepoint_atoms_chunk + populate_codepoint_property_range_from_ext
+///       on a small chunk)
 ///      runs end-to-end on a single connection without crashing PG into
 ///      recovery mode. This is the exact path Ucd.ps1 follows; if any of
 ///      the populators or the FK JOINs are broken, this test surfaces it
@@ -60,6 +61,24 @@ public sealed class CodepointPropertyFkSmokeTests
             "WHERE n.nspname = 'substrate' AND t.relname = 'break_property' " +
             "AND c.contype = 'u' AND array_length(c.conkey, 1) = 2");
         Assert.True(uniq >= 1, "substrate.break_property is missing the UNIQUE(category, enum_id) constraint");
+    }
+
+    [Fact]
+    public async Task CodepointProperty_EntityHashReferencesEntityHash()
+    {
+        Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
+
+        long fk = await _fx.ExecScalarLongAsync(
+            "SELECT count(*) FROM pg_constraint c " +
+            "JOIN pg_class t ON t.oid = c.conrelid " +
+            "JOIN pg_namespace n ON n.oid = t.relnamespace " +
+            "JOIN pg_class rt ON rt.oid = c.confrelid " +
+            "JOIN pg_namespace rn ON rn.oid = rt.relnamespace " +
+            "WHERE n.nspname = 'substrate' AND t.relname = 'codepoint_property' " +
+            "AND rn.nspname = 'substrate' AND rt.relname = 'entity' " +
+            "AND c.contype = 'f'");
+
+        Assert.Equal(1, fk);
     }
 
     [Fact]
@@ -100,9 +119,10 @@ public sealed class CodepointPropertyFkSmokeTests
             "SELECT substrate.populate_scripts_from_ext()",
             "SELECT substrate.populate_blocks_from_ext()",
             "SELECT substrate.populate_break_properties_from_ext()",
+            "SELECT substrate.populate_codepoint_atoms_chunk('unicode_consortium'::text, NULL::float8, 0::int, 1024::int)",
             // Small range; if FK lookups crash, this surfaces it. Full
-            // sweep is exercised in SeedConnectionLifecycleSmokeTests.
-            "SELECT substrate.populate_codepoint_property_range_from_ext(0, 32768)",
+            // seeded-state coverage is a read-only SeedValidation gate.
+            "SELECT substrate.populate_codepoint_property_range_from_ext(0, 1024)",
         ];
 
         foreach (string sql in steps)
@@ -138,6 +158,7 @@ public sealed class CodepointPropertyFkSmokeTests
         await _fx.ExecAsync("SELECT substrate.populate_scripts_from_ext()");
         await _fx.ExecAsync("SELECT substrate.populate_blocks_from_ext()");
         await _fx.ExecAsync("SELECT substrate.populate_break_properties_from_ext()");
+        await _fx.ExecAsync("SELECT substrate.populate_codepoint_atoms_chunk('unicode_consortium'::text, NULL::float8, 0::int, 1024::int)");
         await _fx.ExecAsync("SELECT substrate.populate_codepoint_property_range_from_ext(0, 1024)");
 
         long n = await _fx.ExecScalarLongAsync(

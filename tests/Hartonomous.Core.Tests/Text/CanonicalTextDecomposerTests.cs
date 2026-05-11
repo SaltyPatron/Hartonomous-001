@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
 using Hartonomous.Core.Text.Segmentation;
@@ -125,19 +126,17 @@ public sealed class CanonicalTextDecomposerTests
     [Fact]
     public void G3_repeated_letters_apply_RLE()
     {
-        // "aaa" → one codepoint hash repeated 3x. Native text decomposition
-        // preserves explicit ordinals so reconstruction can replay each repeat.
+        // "aaa" -> one grapheme/codepoint entity repeated 3x. Sequence stores
+        // the consecutive occurrences as one run starting at ordinal 1.
         FakeCodepointProperties props = AsciiLetterProps();
         TextDecomposeOptions opts = new("tatoeba", "text_composition", 1200.0);
 
         RecordingBatch batch = new();
         CanonicalTextDecomposer.Emit(batch, "aaa"u8, props, opts);
 
-        // Each grapheme's child sequence: 1 codepoint. The word_form has three
-        // grapheme children at three distinct ordinals, each with rle_count=1.
-        Assert.Contains(batch.Sequences, s => s.Ordinal == 1 && s.RleCount == 1);
-        Assert.Contains(batch.Sequences, s => s.Ordinal == 2 && s.RleCount == 1);
-        Assert.Contains(batch.Sequences, s => s.Ordinal == 3 && s.RleCount == 1);
+        Assert.Contains(batch.Sequences, s => s.Ordinal == 1 && s.RleCount == 3);
+        Assert.DoesNotContain(batch.Sequences, s => s.Ordinal == 2);
+        Assert.DoesNotContain(batch.Sequences, s => s.Ordinal == 3);
     }
 
     [Fact]
@@ -170,8 +169,7 @@ public sealed class CanonicalTextDecomposerTests
         TextDecomposeResult r = CanonicalTextDecomposer.Emit(batch, "   "u8, props, opts);
 
         // Composition entity exists with a stable hash.
-        Assert.NotNull(r.RootHash);
-        Assert.Equal(32, r.RootHash.Length);
+        Assert.Equal(Hash32.Length, r.RootHash.ToByteArray().Length);
     }
 
     [Fact]
@@ -192,13 +190,12 @@ public sealed class CanonicalTextDecomposerTests
         // Composition's sequence must include exactly 3 children:
         // word_form 'a', raw_span ' ', word_form 'b'. Without the fix,
         // only 2 children (word_forms) appeared.
-        Hartonomous.Core.Ingestion.EntityHandle compositionRoot = batch.Entities[^1].Hash is byte[] h
-            ? new Hartonomous.Core.Ingestion.EntityHandle(h, batch.Entities[^1].Type)
-            : default;
+        Hartonomous.Core.Ingestion.EntityHandle compositionRoot =
+            new(batch.Entities[^1].Hash, batch.Entities[^1].Type);
         int compositionChildren = 0;
         foreach (var seq in batch.Sequences)
         {
-            if (seq.Parent.Hash.AsSpan().SequenceEqual(compositionRoot.Hash))
+            if (seq.Parent.Hash.Equals(compositionRoot.Hash))
             {
                 compositionChildren++;
             }
@@ -213,7 +210,7 @@ public sealed class CanonicalTextDecomposerTests
     private sealed class RecordingBatch : IIngestionBatch, IEquatable<RecordingBatch>
     {
         public string ProvenanceCode { get; init; } = "test";
-        public List<(byte[] Hash, string Type)> Entities { get; } = new();
+        public List<(Hash32 Hash, string Type)> Entities { get; } = new();
         public List<(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount)> Sequences { get; } = new();
         public List<(EntityHandle Entity, string Type, double X, double Y, double Z, double M)> Points4d { get; } = new();
         public List<(EntityHandle Entity, string Type, int VertexCount)> LineStrings4d { get; } = new();
@@ -228,7 +225,7 @@ public sealed class CanonicalTextDecomposerTests
         public int EntityCount => Entities.Count;
         public int EdgeCount => 0;
 
-        public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
+        public EntityHandle AddEntity(Hash32 hash, string entityTypeCode)
         {
             Entities.Add((hash, entityTypeCode));
             return new EntityHandle(hash, entityTypeCode);
@@ -284,34 +281,27 @@ public sealed class CanonicalTextDecomposerTests
             if (Significances.Count != other.Significances.Count) { return false; }
             for (int i = 0; i < Entities.Count; i++)
             {
-                if (!ByteEqual(Entities[i].Hash, other.Entities[i].Hash)) { return false; }
+                if (!Entities[i].Hash.Equals(other.Entities[i].Hash)) { return false; }
                 if (Entities[i].Type != other.Entities[i].Type) { return false; }
             }
             for (int i = 0; i < Sequences.Count; i++)
             {
                 var a = Sequences[i]; var b = other.Sequences[i];
                 if (a.Ordinal != b.Ordinal || a.RleCount != b.RleCount) { return false; }
-                if (!ByteEqual(a.Parent.Hash, b.Parent.Hash)) { return false; }
-                if (!ByteEqual(a.Child.Hash, b.Child.Hash)) { return false; }
+                if (!a.Parent.Hash.Equals(b.Parent.Hash)) { return false; }
+                if (!a.Child.Hash.Equals(b.Child.Hash)) { return false; }
             }
             return true;
         }
         public override bool Equals(object? obj) => obj is RecordingBatch rb && Equals(rb);
         public override int GetHashCode() => Entities.Count ^ Sequences.Count ^ Points4d.Count;
 
-        private static bool ByteEqual(byte[] a, byte[] b)
-        {
-            if (a.Length != b.Length) { return false; }
-            for (int i = 0; i < a.Length; i++) { if (a[i] != b[i]) { return false; } }
-            return true;
-        }
-
         public override string ToString()
         {
             var ic = System.Globalization.CultureInfo.InvariantCulture;
             StringBuilder sb = new();
             sb.AppendLine(ic, $"Entities ({Entities.Count}):");
-            foreach (var e in Entities) { sb.AppendLine(ic, $"  {e.Type} {Convert.ToHexString(e.Hash)[..16]}"); }
+            foreach (var e in Entities) { sb.AppendLine(ic, $"  {e.Type} {e.Hash.ToHexString()[..16]}"); }
             sb.AppendLine(ic, $"Sequences ({Sequences.Count}):");
             foreach (var s in Sequences) { sb.AppendLine(ic, $"  ord={s.Ordinal} rle={s.RleCount}"); }
             return sb.ToString();

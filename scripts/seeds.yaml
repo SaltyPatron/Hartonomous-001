@@ -2,7 +2,7 @@
 #
 # One entry per dataset. The download_seeds.py driver iterates this list
 # and dispatches per `source` type. Each dataset has a target subdirectory
-# under DATA_ROOT (default D:\Models). Manifest of completed downloads is
+# under DATA_ROOT (default /vault/Data). Manifest of completed downloads is
 # tracked in DATA_ROOT/seed_manifest.json.
 #
 # Each entry's `grammar` field names the tree-sitter grammar (existing or
@@ -13,6 +13,7 @@
 #   http_archive    Single archive URL (zip / tar.gz / tar.bz2 / .gz). Auto-extracted.
 #   http_files      Multiple file URLs to drop into target/.
 #   http_file       Single non-archive file URL.
+#   http_mirror     Recursive HTTP directory mirror that preserves upstream paths under target/.
 #   git             Shallow git clone (depth=1) of a repo.
 #   hf_dataset      Hugging Face dataset (snapshot_download via huggingface_hub).
 #   hf_repo         Hugging Face model/space repo.
@@ -34,13 +35,43 @@ datasets:
   - name: ucd-uca-full-mirror
     description: "Full Unicode FTP mirror; ucd/ ucdxml/ uca/ emoji/ idna/ security/ charts/"
     tier: 0
-    source: manual
-    target: UCD
+    source: http_mirror
+    target: Unicode
     license: Unicode-License
     license_flags: [permissive]
     size_mb: 500
     grammar: tree-sitter-ucd-properties (TO AUTHOR; small custom over UCD .txt format)
-    notes: "Already on disk. To re-fetch: rsync -av --delete ftp://ftp.unicode.org/Public/UCD/latest/ D:/Models/UCD/Public/UCD/latest/"
+    urls:
+      - https://www.unicode.org/Public/UCD/latest/
+      - https://www.unicode.org/Public/17.0.0/
+    required_files:
+      - Public/UCD/latest/ucd/UnicodeData.txt
+      - Public/UCD/latest/ucd/UCD.zip
+      - Public/UCD/latest/ucd/Unihan.zip
+      - Public/UCD/latest/ucd/auxiliary/GraphemeBreakProperty.txt
+      - Public/UCD/latest/ucd/auxiliary/GraphemeBreakTest.txt
+      - Public/UCD/latest/ucd/auxiliary/WordBreakProperty.txt
+      - Public/UCD/latest/ucd/auxiliary/WordBreakTest.txt
+      - Public/UCD/latest/ucd/auxiliary/SentenceBreakProperty.txt
+      - Public/UCD/latest/ucd/auxiliary/SentenceBreakTest.txt
+      - Public/UCD/latest/ucd/NormalizationTest.txt
+      - Public/UCD/latest/ucdxml/ucd.all.flat.zip
+      - Public/UCD/latest/ucdxml/ucd.all.grouped.zip
+      - Public/UCD/latest/ucdxml/ucd.unihan.flat.zip
+      - Public/UCD/latest/emoji/emoji-sequences.txt
+      - Public/UCD/latest/emoji/emoji-zwj-sequences.txt
+      - Public/UCD/latest/emoji/emoji-test.txt
+      - Public/UCD/latest/security/confusables.txt
+      - Public/UCD/latest/idna/IdnaMappingTable.txt
+      - Public/UCD/latest/uca/allkeys.txt
+      - Public/UCD/latest/uca/decomps.txt
+      - Public/UCD/latest/uca/ctt.txt
+      - Public/UCD/latest/uca/CollationTest.zip
+      - Public/17.0.0/ucd/UnicodeData.txt
+      - Public/17.0.0/ucd/Unihan.zip
+      - Public/17.0.0/ucdxml/ucd.all.flat.zip
+      - Public/17.0.0/uca/allkeys.txt
+    notes: "Mirrors the full official Unicode seed surface into /vault/Data/Unicode while preserving upstream Public/... paths for both latest and the pinned 17.0.0 release."
 
   - name: iso639-3
     description: "ISO 639-3 language code registry — 4 .tab files"
@@ -57,7 +88,7 @@ datasets:
     description: "WordNet 3.0 dict files (data.{noun,verb,adj,adv}, index.*, lexnames)"
     tier: 0
     source: manual
-    target: princeton-wordnet
+    target: Wordnet
     license: WordNet-License
     license_flags: [permissive]
     size_mb: 100
@@ -79,7 +110,7 @@ datasets:
     description: "Universal Dependencies v2.17 — 339 treebank directories, .conllu format"
     tier: 0
     source: manual
-    target: ud-treebanks
+    target: UD-Treebanks
     license: CC-BY-SA-4.0
     license_flags: [share_alike]
     size_mb: 5000
@@ -90,7 +121,7 @@ datasets:
     description: "kaikki.org wiktextract dumps — full multilingual + English-only"
     tier: 0
     source: manual
-    target: wiktionary
+    target: Wiktionary
     license: CC-BY-SA-4.0
     license_flags: [share_alike]
     size_mb: 25000
@@ -101,7 +132,7 @@ datasets:
     description: "Tatoeba sentence pairs + audio (sentences.csv, links.csv, audio/eng/)"
     tier: 0
     source: manual
-    target: tatoeba
+    target: Tatoeba
     license: CC-BY-2.0
     license_flags: [permissive]
     size_mb: 2000

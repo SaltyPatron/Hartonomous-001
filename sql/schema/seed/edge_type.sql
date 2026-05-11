@@ -73,7 +73,6 @@ FROM (VALUES
     ('has_wikidata',             'structural',    'lemma',              'text_composition'),    -- 12
     ('lexicalized_compound',     'structural',    'word_form',          'word_form'),           -- 13
     ('has_frame',                'structural',    'lemma',              'text_composition'),    -- 14
-    ('has_wordnet_offset',       'structural',    'synset',             'text_composition'),    -- 15
     -- ── Cross-lingual ──────────────────────────────────────────────────
     ('aligned_to_synset',        'cross_lingual', 'lemma',              'synset'),              -- 16
     ('translation_of',           'cross_lingual', 'lemma',              'lemma'),               -- 17
@@ -166,7 +165,25 @@ FROM (VALUES
     ('synonym',                  'semantic',      'lemma',  'lemma'),                           -- 84
     ('coordinate_term',          'semantic',      'lemma',  'lemma'),                           -- 85
     ('derived',                  'semantic',      'lemma',  'lemma'),                           -- 86
-    ('related',                  'semantic',      'lemma',  'lemma')                            -- 87
+    ('related',                  'semantic',      'lemma',  'lemma'),                           -- 87
+    -- ── Unicode structural extensions (appended to preserve existing IDs) ─
+    ('maps_to_uppercase',        'unicode',       'codepoint',          'codepoint'),           -- 96
+    ('maps_to_titlecase',        'unicode',       'codepoint',          'codepoint'),           -- 97
+    ('has_canonical_decomposition',      'unicode', 'codepoint',        'text_composition'),    -- 98
+    ('has_compatibility_decomposition',  'unicode', 'codepoint',        'text_composition'),    -- 99
+    ('canonical_composes_to',    'unicode',       'text_composition',   'codepoint'),           -- 100
+    ('has_full_case_mapping',    'unicode',       'codepoint',          'text_composition'),    -- 101
+    ('has_named_sequence',       'unicode',       'text_composition',   'text_composition'),    -- 102
+    ('has_standardized_variant', 'unicode',       'codepoint',          'text_composition'),    -- 103
+    ('has_emoji_sequence',       'unicode',       'text_composition',   'text_composition'),    -- 104
+    ('has_emoji_zwj_sequence',   'unicode',       'text_composition',   'text_composition'),    -- 105
+    ('confusable_with',          'unicode',       'text_composition',   'text_composition'),    -- 106
+    ('idna_maps_to',             'unicode',       'codepoint',          'text_composition'),    -- 107
+    ('has_bidi_mirroring_glyph', 'unicode',       'codepoint',          'codepoint'),           -- 108
+    ('unihan_variant',           'unicode',       'codepoint',          'codepoint'),           -- 109
+    ('unihan_reading',           'unicode',       'codepoint',          'text_composition'),    -- 110
+    ('unihan_source',            'unicode',       'codepoint',          'text_composition'),    -- 111
+    ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition')     -- 112
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;

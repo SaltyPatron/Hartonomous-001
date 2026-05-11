@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 
 namespace Hartonomous.Core.Data;
@@ -23,7 +24,7 @@ public interface IEntityReader
     /// exist in the substrate.
     /// </summary>
     Task<IReadOnlyList<EntityHandle>> ResolveEntityHandlesAsync(
-        IReadOnlyList<byte[]> hashes,
+        IReadOnlyList<Hash32> hashes,
         IReadOnlyList<string> entityTypeCodes,
         CancellationToken ct);
 

@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Microsoft.Extensions.Logging;
@@ -95,7 +96,7 @@ internal sealed partial class PassSession : IPassSession
         // attach edges/junctions to it without round-tripping. Content addressing
         // means re-emitting the same hash dedupes server-side; the junction insert
         // is idempotent via ON CONFLICT DO NOTHING in 0021.
-        EntityHandle handle = batch.AddEntity(_context.Architecture.ContentHash, "model_architecture");
+        EntityHandle handle = batch.AddEntity(new Hash32(_context.Architecture.ContentHash), "model_architecture");
         batch.AddEntityModelSource(handle, _context.Source.ModelSourceId);
         return handle;
     }

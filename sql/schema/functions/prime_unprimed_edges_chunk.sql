@@ -29,10 +29,10 @@ CREATE OR REPLACE FUNCTION substrate.prime_unprimed_edges_chunk(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_last_etid             INT;
-    v_last_hash             BYTEA;
+    v_last_hash             substrate.hash_value;
     v_inserted              BIGINT;
     v_max_etid              INT;
-    v_max_hash              BYTEA;
+    v_max_hash              substrate.hash_value;
     v_chunk_count           INT;
     v_attestation_type_id   INT;
 BEGIN
@@ -71,7 +71,14 @@ BEGIN
       FROM (
             SELECT e.edge_type_id, e.hash, e.provenance_id
               FROM substrate.edge e
-             WHERE (e.edge_type_id, e.hash) > (v_last_etid, v_last_hash)
+             WHERE (
+                    v_last_hash IS NULL
+                    AND e.edge_type_id > v_last_etid
+                   )
+                OR (
+                    v_last_hash IS NOT NULL
+                    AND (e.edge_type_id, e.hash) > (v_last_etid, v_last_hash)
+                   )
              ORDER BY e.edge_type_id, e.hash
              LIMIT p_chunk_size
            ) AS nc
@@ -90,10 +97,20 @@ BEGIN
             SELECT edge_type_id,
                    hash,
                    COUNT(*) OVER () AS cnt
-              FROM substrate.edge
-             WHERE (edge_type_id, hash) > (v_last_etid, v_last_hash)
-             ORDER BY edge_type_id, hash
-             LIMIT p_chunk_size
+              FROM (
+                    SELECT edge_type_id, hash
+                      FROM substrate.edge
+                     WHERE (
+                            v_last_hash IS NULL
+                            AND edge_type_id > v_last_etid
+                           )
+                        OR (
+                            v_last_hash IS NOT NULL
+                            AND (edge_type_id, hash) > (v_last_etid, v_last_hash)
+                           )
+                     ORDER BY edge_type_id, hash
+                     LIMIT p_chunk_size
+                   ) limited_edges
            ) sub
      ORDER BY edge_type_id DESC, hash DESC
      LIMIT 1;

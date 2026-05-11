@@ -49,14 +49,15 @@ public sealed partial class PromptIngestion : IPromptIngestion
 
         await _pipeline.SubmitBatchAsync(batch, ct).ConfigureAwait(false);
 
-        bool drained = await WaitForDocumentAsync(ingest.RootHash, ct).ConfigureAwait(false);
+        byte[] rootHash = ingest.RootHash.ToByteArray();
+        bool drained = await WaitForDocumentAsync(rootHash, ct).ConfigureAwait(false);
         if (!drained)
         {
             throw new TimeoutException(
                 "Prompt did not drain to substrate within 5 minutes. Check pipeline drain task health.");
         }
 
-        return ingest.RootHash;
+        return rootHash;
     }
 
     private async Task<bool> WaitForDocumentAsync(byte[] hash, CancellationToken ct)

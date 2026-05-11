@@ -16,7 +16,7 @@
 
 .EXAMPLE
   pwsh scripts/seed/Text.ps1
-  pwsh scripts/seed/Text.ps1 -SourceRoot D:\Models
+  pwsh scripts/seed/Text.ps1 -SourceRoot /vault/Data
 #>
 [CmdletBinding()]
 param(

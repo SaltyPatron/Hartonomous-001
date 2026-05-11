@@ -96,7 +96,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             int batchNum = 0;
 
             // Track code → nameHash for junction rows and edge creation.
-            Dictionary<string, byte[]> codeToNameHash = new(languages.Count, StringComparer.Ordinal);
+            Dictionary<string, Hash32> codeToNameHash = new(languages.Count, StringComparer.Ordinal);
             IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
             foreach (Iso639Record rec in languages)
@@ -107,7 +107,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 // The shared text decomposer creates codepoint + grapheme_cluster +
                 // language_name entities and sequence rows in one pass; same content from
                 // any decomposer yields the same entity row with language_name classification.
-                (EntityHandle nameEntity, byte[] nameHash, _) =
+                (EntityHandle nameEntity, Hash32 nameHash, _) =
                     EmitText(batch, rec.RefName, _codepointProperties, "language_name", TrustPriorMu);
                 codeToNameHash[rec.Id] = nameHash;
 
@@ -125,27 +125,27 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             // ── Step 3: Alternative names from Name_Index ──
             // Names that differ from the reference name are additional language_name
             // entities linked via has_alternate_name edges.
-            Dictionary<string, List<byte[]>> codeToAlternateHashes = new(StringComparer.Ordinal);
+            Dictionary<string, List<Hash32>> codeToAlternateHashes = new(StringComparer.Ordinal);
 
             foreach (NameIndexEntry entry in nameIndex)
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (!codeToNameHash.TryGetValue(entry.Id, out byte[]? refHash))
+                if (!codeToNameHash.TryGetValue(entry.Id, out Hash32 refHash))
                 {
                     continue;
                 }
 
                 // Canonical Merkle hash for both alternates — same content as the
                 // reference name yields the same hash → no duplicate row.
-                byte[] printHash = ComputeWordFormHash(entry.PrintName);
-                byte[] invertHash = ComputeWordFormHash(entry.InvertedName);
+                Hash32 printHash = ComputeWordFormHash(entry.PrintName);
+                Hash32 invertHash = ComputeWordFormHash(entry.InvertedName);
 
-                bool printIsRef = SequenceEqual(printHash, refHash);
-                bool invertIsRef = SequenceEqual(invertHash, refHash);
-                bool invertIsPrint = SequenceEqual(invertHash, printHash);
+                bool printIsRef = printHash.Equals(refHash);
+                bool invertIsRef = invertHash.Equals(refHash);
+                bool invertIsPrint = invertHash.Equals(printHash);
 
-                if (!codeToAlternateHashes.TryGetValue(entry.Id, out List<byte[]>? altList))
+                if (!codeToAlternateHashes.TryGetValue(entry.Id, out List<Hash32>? altList))
                 {
                     altList = [];
                     codeToAlternateHashes[entry.Id] = altList;
@@ -153,7 +153,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
                 if (!printIsRef)
                 {
-                    (EntityHandle altEntity, byte[] hash, _) =
+                    (EntityHandle altEntity, Hash32 hash, _) =
                         EmitText(batch, entry.PrintName, _codepointProperties, "language_name", TrustPriorMu);
                     batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
                     altList.Add(hash);
@@ -162,7 +162,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
                 if (!invertIsRef && !invertIsPrint)
                 {
-                    (EntityHandle altEntity, byte[] hash, _) =
+                    (EntityHandle altEntity, Hash32 hash, _) =
                         EmitText(batch, entry.InvertedName, _codepointProperties, "language_name", TrustPriorMu);
                     batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
                     altList.Add(hash);
@@ -191,9 +191,9 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             // name entities. Names are substrate content; language membership
             // is evidence on entity_language keyed by entity hash.
             List<(string Code, byte[] NameHash)> languageNameRows = new(codeToNameHash.Count);
-            foreach (KeyValuePair<string, byte[]> kv in codeToNameHash)
+            foreach (KeyValuePair<string, Hash32> kv in codeToNameHash)
             {
-                languageNameRows.Add((kv.Key, kv.Value));
+                languageNameRows.Add((kv.Key, kv.Value.ToByteArray()));
             }
 
             await refWriter.WriteLanguageJunctionsAsync(languageNameRows, langIdMap, ct);
@@ -214,16 +214,16 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             // walk them.
 
             IIngestionBatch edgeBatch = pipeline.CreateBatch(ProvenanceCode);
-            EntityHandle MakeHandle(byte[] hash) => edgeBatch.AddEntity(hash, "language_name");
+            EntityHandle MakeHandle(Hash32 hash) => edgeBatch.AddEntity(hash, "language_name");
 
-            foreach (KeyValuePair<string, List<byte[]>> kv in codeToAlternateHashes)
+            foreach (KeyValuePair<string, List<Hash32>> kv in codeToAlternateHashes)
             {
-                if (!codeToNameHash.TryGetValue(kv.Key, out byte[]? refHash))
+                if (!codeToNameHash.TryGetValue(kv.Key, out Hash32 refHash))
                 {
                     continue;
                 }
                 EntityHandle refHandle = MakeHandle(refHash);
-                foreach (byte[] altHash in kv.Value)
+                foreach (Hash32 altHash in kv.Value)
                 {
                     EntityHandle altHandle = MakeHandle(altHash);
                     edgeBatch.AddEdge("has_alternate_name", ProvenanceCode,
@@ -237,11 +237,11 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
             foreach (MacrolanguageMapping m in macroMappings)
             {
-                if (!codeToNameHash.TryGetValue(m.MacrolanguageId, out byte[]? macroHash))
+                if (!codeToNameHash.TryGetValue(m.MacrolanguageId, out Hash32 macroHash))
                 {
                     continue;
                 }
-                if (!codeToNameHash.TryGetValue(m.IndividualId, out byte[]? indivHash))
+                if (!codeToNameHash.TryGetValue(m.IndividualId, out Hash32 indivHash))
                 {
                     continue;
                 }
@@ -260,7 +260,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 {
                     continue;
                 }
-                if (!codeToNameHash.TryGetValue(changeTo, out byte[]? successorHash))
+                if (!codeToNameHash.TryGetValue(changeTo, out Hash32 successorHash))
                 {
                     continue;
                 }
@@ -268,7 +268,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 // not in codeToNameHash (since the retired code is no longer in
                 // iso-639-3.tab). Emit it as a fresh language_name entity so the
                 // edge has a source.
-                (EntityHandle retiredHandle, byte[] retiredHash, _) =
+                (EntityHandle retiredHandle, Hash32 retiredHash, _) =
                     EmitText(edgeBatch, r.RefName, _codepointProperties, "language_name", TrustPriorMu);
                 edgeBatch.AddSignificance(retiredHandle, "source_authority", TrustPriorMu);
                 entityCount++;
@@ -294,10 +294,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
         }
     }
 
-    private static bool SequenceEqual(byte[] a, byte[] b)
-    {
-        return a.AsSpan().SequenceEqual(b);
-    }
+
 
     private static partial class Log
     {

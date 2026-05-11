@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS substrate.arena_priming_state (
     context_type_id   INT  PRIMARY KEY
         REFERENCES substrate.significance_context(id) ON DELETE CASCADE,
     last_edge_type_id INT  NOT NULL DEFAULT 0,
-    last_hash         BYTEA NOT NULL DEFAULT '\x'::BYTEA,
+    last_hash         substrate.hash_value,
     completed         BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );

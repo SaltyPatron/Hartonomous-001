@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -21,5 +23,5 @@ public sealed record EdgeSignificanceRecord(
     string ContextTypeCode,
     string AttestationTypeCode,
     string EdgeTypeCode,
-    byte[] EdgeHash,
+    Hash32 EdgeHash,
     double InitialMu) : IngestionRecord;

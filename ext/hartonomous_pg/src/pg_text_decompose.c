@@ -895,6 +895,27 @@ static void flush_sequences(SeqList* L)
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_sequences: SPI_execute (%d)", rc);
 }
 
+static bool hash_bytea_equals(bytea* left, const uint8_t* right)
+{
+    return left != NULL &&
+           right != NULL &&
+           VARSIZE_ANY_EXHDR(left) == HASH_LEN &&
+           memcmp(VARDATA_ANY(left), right, HASH_LEN) == 0;
+}
+
+static bool sequence_tail_extends_run(SeqList* L, const hartonomous_text_record_t* rec)
+{
+    if (L->count == 0 || rec->hash_a == NULL || rec->hash_b == NULL)
+    {
+        return false;
+    }
+
+    int tail = L->count - 1;
+    return L->ordinals[tail] + L->rle_counts[tail] == rec->int_param &&
+           hash_bytea_equals(L->parent_hashes[tail], rec->hash_a) &&
+           hash_bytea_equals(L->child_hashes[tail], rec->hash_b);
+}
+
 static void flush_significance(SigList* L)
 {
     if (L->count == 0) return;
@@ -1101,6 +1122,10 @@ static int pg_text_emit_callback(void* callback_ctx, const hartonomous_text_reco
 
         case HARTONOMOUS_REC_SEQUENCE:
             if (rec->hash_b == NULL) return 1;
+            if (sequence_tail_extends_run(&ctx->seq, rec)) {
+                ctx->seq.rle_counts[ctx->seq.count - 1]++;
+                return 0;
+            }
             ensure_seq_capacity(&ctx->seq);
             ctx->seq.parent_hashes[ctx->seq.count] = hash_to_bytea(rec->hash_a);
             ctx->seq.ordinals[ctx->seq.count] = rec->int_param;

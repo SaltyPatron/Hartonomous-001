@@ -83,7 +83,7 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
                     TopEntityType: "text_composition",
                     TrustMu: UserSessionTrustMu));
         EntityHandle docHandle = ingest.RootHandle;
-        byte[] docHash = ingest.RootHash;
+        byte[] docHash = ingest.RootHash.ToByteArray();
         int promptEntityCount = batch.EntityCount;
         LogPromptIngested(_logger, query.Text.Length, promptEntityCount);
 

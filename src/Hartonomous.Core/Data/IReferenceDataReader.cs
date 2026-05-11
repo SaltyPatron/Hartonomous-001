@@ -56,13 +56,4 @@ public interface IReferenceDataReader
     Task<Dictionary<string, double>> LoadCodeDoubleMapAsync(
         string tableName, string valueColumn, int initialCapacity, CancellationToken ct);
 
-    /// <summary>
-    /// Load the WordNet offset → synset_hash bridge map produced by
-    /// <c>substrate.load_wordnet_offset_synset_map()</c>. The key is the
-    /// BLAKE3 hash of the offset string ("XXXXXXXX-p"); callers compute it
-    /// the same way to look up the substrate's content-pure synset hash.
-    /// Used by OMW and any cross-lexicon decomposer to resolve synsets by
-    /// their authoring offset without recomputing content hashes.
-    /// </summary>
-    Task<Dictionary<byte[], byte[]>> LoadWordNetOffsetSynsetMapAsync(CancellationToken ct);
 }

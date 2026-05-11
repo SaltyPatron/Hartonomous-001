@@ -60,10 +60,10 @@ public sealed class AttentionBlockTuplePassTests
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e => Assert.Equal("model_attention_pattern", e.EdgeTypeCode));
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.Significance, s => s.AttestationTypeCode == "model_attention_qk_pattern"));
+                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_attention_qk_pattern"));
             // No VO attestations (V/O not provided)
             Assert.DoesNotContain(session.Batch.Edges, e =>
-                e.Significance.Any(s => s.AttestationTypeCode == "model_attention_vo_pattern"));
+                e.RatingEvents.Any(s => s.AttestationTypeCode == "model_attention_vo_pattern"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -118,9 +118,9 @@ public sealed class AttentionBlockTuplePassTests
             await pass.RunAsync(ctx, session, CancellationToken.None);
 
             Assert.Contains(session.Batch.Edges, e =>
-                e.Significance.Any(s => s.AttestationTypeCode == "model_attention_qk_pattern"));
+                e.RatingEvents.Any(s => s.AttestationTypeCode == "model_attention_qk_pattern"));
             Assert.Contains(session.Batch.Edges, e =>
-                e.Significance.Any(s => s.AttestationTypeCode == "model_attention_vo_pattern"));
+                e.RatingEvents.Any(s => s.AttestationTypeCode == "model_attention_vo_pattern"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }

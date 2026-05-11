@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
@@ -130,6 +131,9 @@ public sealed partial class GlickoSignificanceUpdater : ISignificanceUpdater
 
     private static NpgsqlParameter ByteaParameter(byte[] value)
         => new() { NpgsqlDbType = NpgsqlDbType.Bytea, Value = value };
+
+    private static NpgsqlParameter ByteaParameter(Hash32 value)
+        => new() { NpgsqlDbType = NpgsqlDbType.Bytea, Value = value.ToByteArray() };
 
     private static NpgsqlParameter DoubleParameter(double value)
         => new() { NpgsqlDbType = NpgsqlDbType.Double, Value = value };

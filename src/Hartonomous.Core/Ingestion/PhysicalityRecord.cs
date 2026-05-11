@@ -1,4 +1,5 @@
 using Hartonomous.Core.Geometry;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -20,7 +21,7 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record PhysicalityRecord(
     string PhysicalityTypeCode,
-    byte[] EntityHash,
-    byte[] ContentHash,
+    Hash32 EntityHash,
+    Hash32 ContentHash,
     byte[] Wkb,
     Point4D Centroid) : IngestionRecord;

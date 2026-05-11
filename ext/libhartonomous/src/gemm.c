@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 #include <mkl.h>
 #include <mkl_cblas.h>
@@ -24,6 +25,12 @@ static void ensure_cbwr_set(void) {
     }
 }
 
+static int fits_mkl_int(int64_t value) {
+    if (value <= 0) return 0;
+    if (sizeof(MKL_INT) >= sizeof(int64_t)) return 1;
+    return value <= (int64_t)INT_MAX;
+}
+
 int hartonomous_gemm_f64(
     int op_a, int op_b,
     int64_t m, int64_t n, int64_t k,
@@ -37,6 +44,10 @@ int hartonomous_gemm_f64(
     if (m <= 0 || n <= 0 || k <= 0) return -2;
     if ((op_a != 0 && op_a != 1) || (op_b != 0 && op_b != 1)) return -2;
     if (lda <= 0 || ldb <= 0 || ldc <= 0) return -2;
+    if (!fits_mkl_int(m) || !fits_mkl_int(n) || !fits_mkl_int(k) ||
+        !fits_mkl_int(lda) || !fits_mkl_int(ldb) || !fits_mkl_int(ldc)) {
+        return -3;
+    }
 
     ensure_cbwr_set();
 

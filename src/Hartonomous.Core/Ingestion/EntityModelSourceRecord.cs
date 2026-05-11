@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -6,5 +8,5 @@ namespace Hartonomous.Core.Ingestion;
 /// resolves at the substrate side via reference table (substrate.model_source).
 /// </summary>
 public sealed record EntityModelSourceRecord(
-    byte[] EntityHash,
+    Hash32 EntityHash,
     long ModelSourceId) : IngestionRecord;

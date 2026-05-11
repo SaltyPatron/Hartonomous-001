@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Compute;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
@@ -73,7 +74,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
         // SubstrateTextDecomposer.EmitStatic is idempotent and content-addressed —
         // running it produces the same hash regardless of how many models have
         // already attested the same token's content.
-        Dictionary<int, byte[]> vocabHashes = new(tokenizer.Vocab.Count);
+        Dictionary<int, Hash32> vocabHashes = new(tokenizer.Vocab.Count);
         foreach (KeyValuePair<int, VocabularyEntry> kv in tokenizer.Vocab)
         {
             ct.ThrowIfCancellationRequested();
@@ -143,7 +144,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
             for (int row = 0; row < vocabSize; row++)
             {
                 ct.ThrowIfCancellationRequested();
-                if (!vocabHashes.TryGetValue(row, out byte[]? wordHash) || wordHash is null) { continue; }
+                if (!vocabHashes.TryGetValue(row, out Hash32 wordHash)) { continue; }
                 EntityHandle wordForm = new(wordHash, "word_form");
                 session.Batch.AddPhysicalityPoint4d(wordForm, "embedding_firefly", x[row], y[row], z[row], magnitude[row]);
                 session.Batch.AddSignificance(wordForm, "model_trust", ModelDerivedTrustMu, "model_embedding_proximity");
@@ -170,8 +171,8 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 norms[row] = Math.Sqrt(sumSq);
             }
             bool[] usable = new bool[vocabSize];
-            byte[]?[] vocabHashByIdx = new byte[]?[vocabSize];
-            foreach (KeyValuePair<int, byte[]> kv in vocabHashes)
+            Hash32?[] vocabHashByIdx = new Hash32?[vocabSize];
+            foreach (KeyValuePair<int, Hash32> kv in vocabHashes)
             {
                 if ((uint)kv.Key < (uint)vocabSize)
                 {
@@ -274,25 +275,25 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 for (int i = 0; i < sChunkLen; i++)
                 {
                     int rowT = usableTokens[sChunkStart + i];
-                    byte[]? hashT = vocabHashByIdx[rowT];
+                    Hash32? hashT = vocabHashByIdx[rowT];
                     if (hashT is null) { continue; }
 
                     for (int k = 0; k < topKFilled[i]; k++)
                     {
                         (int otherRow, double signedCos) = topK[i][k];
-                        byte[]? hashS = vocabHashByIdx[otherRow];
+                        Hash32? hashS = vocabHashByIdx[otherRow];
                         if (hashS is null) { continue; }
 
                         EntityHandle a, b;
-                        if (CompareBytes(hashT, hashS) <= 0)
+                        if (hashT.Value.CompareTo(hashS.Value) <= 0)
                         {
-                            a = new EntityHandle(hashT, "word_form");
-                            b = new EntityHandle(hashS, "word_form");
+                            a = new EntityHandle(hashT.Value, "word_form");
+                            b = new EntityHandle(hashS.Value, "word_form");
                         }
                         else
                         {
-                            a = new EntityHandle(hashS, "word_form");
-                            b = new EntityHandle(hashT, "word_form");
+                            a = new EntityHandle(hashS.Value, "word_form");
+                            b = new EntityHandle(hashT.Value, "word_form");
                         }
 
                         double score = SigmoidLocal(signedCos / CosineTemperature);
@@ -330,17 +331,6 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 minIdx = i;
             }
         }
-    }
-
-    private static int CompareBytes(byte[] a, byte[] b)
-    {
-        int min = Math.Min(a.Length, b.Length);
-        for (int i = 0; i < min; i++)
-        {
-            int c = a[i].CompareTo(b[i]);
-            if (c != 0) { return c; }
-        }
-        return a.Length.CompareTo(b.Length);
     }
 
     private static TokenizerModel? TryLoadTokenizer(string snapshotDir)

@@ -1,4 +1,5 @@
 using System.CommandLine;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Operations;
 using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Operations;
@@ -42,7 +43,7 @@ internal static class RerankCommand
 
         cmd.SetHandler(async (string conn, string? candidatesCsv, string? candidatesFile, string arena, int k) =>
         {
-            List<byte[]> candidates;
+            List<Hash32> candidates;
             try
             {
                 candidates = LoadCandidates(candidatesCsv, candidatesFile);
@@ -91,7 +92,7 @@ internal static class RerankCommand
         return cmd;
     }
 
-    private static List<byte[]> LoadCandidates(string? csv, string? file)
+    private static List<Hash32> LoadCandidates(string? csv, string? file)
     {
         if (!string.IsNullOrEmpty(csv))
         {
@@ -105,9 +106,9 @@ internal static class RerankCommand
         throw new ArgumentException("Either --candidates or --candidates-file must be supplied.");
     }
 
-    private static List<byte[]> ParseHexList(IEnumerable<string> hexes)
+    private static List<Hash32> ParseHexList(IEnumerable<string> hexes)
     {
-        List<byte[]> result = [];
+        List<Hash32> result = [];
         foreach (string s in hexes)
         {
             string trimmed = s.Trim();
@@ -115,7 +116,7 @@ internal static class RerankCommand
             {
                 continue;
             }
-            result.Add(Convert.FromHexString(trimmed));
+            result.Add(Hash32.FromBytes(Convert.FromHexString(trimmed)));
         }
         if (result.Count == 0)
         {

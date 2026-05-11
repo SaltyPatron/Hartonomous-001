@@ -68,11 +68,27 @@ BEGIN
     INSERT INTO substrate.edge_significance
         (context_type_id, edge_type_id, edge_hash, attestation_type_id,
          mu, sigma, volatility, games)
-    SELECT p_arena_id, t.edge_type_id, t.edge_hash, p_attestation_type_id,
-           1500.0, 350.0, 0.06, 0
-      FROM unnest(p_edge_type_ids, p_edge_hashes, p_scores, p_weights)
-           AS t(edge_type_id, edge_hash, score, weight)
-     WHERE t.weight IS NOT NULL AND t.weight > 0.0 AND t.score IS NOT NULL
+    SELECT DISTINCT
+           p_arena_id, t.edge_type_id, t.edge_hash, p_attestation_type_id,
+           COALESCE(pea.initial_mu, p.initial_mu * et.semantic_weight * p.derivation_decay, at.default_initial_mu),
+           COALESCE(pea.initial_sigma, p.initial_sigma, at.default_initial_sigma),
+           0.06,
+           0
+       FROM unnest(p_edge_type_ids, p_edge_hashes, p_scores, p_weights)
+            AS t(edge_type_id, edge_hash, score, weight)
+       JOIN substrate.attestation_type at
+         ON at.id = p_attestation_type_id
+       LEFT JOIN substrate.edge e
+         ON e.edge_type_id = t.edge_type_id
+        AND e.hash = t.edge_hash
+       LEFT JOIN substrate.edge_type et
+         ON et.id = t.edge_type_id
+       LEFT JOIN substrate.provenance p
+         ON p.id = e.provenance_id
+       LEFT JOIN substrate.provenance_edge_authority pea
+         ON pea.provenance_id = e.provenance_id
+        AND pea.edge_type_id = t.edge_type_id
+      WHERE t.weight IS NOT NULL AND t.weight > 0.0 AND t.score IS NOT NULL
     ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
 
     -- Step 2: gather current state in input order, filter the no-op rows.
@@ -128,18 +144,27 @@ BEGIN
     -- Glicko delta scaled by per-event weight. games += 1 per event regardless
     -- of weight (weight scales the rating-period magnitude, not the count).
     UPDATE substrate.edge_significance es
-       SET mu         = es.mu         + (u.new_mu - u.self_mu)       * u.weight,
-           sigma      = es.sigma      + (u.new_sigma - u.self_sigma) * u.weight,
-           volatility = es.volatility + (u.new_vol - u.self_vol)     * u.weight,
-           games      = es.games + 1
-      FROM unnest(etype_arr, ehash_arr,
-                  self_mu, self_sigma, self_vol,
-                  new_mu,  new_sigma,  new_vol,
-                  weights_arr)
-           AS u(edge_type_id, edge_hash,
-                self_mu, self_sigma, self_vol,
-                new_mu,  new_sigma,  new_vol,
-                weight)
+       SET mu         = es.mu         + u.delta_mu,
+           sigma      = es.sigma      + u.delta_sigma,
+           volatility = es.volatility + u.delta_volatility,
+           games      = es.games + u.games
+      FROM (
+          SELECT raw.edge_type_id,
+                 raw.edge_hash,
+                 SUM((raw.new_mu - raw.self_mu) * raw.weight) AS delta_mu,
+                 SUM((raw.new_sigma - raw.self_sigma) * raw.weight) AS delta_sigma,
+                 SUM((raw.new_vol - raw.self_vol) * raw.weight) AS delta_volatility,
+                 COUNT(*)::INT AS games
+            FROM unnest(etype_arr, ehash_arr,
+                        self_mu, self_sigma, self_vol,
+                        new_mu,  new_sigma,  new_vol,
+                        weights_arr)
+                  AS raw(edge_type_id, edge_hash,
+                         self_mu, self_sigma, self_vol,
+                         new_mu,  new_sigma,  new_vol,
+                         weight)
+           GROUP BY raw.edge_type_id, raw.edge_hash
+      ) AS u
      WHERE es.context_type_id     = p_arena_id
        AND es.edge_type_id        = u.edge_type_id
        AND es.edge_hash           = u.edge_hash

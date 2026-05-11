@@ -1,5 +1,5 @@
 using System;
-using System.Runtime.InteropServices;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -11,14 +11,18 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public readonly struct SequenceKey : IEquatable<SequenceKey>
 {
-    public byte[] ParentHash { get; }
+    public Hash32 ParentHash { get; }
     public int Ordinal { get; }
 
-    public SequenceKey(byte[] parentHash, int ordinal)
+    public SequenceKey(Hash32 parentHash, int ordinal)
     {
-        ArgumentNullException.ThrowIfNull(parentHash);
         ParentHash = parentHash;
         Ordinal = ordinal;
+    }
+
+    public SequenceKey(byte[] parentHash, int ordinal)
+        : this(new Hash32(parentHash), ordinal)
+    {
     }
 
     public bool Equals(SequenceKey other)
@@ -27,27 +31,14 @@ public readonly struct SequenceKey : IEquatable<SequenceKey>
         {
             return false;
         }
-        if (ReferenceEquals(ParentHash, other.ParentHash))
-        {
-            return true;
-        }
-        if (ParentHash is null || other.ParentHash is null)
-        {
-            return false;
-        }
-        if (ParentHash.Length != other.ParentHash.Length)
-        {
-            return false;
-        }
-        return MemoryExtensions.SequenceEqual<byte>(ParentHash, other.ParentHash);
+        return ParentHash.Equals(other.ParentHash);
     }
 
     public override bool Equals(object? obj) => obj is SequenceKey other && Equals(other);
 
     public override int GetHashCode()
     {
-        int h = ParentHash is { Length: >= 4 } ? MemoryMarshal.Read<int>(ParentHash.AsSpan(0, 4)) : 0;
-        return HashCode.Combine(h, Ordinal);
+        return HashCode.Combine(ParentHash, Ordinal);
     }
 
     public static bool operator ==(SequenceKey left, SequenceKey right) => left.Equals(right);

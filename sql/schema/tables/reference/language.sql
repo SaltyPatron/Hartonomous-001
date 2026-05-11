@@ -1,9 +1,9 @@
 CREATE TABLE substrate.language (
     id    SERIAL PRIMARY KEY,
-    code  CHAR(3) NOT NULL UNIQUE,
+    code  VARCHAR(3) NOT NULL UNIQUE CHECK (LENGTH(code) = 3),
     name  VARCHAR(128) NOT NULL,
-    scope CHAR(1) NOT NULL,
-    type  CHAR(1) NOT NULL
+    scope VARCHAR(1) NOT NULL CHECK (LENGTH(scope) = 1),
+    type  VARCHAR(1) NOT NULL CHECK (LENGTH(type) = 1)
 );
 
 COMMENT ON TABLE substrate.language IS

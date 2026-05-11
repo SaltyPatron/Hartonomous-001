@@ -52,6 +52,80 @@ public sealed class SeedPhaseSmokeTests
     }
 
     [Fact]
+    public async Task TextDecompose_Hello_EmitsMerkleDagWithRleOccurrences()
+    {
+        Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
+
+        await using Npgsql.NpgsqlConnection conn = new(_fx.ConnectionString);
+        await conn.OpenAsync();
+        await using Npgsql.NpgsqlCommand setupCmd = new(
+            """
+            CREATE TEMP TABLE hello_text_roots AS
+            SELECT
+                (substrate.text_decompose($1::bytea, 'text_composition'::text, 95000.0::float8, 'unicode_consortium'::text)).root_hash AS root_a,
+                (substrate.text_decompose($1::bytea, 'text_composition'::text, 95000.0::float8, 'unicode_consortium'::text)).root_hash AS root_b,
+                public.blake3_hash($1::bytea) AS raw_hash,
+                public.blake3_hash_text('hello') AS raw_text_hash
+            """,
+            conn);
+        setupCmd.Parameters.Add(new Npgsql.NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bytea,
+            Value = System.Text.Encoding.UTF8.GetBytes("hello"),
+        });
+        await setupCmd.ExecuteNonQueryAsync();
+
+        await using Npgsql.NpgsqlCommand cmd = new(
+            """
+            WITH root_children AS (
+                SELECT s.ordinal, s.child_hash, s.rle_count
+                FROM hello_text_roots r
+                JOIN substrate.sequence s ON s.parent_hash = r.root_a
+            ),
+            word_graphemes AS (
+                SELECT s.ordinal, s.child_hash, s.rle_count
+                FROM root_children rc
+                JOIN substrate.sequence s ON s.parent_hash = rc.child_hash
+            ),
+            grapheme_codepoints AS (
+                SELECT s.ordinal, s.child_hash, wg.rle_count * s.rle_count AS rle_count
+                FROM word_graphemes wg
+                JOIN substrate.sequence s ON s.parent_hash = wg.child_hash
+            )
+            SELECT
+                length(root.root_a),
+                (root.root_a = root.root_b),
+                (root.root_a <> root.raw_hash),
+                (root.root_a <> root.raw_text_hash),
+                (SELECT count(*) FROM root_children),
+                (SELECT COALESCE(sum(rle_count), 0) FROM root_children),
+                (SELECT count(*) FROM word_graphemes),
+                (SELECT count(DISTINCT child_hash) FROM word_graphemes),
+                (SELECT COALESCE(sum(rle_count), 0) FROM word_graphemes),
+                (SELECT count(*) FROM grapheme_codepoints),
+                (SELECT count(DISTINCT child_hash) FROM grapheme_codepoints),
+                (SELECT COALESCE(sum(rle_count), 0) FROM grapheme_codepoints)
+            FROM hello_text_roots root
+            """,
+            conn);
+
+        await using Npgsql.NpgsqlDataReader reader = await cmd.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(32, reader.GetInt32(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.GetBoolean(2));
+        Assert.True(reader.GetBoolean(3));
+        Assert.Equal(1L, reader.GetInt64(4));
+        Assert.Equal(1L, reader.GetInt64(5));
+        Assert.Equal(4L, reader.GetInt64(6));
+        Assert.Equal(4L, reader.GetInt64(7));
+        Assert.Equal(5L, reader.GetInt64(8));
+        Assert.Equal(4L, reader.GetInt64(9));
+        Assert.Equal(4L, reader.GetInt64(10));
+        Assert.Equal(5L, reader.GetInt64(11));
+    }
+
+    [Fact]
     public async Task TextDecompose_NfcEquivalence_CollapsesToSameHash()
     {
         Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");

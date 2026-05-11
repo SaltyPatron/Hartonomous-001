@@ -116,7 +116,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
     [Fact]
     public async Task MobyDick_FullRoundTrip()
     {
-        const string Source = @"D:\Models\test_data\text\moby_dick.txt";
+        const string Source = "/vault/Data/test_data/text/moby_dick.txt";
         if (!File.Exists(Source))
         {
             return; // skip silently if the corpus isn't present

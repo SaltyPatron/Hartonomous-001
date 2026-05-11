@@ -74,4 +74,11 @@ public sealed class Blake3Hasher
         Finalize(output);
         return output;
     }
+
+    public Hash32 FinalizeHash32()
+    {
+        Span<byte> output = stackalloc byte[Blake3.HashLen];
+        Finalize(output);
+        return new Hash32(output);
+    }
 }

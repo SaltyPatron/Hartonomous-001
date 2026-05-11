@@ -5,7 +5,7 @@
 
 .PARAMETER SourceRoot
   Root that contains the HuggingFace-style model directory. Default uses the
-  configured D:\Models (the CLI resolves a specific model subdir itself).
+  configured source root (the CLI resolves a specific model subdir itself).
 
 .EXAMPLE
   pwsh scripts/seed/Safetensors.ps1

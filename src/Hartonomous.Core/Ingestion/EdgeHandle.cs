@@ -1,4 +1,5 @@
 using System;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -17,21 +18,19 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public readonly struct EdgeHandle : IEquatable<EdgeHandle>
 {
-    public byte[] Hash { get; }
+    public Hash32 Hash { get; }
     public string EdgeTypeCode { get; }
 
-    public EdgeHandle(byte[] hash, string edgeTypeCode)
+    public EdgeHandle(Hash32 hash, string edgeTypeCode)
     {
-        ArgumentNullException.ThrowIfNull(hash);
         ArgumentException.ThrowIfNullOrEmpty(edgeTypeCode);
-        if (hash.Length != 32)
-        {
-            throw new ArgumentException(
-                $"EdgeHandle requires a 32-byte BLAKE3 hash; got {hash.Length} bytes.",
-                nameof(hash));
-        }
         Hash = hash;
         EdgeTypeCode = edgeTypeCode;
+    }
+
+    public EdgeHandle(byte[] hash, string edgeTypeCode)
+        : this(new Hash32(hash), edgeTypeCode)
+    {
     }
 
     public bool Equals(EdgeHandle other)
@@ -40,16 +39,14 @@ public readonly struct EdgeHandle : IEquatable<EdgeHandle>
         {
             return false;
         }
-        return Hash.AsSpan().SequenceEqual(other.Hash.AsSpan());
+        return Hash.Equals(other.Hash);
     }
 
     public override bool Equals(object? obj) => obj is EdgeHandle h && Equals(h);
 
     public override int GetHashCode()
     {
-        ReadOnlySpan<byte> span = Hash;
-        long head = BitConverter.ToInt64(span);
-        return HashCode.Combine(EdgeTypeCode, head);
+        return HashCode.Combine(EdgeTypeCode, Hash);
     }
 
     public static bool operator ==(EdgeHandle left, EdgeHandle right) => left.Equals(right);
@@ -57,7 +54,6 @@ public readonly struct EdgeHandle : IEquatable<EdgeHandle>
 
     public override string ToString()
     {
-        ReadOnlySpan<byte> span = Hash;
-        return $"{EdgeTypeCode}/{Convert.ToHexString(span[..8]).ToLowerInvariant()}...";
+        return $"{EdgeTypeCode}/{Hash.ToHexString()[..16]}...";
     }
 }

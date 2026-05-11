@@ -76,8 +76,8 @@ public sealed partial class UdDecomposer : BaseDecomposer
         if (banksAll.Count == 0)
         {
             // Fail loud: a clean exit with 0 treebanks would silently mark the
-            // phase complete and leave the substrate without ud_sentence /
-            // ud_token / has_lemma / dependency edges — every downstream phase
+            // phase complete and leave the substrate without sentence/token text,
+            // has_lemma, or dependency edges — every downstream phase
             // (Wiktionary morph propagation, Tatoeba syntactic alignment,
             // Glicko-2 syntactic_role_fitness arena) would then run on an empty
             // UD foundation. Refusing to proceed forces the operator to fix
@@ -182,8 +182,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
             int? langId = bank.LanguageCode is not null && languageMap.TryGetValue(bank.LanguageCode, out int lid)
                 ? lid
                 : null;
-            string subProvenance = $"{ProvenanceCode}/v2.17/{bank.DirectoryName}";
-            string fileKey = Path.GetFileName(file);
             lastBank = bank.DirectoryName;
 
             foreach (UdSentenceRecord sent in UdConllUParser.Parse(file))
@@ -198,7 +196,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 }
 
                 (int posWritten, int morphWritten, int langWritten) = EmitSentenceInline(
-                    batch, bank, fileKey, sent, subProvenance,
+                    batch, sent,
                     posMap, morphFeatMap, langId,
                     ref entityCount, ref edgeCount);
                 totalPosWritten += posWritten;
@@ -219,10 +217,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
     private (int Pos, int Morph, int Lang) EmitSentenceInline(
         IIngestionBatch batch,
-        UdTreebankInfo bank,
-        string fileKey,
         UdSentenceRecord sent,
-        string subProvenance,
         Dictionary<string, int> posMap,
         Dictionary<(string, string), int> morphFeatMap,
         int? langId,
@@ -231,7 +226,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
     {
         List<(double X, double Y, double Z, double M)> sentVertices = new(sent.Tokens.Count);
         EntityHandle[] tokenHandles = new EntityHandle[sent.Tokens.Count];
-        byte[][] tokenHashes = new byte[sent.Tokens.Count][];
         Dictionary<string, int> tokenIdIndex = new(sent.Tokens.Count, StringComparer.Ordinal);
 
         int posWritten = 0;
@@ -247,7 +241,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
             // The shared text decomposer emits the recursive child-centroid trajectory
             // at every tier (codepoint POINTZM, grapheme_cluster LINESTRINGZM through
             // codepoint centroids, word_form LINESTRINGZM through grapheme centroids).
-            (EntityHandle wfHandle, byte[] wfHash, (double X, double Y, double Z, double M) wfCentroid) =
+            (EntityHandle wfHandle, Hash32 _, (double X, double Y, double Z, double M) wfCentroid) =
                 EmitText(batch, tok.Form, _codepointProperties, "word_form", TrustPriorMu);
             entityCount++;
 
@@ -258,7 +252,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
             // means the same surface form across UD/WordNet/Tatoeba/user
             // prompt collapses to ONE entity.
             tokenHandles[ti] = wfHandle;
-            tokenHashes[ti] = wfHash;
             batch.AddSignificance(wfHandle, "source_authority", TrustPriorMu);
 
             // Lemma entity: Merkle hash (codepoints → grapheme clusters → lemma) for convergence
@@ -266,10 +259,10 @@ public sealed partial class UdDecomposer : BaseDecomposer
             if (tok.Lemma is not null && tok.Lemma.Length > 0)
             {
                 string lemmaForm = tok.Lemma;
-                (EntityHandle lemmaEntity, byte[] _, _) = EmitText(batch, lemmaForm, _codepointProperties, "lemma", TrustPriorMu);
+                (EntityHandle lemmaEntity, Hash32 _, _) = EmitText(batch, lemmaForm, _codepointProperties, "lemma", TrustPriorMu);
                 entityCount++;
 
-                batch.AddEdge("has_lemma", subProvenance,
+                batch.AddEdge("has_lemma", ProvenanceCode,
                 [
                     new EdgeMemberSpec(wfHandle, "source", 0),
                     new EdgeMemberSpec(lemmaEntity, "target", 1),
@@ -301,13 +294,11 @@ public sealed partial class UdDecomposer : BaseDecomposer
             sentVertices.Add(wfCentroid);
         }
 
-        // The sentence IS a text_composition. Merkle hash of ordered token
-        // (word_form) hashes is the same Merkle a text decomposer would
-        // produce for the same sentence — same content collapses to ONE
-        // text_composition regardless of source.
-        byte[] sentHash = ComputeMerkleHash(tokenHashes.AsSpan());
-        EntityHandle sentEntity = batch.AddEntity(sentHash, "text_composition");
-        batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
+        // The sentence itself is user-visible text, so its root identity must
+        // come from the native text DAG rather than from UD token placement.
+        string sentenceText = sent.Text ?? ReconstructSentenceText(sent.Tokens);
+        (EntityHandle sentEntity, Hash32 _, _) =
+            EmitText(batch, sentenceText, _codepointProperties, "text_composition", TrustPriorMu);
         entityCount++;
 
         if (langId is int sentLang)
@@ -317,7 +308,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         }
 
         // Token order is encoded by the sentence's LINESTRINGZM physicality
-        // (sentVertices below) — vertex index = ud_token position. The
+        // (sentVertices below) — vertex index = token position. The
         // sentence's Merkle hash also encodes order via the ordered list of
         // child token hashes. No substrate.sequence row needed.
 
@@ -353,7 +344,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 continue;
             }
 
-            batch.AddEdge(tok.Deprel, subProvenance,
+            batch.AddEdge(tok.Deprel, ProvenanceCode,
             [
                 new EdgeMemberSpec(tokenHandles[ti], "dependent", 0),
                 new EdgeMemberSpec(tokenHandles[headIdx], "head", 1),
@@ -362,6 +353,21 @@ public sealed partial class UdDecomposer : BaseDecomposer
         }
 
         return (posWritten, morphWritten, langWritten);
+    }
+
+    private static string ReconstructSentenceText(IReadOnlyList<UdTokenRecord> tokens)
+    {
+        StringBuilder builder = new();
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(' ');
+            }
+            builder.Append(tokens[i].Form);
+        }
+
+        return builder.ToString();
     }
 
     private static partial class Log

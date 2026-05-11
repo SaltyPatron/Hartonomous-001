@@ -102,6 +102,14 @@ CREATE DOMAIN substrate.tier_number AS INTEGER
 COMMENT ON DOMAIN substrate.tier_number IS
     'Composition tier. 0 = atom (codepoint, codeword, sample). Emergent from reference depth, not stored as a column.';
 
+-- ── sql/schema/domains/modality_code.sql ───────────────────────────────────────
+CREATE DOMAIN substrate.modality_code AS VARCHAR(32)
+    CONSTRAINT modality_code_known CHECK (
+        VALUE IN ('text', 'image', 'audio', 'video', 'model_weights')
+    );
+COMMENT ON DOMAIN substrate.modality_code IS
+    'Finite provenance authority modality code.';
+
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
 -- ── Phase 4: composite types ─────────────────────────────────────────
@@ -224,7 +232,7 @@ CREATE TABLE substrate.provenance (
     -- the wide-band tier ladder reseed).
     initial_sigma        FLOAT8      NOT NULL DEFAULT 350.0,
     -- Modalities this source is authoritative in. Empty array → text default.
-    modality_codes       TEXT[]      NOT NULL DEFAULT '{}',
+    modality_codes       substrate.modality_code[] NOT NULL DEFAULT '{}',
     -- Lineage: code of an upstream source whose authority this one inherits.
     derives_from         VARCHAR(64),
     -- Lineage decay factor applied when the parent's trust flows through.
@@ -238,7 +246,7 @@ CREATE TABLE substrate.provenance (
     -- When scope_kind ≠ 'global', identifies which tenant/user owns this
     -- provenance via composite handle into substrate.entity.
     scope_entity_type_id INT,
-    scope_entity_hash    BYTEA,
+    scope_entity_hash    substrate.hash_value,
     -- Self-referential lineage FK; deferred so seeding can insert in any order.
     CONSTRAINT provenance_derives_from_fkey
         FOREIGN KEY (derives_from) REFERENCES substrate.provenance(code)
@@ -306,13 +314,33 @@ CREATE TABLE substrate.break_property (
 COMMENT ON TABLE substrate.break_property IS
     'UAX #29 break properties for segmentation. Five categories: GCB (grapheme), WB (word), SB (sentence), LB (line), InCB (Indic conjunct break). enum_id is the per-category enum value from the embedded UCD blob (UC_GCB_*, UC_WB_*, UC_SB_*, UC_LB_*, UC_INCB_* in pg_ucd_segmentation.h). codepoint_property FK lookups use (category, enum_id) — robust against ID-offset drift when UCD versions add or reorder enum values.';
 
+-- ── sql/schema/tables/reference/bidi_class.sql ───────────────────────────────────────
+CREATE TABLE substrate.bidi_class (
+    id          SERIAL PRIMARY KEY,
+    code        VARCHAR(8) NOT NULL UNIQUE,
+    description VARCHAR(64) NOT NULL
+);
+
+COMMENT ON TABLE substrate.bidi_class IS
+    'UAX #9 Bidirectional Character Type. ~23 values (L, R, AL, EN, ES, ...). Populated by UCD seed from DerivedBidiClass.txt.';
+
+-- ── sql/schema/tables/reference/east_asian_width.sql ───────────────────────────────────────
+CREATE TABLE substrate.east_asian_width (
+    id          SERIAL PRIMARY KEY,
+    code        VARCHAR(2) NOT NULL UNIQUE,
+    description VARCHAR(64) NOT NULL
+);
+
+COMMENT ON TABLE substrate.east_asian_width IS
+    'UAX #11 East Asian Width. Six values: N (Neutral), Na (Narrow), A (Ambiguous), W (Wide), F (Fullwidth), H (Halfwidth). Populated by UCD seed from EastAsianWidth.txt.';
+
 -- ── sql/schema/tables/reference/language.sql ───────────────────────────────────────
 CREATE TABLE substrate.language (
     id    SERIAL PRIMARY KEY,
-    code  CHAR(3) NOT NULL UNIQUE,
+    code  VARCHAR(3) NOT NULL UNIQUE CHECK (LENGTH(code) = 3),
     name  VARCHAR(128) NOT NULL,
-    scope CHAR(1) NOT NULL,
-    type  CHAR(1) NOT NULL
+    scope VARCHAR(1) NOT NULL CHECK (LENGTH(scope) = 1),
+    type  VARCHAR(1) NOT NULL CHECK (LENGTH(type) = 1)
 );
 
 COMMENT ON TABLE substrate.language IS
@@ -634,16 +662,61 @@ INSERT INTO substrate.attestation_type (code, description, default_event_weight)
 INSERT INTO substrate.provenance
     (code, curator_class, initial_mu, initial_sigma, modality_codes, derives_from, derivation_decay)
 VALUES
-    ('unicode_consortium',     'authoritative_standard', 100000,  50, ARRAY['text'],                                                NULL,                1.00),
-    ('sil_international',      'authoritative_standard', 100000,  50, ARRAY['text'],                                                NULL,                1.00),
-    ('princeton_wordnet',      'academic_curated',        90000, 100, ARRAY['text'],                                                NULL,                1.00),
-    ('omwn_consortium',        'academic_consortium',     85000, 100, ARRAY['text'],                                                'princeton_wordnet', 0.92),
-    ('universaldependencies',  'academic_consortium',     85000, 100, ARRAY['text'],                                                NULL,                1.00),
-    ('wiktextract',            'community_curated',       70000, 200, ARRAY['text'],                                                NULL,                1.00),
-    ('tatoeba',                'community_contributed',   50000, 350, ARRAY['text','audio'],                                        NULL,                1.00),
-    ('huggingface_model',      'model_derived',           60000, 350, ARRAY['text','model_weights'],                                NULL,                1.00),
-    ('system_computed',        'system_computed',         40000, 350, ARRAY['text','image','audio','video','model_weights'],        NULL,                1.00),
-    ('user_session',           'user_input',              20000, 500, ARRAY['text','image','audio','video','model_weights'],        NULL,                1.00);
+    ('unicode_consortium',     'authoritative_standard', 100000,  50, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
+    ('sil_international',      'authoritative_standard', 100000,  50, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
+    ('princeton_wordnet',      'academic_curated',        90000, 100, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
+    ('omwn_consortium',        'academic_consortium',     85000, 100, ARRAY['text']::substrate.modality_code[],                                                'princeton_wordnet', 0.92),
+    ('universaldependencies',  'academic_consortium',     85000, 100, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
+    ('wiktextract',            'community_curated',       70000, 200, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
+    ('tatoeba',                'community_contributed',   50000, 350, ARRAY['text','audio']::substrate.modality_code[],                                        NULL,                1.00),
+    ('huggingface_model',      'model_derived',           60000, 350, ARRAY['text','model_weights']::substrate.modality_code[],                                NULL,                1.00),
+    ('system_computed',        'system_computed',         40000, 350, ARRAY['text','image','audio','video','model_weights']::substrate.modality_code[],        NULL,                1.00),
+    ('user_session',           'user_input',              20000, 500, ARRAY['text','image','audio','video','model_weights']::substrate.modality_code[],        NULL,                1.00);
+
+-- ── sql/schema/seed/bidi_class.sql ───────────────────────────────────────
+INSERT INTO substrate.bidi_class (id, code, description) VALUES
+    (1,  'L',   'Left_To_Right'),
+    (2,  'R',   'Right_To_Left'),
+    (3,  'AL',  'Arabic_Letter'),
+    (4,  'EN',  'European_Number'),
+    (5,  'ES',  'European_Separator'),
+    (6,  'ET',  'European_Terminator'),
+    (7,  'AN',  'Arabic_Number'),
+    (8,  'CS',  'Common_Separator'),
+    (9,  'NSM', 'Nonspacing_Mark'),
+    (10, 'BN',  'Boundary_Neutral'),
+    (11, 'B',   'Paragraph_Separator'),
+    (12, 'S',   'Segment_Separator'),
+    (13, 'WS',  'White_Space'),
+    (14, 'ON',  'Other_Neutral'),
+    (15, 'LRE', 'Left_To_Right_Embedding'),
+    (16, 'LRO', 'Left_To_Right_Override'),
+    (17, 'RLE', 'Right_To_Left_Embedding'),
+    (18, 'RLO', 'Right_To_Left_Override'),
+    (19, 'PDF', 'Pop_Directional_Format'),
+    (20, 'LRI', 'Left_To_Right_Isolate'),
+    (21, 'RLI', 'Right_To_Left_Isolate'),
+    (22, 'FSI', 'First_Strong_Isolate'),
+    (23, 'PDI', 'Pop_Directional_Isolate')
+ON CONFLICT (id) DO UPDATE
+SET code = EXCLUDED.code,
+    description = EXCLUDED.description;
+
+SELECT setval('substrate.bidi_class_id_seq', (SELECT max(id) FROM substrate.bidi_class));
+
+-- ── sql/schema/seed/east_asian_width.sql ───────────────────────────────────────
+INSERT INTO substrate.east_asian_width (id, code, description) VALUES
+    (1, 'N',  'Neutral'),
+    (2, 'Na', 'Narrow'),
+    (3, 'A',  'Ambiguous'),
+    (4, 'W',  'Wide'),
+    (5, 'F',  'Fullwidth'),
+    (6, 'H',  'Halfwidth')
+ON CONFLICT (id) DO UPDATE
+SET code = EXCLUDED.code,
+    description = EXCLUDED.description;
+
+SELECT setval('substrate.east_asian_width_id_seq', (SELECT max(id) FROM substrate.east_asian_width));
 
 -- ── sql/schema/seed/lexname.sql ───────────────────────────────────────
 -- 45 WordNet lexicographer categories.
@@ -746,7 +819,6 @@ FROM (VALUES
     ('has_wikidata',             'structural',    'lemma',              'text_composition'),    -- 12
     ('lexicalized_compound',     'structural',    'word_form',          'word_form'),           -- 13
     ('has_frame',                'structural',    'lemma',              'text_composition'),    -- 14
-    ('has_wordnet_offset',       'structural',    'synset',             'text_composition'),    -- 15
     -- ── Cross-lingual ──────────────────────────────────────────────────
     ('aligned_to_synset',        'cross_lingual', 'lemma',              'synset'),              -- 16
     ('translation_of',           'cross_lingual', 'lemma',              'lemma'),               -- 17
@@ -839,7 +911,25 @@ FROM (VALUES
     ('synonym',                  'semantic',      'lemma',  'lemma'),                           -- 84
     ('coordinate_term',          'semantic',      'lemma',  'lemma'),                           -- 85
     ('derived',                  'semantic',      'lemma',  'lemma'),                           -- 86
-    ('related',                  'semantic',      'lemma',  'lemma')                            -- 87
+    ('related',                  'semantic',      'lemma',  'lemma'),                           -- 87
+    -- ── Unicode structural extensions (appended to preserve existing IDs) ─
+    ('maps_to_uppercase',        'unicode',       'codepoint',          'codepoint'),           -- 96
+    ('maps_to_titlecase',        'unicode',       'codepoint',          'codepoint'),           -- 97
+    ('has_canonical_decomposition',      'unicode', 'codepoint',        'text_composition'),    -- 98
+    ('has_compatibility_decomposition',  'unicode', 'codepoint',        'text_composition'),    -- 99
+    ('canonical_composes_to',    'unicode',       'text_composition',   'codepoint'),           -- 100
+    ('has_full_case_mapping',    'unicode',       'codepoint',          'text_composition'),    -- 101
+    ('has_named_sequence',       'unicode',       'text_composition',   'text_composition'),    -- 102
+    ('has_standardized_variant', 'unicode',       'codepoint',          'text_composition'),    -- 103
+    ('has_emoji_sequence',       'unicode',       'text_composition',   'text_composition'),    -- 104
+    ('has_emoji_zwj_sequence',   'unicode',       'text_composition',   'text_composition'),    -- 105
+    ('confusable_with',          'unicode',       'text_composition',   'text_composition'),    -- 106
+    ('idna_maps_to',             'unicode',       'codepoint',          'text_composition'),    -- 107
+    ('has_bidi_mirroring_glyph', 'unicode',       'codepoint',          'codepoint'),           -- 108
+    ('unihan_variant',           'unicode',       'codepoint',          'codepoint'),           -- 109
+    ('unihan_reading',           'unicode',       'codepoint',          'text_composition'),    -- 110
+    ('unihan_source',            'unicode',       'codepoint',          'text_composition'),    -- 111
+    ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition')     -- 112
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;
@@ -861,9 +951,11 @@ BEGIN
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
             ('substrate.provenance',            10),
+            ('substrate.bidi_class',            23),
+            ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',             95),
+            ('substrate.edge_type',            112),
             ('substrate.attestation_type',      27)
         ) AS t(table_name, expected)
     LOOP
@@ -946,10 +1038,15 @@ CREATE TABLE substrate.edge_cross_modal
     PARTITION OF substrate.edge FOR VALUES IN (30, 31);
 
 -- ── sql/schema/tables/core/edge_unicode.sql ───────────────────────────────────────
--- Partition for unicode edge_types (IDs 32..34 per sql/schema/seed/edge_type.sql).
--- Codepoint-level Unicode tables (lowercase mapping, case-folding, collation).
+-- Partition for unicode edge_types. IDs 32..34 are the original core UCD
+-- edges; IDs 96..112 are appended structural Unicode surfaces so existing
+-- model/semantic partitions keep stable IDs.
 CREATE TABLE substrate.edge_unicode
-    PARTITION OF substrate.edge FOR VALUES IN (32, 33, 34);
+    PARTITION OF substrate.edge FOR VALUES IN (
+        32, 33, 34,
+        96, 97, 98, 99, 100, 101, 102, 103, 104,
+        105, 106, 107, 108, 109, 110, 111, 112
+    );
 
 -- ── sql/schema/tables/core/edge_model.sql ───────────────────────────────────────
 -- Partition for model_derived metadata edge_types (IDs 35..59 per
@@ -1035,8 +1132,9 @@ CREATE TABLE substrate.edge_member (
     edge_role_id INT  NOT NULL REFERENCES substrate.edge_role(id),
     role_position INT NOT NULL DEFAULT 0,
     PRIMARY KEY (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
-    -- FKs application-enforced. Pipeline batch ordering guarantees entity
-    -- and edge rows precede edge_member rows.
+    -- FKs application-enforced. Streaming ingestion drains each record kind
+    -- independently, so consumers must treat edge/entity/member visibility as
+    -- eventually consistent within the phase until DrainPendingAsync/FlushAsync.
 ) PARTITION BY LIST (edge_type_id);
 
 COMMENT ON TABLE substrate.edge_member IS
@@ -1056,7 +1154,11 @@ CREATE TABLE substrate.edge_member_cross_modal
 
 -- ── sql/schema/tables/core/edge_member_unicode.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_unicode
-    PARTITION OF substrate.edge_member FOR VALUES IN (32, 33, 34);
+    PARTITION OF substrate.edge_member FOR VALUES IN (
+        32, 33, 34,
+        96, 97, 98, 99, 100, 101, 102, 103, 104,
+        105, 106, 107, 108, 109, 110, 111, 112
+    );
 
 -- ── sql/schema/tables/core/edge_member_model.sql ───────────────────────────────────────
 CREATE TABLE substrate.edge_member_model
@@ -1391,25 +1493,34 @@ COMMENT ON TABLE substrate.entity_morph_feature IS
 -- Codepoint properties indexed by entity hash. Phase C unification:
 -- hash-only entity reference (substrate.entity has hash-only PK).
 CREATE TABLE substrate.codepoint_property (
-    entity_hash              substrate.hash_value PRIMARY KEY,
+    entity_hash              substrate.hash_value PRIMARY KEY REFERENCES substrate.entity(hash),
     codepoint_value          INT  NOT NULL,
     general_category_id      INT  NOT NULL REFERENCES substrate.general_category(id),
     script_id                INT  NOT NULL REFERENCES substrate.script(id),
     block_id                 INT  NOT NULL REFERENCES substrate.block(id),
+    bidi_class_id            INT  NOT NULL REFERENCES substrate.bidi_class(id),
+    east_asian_width_id      INT  NOT NULL REFERENCES substrate.east_asian_width(id),
     gcb_id                   INT  REFERENCES substrate.break_property(id),
     wb_id                    INT  REFERENCES substrate.break_property(id),
     sb_id                    INT  REFERENCES substrate.break_property(id),
     lb_id                    INT  REFERENCES substrate.break_property(id),
+    uca_index                INT  NOT NULL DEFAULT 0,
+    hangul_syllable_type     SMALLINT NOT NULL DEFAULT 0,
+    numeric_type             SMALLINT NOT NULL DEFAULT 0,
     is_extended_pictographic BOOLEAN NOT NULL DEFAULT FALSE,
     ccc                      SMALLINT NOT NULL DEFAULT 0,
+    name                     TEXT,
     decomposition_type       VARCHAR(16),
     decomposition_mapping    INT[],
+    simple_uppercase         INT,
+    simple_lowercase         INT,
+    simple_titlecase         INT,
     simple_case_fold         INT,
     full_case_fold           INT[]
 );
 
 COMMENT ON TABLE substrate.codepoint_property IS
-    'Codepoint → Unicode properties. Hash-only entity reference.';
+    'Codepoint → Unicode properties. Hash-only entity reference with parent substrate.entity FK.';
 
 -- ── sql/schema/tables/junctions/model_architecture_class.sql ───────────────────────────────────────
 CREATE TABLE substrate.model_architecture_class (
@@ -1754,7 +1865,7 @@ CREATE TABLE IF NOT EXISTS substrate.arena_priming_state (
     context_type_id   INT  PRIMARY KEY
         REFERENCES substrate.significance_context(id) ON DELETE CASCADE,
     last_edge_type_id INT  NOT NULL DEFAULT 0,
-    last_hash         BYTEA NOT NULL DEFAULT '\x'::BYTEA,
+    last_hash         substrate.hash_value,
     completed         BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1774,6 +1885,12 @@ CREATE INDEX idx_codepoint_property_block     ON substrate.codepoint_property(bl
 
 -- ── sql/schema/indexes/idx_codepoint_property_codepoint.sql ───────────────────────────────────────
 CREATE INDEX idx_codepoint_property_codepoint ON substrate.codepoint_property(codepoint_value);
+
+-- ── sql/schema/indexes/idx_codepoint_property_bidi.sql ───────────────────────────────────────
+CREATE INDEX idx_codepoint_property_bidi ON substrate.codepoint_property(bidi_class_id);
+
+-- ── sql/schema/indexes/idx_codepoint_property_eaw.sql ───────────────────────────────────────
+CREATE INDEX idx_codepoint_property_eaw ON substrate.codepoint_property(east_asian_width_id);
 
 -- ── sql/schema/indexes/idx_codepoint_property_gc.sql ───────────────────────────────────────
 CREATE INDEX idx_codepoint_property_gc        ON substrate.codepoint_property(general_category_id);
@@ -3326,8 +3443,8 @@ BEGIN
     SELECT
         code,
         name,
-        scope::CHAR(1),
-        type::CHAR(1)
+        scope,
+        type
     FROM unnest(p_codes, p_names, p_scopes, p_types) AS t(code, name, scope, type)
     ON CONFLICT (code) DO UPDATE
         SET name  = EXCLUDED.name,
@@ -3393,42 +3510,6 @@ $$;
 
 COMMENT ON FUNCTION substrate.populate_senses(TEXT[], TEXT[], INT[], INT[]) IS
     'No-op: the legacy sense reference table was removed (Phase C). Function retained as a stub for legacy callers in NpgsqlReferenceDataWriter pending C# AP-2 cleanup.';
-
--- ── sql/schema/functions/load_wordnet_offset_synset_map.sql ───────────────────────────────────────
--- Bridge function for OMW (and any cross-lexicon decomposer) to resolve
--- WordNet synsets by their authoring offset string. Returns one row per
--- has_wordnet_offset edge: (offset_doc_hash, synset_hash). Callers compute
--- the offset_doc_hash via BLAKE3 of the canonical offset string ("XXXXXXXX-p")
--- and look up the substrate's content-pure synset hash from the result map.
---
--- Why this exists: synset identity is content-pure (BLAKE3 Merkle of sorted
--- member lemma hashes + gloss byte hash). The WordNet offset is placement
--- metadata recorded as substrate content via has_wordnet_offset edges, NOT
--- baked into the synset's identity hash. This function exposes the bridge
--- in one round-trip so downstream decomposers can resolve synsets by their
--- external authoring identifier without recomputing content hashes.
-CREATE OR REPLACE FUNCTION substrate.load_wordnet_offset_synset_map()
-RETURNS TABLE(offset_doc_hash BYTEA, synset_hash BYTEA)
-LANGUAGE sql
-AS $$
-    SELECT
-        em_target.entity_hash AS offset_doc_hash,
-        em_source.entity_hash AS synset_hash
-    FROM substrate.edge_member em_source
-    JOIN substrate.edge e
-        ON  e.edge_type_id = em_source.edge_type_id
-        AND e.hash         = em_source.edge_hash
-    JOIN substrate.edge_member em_target
-        ON  em_target.edge_type_id = em_source.edge_type_id
-        AND em_target.edge_hash    = em_source.edge_hash
-    JOIN substrate.edge_role rs
-        ON rs.id = em_source.edge_role_id AND rs.code = 'source'
-    JOIN substrate.edge_role rt
-        ON rt.id = em_target.edge_role_id AND rt.code = 'target'
-    WHERE e.edge_type_id = (
-        SELECT id FROM substrate.edge_type WHERE code = 'has_wordnet_offset'
-    );
-$$;
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -4673,7 +4754,7 @@ AS $$
     WITH reset_rows AS (
         UPDATE substrate.arena_priming_state
            SET last_edge_type_id = 0,
-               last_hash = '\x'::BYTEA,
+               last_hash = NULL,
                completed = FALSE,
                updated_at = now()
          RETURNING 1
@@ -4683,7 +4764,6 @@ $$;
 
 COMMENT ON FUNCTION substrate.reset_arena_priming_state() IS
     'Reset per-arena significance-primer watermarks before a phase-owned priming pass. Re-scanning is idempotent via edge_significance ON CONFLICT and is required because later phases can add lower edge_type_id values.';
-
 
 -- ── sql/schema/functions/prime_unprimed_edges_chunk.sql ───────────────────────────────────────
 -- substrate.prime_unprimed_edges_chunk(p_arena_id, p_chunk_size)
@@ -4717,10 +4797,10 @@ CREATE OR REPLACE FUNCTION substrate.prime_unprimed_edges_chunk(
 LANGUAGE plpgsql AS $$
 DECLARE
     v_last_etid             INT;
-    v_last_hash             BYTEA;
+    v_last_hash             substrate.hash_value;
     v_inserted              BIGINT;
     v_max_etid              INT;
-    v_max_hash              BYTEA;
+    v_max_hash              substrate.hash_value;
     v_chunk_count           INT;
     v_attestation_type_id   INT;
 BEGIN
@@ -4759,7 +4839,14 @@ BEGIN
       FROM (
             SELECT e.edge_type_id, e.hash, e.provenance_id
               FROM substrate.edge e
-             WHERE (e.edge_type_id, e.hash) > (v_last_etid, v_last_hash)
+             WHERE (
+                    v_last_hash IS NULL
+                    AND e.edge_type_id > v_last_etid
+                   )
+                OR (
+                    v_last_hash IS NOT NULL
+                    AND (e.edge_type_id, e.hash) > (v_last_etid, v_last_hash)
+                   )
              ORDER BY e.edge_type_id, e.hash
              LIMIT p_chunk_size
            ) AS nc
@@ -4778,10 +4865,20 @@ BEGIN
             SELECT edge_type_id,
                    hash,
                    COUNT(*) OVER () AS cnt
-              FROM substrate.edge
-             WHERE (edge_type_id, hash) > (v_last_etid, v_last_hash)
-             ORDER BY edge_type_id, hash
-             LIMIT p_chunk_size
+              FROM (
+                    SELECT edge_type_id, hash
+                      FROM substrate.edge
+                     WHERE (
+                            v_last_hash IS NULL
+                            AND edge_type_id > v_last_etid
+                           )
+                        OR (
+                            v_last_hash IS NOT NULL
+                            AND (edge_type_id, hash) > (v_last_etid, v_last_hash)
+                           )
+                     ORDER BY edge_type_id, hash
+                     LIMIT p_chunk_size
+                   ) limited_edges
            ) sub
      ORDER BY edge_type_id DESC, hash DESC
      LIMIT 1;
@@ -5616,11 +5713,27 @@ BEGIN
     INSERT INTO substrate.edge_significance
         (context_type_id, edge_type_id, edge_hash, attestation_type_id,
          mu, sigma, volatility, games)
-    SELECT p_arena_id, t.edge_type_id, t.edge_hash, p_attestation_type_id,
-           1500.0, 350.0, 0.06, 0
-      FROM unnest(p_edge_type_ids, p_edge_hashes, p_scores, p_weights)
-           AS t(edge_type_id, edge_hash, score, weight)
-     WHERE t.weight IS NOT NULL AND t.weight > 0.0 AND t.score IS NOT NULL
+    SELECT DISTINCT
+           p_arena_id, t.edge_type_id, t.edge_hash, p_attestation_type_id,
+           COALESCE(pea.initial_mu, p.initial_mu * et.semantic_weight * p.derivation_decay, at.default_initial_mu),
+           COALESCE(pea.initial_sigma, p.initial_sigma, at.default_initial_sigma),
+           0.06,
+           0
+       FROM unnest(p_edge_type_ids, p_edge_hashes, p_scores, p_weights)
+            AS t(edge_type_id, edge_hash, score, weight)
+       JOIN substrate.attestation_type at
+         ON at.id = p_attestation_type_id
+       LEFT JOIN substrate.edge e
+         ON e.edge_type_id = t.edge_type_id
+        AND e.hash = t.edge_hash
+       LEFT JOIN substrate.edge_type et
+         ON et.id = t.edge_type_id
+       LEFT JOIN substrate.provenance p
+         ON p.id = e.provenance_id
+       LEFT JOIN substrate.provenance_edge_authority pea
+         ON pea.provenance_id = e.provenance_id
+        AND pea.edge_type_id = t.edge_type_id
+      WHERE t.weight IS NOT NULL AND t.weight > 0.0 AND t.score IS NOT NULL
     ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING;
 
     -- Step 2: gather current state in input order, filter the no-op rows.
@@ -5676,18 +5789,27 @@ BEGIN
     -- Glicko delta scaled by per-event weight. games += 1 per event regardless
     -- of weight (weight scales the rating-period magnitude, not the count).
     UPDATE substrate.edge_significance es
-       SET mu         = es.mu         + (u.new_mu - u.self_mu)       * u.weight,
-           sigma      = es.sigma      + (u.new_sigma - u.self_sigma) * u.weight,
-           volatility = es.volatility + (u.new_vol - u.self_vol)     * u.weight,
-           games      = es.games + 1
-      FROM unnest(etype_arr, ehash_arr,
-                  self_mu, self_sigma, self_vol,
-                  new_mu,  new_sigma,  new_vol,
-                  weights_arr)
-           AS u(edge_type_id, edge_hash,
-                self_mu, self_sigma, self_vol,
-                new_mu,  new_sigma,  new_vol,
-                weight)
+       SET mu         = es.mu         + u.delta_mu,
+           sigma      = es.sigma      + u.delta_sigma,
+           volatility = es.volatility + u.delta_volatility,
+           games      = es.games + u.games
+      FROM (
+          SELECT raw.edge_type_id,
+                 raw.edge_hash,
+                 SUM((raw.new_mu - raw.self_mu) * raw.weight) AS delta_mu,
+                 SUM((raw.new_sigma - raw.self_sigma) * raw.weight) AS delta_sigma,
+                 SUM((raw.new_vol - raw.self_vol) * raw.weight) AS delta_volatility,
+                 COUNT(*)::INT AS games
+            FROM unnest(etype_arr, ehash_arr,
+                        self_mu, self_sigma, self_vol,
+                        new_mu,  new_sigma,  new_vol,
+                        weights_arr)
+                  AS raw(edge_type_id, edge_hash,
+                         self_mu, self_sigma, self_vol,
+                         new_mu,  new_sigma,  new_vol,
+                         weight)
+           GROUP BY raw.edge_type_id, raw.edge_hash
+      ) AS u
      WHERE es.context_type_id     = p_arena_id
        AND es.edge_type_id        = u.edge_type_id
        AND es.edge_hash           = u.edge_hash
@@ -6512,10 +6634,19 @@ BEGIN
             general_category_id,
             script_id,
             block_id,
+            bidi_class_id,
+            east_asian_width_id,
             gcb_id, wb_id, sb_id, lb_id,
+            uca_index,
+            hangul_syllable_type,
+            numeric_type,
             is_extended_pictographic,
             ccc,
+            name,
             decomposition_mapping,
+            simple_uppercase,
+            simple_lowercase,
+            simple_titlecase,
             simple_case_fold,
             full_case_fold
         )
@@ -6525,14 +6656,23 @@ BEGIN
             a.general_category + 1,
             a.script + 1,
             a.block + 1,
+            a.bidi + 1,
+            a.eaw + 1,
             bp_gcb.id,
             bp_wb.id,
             bp_sb.id,
             bp_lb.id,
+            a.uca_index,
+            a.hsy::SMALLINT,
+            a.num_type::SMALLINT,
             a.extended_pictographic,
             a.ccc::SMALLINT,
+            a.name,
             a.decomposition_mapping,
-            NULLIF(a.simple_case_fold, -1),
+            CASE WHEN a.simple_uppercase > 0 AND a.simple_uppercase <> a.cp THEN a.simple_uppercase END,
+            CASE WHEN a.simple_lowercase > 0 AND a.simple_lowercase <> a.cp THEN a.simple_lowercase END,
+            CASE WHEN a.simple_titlecase > 0 AND a.simple_titlecase <> a.cp THEN a.simple_titlecase END,
+            CASE WHEN a.simple_case_fold > 0 AND a.simple_case_fold <> a.cp THEN a.simple_case_fold END,
             a.full_case_fold
         FROM substrate.ucd_codepoints(v_slice_start, v_slice_count) a
         JOIN substrate.break_property bp_gcb
@@ -6554,6 +6694,174 @@ $$;
 
 COMMENT ON FUNCTION substrate.populate_codepoint_property_range_from_ext(INT, INT) IS
     'Populates a bounded codepoint_property slice from the embedded UCD catalog in one set-based INSERT-SELECT inside a plpgsql wrapper (LANGUAGE sql inlines into the caller plan and moves the SEGV envelope earlier; plpgsql gives the body its own scope). The actual SEGV root cause is in ucd_atoms_blob.c mmap pointers — see the heap-copy defensive fix there.';
+
+-- ── sql/schema/functions/unicode_edge_hash.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.unicode_edge_hash(
+    p_edge_type_id INT,
+    p_member_hashes substrate.hash_value[]
+)
+RETURNS substrate.hash_value
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+    payload bytea := decode('00000000', 'hex');
+    member_hash substrate.hash_value;
+BEGIN
+    payload := set_byte(payload, 0, p_edge_type_id & 255);
+    payload := set_byte(payload, 1, (p_edge_type_id >> 8) & 255);
+    payload := set_byte(payload, 2, (p_edge_type_id >> 16) & 255);
+    payload := set_byte(payload, 3, (p_edge_type_id >> 24) & 255);
+
+    FOREACH member_hash IN ARRAY p_member_hashes LOOP
+        payload := payload || member_hash::bytea;
+    END LOOP;
+
+    RETURN blake3_hash(payload)::substrate.hash_value;
+END;
+$$;
+
+-- ── sql/schema/functions/populate_unicode_case_edges_from_properties.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_case_edges_from_properties()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    inserted_count BIGINT;
+BEGIN
+    WITH edge_specs(edge_code, source_hash, target_hash) AS (
+        SELECT 'maps_to_lowercase', source.entity_hash, target.entity_hash
+        FROM substrate.codepoint_property source
+        JOIN substrate.codepoint_property target
+          ON target.codepoint_value = source.simple_lowercase
+        WHERE source.simple_lowercase IS NOT NULL
+          AND source.simple_lowercase <> source.codepoint_value
+
+        UNION ALL
+
+        SELECT 'maps_to_uppercase', source.entity_hash, target.entity_hash
+        FROM substrate.codepoint_property source
+        JOIN substrate.codepoint_property target
+          ON target.codepoint_value = source.simple_uppercase
+        WHERE source.simple_uppercase IS NOT NULL
+          AND source.simple_uppercase <> source.codepoint_value
+
+        UNION ALL
+
+        SELECT 'maps_to_titlecase', source.entity_hash, target.entity_hash
+        FROM substrate.codepoint_property source
+        JOIN substrate.codepoint_property target
+          ON target.codepoint_value = source.simple_titlecase
+        WHERE source.simple_titlecase IS NOT NULL
+          AND source.simple_titlecase <> source.codepoint_value
+
+        UNION ALL
+
+        SELECT 'case_folds_to', source.entity_hash, target.entity_hash
+        FROM substrate.codepoint_property source
+        JOIN substrate.codepoint_property target
+          ON target.codepoint_value = source.simple_case_fold
+        WHERE source.simple_case_fold IS NOT NULL
+          AND source.simple_case_fold <> source.codepoint_value
+    ),
+    edge_rows AS (
+        SELECT
+            et.id AS edge_type_id,
+            substrate.unicode_edge_hash(et.id, ARRAY[edge_specs.source_hash, edge_specs.target_hash]::substrate.hash_value[]) AS edge_hash,
+            edge_specs.source_hash,
+            edge_specs.target_hash,
+            provenance.id AS provenance_id,
+            provenance.initial_mu AS provenance_initial_mu,
+            provenance.initial_sigma AS provenance_initial_sigma,
+            provenance.derivation_decay,
+            et.semantic_weight,
+            ST_MakeLine(source_physicality.geom, target_physicality.geom)::geometry(GeometryZM) AS geom
+        FROM edge_specs
+        JOIN substrate.edge_type et ON et.code = edge_specs.edge_code
+        JOIN substrate.provenance provenance ON provenance.code = 'unicode_consortium'
+        JOIN substrate.physicality_type s3_type ON s3_type.code = 's3_position'
+        JOIN substrate.physicality source_physicality
+          ON source_physicality.physicality_type_id = s3_type.id
+         AND source_physicality.entity_hash = edge_specs.source_hash
+         AND source_physicality.content_hash = edge_specs.source_hash
+        JOIN substrate.physicality target_physicality
+          ON target_physicality.physicality_type_id = s3_type.id
+         AND target_physicality.entity_hash = edge_specs.target_hash
+         AND target_physicality.content_hash = edge_specs.target_hash
+    ),
+    inserted_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, geom, provenance_id
+        FROM edge_rows
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    all_edges AS (
+        SELECT edge_type_id, edge_hash, source_hash, target_hash
+        FROM edge_rows
+        CROSS JOIN (SELECT count(*) AS inserted_edge_count FROM inserted_edges) edge_insert_barrier
+    ),
+    inserted_significance AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id,
+            edge_type_id,
+            edge_hash,
+            attestation_type_id,
+            mu,
+            sigma,
+            volatility,
+            games
+        )
+        SELECT
+            context.id,
+            edge_rows.edge_type_id,
+            edge_rows.edge_hash,
+            attestation.id,
+            COALESCE(
+                provenance_edge_authority.initial_mu,
+                edge_rows.provenance_initial_mu * edge_rows.semantic_weight * edge_rows.derivation_decay
+            ),
+            COALESCE(provenance_edge_authority.initial_sigma, edge_rows.provenance_initial_sigma),
+            0.06,
+            0
+        FROM edge_rows
+        CROSS JOIN substrate.significance_context context
+        CROSS JOIN substrate.attestation_type attestation
+        LEFT JOIN substrate.provenance_edge_authority
+          ON provenance_edge_authority.provenance_id = edge_rows.provenance_id
+         AND provenance_edge_authority.edge_type_id = edge_rows.edge_type_id
+        WHERE attestation.code = 'provenance_authority_corroboration'
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    inserted_members AS (
+        INSERT INTO substrate.edge_member (
+            edge_type_id,
+            edge_hash,
+            entity_hash,
+            edge_role_id,
+            role_position
+        )
+        SELECT edge_type_id, edge_hash, source_hash, source_role.id, 0
+        FROM all_edges
+        CROSS JOIN substrate.edge_role source_role
+        WHERE source_role.code = 'source'
+
+        UNION ALL
+
+        SELECT edge_type_id, edge_hash, target_hash, target_role.id, 1
+        FROM all_edges
+        CROSS JOIN substrate.edge_role target_role
+        WHERE target_role.code = 'target'
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    )
+    SELECT count(*) INTO inserted_count
+    FROM inserted_members;
+
+    RETURN inserted_count;
+END;
+$$;
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

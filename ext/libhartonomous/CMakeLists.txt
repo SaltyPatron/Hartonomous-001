@@ -60,6 +60,8 @@ endif()
 
 include(FetchContent)
 
+set(HARTONOMOUS_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../external")
+
 # BLAKE3 — prefer system install, fall back to FetchContent.
 #
 # Why not just FetchContent? BLAKE3 1.5.4's c/CMakeLists.txt branches on
@@ -91,22 +93,37 @@ endif()
 
 # ── Eigen 3.4.0 (header-only linear algebra) ───────────────────
 # Used for templated fixed-size matrix math, SVD (BDCSVD), Jacobi
-# rotations, and as the backing vector type for Spectra. Downloading
-# the source and adding as INTERFACE target (no install, no tests).
-FetchContent_Declare(
-    eigen
-    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-    GIT_TAG        3.4.0
-)
-set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
-set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
-FetchContent_GetProperties(eigen)
-if(NOT eigen_POPULATED)
-    FetchContent_Populate(eigen)
+# rotations, and as the backing vector type for Spectra. Prefer local
+# clones/submodules so clean native builds do not block on network fetches.
+set(HARTONOMOUS_EIGEN_SOURCE_DIR "" CACHE PATH "Local Eigen source directory")
+if(NOT HARTONOMOUS_EIGEN_SOURCE_DIR AND DEFINED ENV{HARTONOMOUS_EIGEN_SOURCE_DIR})
+    set(HARTONOMOUS_EIGEN_SOURCE_DIR "$ENV{HARTONOMOUS_EIGEN_SOURCE_DIR}")
+endif()
+if(NOT HARTONOMOUS_EIGEN_SOURCE_DIR AND EXISTS "${HARTONOMOUS_EXTERNAL_DIR}/eigen/Eigen/Core")
+    set(HARTONOMOUS_EIGEN_SOURCE_DIR "${HARTONOMOUS_EXTERNAL_DIR}/eigen")
+endif()
+if(NOT HARTONOMOUS_EIGEN_SOURCE_DIR AND DEFINED ENV{HOME} AND EXISTS "$ENV{HOME}/Projects/eigen/Eigen/Core")
+    set(HARTONOMOUS_EIGEN_SOURCE_DIR "$ENV{HOME}/Projects/eigen")
+endif()
+if(HARTONOMOUS_EIGEN_SOURCE_DIR AND EXISTS "${HARTONOMOUS_EIGEN_SOURCE_DIR}/Eigen/Core")
     add_library(eigen INTERFACE)
-    target_include_directories(eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
+    target_include_directories(eigen SYSTEM INTERFACE "${HARTONOMOUS_EIGEN_SOURCE_DIR}")
+else()
+    FetchContent_Declare(
+        eigen
+        GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+        GIT_TAG        3.4.0
+    )
+    set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+    FetchContent_GetProperties(eigen)
+    if(NOT eigen_POPULATED)
+        FetchContent_Populate(eigen)
+        add_library(eigen INTERFACE)
+        target_include_directories(eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
+    endif()
 endif()
 
 # ── Spectra 1.0.1 (header-only large sparse eigensolver) ───────
@@ -114,19 +131,32 @@ endif()
 # of large symmetric sparse matrices (normalized Laplacian of k-NN
 # graphs for embedding fireflies — Phase 3.B). Determinism achieved by
 # MKL CBWR + fixed random-vector seed.
-FetchContent_Declare(
-    spectra
-    GIT_REPOSITORY https://github.com/yixuan/spectra.git
-    GIT_TAG        v1.0.1
-)
-set(SPECTRA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_GetProperties(spectra)
-if(NOT spectra_POPULATED)
-    FetchContent_Populate(spectra)
+set(HARTONOMOUS_SPECTRA_SOURCE_DIR "" CACHE PATH "Local Spectra source directory")
+if(NOT HARTONOMOUS_SPECTRA_SOURCE_DIR AND DEFINED ENV{HARTONOMOUS_SPECTRA_SOURCE_DIR})
+    set(HARTONOMOUS_SPECTRA_SOURCE_DIR "$ENV{HARTONOMOUS_SPECTRA_SOURCE_DIR}")
+endif()
+if(NOT HARTONOMOUS_SPECTRA_SOURCE_DIR AND EXISTS "${HARTONOMOUS_EXTERNAL_DIR}/spectra/include/Spectra/SymEigsSolver.h")
+    set(HARTONOMOUS_SPECTRA_SOURCE_DIR "${HARTONOMOUS_EXTERNAL_DIR}/spectra")
+endif()
+if(HARTONOMOUS_SPECTRA_SOURCE_DIR AND EXISTS "${HARTONOMOUS_SPECTRA_SOURCE_DIR}/include/Spectra/SymEigsSolver.h")
     add_library(spectra INTERFACE)
-    target_include_directories(spectra SYSTEM INTERFACE ${spectra_SOURCE_DIR}/include)
+    target_include_directories(spectra SYSTEM INTERFACE "${HARTONOMOUS_SPECTRA_SOURCE_DIR}/include")
     target_link_libraries(spectra INTERFACE eigen)
+else()
+    FetchContent_Declare(
+        spectra
+        GIT_REPOSITORY https://github.com/yixuan/spectra.git
+        GIT_TAG        v1.0.1
+    )
+    set(SPECTRA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_GetProperties(spectra)
+    if(NOT spectra_POPULATED)
+        FetchContent_Populate(spectra)
+        add_library(spectra INTERFACE)
+        target_include_directories(spectra SYSTEM INTERFACE ${spectra_SOURCE_DIR}/include)
+        target_link_libraries(spectra INTERFACE eigen)
+    endif()
 endif()
 
 set(HARTONOMOUS_SOURCES
@@ -178,11 +208,12 @@ endif()
 # weak imports makes normalization/segmentation silently fall back to NULL-table
 # behavior in SQL callers.
 target_sources(hartonomous PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_segmentation.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_classification.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_pictographic.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_decomp.c
-)
+     ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_segmentation.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_classification.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_casing.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_pictographic.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_decomp.c
+ )
 
 target_include_directories(hartonomous
     PUBLIC

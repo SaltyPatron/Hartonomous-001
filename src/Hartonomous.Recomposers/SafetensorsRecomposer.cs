@@ -198,7 +198,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
     private async Task<(string Name, string Dtype, int[] Shape)> ReadTensorMetadataAsync(
         EntityHandle tensor, RecompositionOptions options, CancellationToken ct)
     {
-        string name = $"tensor_{Convert.ToHexString(tensor.Hash)[..8].ToLowerInvariant()}";
+        string name = $"tensor_{tensor.Hash.ToHexString()[..8].ToLowerInvariant()}";
         string dtype = "F32";
         int[] shape = [];
 
@@ -630,7 +630,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                 return name;
             }
         }
-        return $"model_{Convert.ToHexString(modelArchitecture.Hash)[..8].ToLowerInvariant()}";
+        return $"model_{modelArchitecture.Hash.ToHexString()[..8].ToLowerInvariant()}";
     }
 
     private static int[] ParseShape(string text)

@@ -2,8 +2,8 @@
 <#
 .SYNOPSIS
   Run the Tatoeba seed phase. Three-pass decomposer:
-    1. sentences.csv              → tatoeba_sentence + text_composition + has_text + entity_language
-    2. links.csv                  → translation_link edges between sentences
+    1. sentences.csv              → text_composition + entity_language
+    2. links.csv                  → translation_link edges between sentence text compositions
     3. audio/sentences_with_audio.csv → audio_recording + recording_of + has_contributor
 
 .EXAMPLE

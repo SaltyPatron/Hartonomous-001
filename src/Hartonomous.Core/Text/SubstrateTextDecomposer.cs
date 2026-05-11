@@ -41,7 +41,6 @@ public sealed class SubstrateTextDecomposer
     public SubstrateTextDecomposer(object? unused = null)
     {
         _ = unused;
-        EnsureUcdLoaded();
     }
 
     /// <summary>
@@ -81,14 +80,24 @@ public sealed class SubstrateTextDecomposer
                 {
                     continue;
                 }
-                string idx = System.IO.Path.Combine(dir, "hartonomous-ucd-17.0.0.idx");
-                if (!System.IO.File.Exists(idx))
-                {
-                    continue;
-                }
                 int rc = TextDecomposeNative.UcdLoad(dir);
                 if (rc == 0)
                 {
+                    if (TextDecomposeNative.UcdCatalogReady() != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "SubstrateTextDecomposer: loaded UCD atom catalog failed "
+                            + "hash/centroid/reverse-lookup validation.");
+                    }
+
+                    if (TextDecomposeNative.UcdTablesReady() != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "SubstrateTextDecomposer: libhartonomous loaded UCD atoms, "
+                            + "but required generated UCD normalization/segmentation tables "
+                            + "are not linked into the native library.");
+                    }
+
                     Volatile.Write(ref s_ucdLoaded, 1);
                     return;
                 }
@@ -131,16 +140,31 @@ public sealed class SubstrateTextDecomposer
         IIngestionBatch batch,
         ReadOnlySpan<byte> utf8,
         TextDecomposeOptions options)
+        => EmitStaticCore(batch, utf8, options);
+
+    public static TextDecomposeResult EmitStatic(
+        IIngestionBatch batch,
+        byte[] utf8,
+        TextDecomposeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(utf8);
+        return EmitStaticCore(batch, utf8, options);
+    }
+
+    private static unsafe TextDecomposeResult EmitStaticCore(
+        IIngestionBatch batch,
+        ReadOnlySpan<byte> utf8,
+        TextDecomposeOptions options)
     {
         ArgumentNullException.ThrowIfNull(batch);
         EnsureUcdLoaded();
 
-        if (utf8.IsEmpty)
+        if (utf8.Length == 0)
         {
-            byte[] emptyHash = new byte[32];
-            EntityHandle empty = new(emptyHash, options.TopEntityType);
+            Hash32 emptyHash = Hash32.Zero;
             return new TextDecomposeResult(
-                RootHandle: empty, RootHash: emptyHash,
+                RootHandle: new EntityHandle(emptyHash, options.TopEntityType),
+                RootHash: emptyHash,
                 EntitiesEmitted: 0, SequenceRowsEmitted: 0,
                 PhysicalityRowsEmitted: 0, SignificanceRowsEmitted: 0,
                 RootCentroid: (0, 0, 0, 0));
@@ -149,29 +173,29 @@ public sealed class SubstrateTextDecomposer
         EmitContext context = new(batch, options);
         TextDecomposeNative.EmitCallback cb = context.OnRecord;
 
-        byte[] utf8Copy = utf8.ToArray();
         byte[] rootHashBuf = new byte[32];
         double[] rootCentroidBuf = new double[4];
-        GCHandle utf8Pin = GCHandle.Alloc(utf8Copy, GCHandleType.Pinned);
         GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
         GCHandle rootCentroidPin = GCHandle.Alloc(rootCentroidBuf, GCHandleType.Pinned);
         int rc;
         try
         {
-            rc = TextDecomposeNative.TextDecompose(
-                utf8Pin.AddrOfPinnedObject(),
-                (nuint) utf8Copy.Length,
-                NativeKindFor(options.TopEntityType),
-                options.TrustMu,
-                cb,
-                IntPtr.Zero,
-                rootPin.AddrOfPinnedObject(),
-                out _,
-                rootCentroidPin.AddrOfPinnedObject());
+            fixed (byte* utf8Ptr = utf8)
+            {
+                rc = TextDecomposeNative.TextDecompose(
+                    (IntPtr)utf8Ptr,
+                    (nuint) utf8.Length,
+                    NativeKindFor(options.TopEntityType),
+                    options.TrustMu,
+                    cb,
+                    IntPtr.Zero,
+                    rootPin.AddrOfPinnedObject(),
+                    out _,
+                    rootCentroidPin.AddrOfPinnedObject());
+            }
         }
         finally
         {
-            utf8Pin.Free();
             rootPin.Free();
             rootCentroidPin.Free();
             GC.KeepAlive(cb);
@@ -180,15 +204,17 @@ public sealed class SubstrateTextDecomposer
         if (rc != 0)
         {
             throw new InvalidOperationException(
-                $"hartonomous_text_decompose returned {rc} (input {utf8Copy.Length} bytes, top_kind={options.TopEntityType})");
+                $"hartonomous_text_decompose returned {rc} (input {utf8.Length} bytes, top_kind={options.TopEntityType})");
         }
 
-        EntityHandle rootHandle = new(rootHashBuf, options.TopEntityType);
-        batch.AddEntity(rootHashBuf, options.TopEntityType);
+        Hash32 rootHash = new(rootHashBuf);
+        EntityHandle rootHandle = new(rootHash, options.TopEntityType);
+        batch.AddEntity(rootHash, options.TopEntityType);
+        context.FlushSequences();
 
         return new TextDecomposeResult(
             RootHandle: rootHandle,
-            RootHash: rootHashBuf,
+            RootHash: rootHash,
             EntitiesEmitted: context.EntityCount,
             SequenceRowsEmitted: context.SequenceCount,
             PhysicalityRowsEmitted: context.PhysicalityCount,
@@ -202,7 +228,7 @@ public sealed class SubstrateTextDecomposer
     /// same content identity as <see cref="EmitStatic"/> but should not create
     /// substrate rows.
     /// </summary>
-    public static byte[] ComputeRootHash(
+    public static unsafe Hash32 ComputeRootHash(
         ReadOnlySpan<byte> utf8,
         string topEntityType,
         double trustMu = 1500.0)
@@ -211,30 +237,30 @@ public sealed class SubstrateTextDecomposer
 
         if (utf8.IsEmpty)
         {
-            return new byte[32];
+            return Hash32.Zero;
         }
 
-        byte[] utf8Copy = utf8.ToArray();
         byte[] rootHashBuf = new byte[32];
-        GCHandle utf8Pin = GCHandle.Alloc(utf8Copy, GCHandleType.Pinned);
         GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
         int rc;
         try
         {
-            rc = TextDecomposeNative.TextDecompose(
-                utf8Pin.AddrOfPinnedObject(),
-                (nuint) utf8Copy.Length,
-                NativeKindFor(topEntityType),
-                trustMu,
-                s_noopEmit,
-                IntPtr.Zero,
-                rootPin.AddrOfPinnedObject(),
-                out _,
-                IntPtr.Zero);
+            fixed (byte* utf8Ptr = utf8)
+            {
+                rc = TextDecomposeNative.TextDecompose(
+                    (IntPtr)utf8Ptr,
+                    (nuint) utf8.Length,
+                    NativeKindFor(topEntityType),
+                    trustMu,
+                    s_noopEmit,
+                    IntPtr.Zero,
+                    rootPin.AddrOfPinnedObject(),
+                    out _,
+                    IntPtr.Zero);
+            }
         }
         finally
         {
-            utf8Pin.Free();
             rootPin.Free();
             GC.KeepAlive(s_noopEmit);
         }
@@ -242,10 +268,10 @@ public sealed class SubstrateTextDecomposer
         if (rc != 0)
         {
             throw new InvalidOperationException(
-                $"hartonomous_text_decompose returned {rc} while computing root hash (input {utf8Copy.Length} bytes, top_kind={topEntityType})");
+                $"hartonomous_text_decompose returned {rc} while computing root hash (input {utf8.Length} bytes, top_kind={topEntityType})");
         }
 
-        return rootHashBuf;
+        return new Hash32(rootHashBuf);
     }
 
     public static async ValueTask<TextDecomposeResult> EmitStaticAsync(
@@ -260,7 +286,7 @@ public sealed class SubstrateTextDecomposer
 
         if (utf8.Length == 0)
         {
-            byte[] emptyHash = new byte[32];
+            Hash32 emptyHash = Hash32.Zero;
             EntityHandle empty = new(emptyHash, options.TopEntityType);
             return new TextDecomposeResult(
                 RootHandle: empty, RootHash: emptyHash,
@@ -310,14 +336,15 @@ public sealed class SubstrateTextDecomposer
             await sink.EmitAsync(record, ct).ConfigureAwait(false);
         }
 
-        EntityHandle rootHandle = new(rootHashBuf, options.TopEntityType);
+        Hash32 rootHash = new(rootHashBuf);
+        EntityHandle rootHandle = new(rootHash, options.TopEntityType);
         await sink.EmitAsync(
-            new EntityRecord(options.TopEntityType, rootHashBuf, options.ProvenanceCode),
+            new EntityRecord(options.TopEntityType, rootHash, options.ProvenanceCode),
             ct).ConfigureAwait(false);
 
         return new TextDecomposeResult(
             RootHandle: rootHandle,
-            RootHash: rootHashBuf,
+            RootHash: rootHash,
             EntitiesEmitted: context.EntityCount,
             SequenceRowsEmitted: context.SequenceCount,
             PhysicalityRowsEmitted: context.PhysicalityCount,
@@ -347,6 +374,7 @@ public sealed class SubstrateTextDecomposer
         public IIngestionBatch Batch { get; }
         public TextDecomposeOptions Options { get; }
         public Dictionary<Hash32, string> KindByHash { get; } = new();
+        private readonly List<PendingSequence> _sequences = [];
         public long EntityCount;
         public long SequenceCount;
         public long PhysicalityCount;
@@ -364,9 +392,9 @@ public sealed class SubstrateTextDecomposer
             {
                 case TextDecomposeNative.RecEntity:
                 {
-                    byte[] hash = ReadHash(record.HashA);
+                    Hash32 hash = ReadHash(record.HashA);
                     string code = EntityCodeFor(record.Subkind);
-                    KindByHash[new Hash32(hash)] = code;
+                    KindByHash[hash] = code;
                     Batch.AddEntity(hash, code);
                     EntityCount++;
                     break;
@@ -375,8 +403,8 @@ public sealed class SubstrateTextDecomposer
                     break;
                 case TextDecomposeNative.RecPhysicality:
                 {
-                    byte[] entHash = ReadHash(record.HashA);
-                    string entityCode = KindByHash.TryGetValue(new Hash32(entHash), out string? c)
+                    Hash32 entHash = ReadHash(record.HashA);
+                    string entityCode = KindByHash.TryGetValue(entHash, out string? c)
                         ? c : "text_composition";
                     EntityHandle eh = new(entHash, entityCode);
                     string physCode = record.Subkind switch
@@ -392,22 +420,21 @@ public sealed class SubstrateTextDecomposer
                 }
                 case TextDecomposeNative.RecSequence:
                 {
-                    byte[] parentHash = ReadHash(record.HashA);
-                    byte[] childHash  = ReadHash(record.HashB);
-                    string parentCode = KindByHash.TryGetValue(new Hash32(parentHash), out string? pc)
+                    Hash32 parentHash = ReadHash(record.HashA);
+                    Hash32 childHash  = ReadHash(record.HashB);
+                    string parentCode = KindByHash.TryGetValue(parentHash, out string? pc)
                         ? pc : "text_composition";
-                    string childCode = KindByHash.TryGetValue(new Hash32(childHash), out string? cc)
+                    string childCode = KindByHash.TryGetValue(childHash, out string? cc)
                         ? cc : "text_composition";
                     EntityHandle parent = new(parentHash, parentCode);
                     EntityHandle child  = new(childHash,  childCode);
-                    Batch.AddSequence(parent, record.IntParam, child, rleCount: 1);
-                    SequenceCount++;
+                    AddSequence(parent, record.IntParam, child);
                     break;
                 }
                 case TextDecomposeNative.RecSignificance:
                 {
-                    byte[] entHash = ReadHash(record.HashA);
-                    string entityCode = KindByHash.TryGetValue(new Hash32(entHash), out string? c)
+                    Hash32 entHash = ReadHash(record.HashA);
+                    string entityCode = KindByHash.TryGetValue(entHash, out string? c)
                         ? c : "text_composition";
                     EntityHandle eh = new(entHash, entityCode);
                     string ctxCode = record.Subkind switch
@@ -423,14 +450,40 @@ public sealed class SubstrateTextDecomposer
             return 0;
         }
 
-        private static byte[] ReadHash(IntPtr ptr)
+        public void FlushSequences()
+        {
+            foreach (PendingSequence sequence in _sequences)
+            {
+                Batch.AddSequence(sequence.Parent, sequence.Ordinal, sequence.Child, sequence.RleCount);
+            }
+        }
+
+        private void AddSequence(EntityHandle parent, int ordinal, EntityHandle child)
+        {
+            if (_sequences.Count > 0)
+            {
+                PendingSequence tail = _sequences[^1];
+                if (tail.Ordinal + tail.RleCount == ordinal &&
+                    tail.Parent.Hash == parent.Hash &&
+                    tail.Child.Hash == child.Hash)
+                {
+                    _sequences[^1] = tail with { RleCount = tail.RleCount + 1 };
+                    return;
+                }
+            }
+
+            _sequences.Add(new PendingSequence(parent, ordinal, child, 1));
+            SequenceCount++;
+        }
+
+        private static Hash32 ReadHash(IntPtr ptr)
         {
             byte[] dst = new byte[32];
             if (ptr != IntPtr.Zero)
             {
                 Marshal.Copy(ptr, dst, 0, 32);
             }
-            return dst;
+            return new Hash32(dst);
         }
 
         private static byte[] ReadBytes(IntPtr ptr, int len)
@@ -442,6 +495,8 @@ public sealed class SubstrateTextDecomposer
             }
             return dst;
         }
+
+        private sealed record PendingSequence(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount);
     }
 
     private sealed class BufferedEmitContext
@@ -465,9 +520,9 @@ public sealed class SubstrateTextDecomposer
             {
                 case TextDecomposeNative.RecEntity:
                 {
-                    byte[] hash = ReadHash(record.HashA);
+                    Hash32 hash = ReadHash(record.HashA);
                     string code = EntityCodeFor(record.Subkind);
-                    KindByHash[new Hash32(hash)] = code;
+                    KindByHash[hash] = code;
                     Records.Add(new EntityRecord(code, hash, Options.ProvenanceCode));
                     EntityCount++;
                     break;
@@ -476,7 +531,7 @@ public sealed class SubstrateTextDecomposer
                     break;
                 case TextDecomposeNative.RecPhysicality:
                 {
-                    byte[] entHash = ReadHash(record.HashA);
+                    Hash32 entHash = ReadHash(record.HashA);
                     string physCode = record.Subkind switch
                     {
                         TextDecomposeNative.PhysS3Position => "s3_position",
@@ -493,12 +548,12 @@ public sealed class SubstrateTextDecomposer
                         throw new InvalidOperationException(
                             $"text_decompose returned a {physCode} WKB whose subtype is " +
                             $"unsupported by PostGisWkbReader (entity " +
-                            $"{Convert.ToHexString(entHash)}, {wkb.Length} bytes).");
+                            $"{entHash.ToHexString()}, {wkb.Length} bytes).");
                     }
                     Records.Add(new PhysicalityRecord(
                         physCode,
                         entHash,
-                        Blake3.Hash(wkb.AsSpan()),
+                        Blake3.Hash32(wkb.AsSpan()),
                         wkb,
                         centroid));
                     PhysicalityCount++;
@@ -506,15 +561,14 @@ public sealed class SubstrateTextDecomposer
                 }
                 case TextDecomposeNative.RecSequence:
                 {
-                    byte[] parentHash = ReadHash(record.HashA);
-                    byte[] childHash = ReadHash(record.HashB);
-                    Records.Add(new SequenceRecord(parentHash, record.IntParam, childHash, 1));
-                    SequenceCount++;
+                    Hash32 parentHash = ReadHash(record.HashA);
+                    Hash32 childHash = ReadHash(record.HashB);
+                    AddSequence(parentHash, record.IntParam, childHash);
                     break;
                 }
                 case TextDecomposeNative.RecSignificance:
                 {
-                    byte[] entHash = ReadHash(record.HashA);
+                    Hash32 entHash = ReadHash(record.HashA);
                     string ctxCode = record.Subkind switch
                     {
                         TextDecomposeNative.SigSourceAuthority => "source_authority",
@@ -532,14 +586,30 @@ public sealed class SubstrateTextDecomposer
             return 0;
         }
 
-        private static byte[] ReadHash(IntPtr ptr)
+        private void AddSequence(Hash32 parentHash, int ordinal, Hash32 childHash)
+        {
+            if (Records.Count > 0 &&
+                Records[^1] is SequenceRecord tail &&
+                tail.Ordinal + tail.RleCount == ordinal &&
+                tail.ParentEntityHash == parentHash &&
+                tail.ChildEntityHash == childHash)
+            {
+                Records[^1] = tail with { RleCount = tail.RleCount + 1 };
+                return;
+            }
+
+            Records.Add(new SequenceRecord(parentHash, ordinal, childHash, 1));
+            SequenceCount++;
+        }
+
+        private static Hash32 ReadHash(IntPtr ptr)
         {
             byte[] dst = new byte[32];
             if (ptr != IntPtr.Zero)
             {
                 Marshal.Copy(ptr, dst, 0, 32);
             }
-            return dst;
+            return new Hash32(dst);
         }
 
         private static byte[] ReadBytes(IntPtr ptr, int len)

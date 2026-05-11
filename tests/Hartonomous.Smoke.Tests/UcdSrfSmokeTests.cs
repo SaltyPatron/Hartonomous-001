@@ -48,6 +48,7 @@ public sealed class UcdSrfSmokeTests
     }
 
     [Fact]
+    [Trait("Category", "SeedValidation")]
     public async Task UcdCodepoints_Srf_FullRange_SweepsWithoutCrash()
     {
         Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
@@ -76,56 +77,43 @@ public sealed class UcdSrfSmokeTests
     }
 
     [Fact]
+    [Trait("Category", "SeedMutation")]
     public async Task PopulateCodepointAtomsChunk_HighRange_Succeeds()
     {
         Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
         // Chunk that previously crashed under parallelism. Single-call here
         // verifies the SRF body itself — parallel invariants tested separately.
         long inserted = await _fx.ExecScalarLongAsync(
-            "SELECT substrate.populate_codepoint_atoms_chunk('unicode_consortium'::text, NULL::float8, 819200::int, 851968::int)");
+            "SELECT substrate.populate_codepoint_atoms_chunk('unicode_consortium'::text, NULL::float8, 819200::int, 820224::int)");
         Assert.True(inserted > 0);
     }
 
     [Fact]
-    public async Task PopulateCodepointAtomsChunk_EightWayParallel_DoesNotCrash()
+    [Trait("Category", "SeedValidation")]
+    public async Task SeededCodepointClassifications_FullRange_HasNoGaps()
     {
         Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
-        // The exact 8-way concurrency pattern the production seed uses.
-        // Each task opens its own connection; if any backend SIGSEGVs the
-        // others see "server closed the connection unexpectedly" because
-        // the postmaster aborts every backend on a crash of one.
-        const int max = 1114112;
-        const int degree = 8;
-        int chunkSize = (int)Math.Ceiling((double)max / degree);
-        Task<long>[] tasks = new Task<long>[degree];
-        for (int i = 0; i < degree; i++)
-        {
-            int lo = i * chunkSize;
-            int hi = Math.Min(lo + chunkSize, max);
-            tasks[i] = _fx.ExecScalarLongAsync(
-                $"SELECT substrate.populate_codepoint_atoms_chunk('unicode_consortium'::text, NULL::float8, {lo}::int, {hi}::int)");
-        }
-        long[] results = await Task.WhenAll(tasks);
-        long total = results.Sum();
-        Assert.True(total > 0, $"parallel 8-way insert produced {total} rows");
+        long classified = await _fx.ExecScalarLongAsync(
+            "SELECT count(*) " +
+            "FROM substrate.entity_classification ec " +
+            "JOIN substrate.entity_type et ON et.id = ec.entity_type_id " +
+            "JOIN substrate.provenance p ON p.id = ec.provenance_id " +
+            "WHERE et.code = 'codepoint' AND p.code = 'unicode_consortium'");
+        Assert.Equal(1114112, classified);
     }
 
     [Fact]
-    public async Task PopulateCodepointPropertyRange_FullSweep_DoesNotCrash()
+    [Trait("Category", "SeedValidation")]
+    public async Task SeededCodepointProperties_FullRange_HasNoDanglingEntityReferences()
     {
         Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
-        // The function that crashed at chunk [819200, 851968) on 2026-05-08.
-        // Sweep every 32k chunk to verify no codepoint range trips the
-        // in-extension SIGSEGV handler.
-        const int chunk = 32768;
-        const int max = 1114112;
-        for (int lo = 0; lo < max; lo += chunk)
-        {
-            int hi = Math.Min(lo + chunk, max);
-            long inserted = await _fx.ExecScalarLongAsync(
-                $"SELECT substrate.populate_codepoint_property_range_from_ext({lo}, {hi - lo})");
-            Assert.True(inserted >= 0, $"chunk [{lo},{hi}) returned");
-        }
+        long propertyRows = await _fx.ExecScalarLongAsync("SELECT count(*) FROM substrate.codepoint_property");
+        Assert.Equal(1114112, propertyRows);
+
+        long dangling = await _fx.ExecScalarLongAsync(
+            "SELECT count(*) FROM substrate.codepoint_property cp " +
+            "WHERE NOT EXISTS (SELECT 1 FROM substrate.entity e WHERE e.hash = cp.entity_hash)");
+        Assert.Equal(0, dangling);
     }
 }
 

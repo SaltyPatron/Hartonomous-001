@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Decomposers.Safetensors.Passes;
 
@@ -26,7 +27,7 @@ internal sealed class RecordingBatch : IIngestionBatch
 {
     public string ProvenanceCode { get; set; } = "test_provenance";
 
-    public List<(byte[] Hash, string TypeCode)> Entities { get; } = [];
+    public List<(Hash32 Hash, string TypeCode)> Entities { get; } = [];
     public List<RecordedEdge> Edges { get; } = [];
     public List<(string Junction, EntityHandle Entity, int RefId, double? Mu, string AttestationType)> Junctions { get; } = [];
     public List<(EntityHandle Entity, string PhysType, byte[] Wkb)> Physicalities { get; } = [];
@@ -36,7 +37,7 @@ internal sealed class RecordingBatch : IIngestionBatch
     public List<(EntityHandle Entity, string Arena, double Mu, string AttestationType)> Significances { get; } = [];
     public List<(EntityHandle Entity, long ModelSourceId)> ModelSources { get; } = [];
 
-    public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
+    public EntityHandle AddEntity(Hash32 hash, string entityTypeCode)
     {
         Entities.Add((hash, entityTypeCode));
         return new EntityHandle(hash, entityTypeCode);
@@ -44,12 +45,37 @@ internal sealed class RecordingBatch : IIngestionBatch
 
     public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
     {
-        Edges.Add(new RecordedEdge(edgeTypeCode, provenanceCode, members.ToArray(), Array.Empty<EdgeSignificanceSpec>()));
+        Edges.Add(new RecordedEdge(
+            edgeTypeCode,
+            provenanceCode,
+            members.ToArray(),
+            Array.Empty<EdgeSignificanceSpec>(),
+            Array.Empty<EdgeRatingEvent>()));
     }
 
     public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members, ReadOnlySpan<EdgeSignificanceSpec> significance)
     {
-        Edges.Add(new RecordedEdge(edgeTypeCode, provenanceCode, members.ToArray(), significance.ToArray()));
+        Edges.Add(new RecordedEdge(
+            edgeTypeCode,
+            provenanceCode,
+            members.ToArray(),
+            significance.ToArray(),
+            Array.Empty<EdgeRatingEvent>()));
+    }
+
+    public void AddEdge(
+        string edgeTypeCode,
+        string provenanceCode,
+        ReadOnlySpan<EdgeMemberSpec> members,
+        ReadOnlySpan<EdgeSignificanceSpec> significance,
+        ReadOnlySpan<EdgeRatingEvent> events)
+    {
+        Edges.Add(new RecordedEdge(
+            edgeTypeCode,
+            provenanceCode,
+            members.ToArray(),
+            significance.ToArray(),
+            events.ToArray()));
     }
 
     public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null, string attestationTypeCode = "lexical_curated_relation")
@@ -102,4 +128,5 @@ internal sealed record RecordedEdge(
     string EdgeTypeCode,
     string ProvenanceCode,
     EdgeMemberSpec[] Members,
-    EdgeSignificanceSpec[] Significance);
+    EdgeSignificanceSpec[] Significance,
+    EdgeRatingEvent[] RatingEvents);

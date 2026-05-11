@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Decomposition;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Core.Text;
@@ -73,9 +74,9 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     /// </summary>
     protected EntityHandle IngestText(IIngestionBatch batch, string text)
     {
-        if (_textCache.TryGet(text, out byte[]? cachedHash))
+        if (_textCache.TryGet(text, out Hash32 cachedHash))
         {
-            return batch.AddEntity(cachedHash!, "text_composition");
+            return batch.AddEntity(cachedHash, "text_composition");
         }
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         // In-process native call. libhartonomous's hartonomous_text_decompose
@@ -96,9 +97,9 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
 
     protected async ValueTask<EntityHandle> IngestTextAsync(IRecordSink sink, string text, CancellationToken ct)
     {
-        if (_textCache.TryGet(text, out byte[]? cachedHash))
+        if (_textCache.TryGet(text, out Hash32 cachedHash))
         {
-            return await EmitEntityAsync(sink, cachedHash!, "text_composition", ProvenanceCode, ct).ConfigureAwait(false);
+            return await EmitEntityAsync(sink, cachedHash, "text_composition", ProvenanceCode, ct).ConfigureAwait(false);
         }
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         Hartonomous.Core.Text.TextDecomposeResult r = await _substrateTextDecomposer.EmitAsync(
@@ -142,18 +143,18 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     /// re-emit hundreds of substrate records per occurrence. With the cache
     /// they short-circuit to a single EntityRecord registration.
     /// </summary>
-    protected override bool TryGetCachedTextHash(string text, out byte[]? hash)
+    protected override bool TryGetCachedTextHash(string text, out Hash32 hash)
     {
-        if (_textCache.TryGet(text, out byte[]? cached))
+        if (_textCache.TryGet(text, out Hash32 cached))
         {
             hash = cached;
             return true;
         }
-        hash = null;
+        hash = default;
         return false;
     }
 
-    protected override void CacheTextHash(string text, byte[] hash)
+    protected override void CacheTextHash(string text, Hash32 hash)
     {
         _textCache.Add(text, hash);
     }
@@ -165,20 +166,20 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     /// process.
     /// </summary>
     protected override bool TryGetCachedTextEntry(
-        string text, out byte[]? hash, out (double X, double Y, double Z, double M) centroid)
+        string text, out Hash32 hash, out (double X, double Y, double Z, double M) centroid)
     {
-        if (_textCache.TryGet(text, out byte[]? cached) && _centroidCache.TryGetValue(text, out var c))
+        if (_textCache.TryGet(text, out Hash32 cached) && _centroidCache.TryGetValue(text, out var c))
         {
             hash = cached;
             centroid = c;
             return true;
         }
-        hash = null;
+        hash = default;
         centroid = default;
         return false;
     }
 
-    protected override void CacheTextEntry(string text, byte[] hash, (double X, double Y, double Z, double M) centroid)
+    protected override void CacheTextEntry(string text, Hash32 hash, (double X, double Y, double Z, double M) centroid)
     {
         _textCache.Add(text, hash);
         // ConcurrentDictionary indexer is atomic; last-writer-wins is fine

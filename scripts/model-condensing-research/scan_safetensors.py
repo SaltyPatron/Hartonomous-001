@@ -300,7 +300,7 @@ def process_file(
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--root", type=Path, default=Path(r"D:\Models\hub")
+        "--root", type=Path, default=Path("/vault/Data/hub")
     )
     p.add_argument("--out", type=Path, default=None)
     p.add_argument("--max-models", type=int, default=None)

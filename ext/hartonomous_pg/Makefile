@@ -66,7 +66,10 @@ PG_CPPFLAGS  = -I$(srcdir)/../libhartonomous/include
 #                                   entry points) so backtrace_symbols can resolve
 #                                   internal helper names instead of "??".
 PG_CFLAGS   += -fno-lto -g3 -O0 -fno-inline -fno-omit-frame-pointer
-SHLIB_LINK   = -L/usr/local/lib -lhartonomous -fno-lto -Wl,--export-dynamic
+SHLIB_LINK   = -L$(shell $(PG_CONFIG) --pkglibdir) -L/usr/local/lib \
+               -Wl,--no-as-needed -lhartonomous -latomic -Wl,--as-needed \
+               -fno-lto -Wl,--export-dynamic \
+               -Wl,-rpath,$(shell $(PG_CONFIG) --pkglibdir)
 
 REGRESS      = hartonomous_test
 REGRESS_OPTS = --inputdir=test
@@ -80,9 +83,15 @@ include $(PGXS)
 # the blob deploy on as a post-install action.
 .PHONY: install-ucd-blob
 install-ucd-blob:
-	@mkdir -p $(UCD_BLOB_DIR)/blocks
-	@cp -f $(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.idx $(UCD_BLOB_DIR)/
-	@cp -f $(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.reverse.bin $(UCD_BLOB_DIR)/
-	@cp -f $(UCD_BLOB_SRC)/blocks/*.bin $(UCD_BLOB_DIR)/blocks/
-	@echo "hartonomous-ucd: deployed $(UCD_BLOB_DIR)"
+	@if test -f "$(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.idx" && \
+	    test -f "$(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.reverse.bin" && \
+	    test -d "$(UCD_BLOB_SRC)/blocks"; then \
+		mkdir -p "$(UCD_BLOB_DIR)/blocks"; \
+		cp -f "$(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.idx" "$(UCD_BLOB_DIR)/"; \
+		cp -f "$(UCD_BLOB_SRC)/hartonomous-ucd-17.0.0.reverse.bin" "$(UCD_BLOB_DIR)/"; \
+		cp -f "$(UCD_BLOB_SRC)"/blocks/*.bin "$(UCD_BLOB_DIR)/blocks/"; \
+		echo "hartonomous-ucd: deployed $(UCD_BLOB_DIR)"; \
+	else \
+		echo "hartonomous-ucd: blob artifacts absent; libhartonomous embedded catalog fallback remains active"; \
+	fi
 install: install-ucd-blob

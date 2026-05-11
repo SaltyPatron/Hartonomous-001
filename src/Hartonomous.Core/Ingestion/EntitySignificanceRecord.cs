@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -13,5 +15,5 @@ namespace Hartonomous.Core.Ingestion;
 public sealed record EntitySignificanceRecord(
     string ContextTypeCode,
     string AttestationTypeCode,
-    byte[] EntityHash,
+    Hash32 EntityHash,
     double InitialMu) : IngestionRecord;

@@ -81,7 +81,9 @@ internal static class TatoebaCsvReader
             {
                 continue;
             }
-            yield return new TatoebaAudioRow(sid, aid, parts[2]);
+            string license = parts.Length > 3 ? parts[3] : string.Empty;
+            string attributionUrl = parts.Length > 4 ? parts[4] : string.Empty;
+            yield return new TatoebaAudioRow(sid, aid, parts[2], license, attributionUrl);
         }
     }
 }

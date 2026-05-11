@@ -8,11 +8,11 @@ namespace Hartonomous.Core.Decomposition;
 
 public static class EntityContentHashResolver
 {
-    public static IReadOnlyList<byte[]> GetCandidateHashes(
+    public static IReadOnlyList<Hash32> GetCandidateHashes(
         string content,
         IReadOnlyList<string> entityTypeCodes)
     {
-        HashSet<byte[]> hashes = new(ByteArrayEqualityComparer.Instance);
+        HashSet<Hash32> hashes = [];
 
         AddSurfaceHashes(content, entityTypeCodes, hashes);
 
@@ -28,9 +28,9 @@ public static class EntityContentHashResolver
     private static void AddSurfaceHashes(
         string content,
         IReadOnlyList<string> entityTypeCodes,
-        HashSet<byte[]> hashes)
+        HashSet<Hash32> hashes)
     {
-        hashes.Add(Blake3.Hash(Encoding.UTF8.GetBytes(content).AsSpan()));
+        hashes.Add(Blake3.Hash32(Encoding.UTF8.GetBytes(content).AsSpan()));
 
         if (RequiresStructuredTextHash(entityTypeCodes))
         {
@@ -108,19 +108,19 @@ public static class EntityContentHashResolver
         return true;
     }
 
-    private static byte[] ComputeWordFormHash(string form)
+    private static Hash32 ComputeWordFormHash(string form)
         => SubstrateTextDecomposer.ComputeRootHash(
             Encoding.UTF8.GetBytes(form).AsSpan(),
             "word_form");
 
-    private static byte[] HashCodepoint(int cpValue)
+    private static Hash32 HashCodepoint(int cpValue)
     {
         Span<byte> cpBytes = stackalloc byte[4];
         cpBytes[0] = (byte)(cpValue >> 24);
         cpBytes[1] = (byte)(cpValue >> 16);
         cpBytes[2] = (byte)(cpValue >> 8);
         cpBytes[3] = (byte)cpValue;
-        return Blake3.Hash(cpBytes);
+        return Blake3.Hash32(cpBytes);
     }
 
 }

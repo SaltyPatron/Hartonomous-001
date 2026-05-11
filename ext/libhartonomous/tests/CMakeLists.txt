@@ -30,6 +30,7 @@ add_executable(hartonomous_tests
     test_box4d.cc
     test_trajectory_4d.cc
     test_glicko_bulk.cc
+    test_ucd_tables.cc
 )
 
 target_link_libraries(hartonomous_tests

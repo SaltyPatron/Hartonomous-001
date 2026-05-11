@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include <omp.h>
 
@@ -29,6 +30,28 @@ typedef struct {
     double s;
     int64_t j;
 } kn_t;
+
+typedef struct {
+    int64_t lo;
+    int64_t hi;
+    uint8_t used;
+} pair_key_t;
+
+static uint64_t hash_pair_key(int64_t lo, int64_t hi) {
+    uint64_t h = (uint64_t)lo;
+    h ^= (uint64_t)hi + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
+    h ^= h >> 33;
+    return h;
+}
+
+static int mul_size_overflows(int64_t a, int64_t b, size_t elem_size) {
+    if (a < 0 || b < 0) return 1;
+    if ((uint64_t)a > SIZE_MAX / (uint64_t)b) return 1;
+    uint64_t ab = (uint64_t)a * (uint64_t)b;
+    return ab > SIZE_MAX / elem_size;
+}
 
 /* Min-heap keyed by (s asc, j desc) so the weakest neighbour (smallest s, or
  * on ties the LARGER col index) is at the top and gets evicted first. That way
@@ -83,6 +106,7 @@ int hartonomous_knn_cosine_graph_f64(
     if (rows_normalized == NULL || out_row_ptr == NULL || out_col_idx == NULL ||
         out_values == NULL || out_nnz == NULL) return -1;
     if (n <= 0 || d <= 0 || k <= 0 || k >= n) return -2;
+    if (mul_size_overflows(n, k, sizeof(kn_t))) return -3;
 
     const int64_t CHUNK = 64;
 
@@ -97,6 +121,13 @@ int hartonomous_knn_cosine_graph_f64(
 
     /* One similarity-block buffer per thread so the inner loop is thread-local. */
     int max_threads = omp_get_max_threads();
+    if (max_threads <= 0 ||
+        (uint64_t)max_threads > SIZE_MAX / (uint64_t)CHUNK ||
+        (uint64_t)max_threads * (uint64_t)CHUNK > SIZE_MAX / (uint64_t)n ||
+        (uint64_t)max_threads > SIZE_MAX / (uint64_t)k) {
+        free(topk);
+        return -3;
+    }
     double* sim_all = (double*)malloc((size_t)max_threads * (size_t)CHUNK * (size_t)n * sizeof(double));
     kn_t* heap_all = (kn_t*)malloc((size_t)max_threads * (size_t)k * sizeof(kn_t));
     if (!sim_all || !heap_all) {
@@ -181,14 +212,21 @@ int hartonomous_knn_cosine_graph_f64(
      * collect all (min(i,j), max(i,j), w) tuples into a dedup hash, then
      * expand to CSR.
      */
+    if ((uint64_t)n > UINT64_MAX / (uint64_t)k / 4ULL) { free(topk); return -3; }
     const uint64_t pair_cap_want = (uint64_t)n * (uint64_t)k * 4;
     uint64_t cap = 16;
-    while (cap < pair_cap_want) cap <<= 1;
+    while (cap < pair_cap_want) {
+        if (cap > UINT64_MAX / 2ULL) { free(topk); return -3; }
+        cap <<= 1;
+    }
     uint64_t mask = cap - 1;
-    int64_t* pkeys = (int64_t*)malloc((size_t)cap * sizeof(int64_t));
+    if (cap > SIZE_MAX / sizeof(pair_key_t) || cap > SIZE_MAX / sizeof(double)) {
+        free(topk);
+        return -3;
+    }
+    pair_key_t* pkeys = (pair_key_t*)calloc((size_t)cap, sizeof(pair_key_t));
     double* pvals = (double*)malloc((size_t)cap * sizeof(double));
     if (!pkeys || !pvals) { free(pkeys); free(pvals); free(topk); return -9; }
-    for (uint64_t i = 0; i < cap; ++i) pkeys[i] = -1;
 
     for (int64_t i = 0; i < n; ++i) {
         const kn_t* row = topk + (size_t)i * (size_t)k;
@@ -197,18 +235,15 @@ int hartonomous_knn_cosine_graph_f64(
             if (j < 0) continue;
             int64_t lo = (i < j) ? i : j;
             int64_t hi = (i < j) ? j : i;
-            int64_t key = lo * n + hi;
-            uint64_t h = (uint64_t)key;
-            h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
-            h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
-            h ^= h >> 33;
-            h &= mask;
-            while (pkeys[h] != -1) {
-                if (pkeys[h] == key) break;
+            uint64_t h = hash_pair_key(lo, hi) & mask;
+            while (pkeys[h].used) {
+                if (pkeys[h].lo == lo && pkeys[h].hi == hi) break;
                 h = (h + 1) & mask;
             }
-            if (pkeys[h] == -1) {
-                pkeys[h] = key;
+            if (!pkeys[h].used) {
+                pkeys[h].lo = lo;
+                pkeys[h].hi = hi;
+                pkeys[h].used = 1;
                 pvals[h] = row[t].s;
             }
         }
@@ -216,10 +251,9 @@ int hartonomous_knn_cosine_graph_f64(
 
     for (int64_t i = 0; i <= n; ++i) out_row_ptr[i] = 0;
     for (uint64_t s = 0; s < cap; ++s) {
-        if (pkeys[s] == -1) continue;
-        int64_t key = pkeys[s];
-        int64_t lo = key / n;
-        int64_t hi = key % n;
+        if (!pkeys[s].used) continue;
+        int64_t lo = pkeys[s].lo;
+        int64_t hi = pkeys[s].hi;
         out_row_ptr[lo + 1]++;
         out_row_ptr[hi + 1]++;
     }
@@ -231,10 +265,9 @@ int hartonomous_knn_cosine_graph_f64(
     for (int64_t i = 0; i < n; ++i) cursor[i] = out_row_ptr[i];
 
     for (uint64_t s = 0; s < cap; ++s) {
-        if (pkeys[s] == -1) continue;
-        int64_t key = pkeys[s];
-        int64_t lo = key / n;
-        int64_t hi = key % n;
+        if (!pkeys[s].used) continue;
+        int64_t lo = pkeys[s].lo;
+        int64_t hi = pkeys[s].hi;
         double w = pvals[s];
         int64_t pos;
         pos = cursor[lo]++; out_col_idx[pos] = hi; out_values[pos] = w;

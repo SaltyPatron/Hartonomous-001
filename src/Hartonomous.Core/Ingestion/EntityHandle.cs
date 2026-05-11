@@ -1,4 +1,5 @@
 using System;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -20,21 +21,19 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public readonly struct EntityHandle : IEquatable<EntityHandle>
 {
-    public byte[] Hash { get; }
+    public Hash32 Hash { get; }
     public string EntityTypeCode { get; }
 
-    public EntityHandle(byte[] hash, string entityTypeCode)
+    public EntityHandle(Hash32 hash, string entityTypeCode)
     {
-        ArgumentNullException.ThrowIfNull(hash);
         ArgumentException.ThrowIfNullOrEmpty(entityTypeCode);
-        if (hash.Length != 32)
-        {
-            throw new ArgumentException(
-                $"EntityHandle requires a 32-byte BLAKE3 hash; got {hash.Length} bytes.",
-                nameof(hash));
-        }
         Hash = hash;
         EntityTypeCode = entityTypeCode;
+    }
+
+    public EntityHandle(byte[] hash, string entityTypeCode)
+        : this(new Hash32(hash), entityTypeCode)
+    {
     }
 
     public bool Equals(EntityHandle other)
@@ -43,7 +42,7 @@ public readonly struct EntityHandle : IEquatable<EntityHandle>
         {
             return false;
         }
-        return Hash.AsSpan().SequenceEqual(other.Hash.AsSpan());
+        return Hash.Equals(other.Hash);
     }
 
     public override bool Equals(object? obj) => obj is EntityHandle h && Equals(h);
@@ -52,9 +51,7 @@ public readonly struct EntityHandle : IEquatable<EntityHandle>
     {
         // BLAKE3 output is uniformly distributed; mix the type code with the
         // first 8 bytes of the hash for a fast, well-spread hash code.
-        ReadOnlySpan<byte> span = Hash;
-        long head = BitConverter.ToInt64(span);
-        return HashCode.Combine(EntityTypeCode, head);
+        return HashCode.Combine(EntityTypeCode, Hash);
     }
 
     public static bool operator ==(EntityHandle left, EntityHandle right) => left.Equals(right);
@@ -63,7 +60,6 @@ public readonly struct EntityHandle : IEquatable<EntityHandle>
     public override string ToString()
     {
         // Compact debug rendering: "type_code/<first-8-hex>...".
-        ReadOnlySpan<byte> span = Hash;
-        return $"{EntityTypeCode}/{Convert.ToHexString(span[..8]).ToLowerInvariant()}...";
+        return $"{EntityTypeCode}/{Hash.ToHexString()[..16]}...";
     }
 }

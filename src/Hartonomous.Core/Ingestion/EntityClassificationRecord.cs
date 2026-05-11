@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -12,6 +14,6 @@ namespace Hartonomous.Core.Ingestion;
 /// classifications on a pre-existing hash.
 /// </summary>
 public sealed record EntityClassificationRecord(
-    byte[] EntityHash,
+    Hash32 EntityHash,
     string EntityTypeCode,
     string ProvenanceCode) : IngestionRecord;

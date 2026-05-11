@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
+using Hartonomous.Core.Errors;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
@@ -17,13 +18,13 @@ namespace Hartonomous.Decomposers.Wiktionary;
 /// <summary>
 /// Streams the wiktextract JSONL into the substrate with the full semantic surface:
 /// <list type="bullet">
-///   <item>lemma entities + wikt_sense entities (content-hashed by gloss text)</item>
+///   <item>lemma entities + gloss/example text compositions</item>
 ///   <item>has_sense, has_gloss, has_example edges</item>
 ///   <item>has_etymology, has_pronunciation, has_hyphenation, has_wikidata edges
-///     (wikt_sense → document; text routed through TextDecomposer)</item>
-///   <item>has_form edges (lemma → inflected_form), inflection_of edges
-///     (inflected_form → lemma)</item>
-///   <item>translation_of edges (wikt_sense → foreign-language lemma) — produces
+///     (lemma → document; text routed through TextDecomposer)</item>
+///   <item>has_form edges (lemma → word_form), inflection_of edges
+///     (word_form → lemma)</item>
+///   <item>translation_of edges (lemma → foreign-language lemma) — produces
 ///     foreign lemma entities by Merkle identity, with entity_language junction
 ///     attached per WiktTranslation.LangCode</item>
 ///   <item>Eight semantic-relation edge types: synonym, antonym, hypernym, hyponym,
@@ -55,6 +56,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
     protected override ICodepointProperties CodepointProperties => _codepointProperties;
 
     private readonly string _jsonlPath;
+    private readonly string _configuredSource;
     private readonly ICodepointProperties _codepointProperties;
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
@@ -70,6 +72,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         IReferenceDataWriter? referenceDataWriter = null)
         : base(config, substrateTextDecomposer, logger)
     {
+        _configuredSource = config.SourceDirectory;
         _jsonlPath = ResolveJsonlPath(config.SourceDirectory);
         _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
@@ -79,22 +82,45 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 
     protected override IReadOnlyList<string> GetSourcePaths() => [_jsonlPath];
 
+    public override Task ValidateSourceAsync(CancellationToken ct)
+    {
+        if (!File.Exists(_jsonlPath))
+        {
+            string candidates = string.Join(", ", CandidateJsonlPaths(_configuredSource));
+            throw new SourceValidationException(
+                $"[wiktextract] Wiktionary JSONL source not found. Expected one of: {candidates}. "
+                + "Move the wiktextract .jsonl into /vault/Data/Wiktionary or pass --source / configure Hartonomous:Decomposers:Wiktionary:SourcePath explicitly.");
+        }
+
+        return Task.CompletedTask;
+    }
+
     private static string ResolveJsonlPath(string configured)
     {
-        if (File.Exists(configured))
+        foreach (string candidate in CandidateJsonlPaths(configured))
         {
-            return configured;
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
+
+        return Path.Combine(configured, "raw-wiktextract-data.jsonl");
+    }
+
+    private static IEnumerable<string> CandidateJsonlPaths(string configured)
+    {
+        if (Path.GetExtension(configured).Equals(".jsonl", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return configured;
+        }
+
         // Prefer the kaikki.org English-only extract when it's been dropped alongside
         // the raw multilingual master dump. The kaikki extract is ~3–5 GB vs the
         // master's ~21 GB and contains only English entries, so the language filter
         // becomes a no-op and the parser does no wasted work.
-        string kaikkiPath = Path.Combine(configured, "kaikki.org-dictionary-English.jsonl");
-        if (File.Exists(kaikkiPath))
-        {
-            return kaikkiPath;
-        }
-        return Path.Combine(configured, "raw-wiktextract-data.jsonl");
+        yield return Path.Combine(configured, "kaikki.org-dictionary-English.jsonl");
+        yield return Path.Combine(configured, "raw-wiktextract-data.jsonl");
     }
 
     protected override async Task DecomposeCoreAsync(
@@ -241,10 +267,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         continue;
                     }
                     EntityHandle hyphDoc = await IngestTextAsync(sink, repr, ct).ConfigureAwait(false);
-                    // The has_hyphenation edge is declared wikt_sense → text_composition
-                    // in seed; for entry-level hyphenations we use lemma as the source.
-                    // The substrate.edge_member only requires a valid (entity_type_id,
-                    // entity_hash) pair on each end, so this is structurally fine.
+                    // The has_hyphenation edge is lemma → text_composition; the
+                    // hyphenation pattern itself routes through canonical text.
                     await EmitEdgeByCodeAsync("has_hyphenation",
                     [
                         new EdgeMemberSpec(lemmaHandle, "source", 0),
@@ -284,10 +308,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 // ── Etymology templates: 8 distinct edge types based on Name. ──
                 // Templates carry args[1] = source-language code, args[2] = source-word,
                 // args[3] = gloss. We emit a foreign lemma entity for the source word
-                // and an etym_<kind> edge from the entry-level lemma. (When the wikt_sense
-                // for this entry isn't yet decided — etymology in wiktextract is entry-level
-                // not sense-level — we anchor at the lemma. Once Wiktionary moves to per-
-                // sense etymology in T2, anchor at wikt_sense instead.)
+                // and an etym_<kind> edge from the entry-level lemma. Etymology in
+                // wiktextract is entry-level, not sense-level, so the lemma is the
+                // substrate anchor.
                 foreach (WiktEtymologyTemplate t in entry.EtymologyTemplates)
                 {
                     string? edgeCode = EtymologyTemplateNameToEdgeCode(t.Name);
@@ -332,7 +355,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                     ]).ConfigureAwait(false);
                 }
 
-                // ── Translations (wikt_sense → foreign lemma; cross_lingual). ──
+                // ── Translations (lemma → foreign lemma; cross_lingual). ──
                 foreach (WiktTranslation tr in entry.Translations)
                 {
                     if (string.IsNullOrEmpty(tr.Word))
@@ -349,9 +372,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         await EmitJunctionAsync(sink, "entity_language", foreignLemma, tl, null, ct).ConfigureAwait(false);
                     }
 
-                    // translation_of: wikt_sense → lemma. We anchor at the source-language
-                    // lemma since per-sense translation lift is out of T0 scope. T1 will
-                    // anchor at the matched wikt_sense via WiktTranslation.Sense.
+                    // translation_of: source-language lemma → target-language lemma.
                     await EmitEdgeByCodeAsync("translation_of",
                     [
                         new EdgeMemberSpec(lemmaHandle,   "source", 0),
@@ -369,7 +390,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
                 entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Related,         "related",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
 
-                // ── wikt_sense entities + has_sense + has_gloss + has_example. ──
+                // ── Sense gloss/example/wikidata evidence on the lemma. ──
                 foreach (WiktSense sense in entry.Senses)
                 {
                     if (sense.Glosses.Count == 0)
@@ -383,7 +404,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         continue;
                     }
 
-                    // wikt_sense entity removed — sense is the lemma's
+                    // Sense entity removed — sense is the lemma's
                     // gloss/example/wikidata metadata, attached directly to
                     // the lemma. Multi-sense lemmas get N has_gloss edges
                     // (one per Wiktionary sense), each pointing to a different
@@ -434,6 +455,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 }
             }
 
+            await pipeline.DrainPendingAsync(ct).ConfigureAwait(false);
             await ReportProgressCheckpointAsync(force: true).ConfigureAwait(false);
 
             foreach (KeyValuePair<string, long> kv in edgeCountByType)

@@ -141,7 +141,7 @@ internal sealed partial class ModelPassOrchestrator
         byte[] archHash = BuildArchitectureSignature(arch);
 
         IIngestionBatch batch = _pipeline.CreateBatch(_provenanceCode);
-        EntityHandle modelEntity = batch.AddEntity(archHash, "model_architecture");
+        EntityHandle modelEntity = batch.AddEntity(new Hash32(archHash), "model_architecture");
         batch.AddJunction("model_architecture_class", modelEntity, archClassId);
         batch.AddEntityModelSource(modelEntity, modelSourceId);
 
@@ -218,7 +218,7 @@ internal sealed partial class ModelPassOrchestrator
             hashSw.Stop();
             Log.TensorHashed(_logger, tensorIdx, tensor.Name, hashSw.ElapsedMilliseconds);
 
-            EntityHandle tensorH = batch.AddEntity(tensorHash, "tensor");
+            EntityHandle tensorH = batch.AddEntity(new Hash32(tensorHash), "tensor");
             batch.AddEntityModelSource(tensorH, modelSourceId);
             // tensor_tensor_role junction will be re-emitted in §IX.3b math layer
             // once the classification dictionary from TupleResolver maps tensors
@@ -242,7 +242,7 @@ internal sealed partial class ModelPassOrchestrator
             {
                 await _pipeline.SubmitBatchAsync(batch, ct);
                 batch = _pipeline.CreateBatch(_provenanceCode);
-                modelEntity = batch.AddEntity(archHash, "model_architecture");
+                modelEntity = batch.AddEntity(new Hash32(archHash), "model_architecture");
                 batch.AddEntityModelSource(modelEntity, modelSourceId);
             }
         }

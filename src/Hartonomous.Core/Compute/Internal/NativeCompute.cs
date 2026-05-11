@@ -7,6 +7,11 @@ internal static partial class NativeCompute
 {
     private const string Library = "hartonomous";
 
+    static NativeCompute()
+    {
+        Native.HartonomousNativeLibraryResolver.EnsureRegistered();
+    }
+
     /// <summary>
     /// Native runtime info block. Matches the layout of
     /// <c>hartonomous_runtime_info_t</c> in <c>hartonomous.h</c>. Any change

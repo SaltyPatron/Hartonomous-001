@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Native;
 using Hartonomous.Core.Text;
 
 namespace Hartonomous.Core.Tests.Text;
@@ -25,7 +27,19 @@ public sealed class SubstrateTextDecomposerTests
         Assert.NotEqual((0d, 0d, 0d, 0d), result.RootCentroid);
         Assert.Contains(batch.Physicalities, row =>
             row.Type == "s3_position"
-            && row.Entity.Hash.AsSpan().SequenceEqual(result.RootHash));
+            && row.Entity.Hash.Equals(result.RootHash));
+    }
+
+    [Fact]
+    public void UcdTablesReady_WhenNativeTextDecomposerUsable_ReturnsTrue()
+    {
+        if (!TryUseNativeTextDecomposer())
+        {
+            return;
+        }
+
+        Assert.Equal(1, TextDecomposeNative.UcdCatalogReady());
+        Assert.Equal(1, TextDecomposeNative.UcdTablesReady());
     }
 
     private static bool TryUseNativeTextDecomposer()
@@ -44,12 +58,12 @@ public sealed class SubstrateTextDecomposerTests
     private sealed class RecordingBatch : IIngestionBatch
     {
         public string ProvenanceCode { get; } = "test";
-        public List<(byte[] Hash, string Type)> Entities { get; } = [];
+        public List<(Hash32 Hash, string Type)> Entities { get; } = [];
         public List<(EntityHandle Entity, string Type, byte[] Wkb)> Physicalities { get; } = [];
         public int EntityCount => Entities.Count;
         public int EdgeCount => 0;
 
-        public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
+        public EntityHandle AddEntity(Hash32 hash, string entityTypeCode)
         {
             Entities.Add((hash, entityTypeCode));
             return new EntityHandle(hash, entityTypeCode);

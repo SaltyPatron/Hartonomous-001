@@ -16,6 +16,7 @@ internal static class IngestionSql
     public static string GetExistingEntityHashes { get; } = Read("get_existing_entity_hashes.sql");
     public static string GetExistingEntityClassifications { get; } = Read("get_existing_entity_classifications.sql");
     public static string GetExistingEdges { get; } = Read("get_existing_edges.sql");
+    public static string GetExistingEdgeMembers { get; } = Read("get_existing_edge_members.sql");
     public static string GetExistingPhysicalities { get; } = Read("get_existing_physicalities.sql");
     public static string GetExistingSequenceRows { get; } = Read("get_existing_sequence_rows.sql");
 

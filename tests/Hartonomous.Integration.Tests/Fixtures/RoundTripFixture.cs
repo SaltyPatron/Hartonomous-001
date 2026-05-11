@@ -12,7 +12,7 @@ namespace Hartonomous.Integration.Tests.Fixtures;
 /// user's pipeline runs scripts/db/Bootstrap + scripts/seed/All before tests
 /// fire). Per the V1 plan's Phase 0 baseline.
 ///
-/// Real ingested-model snapshots are loaded by the test from D:\Models\... if
+/// Real ingested-model snapshots are loaded by the test from /vault/Data/... if
 /// present; otherwise the test that depends on them is skipped via
 /// <see cref="HasIngestedModel"/>.
 /// </summary>
@@ -29,7 +29,7 @@ public sealed class RoundTripFixture : IAsyncLifetime
         ConnectionString = Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
             ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
         ModelsRoot = Environment.GetEnvironmentVariable("HARTONOMOUS_MODELS_ROOT")
-            ?? @"D:\Models";
+            ?? "/vault/Data";
     }
 
     public Task InitializeAsync()

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
 using Hartonomous.Core.Text.Tokenizers;
@@ -51,7 +52,7 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
         int hiddenDim = (int)e.Info.Shape[1];
         if (vocabSize < 2 || hiddenDim < 1) { return; }
 
-        Dictionary<int, byte[]>? vocabHashes = ResolveVocabHashes(context, session, ct);
+        Dictionary<int, Hash32>? vocabHashes = ResolveVocabHashes(context, session, ct);
         if (vocabHashes is null || vocabHashes.Count == 0) { return; }
 
         double[] embed = SafetensorsReader.ReadTensorAsDouble(e.Info);
@@ -142,11 +143,11 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
             {
                 for (int j = i + 1; j < topTokens.Length; j++)
                 {
-                    byte[] hashA = vocabHashes[topTokens[i]];
-                    byte[] hashB = vocabHashes[topTokens[j]];
+                    Hash32 hashA = vocabHashes[topTokens[i]];
+                    Hash32 hashB = vocabHashes[topTokens[j]];
                     EntityHandle aH;
                     EntityHandle bH;
-                    if (CompareBytes(hashA, hashB) <= 0)
+                    if (hashA.CompareTo(hashB) <= 0)
                     {
                         aH = new EntityHandle(hashA, "word_form");
                         bH = new EntityHandle(hashB, "word_form");
@@ -210,7 +211,7 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
         return null;
     }
 
-    private static Dictionary<int, byte[]>? ResolveVocabHashes(
+    private static Dictionary<int, Hash32>? ResolveVocabHashes(
         ModelPassContext context, IPassSession session, CancellationToken ct)
     {
         string snapshotDir = context.Source.ModelDirectory;
@@ -224,7 +225,7 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
         try { model = HuggingFaceTokenizerParser.Parse(bytes); }
         catch (Exception ex) when (ex is not OperationCanceledException) { return null; } // BOUNDARY: malformed tokenizer.json disables attestation enrichment for this pass.
 
-        Dictionary<int, byte[]> map = new(model.Vocab.Count);
+        Dictionary<int, Hash32> map = new(model.Vocab.Count);
         foreach (KeyValuePair<int, VocabularyEntry> kv in model.Vocab)
         {
             ct.ThrowIfCancellationRequested();
@@ -239,7 +240,7 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
         return map;
     }
 
-    private static int[] TopKByValue(double[] norm, Dictionary<int, byte[]> vocabHashes, double noiseFloor, int k)
+    private static int[] TopKByValue(double[] norm, Dictionary<int, Hash32> vocabHashes, double noiseFloor, int k)
     {
         if (k < 1) { return Array.Empty<int>(); }
         (int Tok, double Val)[] buf = new (int, double)[k];
@@ -283,17 +284,6 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
                 minIdx = i;
             }
         }
-    }
-
-    private static int CompareBytes(byte[] a, byte[] b)
-    {
-        int min = Math.Min(a.Length, b.Length);
-        for (int i = 0; i < min; i++)
-        {
-            int c = a[i].CompareTo(b[i]);
-            if (c != 0) { return c; }
-        }
-        return a.Length.CompareTo(b.Length);
     }
 
     private static partial class Log

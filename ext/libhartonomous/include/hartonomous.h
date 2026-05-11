@@ -24,6 +24,10 @@ extern "C" {
 
 #define HARTONOMOUS_HASH_LEN 32
 
+typedef struct hartonomous_hash32 {
+    uint8_t bytes[HARTONOMOUS_HASH_LEN];
+} hartonomous_hash32_t;
+
 HARTONOMOUS_API const char* hartonomous_version(void);
 
 /* ── Runtime information ──────────────────────────────────────
@@ -273,7 +277,8 @@ HARTONOMOUS_API int hartonomous_tensor_decode_f64(
  * are 0 (no-op) or 1 (transpose). Cache-blocked, single-threaded, scalar +
  * compiler-vectorized. Same inputs → bit-identical output across runs.
  *
- * Returns 0 on success, -1 on null arg, -2 on size <= 0.
+ * Returns 0 on success, -1 on null arg, -2 on invalid shape,
+ * -3 when a valid int64_t shape cannot be represented by MKL_INT.
  */
 HARTONOMOUS_API int hartonomous_gemm_f64(
     int op_a, int op_b,
@@ -347,7 +352,9 @@ HARTONOMOUS_API int hartonomous_procrustes_f64(
  *   out_indices    — corpus index of each neighbour
  *   out_distances  — squared Euclidean distances (floored at 0)
  *
- * Returns 0 on success, -1 on null arg, -2 on bad shape, -9 on alloc.
+ * Returns 0 on success, -1 on null arg, -2 on bad shape,
+ * -3 when a valid int64_t shape cannot be represented by MKL_INT,
+ * -9 on alloc.
  */
 HARTONOMOUS_API int hartonomous_knearest_exact_f64(
     int64_t nq, int64_t nc, int64_t d,
@@ -745,8 +752,8 @@ HARTONOMOUS_API double hartonomous_hausdorff_4d(
 typedef struct hartonomous_text_record {
     int             kind;        /* HARTONOMOUS_REC_* */
     int             subkind;     /* entity-kind / phys-kind / sig-kind / 0 */
-    const uint8_t*  hash_a;      /* entity_hash | parent_hash */
-    const uint8_t*  hash_b;      /* content_hash | child_hash | 0 */
+    const uint8_t*  hash_a;      /* hartonomous_hash32_t bytes: entity_hash | parent_hash */
+    const uint8_t*  hash_b;      /* hartonomous_hash32_t bytes: content_hash | child_hash | 0 */
     int             int_param;   /* ordinal | rle_count | 0 */
     double          double_param;/* mu | 0 */
     const uint8_t*  wkb;         /* EWKB bytes | 0 */
@@ -779,6 +786,21 @@ HARTONOMOUS_API void hartonomous_ucd_unload(void);
  * 0 otherwise.
  */
 HARTONOMOUS_API int hartonomous_ucd_loaded_state(void);
+
+/*
+ * Returns 1 when the UCD atom catalog is loaded and representative atom
+ * lookups, centroid norms, and reverse hash lookups are internally
+ * consistent. This validates the client/native catalog independently from
+ * PostgreSQL seed materialization.
+ */
+HARTONOMOUS_API int hartonomous_ucd_catalog_ready(void);
+
+/*
+ * Returns 1 when every generated UCD table required by native text
+ * decomposition is linked into libhartonomous, 0 otherwise. Text
+ * decomposition refuses to run when this returns 0.
+ */
+HARTONOMOUS_API int hartonomous_ucd_tables_ready(void);
 
 /*
  * Per-codepoint atom accessors. All return -1 on failure
@@ -820,6 +842,7 @@ HARTONOMOUS_API int32_t hartonomous_ucd_cp_from_hash(const uint8_t hash32[32]);
  *   -1 on null required arg,
  *   -2 if hartonomous_ucd_load was not called or failed,
  *   -3 if utf8_len is 0 (callers should check before calling),
+ *   -4 if generated UCD normalization/segmentation tables are unavailable,
  *   any non-zero value returned by `emit` to abort the walk.
  */
 HARTONOMOUS_API int hartonomous_text_decompose(

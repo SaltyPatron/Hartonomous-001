@@ -1,8 +1,8 @@
 # scripts/ — Hartonomous ops tooling
 
-Modular PowerShell 7 scripts. One script per discrete operation. Every
-script is self-contained, idempotent where sensible, and `-CmdletBinding`
-with comment-based help — `Get-Help ./<script>.ps1 -Full` works everywhere.
+Linux-native Bash entrypoints live under `scripts/linux/`. Use these on Linux;
+they do not call PowerShell. The `.ps1` scripts are the original Windows
+orchestration surface.
 
 Shared logic lives in `lib/*.psm1`. Config defaults live in `config.psd1`
 and every value is overridable via environment variable.
@@ -10,6 +10,39 @@ and every value is overridable via environment variable.
 ---
 
 ## Quickstart
+
+### Linux
+
+| Goal | Command |
+|---|---|
+| Build all local artifacts | `scripts/hart build` |
+| Build .NET | `scripts/hart build dotnet --no-restore` |
+| Run DB-free .NET unit tests | `scripts/hart test unit --no-build` |
+| Build native library | `scripts/hart build native` |
+| Run native tests | `scripts/hart test native` |
+| Build extension SQL | `scripts/hart build extension-sql` |
+| Build/install local PG extension | `scripts/hart build pg-extension` |
+| Install already-built PG extension artifacts | `scripts/hart install pg-extension --copy` |
+| Dev symlink PG extension artifacts | `scripts/hart install pg-extension --symlink` |
+| Regenerate Unicode extension assets | `scripts/hart codegen unicode --ucd-root /path/to/UCD/latest` |
+| Create + bootstrap DB | `scripts/hart db create && scripts/hart db bootstrap` |
+| Reset DB destructively | `scripts/hart db reset --force` |
+| Run DB-backed smoke tests | `scripts/hart test smoke --no-build` |
+| Run DB-backed integration tests | `scripts/hart test integration --no-build` |
+| Run native + unit + DB-backed gates | `scripts/hart test all` |
+| Run a seed phase | `scripts/hart seed UcdUca --no-build` |
+| Substrate dashboard | `scripts/hart ops status` |
+
+The implementation lives in `scripts/linux/` and is intentionally Bash-first:
+no `pwsh`, no Windows path assumptions, and DB-backed gates are explicit instead
+of being mixed into plain unit validation. On Linux, DB commands target local
+PostgreSQL through `pg_config`, `psql`, and `HARTONOMOUS_DB`; Docker is kept as
+an explicit optional runtime under `scripts/hart docker ...` for Windows parity,
+not as the default Linux substrate. Unicode generated C/blob assets are
+an explicit offline `codegen` step; normal build, DB bootstrap, and seed consume
+the committed/generated extension assets without regenerating them.
+
+### Windows / PowerShell
 
 | Goal | Command |
 |---|---|
@@ -103,6 +136,12 @@ and every value is overridable via environment variable.
 | `AgentScaffolding.ps1` | Scan AI-facing scaffolding and standards docs for migration-era schema drift (`pwsh -File scripts/verify/AgentScaffolding.ps1`). |
 | `NoInlineSql.ps1` | Scan C# and normal ops scripts for inline SQL command bodies (`pwsh -File scripts/verify/NoInlineSql.ps1`). |
 | `compare_safetensors.py` | Compare exported safetensors files. |
+
+### Data acquisition helpers
+
+| Tool | Purpose |
+|---|---|
+| `download_seeds.py` | Download or backfill external seed datasets from `scripts/seeds.yaml`. Example: `python scripts/download_seeds.py --data-root /data/Unicode --dataset ucd-uca-full-mirror`. |
 
 ### `ops/`
 

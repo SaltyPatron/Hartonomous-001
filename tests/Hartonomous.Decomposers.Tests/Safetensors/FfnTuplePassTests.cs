@@ -73,7 +73,7 @@ public sealed class FfnTuplePassTests
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e => Assert.Equal("model_ffn_factor", e.EdgeTypeCode));
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.Significance, s => s.AttestationTypeCode == "model_ffn_full_path"));
+                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_ffn_full_path"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -122,7 +122,7 @@ public sealed class FfnTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.Significance, s => s.AttestationTypeCode == "model_ffn_full_path"));
+                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_ffn_full_path"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -175,7 +175,7 @@ public sealed class FfnTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.Significance, s => s.AttestationTypeCode == "model_moe_expert_response"));
+                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_moe_expert_response"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }

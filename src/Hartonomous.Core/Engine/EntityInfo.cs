@@ -1,4 +1,5 @@
 using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Engine;
 
@@ -24,5 +25,5 @@ public sealed record EntityInfo
     public string EntityTypeCode => Handle.EntityTypeCode;
 
     /// <summary>Convenience accessor for the BLAKE3 content hash.</summary>
-    public byte[] Hash => Handle.Hash;
+    public Hash32 Hash => Handle.Hash;
 }

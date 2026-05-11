@@ -73,12 +73,12 @@ public sealed class SubstrateFunctionSmokeTests
         long arenas = await _fx.ExecScalarLongAsync("SELECT count(*) FROM substrate.significance_context");
         long provenance = await _fx.ExecScalarLongAsync("SELECT count(*) FROM substrate.provenance");
 
-        Assert.True(entityTypes >= 50, $"entity_type rows: {entityTypes}");
-        Assert.True(edgeTypes >= 100, $"edge_type rows: {edgeTypes}");
+        Assert.Equal(21, entityTypes);
+        Assert.Equal(112, edgeTypes);
         Assert.Equal(7, edgeRoles);
-        Assert.True(attestation >= 14, $"attestation_type rows: {attestation}");
+        Assert.Equal(27, attestation);
         Assert.Equal(10, arenas);
-        Assert.True(provenance >= 10, $"provenance rows: {provenance}");
+        Assert.Equal(10, provenance);
     }
 
     [Fact]
@@ -95,9 +95,9 @@ public sealed class SubstrateFunctionSmokeTests
             "provenance_authority_corroboration",
             "model_input_embedding",
             "model_attention_qk_pattern",
-            "model_ffn_factor_alignment",
+            "model_attention_vo_pattern",
+            "model_cross_modal_alignment",
             "model_ffn_full_path",
-            "model_per_role_unit_circuit",
             "model_embedding_proximity",
         ];
         foreach (string code in requiredCodes)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Decomposition;
 
@@ -29,8 +30,8 @@ public sealed class TextIngestionCache
     private readonly object _gate = new();
     private readonly int _capacity;
     private readonly int _maxKeyLength;
-    private readonly LinkedList<KeyValuePair<string, byte[]>> _list = new();
-    private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, byte[]>>> _index;
+    private readonly LinkedList<KeyValuePair<string, Hash32>> _list = new();
+    private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, Hash32>>> _index;
 
     public TextIngestionCache(int capacity = 100_000, int maxKeyLength = 8192)
     {
@@ -44,7 +45,7 @@ public sealed class TextIngestionCache
         }
         _capacity = capacity;
         _maxKeyLength = maxKeyLength;
-        _index = new Dictionary<string, LinkedListNode<KeyValuePair<string, byte[]>>>(
+        _index = new Dictionary<string, LinkedListNode<KeyValuePair<string, Hash32>>>(
             capacity, StringComparer.Ordinal);
     }
 
@@ -71,16 +72,16 @@ public sealed class TextIngestionCache
         }
     }
 
-    public bool TryGet(string text, out byte[]? hash)
+    public bool TryGet(string text, out Hash32 hash)
     {
         if (text.Length > _maxKeyLength)
         {
-            hash = null;
+            hash = default;
             return false;
         }
         lock (_gate)
         {
-            if (_index.TryGetValue(text, out LinkedListNode<KeyValuePair<string, byte[]>>? node))
+            if (_index.TryGetValue(text, out LinkedListNode<KeyValuePair<string, Hash32>>? node))
             {
                 // Move-to-front: the just-touched node is now most recently used.
                 _list.Remove(node);
@@ -89,13 +90,13 @@ public sealed class TextIngestionCache
                 Hits++;
                 return true;
             }
-            hash = null;
+            hash = default;
             Misses++;
             return false;
         }
     }
 
-    public void Add(string text, byte[] hash)
+    public void Add(string text, Hash32 hash)
     {
         if (text.Length > _maxKeyLength)
         {
@@ -116,7 +117,7 @@ public sealed class TextIngestionCache
             if (_index.Count >= _capacity)
             {
                 // Evict least-recently-used (tail of list).
-                LinkedListNode<KeyValuePair<string, byte[]>>? lru = _list.Last;
+                LinkedListNode<KeyValuePair<string, Hash32>>? lru = _list.Last;
                 if (lru is not null)
                 {
                     _list.RemoveLast();
@@ -124,7 +125,7 @@ public sealed class TextIngestionCache
                     Evictions++;
                 }
             }
-            LinkedListNode<KeyValuePair<string, byte[]>> node = new(new KeyValuePair<string, byte[]>(text, hash));
+            LinkedListNode<KeyValuePair<string, Hash32>> node = new(new KeyValuePair<string, Hash32>(text, hash));
             _list.AddFirst(node);
             _index[text] = node;
         }

@@ -10,3 +10,6 @@
 [submodule "external/proj"]
 	path = external/proj
 	url = https://github.com/OSGeo/PROJ.git
+[submodule "external/spectra"]
+	path = external/spectra
+	url = https://github.com/yixuan/spectra.git

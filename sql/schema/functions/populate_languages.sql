@@ -14,8 +14,8 @@ BEGIN
     SELECT
         code,
         name,
-        scope::CHAR(1),
-        type::CHAR(1)
+        scope,
+        type
     FROM unnest(p_codes, p_names, p_scopes, p_types) AS t(code, name, scope, type)
     ON CONFLICT (code) DO UPDATE
         SET name  = EXCLUDED.name,

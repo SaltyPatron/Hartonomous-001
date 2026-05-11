@@ -32,10 +32,9 @@ namespace Hartonomous.Decomposers.WordNet;
 /// for each sense live on substrate.edge_significance keyed by the
 /// has_sense edge.
 ///
-/// External identifiers (WordNet offsets) are recorded as substrate content
-/// via has_wordnet_offset edges (synset → text_composition for the offset
-/// string). OMW joins via these edges to find synsets by their authoring
-/// offset, instead of computing matching identity hashes from placement.
+/// WordNet source offsets are phase-local join keys only. They are used to
+/// connect WordNet pointer rows and OMW rows to the emitted synset hash during
+/// this ingestion phase; they are not substrate entities or edges.
 ///
 /// Per-sense verb sentence frames are n-ary has_frame edges
 /// (lemma=source + frame_text=target + synset=context). The context role
@@ -62,12 +61,14 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
     private readonly IReferenceDataReader? _referenceDataReader;
     private readonly IJunctionWriter? _junctionWriter;
     private readonly IReferenceDataWriter? _referenceDataWriter;
+    private readonly IWordNetSynsetBridge _synsetBridge;
 
     public WordNetDecomposer(
         DecomposerConfig config,
         Hartonomous.Core.Text.SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<WordNetDecomposer> logger,
         ICodepointProperties codepointProperties,
+        IWordNetSynsetBridge synsetBridge,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
@@ -78,6 +79,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
         _referenceDataWriter = referenceDataWriter;
+        _synsetBridge = synsetBridge;
     }
 
     protected override IReadOnlyList<string> GetSourcePaths() =>
@@ -174,10 +176,9 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 new(System.Environment.ProcessorCount, 64, StringComparer.Ordinal);
 
             // offsetCode → content-pure synset_hash. Built in pass 1 (parallel),
-            // consumed in pass 2 (pointer resolution) and by OMW via
-            // has_wordnet_offset. ConcurrentDictionary so the parallel pass-1
-            // tasks can populate concurrently.
-            System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> offsetToSynsetHash =
+            // consumed in pass 2 for WordNet pointer resolution. OMW uses the
+            // same mappings through the phase-local WordNetSynsetBridge.
+            System.Collections.Concurrent.ConcurrentDictionary<string, Hash32> offsetToSynsetHash =
                 new(System.Environment.ProcessorCount, synsets.Count, StringComparer.Ordinal);
 
             void Bump(string code)
@@ -187,7 +188,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
             }
 
             // ── Pass 1: emit lemmas + synsets with content-pure hashes,
-            //           glosses, has_sense edges, junctions, has_wordnet_offset.
+            //           glosses, has_sense edges, and junctions.
             //
             // Parallelized over chunks, not individual synsets. Each worker owns
             // one local IIngestionBatch at a time and flushes only when the batch
@@ -224,15 +225,13 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         string offsetCode = $"{syn.Offset:D8}-{syn.SsType}";
 
                         List<EntityHandle> memberHandles = new(syn.Words.Count);
-                        List<byte[]> memberHashes = new(syn.Words.Count);
-                        List<(byte[] Hash, (double X, double Y, double Z, double M) Centroid)> memberPhysicalityComponents = new(syn.Words.Count);
+                        List<(Hash32 Hash, (double X, double Y, double Z, double M) Centroid)> memberPhysicalityComponents = new(syn.Words.Count);
                         foreach (SynsetWord sw in syn.Words)
                         {
-                            (EntityHandle h, byte[] lemmaHash, (double X, double Y, double Z, double M) lemmaCentroid) =
+                            (EntityHandle h, Hash32 lemmaHash, (double X, double Y, double Z, double M) lemmaCentroid) =
                                 EmitText(localBatch, sw.Word, _codepointProperties, "lemma", TrustPriorMu);
                             localBatch.AddSignificance(h, "source_authority", TrustPriorMu);
                             memberHandles.Add(h);
-                            memberHashes.Add(lemmaHash);
                             memberPhysicalityComponents.Add((lemmaHash, lemmaCentroid));
                             System.Threading.Interlocked.Increment(ref entityCount);
                         }
@@ -240,16 +239,16 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         // Synset content hash: Merkle over sorted member lemma hashes
                         // plus core text-decomposition hashes for the authored gloss
                         // content.
-                        (byte[] Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents = memberPhysicalityComponents
-                            .OrderBy(component => component.Hash, ByteArraySortComparer.Instance)
+                        (Hash32 Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents = memberPhysicalityComponents
+                            .OrderBy(component => component.Hash)
                             .ToArray();
-                        byte[][] sortedLemmaHashes = sortedMemberPhysicalityComponents
+                        Hash32[] sortedLemmaHashes = sortedMemberPhysicalityComponents
                             .Select(component => component.Hash)
                             .ToArray();
 
                         (string definition, List<string> examples) = WordNetParser.ParseGloss(syn.Gloss);
                         List<(string EdgeType, EntityHandle TextHandle)> glossEdges = [];
-                        List<byte[]> glossTextHashes = [];
+                        List<Hash32> glossTextHashes = [];
                         if (definition.Length > 0)
                         {
                             EntityHandle defDoc = IngestText(localBatch, definition);
@@ -272,13 +271,16 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                             glossTextHashes.Add(emptyGlossDoc.Hash);
                         }
 
-                        byte[][] synsetContent = new byte[sortedLemmaHashes.Length + glossTextHashes.Count][];
-                        Array.Copy(sortedLemmaHashes, synsetContent, sortedLemmaHashes.Length);
+                        Hash32[] synsetContent = new Hash32[sortedLemmaHashes.Length + glossTextHashes.Count];
+                        for (int i = 0; i < sortedLemmaHashes.Length; i++)
+                        {
+                            synsetContent[i] = sortedLemmaHashes[i];
+                        }
                         for (int i = 0; i < glossTextHashes.Count; i++)
                         {
                             synsetContent[sortedLemmaHashes.Length + i] = glossTextHashes[i];
                         }
-                        byte[] synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
+                        Hash32 synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
 
                         EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset");
                         AddSynsetPhysicality(localBatch, synsetHandle, sortedMemberPhysicalityComponents);
@@ -286,15 +288,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         System.Threading.Interlocked.Increment(ref entityCount);
 
                         offsetToSynsetHash[offsetCode] = synsetHash;
-
-                        byte[] offsetDocHash = WordNetSynsetIdentity.OffsetCodeHash(offsetCode);
-                        EntityHandle offsetDoc = localBatch.AddEntity(offsetDocHash, "text_composition");
-                        localBatch.AddEdge("has_wordnet_offset", ProvenanceCode,
-                        [
-                            new EdgeMemberSpec(synsetHandle, "source", 0),
-                            new EdgeMemberSpec(offsetDoc,    "target", 1),
-                        ]);
-                        Bump("has_wordnet_offset");
+                        _synsetBridge.Add(offsetCode, synsetHash);
 
                         string udPos = WordNetParser.PosCharToUdPos(WordNetParser.SsTypeToPos(syn.SsType));
                         if (posIdMap.TryGetValue(udPos, out int posId))
@@ -373,7 +367,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 ct.ThrowIfCancellationRequested();
 
                 string offsetCode = $"{syn.Offset:D8}-{syn.SsType}";
-                if (!offsetToSynsetHash.TryGetValue(offsetCode, out byte[]? srcHash))
+                if (!offsetToSynsetHash.TryGetValue(offsetCode, out Hash32 srcHash))
                 {
                     continue;
                 }
@@ -387,7 +381,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         continue;
                     }
                     string targetOffset = $"{ptr.TargetOffset:D8}-{ptr.TargetPos}";
-                    if (!offsetToSynsetHash.TryGetValue(targetOffset, out byte[]? targetHash))
+                    if (!offsetToSynsetHash.TryGetValue(targetOffset, out Hash32 targetHash))
                     {
                         continue;
                     }
@@ -520,7 +514,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
     private static void AddSynsetPhysicality(
         IIngestionBatch batch,
         EntityHandle synsetHandle,
-        (byte[] Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents)
+        (Hash32 Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents)
     {
         if (sortedMemberPhysicalityComponents.Length == 0)
         {
@@ -602,7 +596,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
         [LoggerMessage(Level = LogLevel.Warning, Message = "Verb sense_key mismatches vs index.sense: {Count} (synthetic key construction may be wrong for these — frames will be silently dropped)")]
         public static partial void VerbSenseKeyMismatches(ILogger logger, int count);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Morph exceptions: {Count} inflected_form entities + inflection_of edges")]
+        [LoggerMessage(Level = LogLevel.Information, Message = "Morph exceptions: {Count} word_form entities + inflection_of edges")]
         public static partial void MorphDone(ILogger logger, int count);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Edges by type: {Code}={Count}")]

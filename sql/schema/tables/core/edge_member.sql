@@ -11,8 +11,9 @@ CREATE TABLE substrate.edge_member (
     edge_role_id INT  NOT NULL REFERENCES substrate.edge_role(id),
     role_position INT NOT NULL DEFAULT 0,
     PRIMARY KEY (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
-    -- FKs application-enforced. Pipeline batch ordering guarantees entity
-    -- and edge rows precede edge_member rows.
+    -- FKs application-enforced. Streaming ingestion drains each record kind
+    -- independently, so consumers must treat edge/entity/member visibility as
+    -- eventually consistent within the phase until DrainPendingAsync/FlushAsync.
 ) PARTITION BY LIST (edge_type_id);
 
 COMMENT ON TABLE substrate.edge_member IS

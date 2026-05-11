@@ -1,4 +1,5 @@
 using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Text;
 
@@ -13,7 +14,7 @@ namespace Hartonomous.Core.Text;
 /// </summary>
 public readonly record struct TextDecomposeResult(
     EntityHandle RootHandle,
-    byte[] RootHash,
+    Hash32 RootHash,
     long EntitiesEmitted,
     long SequenceRowsEmitted,
     long PhysicalityRowsEmitted,

@@ -75,19 +75,15 @@ public sealed class TupleResolverBertTests
     }
 
     [Fact]
-    public void Embedding_PositionAndType_ClassifyAsSeparateLookupTuples()
+    public void Embedding_PositionAndType_AreNotWordLookupTuples()
     {
         TensorHandle pos = TupleResolverTestHelpers.Tensor("embeddings.position_embeddings.weight", [512, 384]);
         TensorHandle typ = TupleResolverTestHelpers.Tensor("embeddings.token_type_embeddings.weight", [2, 384]);
         TupleResolver resolver = new();
         (var classifications, _) = resolver.Resolve(ArchClass, [pos, typ]);
 
-        Assert.Equal(PrimitiveKind.Lookup, classifications[pos].Primitive);
-        Assert.Equal(TupleSlot.Table, classifications[pos].Slot);
-        Assert.Equal(ModalityHint.Position, classifications[pos].Modality);
-
-        Assert.Equal(PrimitiveKind.Lookup, classifications[typ].Primitive);
-        Assert.Equal(ModalityHint.Text, classifications[typ].Modality);
+        Assert.False(classifications.ContainsKey(pos));
+        Assert.False(classifications.ContainsKey(typ));
     }
 
     [Fact]

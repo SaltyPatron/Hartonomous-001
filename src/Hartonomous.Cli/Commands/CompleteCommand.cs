@@ -74,7 +74,7 @@ internal static class CompleteCommand
                     TopEntityType: "text_composition",
                     TrustMu: 1000.0));
             await pipeline.SubmitBatchAsync(batch, CancellationToken.None);
-            byte[] seedHash = ingest.RootHash;
+            byte[] seedHash = ingest.RootHash.ToByteArray();
 
             await pipeline.FlushAsync(CancellationToken.None);
 

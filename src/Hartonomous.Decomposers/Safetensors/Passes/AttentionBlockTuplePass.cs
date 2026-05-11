@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
@@ -66,7 +67,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         int hiddenDim = (int)e.Info.Shape[1];
         if (vocabSize < 2 || hiddenDim < 1) { return; }
 
-        (bool[] usable, byte[]?[] vocabHashByIdx) = ResolveVocabArrays(context, session, vocabSize, ct);
+        (bool[] usable, Hash32?[] vocabHashByIdx) = ResolveVocabArrays(context, session, vocabSize, ct);
         if (CountTrue(usable) == 0)
         {
             Log.NoTokenizer(_logger, context.Source.ModelId);
@@ -133,7 +134,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
 
     private static async Task<long> EmitChunkedQK(
         IPassSession session, ModelPassContext context,
-        bool[] usable, byte[]?[] vocabHashByIdx,
+        bool[] usable, Hash32?[] vocabHashByIdx,
         double[] embed, double[] qFlat, double[] kFlat,
         int vocabSize, int hiddenDim, int dProj,
         string attestationTypeCode, CancellationToken ct)
@@ -177,7 +178,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
 
     private static async Task<long> EmitChunkedVO(
         IPassSession session, ModelPassContext context,
-        bool[] usable, byte[]?[] vocabHashByIdx,
+        bool[] usable, Hash32?[] vocabHashByIdx,
         double[] embed, double[] vFlat, double[] oFlat,
         int vocabSize, int hiddenDim, int vCols, int oRows,
         string attestationTypeCode, CancellationToken ct)
@@ -233,7 +234,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
     /// </summary>
     private static async Task<long> ChunkedPairScoringFromMaterialized(
         IPassSession session, ModelPassContext context,
-        bool[] usable, byte[]?[] vocabHashByIdx,
+        bool[] usable, Hash32?[] vocabHashByIdx,
         double[] pq, double[] pk,
         int[] sources, int vocabSize, int dProj,
         string attestationTypeCode, double temperature, string edgeTypeCode,
@@ -326,17 +327,17 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
             for (int i = 0; i < sChunkLen; i++)
             {
                 int a = sources[sChunkStart + i];
-                byte[]? aHash = vocabHashByIdx[a];
+                Hash32? aHash = vocabHashByIdx[a];
                 if (aHash is null) { continue; }
 
                 for (int j = 0; j < topKFilled[i]; j++)
                 {
                     (int b, double signed) = topK[i][j];
-                    byte[]? bHash = vocabHashByIdx[b];
+                    Hash32? bHash = vocabHashByIdx[b];
                     if (bHash is null) { continue; }
 
-                    EntityHandle aH = new(aHash, "word_form");
-                    EntityHandle bH = new(bHash, "word_form");
+                    EntityHandle aH = new(aHash.Value, "word_form");
+                    EntityHandle bH = new(bHash.Value, "word_form");
                     double score = Sigmoid(signed / temperature);
 
                     EdgeRatingEvent[] events =
@@ -422,11 +423,11 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         return null;
     }
 
-    private static (bool[] Usable, byte[]?[] HashByIdx) ResolveVocabArrays(
+    private static (bool[] Usable, Hash32?[] HashByIdx) ResolveVocabArrays(
         ModelPassContext context, IPassSession session, int vocabSize, CancellationToken ct)
     {
         bool[] usable = new bool[vocabSize];
-        byte[]?[] hashByIdx = new byte[]?[vocabSize];
+        Hash32?[] hashByIdx = new Hash32?[vocabSize];
         string snapshotDir = context.Source.ModelDirectory;
         string tokenizerJson = Path.Combine(snapshotDir, "tokenizer.json");
         if (!File.Exists(tokenizerJson)) { return (usable, hashByIdx); }

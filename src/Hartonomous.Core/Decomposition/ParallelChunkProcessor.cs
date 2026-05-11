@@ -13,15 +13,14 @@ namespace Hartonomous.Core.Decomposition;
 /// but they all wait on the single producer.
 ///
 /// This processor lets a decomposer fan its chunk stream out across N
-/// worker tasks. Each task pulls a chunk from the source enumerable, runs
-/// the precompute → bulk-check → emit-diff orchestration, and pushes
-/// records into the (thread-safe) IRecordSink.EmitAsync.
+/// worker tasks. Each task pulls a chunk from the source enumerable, produces
+/// deterministic records, and pushes them into the pipeline's single
+/// substrate-diff funnel.
 ///
 /// Thread-safety contract:
 ///   - IRecordSink.EmitAsync is MPSC-safe by design (the pipeline's bounded
 ///     channels accept concurrent writers).
-///   - IIngestionPipeline.GetExisting*Async each open their own
-///     NpgsqlConnection — concurrent calls are fine.
+///   - IIngestionPipeline owns substrate-diff checks at the funnel boundary.
 ///   - The decomposer's per-chunk state must be local to the chunk; no
 ///     shared mutable state across worker tasks.
 /// </summary>
@@ -29,9 +28,9 @@ public static class ParallelChunkProcessor
 {
     /// <summary>
     /// Process an async source of chunks across <paramref name="degreeOfParallelism"/>
-    /// worker tasks. Each chunk is handed to <paramref name="processChunk"/>
-    /// which performs the substrate-aware ingestion (precompute candidates,
-    /// bulk-check, emit diff, fire rating events).
+    /// worker tasks. Each chunk is handed to <paramref name="processChunk"/>,
+    /// which produces deterministic records and emits them into the central
+    /// ingestion funnel.
     /// </summary>
     public static async Task RunAsync<TChunk>(
         IAsyncEnumerable<TChunk> source,
@@ -78,7 +77,7 @@ public static class ParallelChunkProcessor
     /// <summary>
     /// Default degree-of-parallelism heuristic for ingestion-bound work:
     /// half the host's logical core count, clamped to [4, 16]. Leaves
-    /// headroom for the pipeline's 10 drain tasks plus PG backends.
+    /// headroom for pipeline drain workers plus PG backends.
     /// </summary>
     public static int DefaultDegreeOfParallelism()
     {

@@ -33,7 +33,7 @@ python download_seeds.py --tier 1 --data-root D:\OtherModels
 ## Files
 
 - `seeds.yaml` — declarative catalog of every curated dataset (URL, source type, license, target path, tree-sitter grammar that will eventually decompose it). The single source of truth.
-- `download_seeds.py` — the driver. Reads `seeds.yaml`, dispatches to handlers per source type, tracks state in `D:\Models\seed_manifest.json`.
+- `download_seeds.py` — the driver. Reads `seeds.yaml`, dispatches to handlers per source type, tracks state in `/vault/Data/seed_manifest.json`.
 - `README.md` — this file.
 
 ## How it works
@@ -137,10 +137,10 @@ After running the script, verify with:
 
 ```powershell
 # How many datasets are in the manifest
-python -c "import json; m = json.load(open(r'D:\Models\seed_manifest.json')); print(len(m), 'datasets'); [print(' ', n) for n in sorted(m)]"
+python -c "import json; m = json.load(open('/vault/Data/seed_manifest.json')); print(len(m), 'datasets'); [print(' ', n) for n in sorted(m)]"
 
 # How much disk used per dataset
-python -c "import json, pathlib; m = json.load(open(r'D:\Models\seed_manifest.json')); [print(f'{sum(f[\"size\"] for f in d[\"files\"]) / 1024 / 1024:>10.1f} MB  {n}') for n, d in sorted(m.items())]"
+python -c "import json, pathlib; m = json.load(open('/vault/Data/seed_manifest.json')); [print(f'{sum(f[\"size\"] for f in d[\"files\"]) / 1024 / 1024:>10.1f} MB  {n}') for n, d in sorted(m.items())]"
 ```
 
 ## Idempotency and re-runs

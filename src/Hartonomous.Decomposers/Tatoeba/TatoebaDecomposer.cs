@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Hartonomous.Core;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
@@ -15,27 +15,22 @@ using Microsoft.Extensions.Logging;
 namespace Hartonomous.Decomposers.Tatoeba;
 
 /// <summary>
-/// Streams the Tatoeba exports (sentences.csv, links.csv, sentences_with_audio.csv) into
-/// the substrate. Three passes, each bounded in memory.
+/// Streams the Tatoeba sentence, translation-link, and audio exports into the
+/// substrate. Source-local sentence/audio IDs are phase-local join keys only.
 /// <list type="number">
-///   <item><b>Pass 1 — sentences.</b> tatoeba_sentence + text_composition + has_text +
-///     entity_language. Sentence identity is content-addressed against the Tatoeba ID
-///     (a stable external identifier used across every Tatoeba export + audio reference),
-///     mirroring the <c>ud_sentence</c> pattern used by <see cref="Hartonomous.Decomposers.Ud.UdDecomposer"/>.
-///     The text itself is a separately content-addressed <c>text_composition</c>, so
-///     identical sentence strings with different Tatoeba IDs share one text entity.</item>
+///   <item><b>Pass 1 — sentences.</b> text_composition + entity_language.
+///     Sentence identity is the canonical text root hash; Tatoeba IDs are source
+///     placement metadata used only to connect links during this pass. Identical
+///     sentence strings with different Tatoeba IDs share one text entity.</item>
 ///   <item><b>Pass 2 — translation links.</b> translation_link edges between two
-///     tatoeba_sentence entities. The decomposer re-emits both sentence hashes on each
+///     text_composition entities. The decomposer re-emits both sentence hashes on each
 ///     link batch; the ingestion pipeline's <c>ON CONFLICT (hash, entity_type_id) DO NOTHING</c>
 ///     dedupe means these collapse onto the pass-1 entities.</item>
-///   <item><b>Pass 3 — audio.</b> audio_recording entities + recording_of edges to the
-///     attested sentence + has_contributor edges to a text_composition holding the
-///     contributor handle. Waveform geometry, FFT/MFCC/pitch/onset analysis edges, and
-///     forced-alignment edges to specific tokens are the responsibility of the audio
-///     analysis-pass module (tasks #36/#66) — the audio entities created here are the
-///     substrate anchors those passes attach to.</item>
+///   <item><b>Pass 3 — audio.</b> audio_recording entities are hashed from the
+///     actual MP3 bytes, then linked to their attested sentence and contributor.
+///     Audio IDs are used only to locate files from the manifest.</item>
 /// </list>
-/// All three passes are resume-idempotent: re-running from scratch produces the same
+/// All passes are resume-idempotent: re-running from scratch produces the same
 /// final substrate state because every emitted entity and edge is content-addressed +
 /// ON CONFLICT DO NOTHING.
 /// </summary>
@@ -92,7 +87,8 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
     {
         string sentencesPath = Path.Combine(_rootDir, "sentences.csv");
         string linksPath = Path.Combine(_rootDir, "links.csv");
-        string audioPath = Path.Combine(_rootDir, "audio", "sentences_with_audio.csv");
+        string audioRoot = Path.Combine(_rootDir, "audio");
+        string audioPath = Path.Combine(audioRoot, "sentences_with_audio.csv");
 
         if (!File.Exists(sentencesPath))
         {
@@ -108,13 +104,13 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         long edgeCount = 0;
         int batchNum = 0;
 
-        // Map Tatoeba integer IDs to content hashes so pass 2 (links) and pass 3 (audio)
-        // can resolve sentences by ID without hashing source-specific identifiers.
+        // Map Tatoeba integer IDs to content hashes so later passes can resolve
+        // links/audio without persisting source-specific identifiers.
         Dictionary<int, byte[]> sentenceIdToHash = new(8_000_000);
 
         // ── Pass 1: sentences ──
-        // Each batch carries: tatoeba_sentence + text_composition + has_text edge +
-        // entity_language junction — all using EntityHandles in the same batch.
+        // Each batch carries: text_composition + entity_language junction — all
+        // using EntityHandles in the same batch.
         // No phase-wide ResolveEntityIdsAsync; the pipeline's ON CONFLICT (hash,
         // entity_type_id) DO NOTHING dedupes repeated emissions across passes.
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
@@ -156,7 +152,7 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         Log.Pass1Complete(Logger, pass1Count, entityCount, edgeCount);
 
         // ── Pass 2: translation links ──
-        // Both endpoints are tatoeba_sentence entities the prior pass already
+        // Both endpoints are text_composition entities the prior pass already
         // committed. Re-emit both AddEntity calls in this batch; ON CONFLICT
         // dedupe gives us in-batch handles that map to the existing substrate
         // rows. translation_link edge uses those handles inline.
@@ -199,8 +195,12 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
 
         // ── Pass 3: audio ──
         long pass3Count = 0;
+        long pass3MissingAudio = 0;
         if (File.Exists(audioPath))
         {
+            using TatoebaAudioIndex audioIndex = TatoebaAudioIndex.Build(audioRoot);
+            Log.AudioFilesIndexed(Logger, audioIndex.Count);
+
             batch = pipeline.CreateBatch(ProvenanceCode);
             foreach (TatoebaAudioRow ar in TatoebaCsvReader.ReadAudio(audioPath))
             {
@@ -214,7 +214,14 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
                     batch = pipeline.CreateBatch(ProvenanceCode);
                 }
 
-                EmitAudio(batch, ar, sentenceIdToHash, ref entityCount, ref edgeCount);
+                (bool emitted, long emittedEntities, long emittedEdges) =
+                    await EmitAudioAsync(batch, ar, sentenceIdToHash, audioIndex, ct).ConfigureAwait(false);
+                if (!emitted)
+                {
+                    pass3MissingAudio++;
+                }
+                entityCount += emittedEntities;
+                edgeCount += emittedEdges;
                 pass3Count++;
                 if (pass3Count % 250_000 == 0)
                 {
@@ -233,7 +240,7 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         {
             Log.AudioManifestMissing(Logger, audioPath);
         }
-        Log.Pass3Complete(Logger, pass3Count, entityCount, edgeCount);
+        Log.Pass3Complete(Logger, pass3Count, pass3MissingAudio, entityCount, edgeCount);
     }
 
     private void EmitSentence(
@@ -251,23 +258,11 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         // and writes directly to substrate. Same content from Tatoeba +
         // WordNet examples + Wiktionary citations + user prompts collapses
         // to ONE text_composition entity.
-        // Empty-text rows fall back to a stable Tatoeba-ID-derived hash so
-        // the sentence remains addressable for translation_link / recording_of.
-        byte[] sentHash;
-        EntityHandle sentEntity;
-        if (!string.IsNullOrEmpty(row.Text))
-        {
-            sentEntity = IngestText(batch, row.Text);
-            sentHash = sentEntity.Hash;
-            entityCount++;
-        }
-        else
-        {
-            sentHash = ComputeAtomicStringHash($"tatoeba_empty:{row.SentenceId}");
-            sentEntity = batch.AddEntity(sentHash, "text_composition");
-            batch.AddSignificance(sentEntity, "source_authority", TrustPriorMu);
-            entityCount++;
-        }
+        // Empty-text rows collapse through the same text path. Sentence IDs are
+        // placement/source metadata and must not enter the content hash.
+        EntityHandle sentEntity = IngestText(batch, row.Text);
+        byte[] sentHash = sentEntity.Hash.ToByteArray();
+        entityCount++;
 
         sentenceIdToHash[row.SentenceId] = sentHash;
 
@@ -291,8 +286,8 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
             return; // Source or target sentence not seen in pass 1.
         }
 
-        EntityHandle src = batch.AddEntity(srcHash, "text_composition");
-        EntityHandle tgt = batch.AddEntity(tgtHash, "text_composition");
+        EntityHandle src = batch.AddEntity(new Hash32(srcHash), "text_composition");
+        EntityHandle tgt = batch.AddEntity(new Hash32(tgtHash), "text_composition");
 
         batch.AddEdge(EdgeTranslationLink, "tatoeba",
         [
@@ -302,47 +297,72 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         edgeCount++;
     }
 
-    private void EmitAudio(
+    private async ValueTask<(bool Emitted, long Entities, long Edges)> EmitAudioAsync(
         IIngestionBatch batch,
         TatoebaAudioRow row,
         Dictionary<int, byte[]> sentenceIdToHash,
-        ref long entityCount,
-        ref long edgeCount)
+        TatoebaAudioIndex audioIndex,
+        CancellationToken ct)
     {
-        byte[] audioHash = ComputeAtomicStringHash($"tatoeba_audio:{row.AudioId}");
-        EntityHandle audioEntity = batch.AddEntity(audioHash, "audio_recording");
-        batch.AddSignificance(audioEntity, "source_authority", TrustPriorMu);
-        entityCount++;
-
         if (!sentenceIdToHash.TryGetValue(row.SentenceId, out byte[]? sentHash))
         {
-            return; // Sentence not seen in pass 1.
+            return (false, 0, 0);
         }
-        EntityHandle sentEntity = batch.AddEntity(sentHash, "text_composition");
-
-        batch.AddEdge(EdgeRecordingOf, "tatoeba",
-        [
-            new EdgeMemberSpec(audioEntity, "source", 0),
-            new EdgeMemberSpec(sentEntity, "target", 1),
-        ]);
-        edgeCount++;
-
-        if (!string.IsNullOrEmpty(row.Contributor))
+        Stream? audioStream = audioIndex.OpenRead(row.AudioId);
+        if (audioStream is null)
         {
-            // Contributor handle through SubstrateTextDecomposer (via IngestText)
-            // — same content from anywhere in the substrate (Wiktionary citation,
-            // user_session prompt referencing the contributor, etc.) collapses to
-            // ONE text_composition entity. C extension does the walk in C.
-            EntityHandle contribEntity = IngestText(batch, row.Contributor);
+            return (false, 0, 0);
+        }
+
+        long entityCount = 0;
+        long edgeCount = 0;
+        await using (audioStream.ConfigureAwait(false))
+        {
+            byte[] audioHash = await HashStreamAsync(audioStream, ct).ConfigureAwait(false);
+            EntityHandle audioEntity = batch.AddEntity(new Hash32(audioHash), "audio_recording");
+            batch.AddSignificance(audioEntity, "source_authority", TrustPriorMu);
             entityCount++;
 
-            batch.AddEdge(EdgeHasContributor, "tatoeba",
+            EntityHandle sentEntity = batch.AddEntity(new Hash32(sentHash), "text_composition");
+
+            batch.AddEdge(EdgeRecordingOf, ProvenanceCode,
             [
                 new EdgeMemberSpec(audioEntity, "source", 0),
-                new EdgeMemberSpec(contribEntity, "target", 1),
+                new EdgeMemberSpec(sentEntity, "target", 1),
             ]);
             edgeCount++;
+
+            if (!string.IsNullOrEmpty(row.Contributor))
+            {
+                EntityHandle contribEntity = IngestText(batch, row.Contributor);
+                entityCount++;
+
+                batch.AddEdge(EdgeHasContributor, ProvenanceCode,
+                [
+                    new EdgeMemberSpec(audioEntity, "source", 0),
+                    new EdgeMemberSpec(contribEntity, "target", 1),
+                ]);
+                edgeCount++;
+            }
         }
+
+        return (true, entityCount, edgeCount);
+    }
+
+    private static async ValueTask<byte[]> HashStreamAsync(Stream stream, CancellationToken ct)
+    {
+        Blake3Hasher hasher = Blake3Hasher.Create();
+        byte[] buffer = new byte[1024 * 1024];
+        while (true)
+        {
+            int read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+            hasher.Update(buffer.AsSpan(0, read));
+        }
+        return hasher.Finalize();
     }
 
     private static partial class Log
@@ -362,13 +382,17 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         [LoggerMessage(Level = LogLevel.Information, Message = "Tatoeba pass 2 complete: {Links} translation links, {Skipped} self-loops skipped, {Edges} total edges")]
         public static partial void Pass2Complete(ILogger logger, long links, long skipped, long edges);
 
+        [LoggerMessage(Level = LogLevel.Information, Message = "Tatoeba audio files indexed: {Count} MP3 files")]
+        public static partial void AudioFilesIndexed(ILogger logger, int count);
+
         [LoggerMessage(Level = LogLevel.Information, Message = "Tatoeba pass 3: {Count} audio manifest rows scanned")]
         public static partial void AudioScanned(ILogger logger, long count);
 
-        [LoggerMessage(Level = LogLevel.Information, Message = "Tatoeba pass 3 complete: {Rows} audio rows, {Entities} entities, {Edges} edges")]
-        public static partial void Pass3Complete(ILogger logger, long rows, long entities, long edges);
+        [LoggerMessage(Level = LogLevel.Information, Message = "Tatoeba pass 3 complete: {Rows} audio rows, {MissingAudio} missing/skipped, {Entities} entities, {Edges} edges")]
+        public static partial void Pass3Complete(ILogger logger, long rows, long missingAudio, long entities, long edges);
 
         [LoggerMessage(Level = LogLevel.Warning, Message = "Tatoeba audio manifest missing at {Path} — pass 3 skipped")]
         public static partial void AudioManifestMissing(ILogger logger, string path);
+
     }
 }

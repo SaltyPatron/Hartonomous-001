@@ -1,6 +1,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -105,6 +106,18 @@ TEST(Gemm, RejectsBadShape) {
     EXPECT_EQ(-2, hartonomous_gemm_f64(0, 0, 0, 1, 1, 1.0, &d, 1, &d, 1, 0.0, &d, 1));
     EXPECT_EQ(-2, hartonomous_gemm_f64(2, 0, 1, 1, 1, 1.0, &d, 1, &d, 1, 0.0, &d, 1));
     EXPECT_EQ(-2, hartonomous_gemm_f64(0, 0, 1, 1, 1, 1.0, &d, 0, &d, 1, 0.0, &d, 1));
+}
+
+TEST(Gemm, RejectsMklIntOverflowBeforeCast) {
+    double d = 0.0;
+    EXPECT_EQ(-3, hartonomous_gemm_f64(
+        0, 0,
+        static_cast<int64_t>(std::numeric_limits<int>::max()) + 1, 1, 1,
+        1.0,
+        &d, 1,
+        &d, 1,
+        0.0,
+        &d, 1));
 }
 
 TEST(Gemm, KnnRepresentativeSize) {

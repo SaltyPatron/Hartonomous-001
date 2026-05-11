@@ -5,6 +5,7 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 TEST(KnearestExact, TrivialSelfQueryReturnsSelfFirst) {
     // Corpus is just its own queries. Top-1 must be self at distance 0.
@@ -109,4 +110,21 @@ TEST(KnearestExact, RejectsBadArgs) {
     EXPECT_EQ(hartonomous_knearest_exact_f64(0, 3, 2, pts.data(), pts.data(), 2, idx.data(), dist.data()), -2);
     EXPECT_EQ(hartonomous_knearest_exact_f64(2, 3, 2, pts.data(), pts.data(), 0, idx.data(), dist.data()), -2);
     EXPECT_EQ(hartonomous_knearest_exact_f64(2, 3, 2, pts.data(), pts.data(), 5, idx.data(), dist.data()), -2);  // k > nc
+}
+
+TEST(KnearestExact, RejectsOutputShapeOverflowBeforeAllocation) {
+    double point = 0.0;
+    int64_t idx = 0;
+    double dist = 0.0;
+
+    EXPECT_EQ(hartonomous_knearest_exact_f64(
+        std::numeric_limits<int64_t>::max() / 2,
+        4,
+        4,
+        &point,
+        &point,
+        4,
+        &idx,
+        &dist),
+        -3);
 }

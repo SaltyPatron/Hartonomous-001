@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 import platform
@@ -62,10 +63,24 @@ try:
 except ImportError:
     sys.exit("Missing dependency: pip install tqdm")
 
-DEFAULT_DATA_ROOT = Path(r"D:\Models") if platform.system() == "Windows" else Path.home() / "models"
+DEFAULT_DATA_ROOT = Path("/vault/Data")
 SEEDS_YAML = Path(__file__).parent / "seeds.yaml"
 MANIFEST_FILENAME = "seed_manifest.json"
 USER_AGENT = "Hartonomous-substrate-seed-downloader/1.0"
+
+
+class HrefExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        for key, value in attrs:
+            if key.lower() == "href" and value:
+                self.hrefs.append(value)
+                return
 
 # ─────────────────────────────────────────────────────────────────────────
 # Logging helpers
@@ -206,6 +221,24 @@ def file_inventory(target_dir: Path, sha256_files: bool = False) -> list[dict]:
             except OSError:
                 pass
     return out
+
+
+def target_has_content(target: Path) -> bool:
+    if target.is_file():
+        return True
+    if not target.exists():
+        return False
+    return any(p.name != MANIFEST_FILENAME for p in target.iterdir())
+
+
+def missing_required_files(ds: dict, data_root: Path) -> list[str]:
+    required = ds.get("required_files", [])
+    missing: list[str] = []
+    for rel in required:
+        path = data_root / rel
+        if not path.is_file():
+            missing.append(rel)
+    return missing
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -389,11 +422,95 @@ def handle_hf_dataset(ds: dict, target: Path, session: requests.Session, dry_run
     return True, ""
 
 
+def extract_listing_hrefs(html: str) -> list[str]:
+    parser = HrefExtractor()
+    parser.feed(html)
+    return parser.hrefs
+
+
+def fetch_directory_listing(url: str, session: requests.Session) -> list[str]:
+    headers = {"User-Agent": USER_AGENT}
+    resp = session.get(url, headers=headers, timeout=60)
+    resp.raise_for_status()
+    return extract_listing_hrefs(resp.text)
+
+
+def should_follow_href(href: str) -> bool:
+    if not href or href.startswith("#") or href.startswith("?"):
+        return False
+    lower = href.lower()
+    if lower.startswith("mailto:") or lower.startswith("javascript:"):
+        return False
+    return True
+
+
+def handle_http_mirror(ds: dict, target: Path, session: requests.Session, dry_run: bool) -> tuple[bool, str]:
+    urls: list[str] = ds.get("urls", [])
+    if not urls:
+        return False, "missing_urls"
+    if dry_run:
+        for url in urls:
+            log_info(f"DRY-RUN would mirror {url} into {target}")
+        return True, "dry_run"
+
+    target.mkdir(parents=True, exist_ok=True)
+    visited_dirs: set[str] = set()
+    downloaded_files: set[str] = set()
+
+    for root_url in urls:
+        parsed_root = urllib.parse.urlparse(root_url)
+        root_prefix = parsed_root.path if parsed_root.path.endswith("/") else parsed_root.path + "/"
+        pending = [root_url]
+
+        while pending:
+            current = pending.pop()
+            if current in visited_dirs:
+                continue
+            visited_dirs.add(current)
+
+            try:
+                hrefs = fetch_directory_listing(current, session)
+            except Exception as e:
+                return False, f"mirror_listing_failed: {current}: {e}"
+
+            for href in hrefs:
+                if not should_follow_href(href):
+                    continue
+
+                resolved = urllib.parse.urljoin(current, href)
+                parsed = urllib.parse.urlparse(resolved)
+                if parsed.scheme not in ("http", "https"):
+                    continue
+                if parsed.netloc != parsed_root.netloc:
+                    continue
+                if not parsed.path.startswith(root_prefix):
+                    continue
+
+                if resolved.endswith("/"):
+                    pending.append(resolved)
+                    continue
+
+                rel_path = Path(parsed.path.lstrip("/"))
+                dest = target / rel_path
+                file_key = dest.as_posix()
+                if file_key in downloaded_files:
+                    continue
+                downloaded_files.add(file_key)
+                log_info(f"GET {resolved}")
+                try:
+                    http_download_with_progress(resolved, dest, session)
+                except Exception as e:
+                    return False, f"mirror_download_failed: {resolved}: {e}"
+
+    return True, ""
+
+
 HANDLERS = {
     "manual": handle_manual,
     "http_file": handle_http_file,
     "http_files": handle_http_files,
     "http_archive": handle_http_archive,
+    "http_mirror": handle_http_mirror,
     "git": handle_git,
     "hf_dataset": handle_hf_dataset,
 }
@@ -431,13 +548,14 @@ def process_one(
 ) -> bool:
     name = ds["name"]
     target = data_root / ds["target"]
+    missing_before = missing_required_files(ds, data_root)
 
     # Idempotency check
-    if not force and manifest.has(name):
+    if not force and manifest.has(name) and not missing_before:
         log_skip(f"{name} (manifest hit; use --force to redownload)")
         return True
 
-    if not force and target.exists() and any(target.iterdir() if target.is_dir() else [target]):
+    if not force and target.exists() and target_has_content(target) and not missing_before:
         log_skip(f"{name} (target {target} non-empty; not in manifest, recording without re-download; use --force to redownload)")
         # Backfill manifest entry without re-downloading
         if not dry_run:
@@ -470,6 +588,11 @@ def process_one(
 
     if dry_run:
         return ok
+
+    missing_after = missing_required_files(ds, data_root)
+    if ok and missing_after:
+        ok = False
+        status = "missing_required_files: " + ", ".join(missing_after)
 
     entry = ManifestEntry(
         name=name,

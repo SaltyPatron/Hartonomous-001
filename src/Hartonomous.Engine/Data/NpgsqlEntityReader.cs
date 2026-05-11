@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Engine;
@@ -23,7 +24,7 @@ public sealed class NpgsqlEntityReader : IEntityReader, ITextRecompositionReader
     }
 
     public async Task<IReadOnlyList<EntityHandle>> ResolveEntityHandlesAsync(
-        IReadOnlyList<byte[]> hashes,
+        IReadOnlyList<Hash32> hashes,
         IReadOnlyList<string> entityTypeCodes,
         CancellationToken ct)
     {
@@ -35,7 +36,7 @@ public sealed class NpgsqlEntityReader : IEntityReader, ITextRecompositionReader
         byte[][] hashArray = new byte[hashes.Count][];
         for (int index = 0; index < hashes.Count; index++)
         {
-            hashArray[index] = hashes[index];
+            hashArray[index] = hashes[index].ToByteArray();
         }
 
         string[] typeArray = new string[entityTypeCodes.Count];
@@ -75,7 +76,7 @@ public sealed class NpgsqlEntityReader : IEntityReader, ITextRecompositionReader
         for (int index = 0; index < entityHandles.Count; index++)
         {
             typeCodes[index] = entityHandles[index].EntityTypeCode;
-            hashes[index] = entityHandles[index].Hash;
+            hashes[index] = entityHandles[index].Hash.ToByteArray();
         }
 
         Dictionary<EntityHandle, EntityInfo> result = new(entityHandles.Count);
@@ -136,7 +137,7 @@ public sealed class NpgsqlEntityReader : IEntityReader, ITextRecompositionReader
         for (int index = 0; index < edgeHandles.Count; index++)
         {
             typeCodes[index] = edgeHandles[index].EdgeTypeCode;
-            hashes[index] = edgeHandles[index].Hash;
+            hashes[index] = edgeHandles[index].Hash.ToByteArray();
         }
 
         Dictionary<EdgeHandle, EdgeInfo> result = new(edgeHandles.Count);
@@ -179,7 +180,7 @@ public sealed class NpgsqlEntityReader : IEntityReader, ITextRecompositionReader
     public async Task<IReadOnlyList<EntityHandle>> FindEntitiesByContentAsync(
         string content, IReadOnlyList<string> entityTypeCodes, CancellationToken ct)
     {
-        IReadOnlyList<byte[]> candidateHashes = EntityContentHashResolver.GetCandidateHashes(
+        IReadOnlyList<Hash32> candidateHashes = EntityContentHashResolver.GetCandidateHashes(
             content, entityTypeCodes);
         if (candidateHashes.Count == 0)
         {

@@ -32,4 +32,23 @@ public static class Merkle
         Hash(childHashes32, output);
         return output;
     }
+
+    public static Hash32 Hash32(ReadOnlySpan<byte> childHashes32)
+    {
+        Span<byte> output = stackalloc byte[Blake3.HashLen];
+        Hash(childHashes32, output);
+        return new Hash32(output);
+    }
+
+    public static Hash32 Hash32(ReadOnlySpan<Hash32> childHashes)
+    {
+        Span<byte> stack = childHashes.Length <= 64
+            ? stackalloc byte[childHashes.Length * Blake3.HashLen]
+            : new byte[childHashes.Length * Blake3.HashLen];
+        for (int i = 0; i < childHashes.Length; i++)
+        {
+            childHashes[i].CopyTo(stack.Slice(i * Blake3.HashLen, Blake3.HashLen));
+        }
+        return Hash32(stack);
+    }
 }

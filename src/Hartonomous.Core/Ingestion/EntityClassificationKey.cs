@@ -1,5 +1,5 @@
 using System;
-using System.Runtime.InteropServices;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -11,18 +11,22 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public readonly struct EntityClassificationKey : IEquatable<EntityClassificationKey>
 {
-    public byte[] EntityHash { get; }
+    public Hash32 EntityHash { get; }
     public string EntityTypeCode { get; }
     public string ProvenanceCode { get; }
 
-    public EntityClassificationKey(byte[] entityHash, string entityTypeCode, string provenanceCode)
+    public EntityClassificationKey(Hash32 entityHash, string entityTypeCode, string provenanceCode)
     {
-        ArgumentNullException.ThrowIfNull(entityHash);
         ArgumentNullException.ThrowIfNull(entityTypeCode);
         ArgumentNullException.ThrowIfNull(provenanceCode);
         EntityHash = entityHash;
         EntityTypeCode = entityTypeCode;
         ProvenanceCode = provenanceCode;
+    }
+
+    public EntityClassificationKey(byte[] entityHash, string entityTypeCode, string provenanceCode)
+        : this(new Hash32(entityHash), entityTypeCode, provenanceCode)
+    {
     }
 
     public bool Equals(EntityClassificationKey other)
@@ -35,27 +39,14 @@ public readonly struct EntityClassificationKey : IEquatable<EntityClassification
         {
             return false;
         }
-        if (ReferenceEquals(EntityHash, other.EntityHash))
-        {
-            return true;
-        }
-        if (EntityHash is null || other.EntityHash is null)
-        {
-            return false;
-        }
-        if (EntityHash.Length != other.EntityHash.Length)
-        {
-            return false;
-        }
-        return MemoryExtensions.SequenceEqual<byte>(EntityHash, other.EntityHash);
+        return EntityHash.Equals(other.EntityHash);
     }
 
     public override bool Equals(object? obj) => obj is EntityClassificationKey other && Equals(other);
 
     public override int GetHashCode()
     {
-        int h = EntityHash is { Length: >= 4 } ? MemoryMarshal.Read<int>(EntityHash.AsSpan(0, 4)) : 0;
-        return HashCode.Combine(h, EntityTypeCode, ProvenanceCode);
+        return HashCode.Combine(EntityHash, EntityTypeCode, ProvenanceCode);
     }
 
     public static bool operator ==(EntityClassificationKey left, EntityClassificationKey right) => left.Equals(right);

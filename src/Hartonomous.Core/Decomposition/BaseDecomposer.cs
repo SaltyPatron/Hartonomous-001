@@ -13,6 +13,10 @@ namespace Hartonomous.Core.Decomposition;
 
 public abstract partial class BaseDecomposer : IDecomposer
 {
+    private const string SourceAuthorityContext = "source_authority";
+    private const string ProvenanceAuthorityAttestation = "provenance_authority_corroboration";
+    private const double ProvenanceAuthorityEventWeight = 0.8;
+
     private readonly DecomposerConfig _config;
     private readonly ILogger _logger;
 
@@ -57,7 +61,7 @@ public abstract partial class BaseDecomposer : IDecomposer
 
     protected abstract IReadOnlyList<string> GetSourcePaths();
 
-    public static byte[] ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash(content);
+    public static Hash32 ComputeHash(ReadOnlySpan<byte> content) => Blake3.Hash32(content);
 
     /// <summary>
     /// Hash an atomic identifier string — a structured, non-natural-language
@@ -80,28 +84,25 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// If you are unsure whether your string is an atomic identifier or
     /// user-visible content, route it through SubstrateTextDecomposer.
     /// </summary>
-    public static byte[] ComputeAtomicStringHash(string atomicIdentifier)
-        => Blake3.Hash(Encoding.UTF8.GetBytes(atomicIdentifier).AsSpan());
+    public static Hash32 ComputeAtomicStringHash(string atomicIdentifier)
+        => Blake3.Hash32(Encoding.UTF8.GetBytes(atomicIdentifier).AsSpan());
 
-    public static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes)
+    public static Hash32 ComputeMerkleHash(ReadOnlySpan<Hash32> childHashes)
     {
-        byte[] concat = new byte[childHashes.Length * Blake3.HashLen];
-        for (int i = 0; i < childHashes.Length; i++)
-        {
-            childHashes[i].CopyTo(concat.AsSpan(i * Blake3.HashLen));
-        }
-        return Merkle.Hash(concat.AsSpan());
+        return Merkle.Hash32(childHashes);
     }
 
-    protected static byte[] ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<byte[]> participantHashes)
+    protected static Hash32 ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<Hash32> participantHashes)
     {
-        byte[] buffer = new byte[4 + participantHashes.Length * 32];
+        Span<byte> buffer = participantHashes.Length <= 8
+            ? stackalloc byte[4 + participantHashes.Length * Hash32.Length]
+            : new byte[4 + participantHashes.Length * Hash32.Length];
         BitConverter.TryWriteBytes(buffer, edgeTypeId);
         for (int i = 0; i < participantHashes.Length; i++)
         {
-            participantHashes[i].CopyTo(buffer.AsSpan(4 + i * 32));
+            participantHashes[i].CopyTo(buffer.Slice(4 + i * Hash32.Length, Hash32.Length));
         }
-        return ComputeHash(buffer.AsSpan());
+        return ComputeHash(buffer);
     }
 
     protected static async Task SubmitAndReportAsync(
@@ -115,83 +116,10 @@ public abstract partial class BaseDecomposer : IDecomposer
         await reporter.ReportAsync(snapshot, ct);
     }
 
-    // ── Substrate-aware ingestion: bulk existence check orchestration ─────
-    //
-    // Decomposers that opt into the streaming-bulk-check pattern call
-    // BulkCheckChunkAsync once per chunk after they've populated
-    // ChunkCandidates with locally-precomputed PKs. This issues the per-kind
-    // bulk-existence-check calls in parallel — five sub-second round-trips
-    // become ~one round-trip wall-time. The decomposer subtracts the result
-    // from candidates and emits ONLY the diff into the existing pipeline,
-    // collapsing 30:1+ redundant-emission patterns to ~1:1.
-    //
-    // Glicko-2 rating events still fire for every observed candidate (not
-    // just the missing ones) — row-identity dedup and rating-event dedup
-    // are different paths (per memory: feedback_streaming_and_rating).
-
-    /// <summary>
-    /// Issue per-kind bulk-existence-checks in parallel against the
-    /// substrate. Returns the existing-PK subset for each kind; the
-    /// decomposer's missing set per kind is <c>candidates.X \ existing.X</c>.
-    /// </summary>
-    protected static async Task<ChunkExisting> BulkCheckChunkAsync(
-        IIngestionPipeline pipeline,
-        ChunkCandidates candidates,
-        CancellationToken ct)
-    {
-        Task<HashSet<HashKey>> entitiesTask = candidates.EntityHashes.Count == 0
-            ? Task.FromResult(new HashSet<HashKey>())
-            : pipeline.GetExistingEntityHashesAsync(
-                ToByteArrayList(candidates.EntityHashes), ct);
-
-        Task<HashSet<EntityClassificationKey>> classificationsTask = candidates.EntityClassifications.Count == 0
-            ? Task.FromResult(new HashSet<EntityClassificationKey>())
-            : pipeline.GetExistingEntityClassificationsAsync(candidates.EntityClassifications, ct);
-
-        Task<HashSet<EdgeKey>> edgesTask = candidates.Edges.Count == 0
-            ? Task.FromResult(new HashSet<EdgeKey>())
-            : pipeline.GetExistingEdgesAsync(candidates.Edges, ct);
-
-        Task<HashSet<PhysicalityKey>> physicalitiesTask = candidates.Physicalities.Count == 0
-            ? Task.FromResult(new HashSet<PhysicalityKey>())
-            : pipeline.GetExistingPhysicalitiesAsync(candidates.Physicalities, ct);
-
-        Task<HashSet<SequenceKey>> sequencesTask = candidates.SequenceRows.Count == 0
-            ? Task.FromResult(new HashSet<SequenceKey>())
-            : pipeline.GetExistingSequenceRowsAsync(candidates.SequenceRows, ct);
-
-        await Task.WhenAll(entitiesTask, classificationsTask, edgesTask, physicalitiesTask, sequencesTask)
-            .ConfigureAwait(false);
-
-        return new ChunkExisting
-        {
-            EntityHashes = entitiesTask.Result,
-            EntityClassifications = classificationsTask.Result,
-            Edges = edgesTask.Result,
-            Physicalities = physicalitiesTask.Result,
-            SequenceRows = sequencesTask.Result,
-        };
-    }
-
-    private static List<byte[]> ToByteArrayList(HashSet<HashKey> hashes)
-    {
-        List<byte[]> result = new(hashes.Count);
-        foreach (HashKey k in hashes)
-        {
-            result.Add(k.Hash);
-        }
-        return result;
-    }
-
-    // ── Streaming sink helpers (Phase D) ─────────────────────────────────
-    // Decomposers in the streaming-pipeline migration use these to emit
-    // records one-at-a-time to an IRecordSink. No batch accumulation in
-    // the decomposer; backpressure is the sink's bounded channel filling.
-    //
-    // These helpers are additive — the old IIngestionBatch path remains
-    // until every decomposer is migrated (task F1). During the transition,
-    // a decomposer may use either path; the orchestrator picks based on
-    // which DecomposeCoreAsync overload it overrides.
+    // ── Streaming sink helpers ────────────────────────────────────────────
+    // Decomposers emit deterministic records into the single ingestion funnel.
+    // The pipeline owns buffering, substrate diff, COPY drains, backpressure,
+    // and significance event persistence.
 
     /// <summary>
     /// Emit one entity into the streaming sink. Returns the EntityHandle so
@@ -201,7 +129,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// </summary>
     protected static async ValueTask<EntityHandle> EmitEntityAsync(
         IRecordSink sink,
-        byte[] hash,
+        Hash32 hash,
         string entityTypeCode,
         string provenanceCode,
         CancellationToken ct)
@@ -238,12 +166,12 @@ public abstract partial class BaseDecomposer : IDecomposer
         }
         System.Array.Sort(sorted, (a, b) => a.Position.CompareTo(b.Position));
 
-        byte[][] orderedHashes = new byte[sorted.Length][];
+        Hash32[] orderedHashes = new Hash32[sorted.Length];
         for (int j = 0; j < sorted.Length; j++)
         {
             orderedHashes[j] = sorted[j].Entity.Hash;
         }
-        byte[] edgeHash = ComputeEdgeHash(edgeTypeId, orderedHashes);
+        Hash32 edgeHash = ComputeEdgeHash(edgeTypeId, orderedHashes);
 
         await sink.EmitAsync(new EdgeRecord(edgeTypeCode, edgeHash, provenanceCode), ct);
         for (int j = 0; j < sorted.Length; j++)
@@ -255,6 +183,13 @@ public abstract partial class BaseDecomposer : IDecomposer
                 sorted[j].RoleCode,
                 sorted[j].Position), ct);
         }
+        await sink.EmitAsync(new EdgeRatingEventRecord(
+            SourceAuthorityContext,
+            ProvenanceAuthorityAttestation,
+            edgeTypeCode,
+            edgeHash,
+            Score: 1.0,
+            Weight: ProvenanceAuthorityEventWeight), ct);
     }
 
     protected static ValueTask EmitEdgeAsync(
@@ -314,7 +249,7 @@ public abstract partial class BaseDecomposer : IDecomposer
         Hartonomous.Core.Geometry.Point4D centroid,
         CancellationToken ct)
     {
-        byte[] contentHash = Blake3.Hash(wkb.AsSpan());
+        Hash32 contentHash = Blake3.Hash32(wkb.AsSpan());
         return sink.EmitAsync(new PhysicalityRecord(
             physicalityTypeCode,
             entity.Hash,
@@ -423,10 +358,9 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// <summary>
     /// Emit substrate.sequence rows recording the ordered children of
     /// <paramref name="parent"/> as supplied in <paramref name="children"/>,
-    /// 1-based ordinals. Contiguous runs of the same child are NOT
-    /// auto-collapsed here — pass distinct rows; if a decomposer wants RLE
-    /// compression for a long refrain it should call
-    /// <see cref="IIngestionBatch.AddSequence"/> directly with rleCount &gt; 1.
+    /// 1-based ordinals. This convenience helper preserves one row per child;
+    /// native/core text decomposers coalesce contiguous repeated children with
+    /// <see cref="IIngestionBatch.AddSequence"/> and rleCount &gt; 1.
     /// Repeated entities at distinct ordinals (the "green eggs and ham × 3"
     /// case) are preserved exactly because the sequence row PK is
     /// (parent_type, parent_hash, ordinal) — repeats don't collide.
@@ -497,7 +431,7 @@ public abstract partial class BaseDecomposer : IDecomposer
         int position = 0;
         foreach (Rune rune in surfaceForm.EnumerateRunes())
         {
-            byte[] cpHash = HashCodepoint(rune.Value);
+            Hash32 cpHash = HashCodepoint(rune.Value);
             EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
             position++;
         }
@@ -516,7 +450,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// This produces the same hash as <see cref="EmitText"/> so that any decomposer can pre-compute
     /// a word's identity hash for dedup lookups before deciding whether to emit.
     /// </summary>
-    public static byte[] ComputeWordFormHash(string form)
+    public static Hash32 ComputeWordFormHash(string form)
         => Hartonomous.Core.Text.SubstrateTextDecomposer.ComputeRootHash(
             Encoding.UTF8.GetBytes(form).AsSpan(),
             "word_form");
@@ -526,7 +460,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// decomposer so that "a" from ISO 639-3, "a" from WordNet, and "a" from Wiktionary all
     /// deduplicate to the same codepoint entity.
     /// </summary>
-    public static byte[] HashCodepoint(int cpValue)
+    public static Hash32 HashCodepoint(int cpValue)
     {
         Span<byte> cpBytes = stackalloc byte[4];
         cpBytes[0] = (byte)(cpValue >> 24);
@@ -557,7 +491,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// <param name="topEntityType">e.g. <c>"text_composition"</c>, <c>"lemma"</c>, <c>"language_name"</c>.</param>
     /// <param name="trustMu">Per-call <c>source_authority</c> arena prior. See
     /// <c>substrate.provenance.initial_mu</c> for canonical values.</param>
-    protected (Hartonomous.Core.Ingestion.EntityHandle Handle, byte[] Hash, (double X, double Y, double Z, double M) Centroid)
+    protected (Hartonomous.Core.Ingestion.EntityHandle Handle, Hash32 Hash, (double X, double Y, double Z, double M) Centroid)
         EmitText(
             Hartonomous.Core.Ingestion.IIngestionBatch batch,
             string text,
@@ -582,10 +516,10 @@ public abstract partial class BaseDecomposer : IDecomposer
         // re-emits "run" lemma's full DAG dozens of times because "run" is in
         // many synsets; with the cache the second-and-subsequent calls do
         // zero work past the cache lookup).
-        if (TryGetCachedTextEntry(text, out byte[]? cachedHash, out (double X, double Y, double Z, double M) cachedCentroid))
+        if (TryGetCachedTextEntry(text, out Hash32 cachedHash, out (double X, double Y, double Z, double M) cachedCentroid))
         {
-            Hartonomous.Core.Ingestion.EntityHandle cachedHandle = batch.AddEntity(cachedHash!, topEntityType);
-            return (cachedHandle, cachedHash!, cachedCentroid);
+            Hartonomous.Core.Ingestion.EntityHandle cachedHandle = batch.AddEntity(cachedHash, topEntityType);
+            return (cachedHandle, cachedHash, cachedCentroid);
         }
 
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
@@ -606,7 +540,7 @@ public abstract partial class BaseDecomposer : IDecomposer
         return (r.RootHandle, r.RootHash, r.RootCentroid);
     }
 
-    protected async ValueTask<(Hartonomous.Core.Ingestion.EntityHandle Handle, byte[] Hash, (double X, double Y, double Z, double M) Centroid)>
+    protected async ValueTask<(Hartonomous.Core.Ingestion.EntityHandle Handle, Hash32 Hash, (double X, double Y, double Z, double M) Centroid)>
         EmitTextAsync(
             Hartonomous.Core.Ingestion.IRecordSink sink,
             string text,
@@ -630,11 +564,11 @@ public abstract partial class BaseDecomposer : IDecomposer
         // / CacheTextHash on subclasses (see TextIngestingDecomposer) to
         // turn the cache on — BaseDecomposer's defaults are no-ops so
         // decomposers without a cache pay nothing.
-        if (TryGetCachedTextHash(text, out byte[]? cachedHash))
+        if (TryGetCachedTextHash(text, out Hash32 cachedHash))
         {
             Hartonomous.Core.Ingestion.EntityHandle cachedHandle =
-                await EmitEntityAsync(sink, cachedHash!, topEntityType, ProvenanceCode, ct).ConfigureAwait(false);
-            return (cachedHandle, cachedHash!, default);
+                await EmitEntityAsync(sink, cachedHash, topEntityType, ProvenanceCode, ct).ConfigureAwait(false);
+            return (cachedHandle, cachedHash, default);
         }
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         Hartonomous.Core.Text.TextDecomposeResult r =
@@ -655,9 +589,9 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// to short-circuit the full decompose. Default no-op; <see cref="TextIngestingDecomposer"/>
     /// overrides with its <c>TextIngestionCache</c>.
     /// </summary>
-    protected virtual bool TryGetCachedTextHash(string text, out byte[]? hash)
+    protected virtual bool TryGetCachedTextHash(string text, out Hash32 hash)
     {
-        hash = null;
+        hash = default;
         return false;
     }
 
@@ -666,7 +600,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// future cache hits. Default no-op; <see cref="TextIngestingDecomposer"/>
     /// overrides.
     /// </summary>
-    protected virtual void CacheTextHash(string text, byte[] hash) { }
+    protected virtual void CacheTextHash(string text, Hash32 hash) { }
 
     /// <summary>
     /// Subclass hook: return a previously-emitted (hash, centroid) for
@@ -678,7 +612,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// the centroid-aware variant.
     /// </summary>
     protected virtual bool TryGetCachedTextEntry(
-        string text, out byte[]? hash, out (double X, double Y, double Z, double M) centroid)
+        string text, out Hash32 hash, out (double X, double Y, double Z, double M) centroid)
     {
         if (TryGetCachedTextHash(text, out hash))
         {
@@ -693,7 +627,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// Subclass hook: record (hash, centroid) for <paramref name="text"/>.
     /// Default delegates to the hash-only cache.
     /// </summary>
-    protected virtual void CacheTextEntry(string text, byte[] hash, (double X, double Y, double Z, double M) centroid)
+    protected virtual void CacheTextEntry(string text, Hash32 hash, (double X, double Y, double Z, double M) centroid)
     {
         CacheTextHash(text, hash);
     }

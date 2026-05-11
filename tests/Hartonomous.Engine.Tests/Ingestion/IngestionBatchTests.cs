@@ -26,10 +26,10 @@ public sealed class IngestionBatchTests
     {
         IngestionBatch batch = new("test");
         byte[] hash = Hash(0xAB);
-        EntityHandle h = batch.AddEntity(hash, "lemma");
+        EntityHandle h = batch.AddEntity(new(hash), "lemma");
 
         Assert.Equal("lemma", h.EntityTypeCode);
-        Assert.Same(hash, h.Hash);
+        Assert.Equal(hash, h.Hash.ToByteArray());
         Assert.Equal(1, batch.EntityCount);
     }
 
@@ -50,7 +50,7 @@ public sealed class IngestionBatchTests
 
         // Provenance is set at construction and stable for the batch's
         // lifetime — never fallbacks, never derived.
-        tatoeba.AddEntity(Hash(0x01), "tatoeba_sentence");
+        tatoeba.AddEntity(new(Hash(0x01)), "text_composition");
         Assert.Equal("tatoeba", tatoeba.ProvenanceCode);
     }
 
@@ -61,8 +61,8 @@ public sealed class IngestionBatchTests
         IngestionBatch a = new("decomposer_a");
         IngestionBatch b = new("decomposer_b");
 
-        a.AddEntity(Hash(0x01), "lemma");
-        b.AddEntity(Hash(0x02), "synset");
+        a.AddEntity(new(Hash(0x01)), "lemma");
+        b.AddEntity(new(Hash(0x02)), "synset");
 
         Assert.Equal("decomposer_a", a.ProvenanceCode);
         Assert.Equal("decomposer_b", b.ProvenanceCode);
@@ -72,8 +72,8 @@ public sealed class IngestionBatchTests
     public void AddEdge_AcceptsHashCompositeMembersInRoleOrder()
     {
         IngestionBatch batch = new("test");
-        EntityHandle source = batch.AddEntity(Hash(0x01), "lemma");
-        EntityHandle target = batch.AddEntity(Hash(0x02), "synset");
+        EntityHandle source = batch.AddEntity(new(Hash(0x01)), "lemma");
+        EntityHandle target = batch.AddEntity(new(Hash(0x02)), "synset");
 
         EdgeMemberSpec[] members =
         [

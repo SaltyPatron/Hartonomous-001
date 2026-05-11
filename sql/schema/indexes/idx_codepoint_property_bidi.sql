@@ -1,0 +1,1 @@
+CREATE INDEX idx_codepoint_property_bidi ON substrate.codepoint_property(bidi_class_id);

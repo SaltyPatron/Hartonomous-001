@@ -1,3 +1,5 @@
+using Hartonomous.Core.Compute.Common;
+
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
@@ -23,6 +25,6 @@ namespace Hartonomous.Core.Ingestion;
 /// </summary>
 public sealed record EdgeRecord(
     string EdgeTypeCode,
-    byte[] EdgeHash,
+    Hash32 EdgeHash,
     string ProvenanceCode,
     byte[]? GeomWkb = null) : IngestionRecord;

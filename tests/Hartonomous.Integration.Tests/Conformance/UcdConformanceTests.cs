@@ -9,7 +9,7 @@ namespace Hartonomous.Integration.Tests.Conformance;
 /// <summary>
 /// Conformance tests that run the hand-rolled UAX #29 segmentation library
 /// at <c>Hartonomous.Core.Text.Segmentation</c> against the OFFICIAL Unicode
-/// Consortium test files in <c>D:\Models\UCD\Public\UCD\latest\ucd\auxiliary\</c>.
+/// Consortium test files in <c>/vault/Data/Unicode/Public/UCD/latest/ucd/auxiliary/</c>.
 /// <para>
 /// The test files contain thousands of cases each, formatted per UAX #29:
 ///   <c>÷ HEX × HEX ÷ HEX ÷ # comment</c>
@@ -27,7 +27,7 @@ namespace Hartonomous.Integration.Tests.Conformance;
 /// </summary>
 public sealed class UcdConformanceTests : IAsyncLifetime
 {
-    private const string AuxRoot = @"D:\Models\UCD\Public\UCD\latest\ucd\auxiliary";
+    private const string AuxRoot = "/vault/Data/Unicode/Public/UCD/latest/ucd/auxiliary";
 
     private static string ConnectionString() =>
         Environment.GetEnvironmentVariable("HARTONOMOUS_DB")

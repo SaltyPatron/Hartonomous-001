@@ -15,7 +15,7 @@
     }
 
     Paths = @{
-        SourceRoot       = 'D:\Models'
+        SourceRoot       = '/vault/Data'
         Logs             = 'logs'
         Reports          = 'reports'
         Artifacts        = 'artifacts'
@@ -74,29 +74,29 @@
         # Each decomposer's full source footprint — every file/dir the C# code
         # reads must be asserted before Invoke-HartPhase runs. Paths mirror the
         # subpaths hardcoded in src/Hartonomous.Cli/Program.cs.
-        Ucd                  = 'UCD\Public\UCD\latest\ucdxml\ucd.all.grouped.xml'
-        Uca                  = 'UCD\Public\UCD\latest\uca\allkeys.txt'
+        Ucd                  = 'Unicode\Public\UCD\latest'
+        Uca                  = 'Unicode\Public\UCD\latest\uca\allkeys.txt'
         Iso639               = 'ISO639\iso-639-3.tab'
-        WordNet              = 'princeton-wordnet\WordNet-3.0\dict'
+        WordNet              = 'Wordnet\WordNet-3.0\dict'
         Omw                  = 'omw'
         ModelHub             = 'hub'
         # Wiktionary: the decomposer streams one multi-GB JSONL produced by wiktextract.
         # Both the parent dir and the file are asserted so a missing-or-moved JSONL
         # fails loudly before the phase starts.
-        WiktionaryRoot       = 'wiktionary'
-        WiktionaryJsonl      = 'wiktionary\raw-wiktextract-data.jsonl'
+        WiktionaryRoot       = 'Wiktionary'
+        WiktionaryJsonl      = 'Wiktionary\raw-wiktextract-data.jsonl'
         # Universal Dependencies: every UD_{Lang}-{Bank}/*.conllu file across every
         # treebank in v2.17. The decomposer enumerates directories recursively, so
         # we assert the tree root; the scanner fails per-treebank if a .conllu is
         # missing.
-        UniversalDepsRoot    = 'ud-treebanks\ud-treebanks-v2.17'
+        UniversalDepsRoot    = 'UD-Treebanks\ud-treebanks-v2.17'
         # Tatoeba: three-pass decomposer consumes sentences.csv, links.csv, and
         # audio/sentences_with_audio.csv. All three are asserted; audio is optional
         # at decompose-time but required for a complete seeded substrate.
-        TatoebaRoot          = 'tatoeba'
-        TatoebaSentences     = 'tatoeba\sentences.csv'
-        TatoebaLinks         = 'tatoeba\links.csv'
-        TatoebaAudioManifest = 'tatoeba\audio\sentences_with_audio.csv'
+        TatoebaRoot          = 'Tatoeba'
+        TatoebaSentences     = 'Tatoeba\sentences.csv'
+        TatoebaLinks         = 'Tatoeba\links.csv'
+        TatoebaAudioManifest = 'Tatoeba\audio\sentences_with_audio.csv'
         # Text: test documents for TextDecomp phase.
         TextRoot             = 'test_data\text'
     }

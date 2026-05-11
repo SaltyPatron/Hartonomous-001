@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Ingestion;
 
@@ -40,7 +41,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     public IReadOnlyList<SignificanceEntry> Significances => _significances;
     public IReadOnlyList<EntityModelSourceEntry> EntityModelSources => _entityModelSources;
 
-    public EntityHandle AddEntity(byte[] hash, string entityTypeCode)
+    public EntityHandle AddEntity(Hash32 hash, string entityTypeCode)
     {
         _entities.Add(new EntityEntry(hash, entityTypeCode));
         return new EntityHandle(hash, entityTypeCode);
@@ -98,7 +99,7 @@ internal sealed class IngestionBatch : IIngestionBatch
         {
             throw new ArgumentException(
                 $"AddPhysicality: could not extract a 4D centroid from the supplied WKB " +
-                $"(entity {Convert.ToHexString(entity.Hash)}, type {physicalityTypeCode}, " +
+                $"(entity {entity.Hash.ToHexString()}, type {physicalityTypeCode}, " +
                 $"{geomWkb.Length} bytes). Either the WKB subtype is unsupported by " +
                 $"PostGisWkbReader or the buffer is malformed. Use AddPhysicalityPoint4d " +
                 $"or AddPhysicalityLineString4d when the centroid is already known.",

@@ -42,6 +42,7 @@
 -- @include schema/domains/rle_count.sql
 -- @include schema/domains/code_value.sql
 -- @include schema/domains/tier_number.sql
+-- @include schema/domains/modality_code.sql
 
 -- ── Phase 4: composite types ─────────────────────────────────────────
 -- @include schema/types/entity_ref.sql
@@ -59,6 +60,8 @@
 -- @include schema/tables/reference/script.sql
 -- @include schema/tables/reference/block.sql
 -- @include schema/tables/reference/break_property.sql
+-- @include schema/tables/reference/bidi_class.sql
+-- @include schema/tables/reference/east_asian_width.sql
 -- @include schema/tables/reference/language.sql
 -- @include schema/tables/reference/general_category.sql
 -- @include schema/tables/reference/semantic_relation_type.sql
@@ -78,6 +81,8 @@
 -- @include schema/seed/significance_context.sql
 -- @include schema/seed/attestation_type.sql
 -- @include schema/seed/provenance.sql
+-- @include schema/seed/bidi_class.sql
+-- @include schema/seed/east_asian_width.sql
 -- @include schema/seed/lexname.sql
 -- @include schema/seed/pos.sql
 -- @include schema/seed/edge_type.sql
@@ -190,6 +195,8 @@
 -- @include schema/indexes/idx_break_property_category.sql
 -- @include schema/indexes/idx_codepoint_property_block.sql
 -- @include schema/indexes/idx_codepoint_property_codepoint.sql
+-- @include schema/indexes/idx_codepoint_property_bidi.sql
+-- @include schema/indexes/idx_codepoint_property_eaw.sql
 -- @include schema/indexes/idx_codepoint_property_gc.sql
 -- @include schema/indexes/idx_codepoint_property_script.sql
 -- @include schema/indexes/idx_comparison_event_arena.sql
@@ -252,7 +259,6 @@
 -- @include schema/functions/populate_morph_features.sql
 -- @include schema/functions/populate_deprels.sql
 -- @include schema/functions/populate_senses.sql
--- @include schema/functions/load_wordnet_offset_synset_map.sql
 -- Upserters
 -- @include schema/functions/upsert_reference_edge_type.sql
 -- @include schema/functions/upsert_homogeneous_edge_types.sql
@@ -334,6 +340,8 @@
 -- @include schema/functions/populate_blocks_from_ext.sql
 -- @include schema/functions/populate_break_properties_from_ext.sql
 -- @include schema/functions/populate_codepoint_property_range_from_ext.sql
+-- @include schema/functions/unicode_edge_hash.sql
+-- @include schema/functions/populate_unicode_case_edges_from_properties.sql
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local
 --  temp table — no persistent staging, no auto-discovered drain manifest.)

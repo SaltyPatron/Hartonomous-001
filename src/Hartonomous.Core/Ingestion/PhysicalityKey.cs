@@ -1,5 +1,5 @@
 using System;
-using System.Runtime.InteropServices;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -12,17 +12,20 @@ namespace Hartonomous.Core.Ingestion;
 public readonly struct PhysicalityKey : IEquatable<PhysicalityKey>
 {
     public string PhysicalityTypeCode { get; }
-    public byte[] EntityHash { get; }
-    public byte[] ContentHash { get; }
+    public Hash32 EntityHash { get; }
+    public Hash32 ContentHash { get; }
 
-    public PhysicalityKey(string physicalityTypeCode, byte[] entityHash, byte[] contentHash)
+    public PhysicalityKey(string physicalityTypeCode, Hash32 entityHash, Hash32 contentHash)
     {
         ArgumentNullException.ThrowIfNull(physicalityTypeCode);
-        ArgumentNullException.ThrowIfNull(entityHash);
-        ArgumentNullException.ThrowIfNull(contentHash);
         PhysicalityTypeCode = physicalityTypeCode;
         EntityHash = entityHash;
         ContentHash = contentHash;
+    }
+
+    public PhysicalityKey(string physicalityTypeCode, byte[] entityHash, byte[] contentHash)
+        : this(physicalityTypeCode, new Hash32(entityHash), new Hash32(contentHash))
+    {
     }
 
     public bool Equals(PhysicalityKey other)
@@ -31,33 +34,18 @@ public readonly struct PhysicalityKey : IEquatable<PhysicalityKey>
         {
             return false;
         }
-        if (!ByteArrayEqual(EntityHash, other.EntityHash))
+        if (!EntityHash.Equals(other.EntityHash))
         {
             return false;
         }
-        return ByteArrayEqual(ContentHash, other.ContentHash);
-    }
-
-    private static bool ByteArrayEqual(byte[]? a, byte[]? b)
-    {
-        if (ReferenceEquals(a, b))
-        {
-            return true;
-        }
-        if (a is null || b is null || a.Length != b.Length)
-        {
-            return false;
-        }
-        return MemoryExtensions.SequenceEqual<byte>(a, b);
+        return ContentHash.Equals(other.ContentHash);
     }
 
     public override bool Equals(object? obj) => obj is PhysicalityKey other && Equals(other);
 
     public override int GetHashCode()
     {
-        int eh = EntityHash is { Length: >= 4 } ? MemoryMarshal.Read<int>(EntityHash.AsSpan(0, 4)) : 0;
-        int ch = ContentHash is { Length: >= 4 } ? MemoryMarshal.Read<int>(ContentHash.AsSpan(0, 4)) : 0;
-        return HashCode.Combine(PhysicalityTypeCode, eh, ch);
+        return HashCode.Combine(PhysicalityTypeCode, EntityHash, ContentHash);
     }
 
     public static bool operator ==(PhysicalityKey left, PhysicalityKey right) => left.Equals(right);

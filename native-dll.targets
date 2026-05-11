@@ -2,23 +2,23 @@
   <!-- Native DLL copy rules for libhartonomous. Imported by Directory.Build.props for all
        projects that transitively depend on Hartonomous.Core (which contains P/Invoke declarations). -->
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\Release\hartonomous.dll"
-          Condition="Exists('$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\Release\hartonomous.dll')"
+    <None Include="$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/Release/hartonomous.dll"
+          Condition="Exists('$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/Release/hartonomous.dll')"
           CopyToOutputDirectory="PreserveNewest" Visible="false" Link="hartonomous.dll" />
-    <None Include="$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\hartonomous.dll"
-          Condition="Exists('$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\hartonomous.dll')"
+    <None Include="$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/hartonomous.dll"
+          Condition="Exists('$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/hartonomous.dll')"
           CopyToOutputDirectory="PreserveNewest" Visible="false" Link="hartonomous.dll" />
-    <None Include="$(MSBuildThisFileDirectory)ext\libhartonomous\build\libhartonomous.so"
-          Condition="Exists('$(MSBuildThisFileDirectory)ext\libhartonomous\build\libhartonomous.so')"
+    <None Include="$(MSBuildThisFileDirectory)ext/libhartonomous/build/libhartonomous.so"
+          Condition="Exists('$(MSBuildThisFileDirectory)ext/libhartonomous/build/libhartonomous.so')"
           CopyToOutputDirectory="PreserveNewest" Visible="false" Link="libhartonomous.so" />
-    <None Include="$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\libhartonomous.so"
-          Condition="Exists('$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\libhartonomous.so')"
+    <None Include="$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/libhartonomous.so"
+          Condition="Exists('$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/libhartonomous.so')"
           CopyToOutputDirectory="PreserveNewest" Visible="false" Link="libhartonomous.so" />
-    <None Include="$(MSBuildThisFileDirectory)ext\libhartonomous\build\libhartonomous.dylib"
-          Condition="Exists('$(MSBuildThisFileDirectory)ext\libhartonomous\build\libhartonomous.dylib')"
+    <None Include="$(MSBuildThisFileDirectory)ext/libhartonomous/build/libhartonomous.dylib"
+          Condition="Exists('$(MSBuildThisFileDirectory)ext/libhartonomous/build/libhartonomous.dylib')"
           CopyToOutputDirectory="PreserveNewest" Visible="false" Link="libhartonomous.dylib" />
-    <None Include="$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\libhartonomous.dylib"
-          Condition="Exists('$(MSBuildThisFileDirectory)ext\libhartonomous\build\bin\libhartonomous.dylib')"
+    <None Include="$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/libhartonomous.dylib"
+          Condition="Exists('$(MSBuildThisFileDirectory)ext/libhartonomous/build/bin/libhartonomous.dylib')"
           CopyToOutputDirectory="PreserveNewest" Visible="false" Link="libhartonomous.dylib" />
   </ItemGroup>
 </Project>

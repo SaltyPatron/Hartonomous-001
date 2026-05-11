@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
@@ -59,7 +60,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
         int hiddenDim = (int)e.Info.Shape[1];
         if (vocabSize < 2 || hiddenDim < 1) { return; }
 
-        (bool[] usable, byte[]?[] vocabHashByIdx) = ResolveVocabArrays(context, session, vocabSize, ct);
+        (bool[] usable, Hash32?[] vocabHashByIdx) = ResolveVocabArrays(context, session, vocabSize, ct);
         if (CountTrue(usable) == 0)
         {
             Log.NoTokenizer(_logger, context.Source.ModelId);
@@ -164,7 +165,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
 
     private static async Task<long> EmitChunkedFfnAttestations(
         IPassSession session, ModelPassContext context,
-        bool[] usable, byte[]?[] vocabHashByIdx,
+        bool[] usable, Hash32?[] vocabHashByIdx,
         double[] embed, int vocabSize, int hiddenDim,
         FfnTensors fn, string attestationTypeCode, CancellationToken ct)
     {
@@ -322,26 +323,26 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             for (int i = 0; i < sChunkLen; i++)
             {
                 int a = sources[sChunkStart + i];
-                byte[]? aHash = vocabHashByIdx[a];
+                Hash32? aHash = vocabHashByIdx[a];
                 if (aHash is null) { continue; }
 
                 for (int j = 0; j < topKFilled[i]; j++)
                 {
                     (int b, double signed) = topK[i][j];
-                    byte[]? bHash = vocabHashByIdx[b];
+                    Hash32? bHash = vocabHashByIdx[b];
                     if (bHash is null) { continue; }
 
                     EntityHandle aH;
                     EntityHandle bH;
-                    if (CompareBytes(aHash, bHash) <= 0)
+                    if (aHash.Value.CompareTo(bHash.Value) <= 0)
                     {
-                        aH = new EntityHandle(aHash, "word_form");
-                        bH = new EntityHandle(bHash, "word_form");
+                        aH = new EntityHandle(aHash.Value, "word_form");
+                        bH = new EntityHandle(bHash.Value, "word_form");
                     }
                     else
                     {
-                        aH = new EntityHandle(bHash, "word_form");
-                        bH = new EntityHandle(aHash, "word_form");
+                        aH = new EntityHandle(bHash.Value, "word_form");
+                        bH = new EntityHandle(aHash.Value, "word_form");
                     }
 
                     double score = Sigmoid(signed / temperature);
@@ -405,11 +406,11 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
         return null;
     }
 
-    private static (bool[] Usable, byte[]?[] HashByIdx) ResolveVocabArrays(
+    private static (bool[] Usable, Hash32?[] HashByIdx) ResolveVocabArrays(
         ModelPassContext context, IPassSession session, int vocabSize, CancellationToken ct)
     {
         bool[] usable = new bool[vocabSize];
-        byte[]?[] hashByIdx = new byte[]?[vocabSize];
+        Hash32?[] hashByIdx = new Hash32?[vocabSize];
         string snapshotDir = context.Source.ModelDirectory;
         string tokenizerJson = Path.Combine(snapshotDir, "tokenizer.json");
         if (!File.Exists(tokenizerJson)) { return (usable, hashByIdx); }
@@ -485,17 +486,6 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             double abs = Math.Abs(buf[i].Signed);
             if (abs < minAbs) { minAbs = abs; minIdx = i; }
         }
-    }
-
-    private static int CompareBytes(byte[] a, byte[] b)
-    {
-        int min = Math.Min(a.Length, b.Length);
-        for (int i = 0; i < min; i++)
-        {
-            int c = a[i].CompareTo(b[i]);
-            if (c != 0) { return c; }
-        }
-        return a.Length.CompareTo(b.Length);
     }
 
     private static partial class Log

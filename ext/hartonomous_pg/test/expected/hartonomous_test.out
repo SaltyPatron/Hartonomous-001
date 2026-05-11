@@ -1,10 +1,10 @@
 -- pg_regress test for hartonomous extension (P1a.5 minimal smoke pack).
 -- Validates: extension loads, types round-trip, distance is correct,
 -- aggregates work end-to-end. GiST/SP-GiST kNN tests deferred to P1a.3.
-
-CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis WITH VERSION '3.6.3';
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS hartonomous;
-
 -- Version
 SELECT length(hartonomous_version()) > 0 AS has_version;
  has_version 
@@ -12,8 +12,8 @@ SELECT length(hartonomous_version()) > 0 AS has_version;
  t
 (1 row)
 
-
--- BLAKE3 (regression-stable subset).
+-- BLAKE3 byte/text primitives. Raw text identity is produced by UAX #29
+-- text decomposition/Merkle composition, not by hashing a multi-character string.
 SELECT length(blake3_hash('\x48656c6c6f'::bytea)) AS blake3_len;
  blake3_len 
 ------------
@@ -26,18 +26,46 @@ SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
               32
 (1 row)
 
-SELECT blake3_hash_text('hello') = blake3_hash_text('hello') AS blake3_deterministic;
- blake3_deterministic 
-----------------------
- t
+-- UAX #29/Merkle text identity for "hello": deterministic root, raw hash is
+-- not the text composition hash, and the repeated "l" is stored as RLE
+-- occurrence counts in substrate.sequence.
+CREATE TEMP TABLE hello_text_roots AS
+SELECT
+    (substrate.text_decompose(convert_to('hello', 'UTF8'), 'text_composition', 95000.0, 'unicode_consortium')).root_hash AS root_a,
+    (substrate.text_decompose(convert_to('hello', 'UTF8'), 'text_composition', 95000.0, 'unicode_consortium')).root_hash AS root_b,
+    blake3_hash(convert_to('hello', 'UTF8')) AS raw_hash,
+    blake3_hash_text('hello') AS raw_text_hash;
+WITH root_children AS (
+    SELECT s.ordinal, s.child_hash, s.rle_count
+    FROM hello_text_roots r
+    JOIN substrate.sequence s ON s.parent_hash = r.root_a
+),
+word_graphemes AS (
+    SELECT s.ordinal, s.child_hash, s.rle_count
+    FROM root_children rc
+    JOIN substrate.sequence s ON s.parent_hash = rc.child_hash
+),
+grapheme_codepoints AS (
+    SELECT s.ordinal, s.child_hash, wg.rle_count * s.rle_count AS rle_count
+    FROM word_graphemes wg
+    JOIN substrate.sequence s ON s.parent_hash = wg.child_hash
+)
+SELECT
+    length(root.root_a) AS root_len,
+    root.root_a = root.root_b AS deterministic,
+    root.root_a <> root.raw_hash AS not_raw_byte_hash,
+    root.root_a <> root.raw_text_hash AS not_raw_text_hash,
+    (SELECT count(*) FROM root_children) AS root_rows,
+    (SELECT COALESCE(sum(rle_count), 0) FROM root_children) AS root_occurrences,
+    (SELECT count(*) FROM word_graphemes) AS grapheme_rows,
+    (SELECT COALESCE(sum(rle_count), 0) FROM word_graphemes) AS grapheme_occurrences,
+    (SELECT count(*) FROM grapheme_codepoints) AS codepoint_rows,
+    (SELECT COALESCE(sum(rle_count), 0) FROM grapheme_codepoints) AS codepoint_occurrences
+FROM hello_text_roots root;
+ root_len | deterministic | not_raw_byte_hash | not_raw_text_hash | root_rows | root_occurrences | grapheme_rows | grapheme_occurrences | codepoint_rows | codepoint_occurrences 
+----------+---------------+-------------------+-------------------+-----------+------------------+---------------+----------------------+----------------+-----------------------
+       32 | t             | t                 | t                 |         1 |                1 |             4 |                    5 |              4 |                     5
 (1 row)
-
-SELECT blake3_hash_text('hello') != blake3_hash_text('world') AS blake3_distinct;
- blake3_distinct 
------------------
- t
-(1 row)
-
 
 -- point4d round-trip via text I/O.
 SELECT '(1, 2, 3, 4)'::point4d AS p_in;
@@ -52,14 +80,12 @@ SELECT point4d(1.0, 2.0, 3.0, 4.0) AS p_ctor;
  (1, 2, 3, 4)
 (1 row)
 
-
 -- distance_4d on basis vectors: ||(1,0,0,0) - (0,1,0,0)|| = sqrt(2).
 SELECT round(distance_4d(point4d(1, 0, 0, 0), point4d(0, 1, 0, 0))::numeric, 6) AS d_4d_basis;
  d_4d_basis 
 ------------
    1.414214
 (1 row)
-
 
 -- distance_s3: identical → 0, antipodal → π, orthogonal → π/2.
 SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(1, 0, 0, 0))::numeric, 6) AS d_s3_self;
@@ -79,7 +105,6 @@ SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(0, 1, 0, 0))::numeric, 4) 
 -----------------
           1.5708
 (1 row)
-
 
 -- Operators bind correctly.
 SELECT round((point4d(1, 0, 0, 0) <-> point4d(0, 1, 0, 0))::numeric, 6) AS op_dist_4d;
@@ -106,7 +131,6 @@ SELECT point4d(1, 2, 3, 4) <> point4d(1, 2, 3, 5) AS op_ne_diff;
  t
 (1 row)
 
-
 -- dot, norm, normalize.
 SELECT round(dot_4d(point4d(1, 2, 3, 4), point4d(1, 1, 1, 1))::numeric, 6) AS dot_one;
   dot_one  
@@ -126,14 +150,12 @@ SELECT round(norm_4d(normalize_4d(point4d(1, 2, 3, 4)))::numeric, 6) AS norm_aft
              1.000000
 (1 row)
 
-
 -- antipode.
 SELECT antipode(point4d(1, 0, 0, 0)) AS antipode_basis;
   antipode_basis  
 ------------------
  (-1, -0, -0, -0)
 (1 row)
-
 
 -- Super-Fibonacci is deterministic and unit-norm.
 SELECT super_fibonacci_4d(0, 1024) = super_fibonacci_4d(0, 1024) AS sf_deterministic;
@@ -154,7 +176,6 @@ SELECT round(norm_4d(super_fibonacci_4d(42, 1024))::numeric, 6) AS sf_unit_norm_
         1.000000
 (1 row)
 
-
 -- Hilbert round-trip at order 8 within quantization tolerance.
 SELECT hilbert_4d(point4d(0, 0, 0, 0), 8) AS hilbert_origin;
  hilbert_origin 
@@ -168,7 +189,6 @@ SELECT hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 4) <> hilbert_4d(point4d(0.5, 0.5
  t
 (1 row)
 
-
 -- Hilbert order out of range → error.
 DO $$
 BEGIN
@@ -178,7 +198,6 @@ EXCEPTION WHEN numeric_value_out_of_range THEN
     RAISE NOTICE 'hilbert_4d correctly rejects order > 16';
 END $$;
 NOTICE:  hilbert_4d correctly rejects order > 16
-
 -- Super-Fibonacci index out of range → error.
 DO $$
 BEGIN
@@ -188,7 +207,6 @@ EXCEPTION WHEN numeric_value_out_of_range THEN
     RAISE NOTICE 'super_fibonacci_4d correctly rejects i >= n';
 END $$;
 NOTICE:  super_fibonacci_4d correctly rejects i >= n
-
 -- box4d round-trip and predicates.
 SELECT '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d AS b_in;
              b_in             
@@ -229,7 +247,6 @@ SELECT box4d_contains_point(
  f
 (1 row)
 
-
 -- centroid_4d aggregate over a tetrahedron's vertices = (0.25, 0.25, 0.25, 0.25).
 WITH pts(p) AS (
     VALUES (point4d(1, 0, 0, 0)),
@@ -242,7 +259,6 @@ SELECT centroid_4d(p) AS tet_centroid FROM pts;
 --------------------------
  (0.25, 0.25, 0.25, 0.25)
 (1 row)
-
 
 -- centroid_s3 over the same set: renormalized centroid is unit-norm.
 WITH pts(p) AS (
@@ -257,7 +273,6 @@ SELECT round(norm_4d(centroid_s3(p))::numeric, 6) AS s3_centroid_unit FROM pts;
          1.000000
 (1 row)
 
-
 -- bbox_4d aggregate over the same set yields the unit corners box.
 WITH pts(p) AS (
     VALUES (point4d(1, 0, 0, 0)),
@@ -271,7 +286,6 @@ SELECT bbox_4d(p) AS tet_box FROM pts;
  ((0, 0, 0, 0), (1, 1, 1, 1))
 (1 row)
 
-
 -- Done
 SELECT 'all tests passed' AS result;
       result      
@@ -279,11 +293,9 @@ SELECT 'all tests passed' AS result;
  all tests passed
 (1 row)
 
-
 -- ═══════════════════════════════════════════════════════════════════════
 -- P1a.3 additions: linestring4d, trajectory, glicko bulk, casts, GiST/SP-GiST
 -- ═══════════════════════════════════════════════════════════════════════
-
 -- linestring4d round-trip via text I/O.
 SELECT '((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d AS ls_in;
               ls_in              
@@ -315,7 +327,6 @@ SELECT round(length_4d('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d)::numeric
  4.000000
 (1 row)
 
-
 -- frechet_4d identity = 0, hausdorff_4d identity = 0.
 SELECT round(frechet_4d(
     '((0,0,0,0),(1,0,0,0))'::linestring4d,
@@ -333,7 +344,6 @@ SELECT round(hausdorff_4d(
        0.000000
 (1 row)
 
-
 -- frechet_4d shifted polylines: parallel offset = constant.
 SELECT round(frechet_4d(
     '((0,0,0,0),(1,0,0,0),(2,0,0,0))'::linestring4d,
@@ -342,7 +352,6 @@ SELECT round(frechet_4d(
 ----------------
        1.000000
 (1 row)
-
 
 -- Glicko-2 bulk: 1 player vs equal-strength opponent, score 0.5 ⇒ mu unchanged.
 SELECT g.new_mu[1]::numeric(8,2) AS mu_after,
@@ -356,7 +365,6 @@ FROM glicko2_bulk_update(
   1500.00 | t
 (1 row)
 
-
 -- Cast point4d ↔ float8[].
 SELECT (point4d(1, 2, 3, 4)::double precision[]) AS p_to_arr;
  p_to_arr  
@@ -369,7 +377,6 @@ SELECT (ARRAY[1.0, 2.0, 3.0, 4.0]::double precision[])::point4d AS arr_to_p;
 --------------
  (1, 2, 3, 4)
 (1 row)
-
 
 -- Domain: unit_quaternion accepts unit-norm, rejects otherwise.
 SELECT (point4d(1, 0, 0, 0)::unit_quaternion) AS uq_ok;
@@ -386,7 +393,6 @@ EXCEPTION WHEN check_violation THEN
     RAISE NOTICE 'unit_quaternion correctly rejects non-unit input';
 END $$;
 NOTICE:  unit_quaternion correctly rejects non-unit input
-
 -- Domain: glicko_mu rejects out-of-range.
 DO $$
 BEGIN
@@ -396,14 +402,12 @@ EXCEPTION WHEN check_violation THEN
     RAISE NOTICE 'glicko_mu correctly rejects negative input';
 END $$;
 NOTICE:  glicko_mu correctly rejects negative input
-
 -- GiST index: build, query <-> kNN against seq scan reference.
 CREATE TEMP TABLE g_pts (id serial PRIMARY KEY, p point4d);
 INSERT INTO g_pts (p)
 SELECT super_fibonacci_4d(i, 1000) FROM generate_series(0, 999) i;
 CREATE INDEX g_pts_gist ON g_pts USING gist (p);
 ANALYZE g_pts;
-
 WITH q AS (SELECT super_fibonacci_4d(123, 1000) AS qp),
 gist_top AS (
     SELECT id FROM g_pts, q ORDER BY p <-> q.qp LIMIT 5
@@ -418,7 +422,6 @@ SELECT (SELECT array_agg(id ORDER BY id) FROM gist_top)
  t
 (1 row)
 
-
 -- GiST containment.
 SELECT count(*) > 0 AS gist_containment_works
 FROM g_pts
@@ -428,14 +431,12 @@ WHERE p <@ '((-1,-1,-1,-1),(1,1,1,1))'::box4d;
  t
 (1 row)
 
-
 -- SP-GiST index: build, query <@ containment matches seq scan.
 CREATE TEMP TABLE s_pts (id serial PRIMARY KEY, p point4d);
 INSERT INTO s_pts (p)
 SELECT super_fibonacci_4d(i, 500) FROM generate_series(0, 499) i;
 CREATE INDEX s_pts_spgist ON s_pts USING spgist (p);
 ANALYZE s_pts;
-
 WITH spgist_in AS (
     SELECT id FROM s_pts
     WHERE p <@ '((-0.5,-0.5,-0.5,-0.5),(0.5,0.5,0.5,0.5))'::box4d
@@ -451,7 +452,6 @@ SELECT (SELECT array_agg(id ORDER BY id) FROM spgist_in)
  
 (1 row)
 
-
 -- Diagnostic view returns rows.
 SELECT count(*) >= 2 AS view_sees_indexes
 FROM point4d_index_stats
@@ -461,7 +461,6 @@ WHERE table_name IN ('g_pts', 's_pts');
  t
 (1 row)
 
-
 -- Done (P1a.3 extension)
 SELECT 'P1a.3 tests passed' AS result;
        result       
@@ -469,18 +468,15 @@ SELECT 'P1a.3 tests passed' AS result;
  P1a.3 tests passed
 (1 row)
 
-
 -- ═══════════════════════════════════════════════════════════════════════
 -- P1a.5: CBWR=AUTO,STRICT determinism gate + runtime introspection
 -- ═══════════════════════════════════════════════════════════════════════
-
 -- Strict determinism is requested at extension load (default GUC = on).
 SELECT strict_determinism FROM hartonomous_runtime_info();
  strict_determinism 
 --------------------
  t
 (1 row)
-
 
 -- CBWR branch is resolved (>= 0 means MKL accepted the AUTO|STRICT request).
 SELECT cbwr_branch >= 0 AS cbwr_active FROM hartonomous_runtime_info();
@@ -489,14 +485,12 @@ SELECT cbwr_branch >= 0 AS cbwr_active FROM hartonomous_runtime_info();
  t
 (1 row)
 
-
 -- MKL version string is populated (non-empty).
 SELECT length(mkl_version) > 0 AS mkl_version_present FROM hartonomous_runtime_info();
  mkl_version_present 
 ---------------------
  t
 (1 row)
-
 
 -- Golden determinism fixture: super_fibonacci index 0 / N=1024 is byte-stable.
 -- Two calls with identical args must produce identical output. The cast to
@@ -509,7 +503,6 @@ SELECT super_fibonacci_4d(0, 1024)::text = super_fibonacci_4d(0, 1024)::text
  t
 (1 row)
 
-
 -- Golden determinism fixture: a known-good Hilbert index for a fixed point.
 -- This is a regression anchor — if the underlying algorithm or its bit
 -- packing ever changes, this row breaks and pg_regress reports a diff.
@@ -518,7 +511,6 @@ SELECT hilbert_4d(point4d(0.25, 0.5, 0.75, 0.125), 8) AS hilbert_anchor;
 ----------------
      1099161053
 (1 row)
-
 
 -- Done (P1a.5 extension)
 SELECT 'P1a.5 tests passed' AS result;

@@ -1,3 +1,4 @@
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -11,17 +12,18 @@ namespace Hartonomous.Engine.Tests.Orchestration;
 public sealed class SequentialPhaseRunnerTests
 {
     private static SequentialPhaseRunner CreateRunner(
-        Dictionary<Phase, IReadOnlyList<IDecomposer>>? decomposers = null)
+        Dictionary<Phase, IReadOnlyList<IDecomposer>>? decomposers = null,
+        FakePipeline? pipeline = null)
     {
         return new SequentialPhaseRunner(
             decomposers ?? new Dictionary<Phase, IReadOnlyList<IDecomposer>>(),
-            new FakePipeline(),
+            pipeline ?? new FakePipeline(),
             new FakeReporter(),
             NullLogger<SequentialPhaseRunner>.Instance);
     }
 
     [Fact]
-    public async Task RunPhase_NoDecomposers_Succeeds()
+    public async Task RunPhase_CoreAlgebraNoDecomposers_Succeeds()
     {
         SequentialPhaseRunner runner = CreateRunner();
 
@@ -29,6 +31,18 @@ public sealed class SequentialPhaseRunnerTests
 
         Assert.Equal(PhaseStatus.Completed, result.Status);
         Assert.Null(result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task RunPhase_UcdUcaNoDecomposers_Fails()
+    {
+        SequentialPhaseRunner runner = CreateRunner();
+
+        await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
+        PhaseResult result = await runner.RunPhaseAsync(Phase.UcdUca, CancellationToken.None);
+
+        Assert.Equal(PhaseStatus.Failed, result.Status);
+        Assert.Contains("no registered decomposer", result.ErrorMessage);
     }
 
     [Fact]
@@ -62,12 +76,18 @@ public sealed class SequentialPhaseRunnerTests
     [Fact]
     public async Task RunPhase_MetDependency_Succeeds()
     {
-        SequentialPhaseRunner runner = CreateRunner();
+        FakeDecomposer ucd = new();
+        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
+        {
+            [Phase.UcdUca] = [ucd],
+        };
+        SequentialPhaseRunner runner = CreateRunner(map);
 
         await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
         PhaseResult result = await runner.RunPhaseAsync(Phase.UcdUca, CancellationToken.None);
 
         Assert.Equal(PhaseStatus.Completed, result.Status);
+        Assert.True(ucd.DecomposeCalled);
     }
 
     [Fact]
@@ -186,6 +206,70 @@ public sealed class SequentialPhaseRunnerTests
     }
 
     [Fact]
+    public async Task RunPhase_NoSubmittedRecords_SkipsGraphPostPasses()
+    {
+        FakePipeline pipeline = new();
+        FakeDecomposer decomposer = new();
+        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
+        {
+            [Phase.CoreAlgebra] = [decomposer],
+        };
+        SequentialPhaseRunner runner = CreateRunner(map, pipeline);
+
+        PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
+
+        Assert.Equal(PhaseStatus.Completed, result.Status);
+        Assert.Equal(1, pipeline.DrainPendingCalls);
+        Assert.Equal(0, pipeline.PopulateSequencePhysicalityCalls);
+        Assert.Equal(0, pipeline.PopulateEdgeTrajectoriesCalls);
+        Assert.Equal(0, pipeline.PrimeAllSignificanceCalls);
+    }
+
+    [Fact]
+    public async Task RunPhase_SubmittedSequences_RunsSequencePostPassOnly()
+    {
+        FakePipeline pipeline = new()
+        {
+            StatsOverride = new PipelineStats { SequencesSubmitted = 1 },
+        };
+        FakeDecomposer decomposer = new();
+        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
+        {
+            [Phase.CoreAlgebra] = [decomposer],
+        };
+        SequentialPhaseRunner runner = CreateRunner(map, pipeline);
+
+        PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
+
+        Assert.Equal(PhaseStatus.Completed, result.Status);
+        Assert.Equal(1, pipeline.PopulateSequencePhysicalityCalls);
+        Assert.Equal(0, pipeline.PopulateEdgeTrajectoriesCalls);
+        Assert.Equal(0, pipeline.PrimeAllSignificanceCalls);
+    }
+
+    [Fact]
+    public async Task RunPhase_SubmittedEdges_RunsGraphPostPasses()
+    {
+        FakePipeline pipeline = new()
+        {
+            StatsOverride = new PipelineStats { EdgesSubmitted = 1 },
+        };
+        FakeDecomposer decomposer = new();
+        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
+        {
+            [Phase.CoreAlgebra] = [decomposer],
+        };
+        SequentialPhaseRunner runner = CreateRunner(map, pipeline);
+
+        PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
+
+        Assert.Equal(PhaseStatus.Completed, result.Status);
+        Assert.Equal(0, pipeline.PopulateSequencePhysicalityCalls);
+        Assert.Equal(1, pipeline.PopulateEdgeTrajectoriesCalls);
+        Assert.Equal(1, pipeline.PrimeAllSignificanceCalls);
+    }
+
+    [Fact]
     public async Task RunPhase_Cancellation_PropagatesThrough()
     {
         using CancellationTokenSource cts = new();
@@ -209,7 +293,16 @@ public sealed class SequentialPhaseRunnerTests
     public async Task RunPhase_DeepDependencyChain_Validated()
     {
         // CoreAlgebra → UcdUca → Iso639 → WordNetOmw
-        SequentialPhaseRunner runner = CreateRunner();
+        FakeDecomposer ucd = new();
+        FakeDecomposer iso = new();
+        FakeDecomposer wordNet = new();
+        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
+        {
+            [Phase.UcdUca] = [ucd],
+            [Phase.Iso639] = [iso],
+            [Phase.WordNetOmw] = [wordNet],
+        };
+        SequentialPhaseRunner runner = CreateRunner(map);
 
         // Can't skip to WordNetOmw.
         PhaseResult result = await runner.RunPhaseAsync(Phase.WordNetOmw, CancellationToken.None);
@@ -263,17 +356,39 @@ public sealed class SequentialPhaseRunnerTests
 
     private sealed class FakePipeline : IIngestionPipeline
     {
-        public PipelineStats Stats => new();
+        public PipelineStats StatsOverride { get; init; } = new();
+        public int DrainPendingCalls { get; private set; }
+        public int PopulateSequencePhysicalityCalls { get; private set; }
+        public int PopulateEdgeTrajectoriesCalls { get; private set; }
+        public int PrimeAllSignificanceCalls { get; private set; }
+        public PipelineStats Stats => StatsOverride;
         public IIngestionBatch CreateBatch() => new FakeBatch();
         public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
-        public Task DrainPendingAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task PopulateSequencePhysicalityAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<byte[]> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
+        public Task DrainPendingAsync(CancellationToken ct)
+        {
+            DrainPendingCalls++;
+            return Task.CompletedTask;
+        }
+        public Task PopulateSequencePhysicalityAsync(CancellationToken ct)
+        {
+            PopulateSequencePhysicalityCalls++;
+            return Task.CompletedTask;
+        }
+        public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
+        {
+            PopulateEdgeTrajectoriesCalls++;
+            return Task.CompletedTask;
+        }
+        public Task PrimeAllSignificanceAsync(CancellationToken ct)
+        {
+            PrimeAllSignificanceCalls++;
+            return Task.CompletedTask;
+        }
+        public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<Hash32> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
         public Task<HashSet<EntityClassificationKey>> GetExistingEntityClassificationsAsync(IReadOnlyCollection<EntityClassificationKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EntityClassificationKey>());
         public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());
+        public Task<HashSet<EdgeMemberKey>> GetExistingEdgeMembersAsync(IReadOnlyCollection<EdgeMemberKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeMemberKey>());
         public Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<PhysicalityKey>());
         public Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<SequenceKey>());
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -284,7 +399,7 @@ public sealed class SequentialPhaseRunnerTests
         public string ProvenanceCode => "test";
         public int EntityCount => 0;
         public int EdgeCount => 0;
-        public EntityHandle AddEntity(byte[] hash, string entityTypeCode) => new(hash, entityTypeCode);
+        public EntityHandle AddEntity(Hash32 hash, string entityTypeCode) => new(hash, entityTypeCode);
         public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members) { }
         public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null, string attestationTypeCode = "lexical_curated_relation") { }
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }

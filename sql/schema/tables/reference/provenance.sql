@@ -30,7 +30,7 @@ CREATE TABLE substrate.provenance (
     -- the wide-band tier ladder reseed).
     initial_sigma        FLOAT8      NOT NULL DEFAULT 350.0,
     -- Modalities this source is authoritative in. Empty array → text default.
-    modality_codes       TEXT[]      NOT NULL DEFAULT '{}',
+    modality_codes       substrate.modality_code[] NOT NULL DEFAULT '{}',
     -- Lineage: code of an upstream source whose authority this one inherits.
     derives_from         VARCHAR(64),
     -- Lineage decay factor applied when the parent's trust flows through.
@@ -44,7 +44,7 @@ CREATE TABLE substrate.provenance (
     -- When scope_kind ≠ 'global', identifies which tenant/user owns this
     -- provenance via composite handle into substrate.entity.
     scope_entity_type_id INT,
-    scope_entity_hash    BYTEA,
+    scope_entity_hash    substrate.hash_value,
     -- Self-referential lineage FK; deferred so seeding can insert in any order.
     CONSTRAINT provenance_derives_from_fkey
         FOREIGN KEY (derives_from) REFERENCES substrate.provenance(code)

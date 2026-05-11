@@ -131,6 +131,15 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
 
         if (!_decomposers.TryGetValue(phase, out IReadOnlyList<IDecomposer>? decomposers) || decomposers.Count == 0)
         {
+            if (!PhaseExecutionPolicy.AllowsNoRegisteredDecomposer(phase))
+            {
+                string msg = $"Phase {phase} has no registered decomposer or explicit runner";
+                Log.RequiredPhaseNoDecomposers(_logger, phase);
+                _status[phase] = PhaseStatus.Failed;
+                await PersistStatusAsync(phase, "failed", errorMessage: msg, ct);
+                return new PhaseResult(phase, PhaseStatus.Failed, sw.Elapsed, msg);
+            }
+
             Log.PhaseNoDecomposers(_logger, phase);
             _status[phase] = PhaseStatus.Completed;
             await PersistStatusAsync(phase, "completed", errorMessage: null, ct);
@@ -142,6 +151,7 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             foreach (IDecomposer decomposer in decomposers)
             {
                 Log.DecomposerStarted(_logger, decomposer.DisplayName, phase);
+                await decomposer.ValidateSourceAsync(ct);
                 await decomposer.DecomposeAsync(_pipeline, _reporter, ct);
                 Log.DecomposerCompleted(_logger, decomposer.DisplayName, phase);
             }
@@ -159,9 +169,16 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             //   3. Prime substrate.edge_significance for every arena in
             //      substrate.significance_context (AP-1: cross-product, no filter).
             await _pipeline.DrainPendingAsync(ct);
-            await _pipeline.PopulateSequencePhysicalityAsync(ct);
-            await _pipeline.PopulateEdgeTrajectoriesAsync(ct);
-            await _pipeline.PrimeAllSignificanceAsync(ct);
+            PipelineStats stats = _pipeline.Stats;
+            if (stats.SequencesSubmitted > 0)
+            {
+                await _pipeline.PopulateSequencePhysicalityAsync(ct);
+            }
+            if (stats.EdgesSubmitted > 0)
+            {
+                await _pipeline.PopulateEdgeTrajectoriesAsync(ct);
+                await _pipeline.PrimeAllSignificanceAsync(ct);
+            }
 
             _status[phase] = PhaseStatus.Completed;
             await PersistStatusAsync(phase, "completed", errorMessage: null, ct);
@@ -230,6 +247,9 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
 
         [LoggerMessage(Level = LogLevel.Warning, Message = "Phase {Phase} has no registered decomposers — marking complete")]
         public static partial void PhaseNoDecomposers(ILogger logger, Phase phase);
+
+        [LoggerMessage(Level = LogLevel.Error, Message = "Required phase {Phase} has no registered decomposers")]
+        public static partial void RequiredPhaseNoDecomposers(ILogger logger, Phase phase);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "Phase {Phase} already completed — skipping (use reset to rerun)")]
         public static partial void PhaseAlreadyCompleted(ILogger logger, Phase phase);

@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include <mkl.h>
 
@@ -59,6 +60,13 @@ static inline void sift_down(nb_t* h, int64_t n, int64_t i) {
     }
 }
 
+static int mul_size_overflows(int64_t a, int64_t b, size_t elem_size) {
+    if (a < 0 || b < 0) return 1;
+    if ((uint64_t)a > SIZE_MAX / (uint64_t)b) return 1;
+    uint64_t ab = (uint64_t)a * (uint64_t)b;
+    return ab > SIZE_MAX / elem_size;
+}
+
 int hartonomous_knearest_exact_f64(
     int64_t nq, int64_t nc, int64_t d,
     const double* queries,
@@ -72,6 +80,12 @@ int hartonomous_knearest_exact_f64(
     }
     if (nq <= 0 || nc <= 0 || d <= 0 || k <= 0 || k > nc) {
         return -2;
+    }
+    if (mul_size_overflows(nc, d, sizeof(double)) ||
+        mul_size_overflows(nq, d, sizeof(double)) ||
+        mul_size_overflows(nq, k, sizeof(int64_t)) ||
+        mul_size_overflows(nq, k, sizeof(double))) {
+        return -3;
     }
 
     /* Precompute squared row norms for corpus and queries. */
@@ -95,69 +109,77 @@ int hartonomous_knearest_exact_f64(
         qn2[i] = s;
     }
 
-    /* Cross term G = Q · C^T ∈ R^(nq × nc). For large corpora this may need
-     * chunking; the substrate's embedding firefly populations fit in a few
-     * GiB so a single GEMM is acceptable. Fallback chunking is not needed
-     * for the current substrate; if it becomes an issue a chunked path can
-     * be added without changing the contract. */
-    double* g = (double*)mkl_malloc((size_t)nq * (size_t)nc * sizeof(double), 64);
+    const int64_t max_block_bytes = 256LL * 1024LL * 1024LL;
+    int64_t q_chunk = max_block_bytes / ((int64_t)sizeof(double) * nc);
+    if (q_chunk < 1) q_chunk = 1;
+    if (q_chunk > nq) q_chunk = nq;
+
+    double* g = (double*)mkl_malloc((size_t)q_chunk * (size_t)nc * sizeof(double), 64);
+    nb_t* heap = (nb_t*)mkl_malloc((size_t)k * sizeof(nb_t), 64);
     if (g == NULL) {
+        if (heap != NULL) { mkl_free(heap); }
         mkl_free(cn2); mkl_free(qn2);
         return -9;
     }
-    cblas_dgemm(
-        CblasRowMajor, CblasNoTrans, CblasTrans,
-        (MKL_INT)nq, (MKL_INT)nc, (MKL_INT)d,
-        1.0,
-        queries, (MKL_INT)d,
-        corpus, (MKL_INT)d,
-        0.0,
-        g, (MKL_INT)nc
-    );
-
-    /* Per-query heap selection. */
-    for (int64_t q = 0; q < nq; ++q) {
-        const double* gq = g + q * nc;
-        double qnorm = qn2[q];
-        /* Build heap of first k candidates. */
-        nb_t* heap = (nb_t*)mkl_malloc((size_t)k * sizeof(nb_t), 64);
-        if (heap == NULL) {
-            mkl_free(g); mkl_free(cn2); mkl_free(qn2);
-            return -9;
-        }
-        int64_t h_size = 0;
-        for (int64_t c = 0; c < nc; ++c) {
-            double d2 = qnorm + cn2[c] - 2.0 * gq[c];
-            /* Numerical floor: self-matches can produce tiny negatives. */
-            if (d2 < 0.0) { d2 = 0.0; }
-            nb_t cand = { d2, c };
-            if (h_size < k) {
-                heap[h_size] = cand;
-                sift_up(heap, h_size);
-                h_size++;
-            } else if (worse(heap[0], cand)) {
-                heap[0] = cand;
-                sift_down(heap, h_size, 0);
-            }
-        }
-        /* Extract into the output sorted ascending. */
-        int64_t count = h_size;
-        /* heap sort: repeatedly swap root with last, shrink, sift. */
-        for (int64_t e = count - 1; e > 0; --e) {
-            nb_t t = heap[0]; heap[0] = heap[e]; heap[e] = t;
-            sift_down(heap, e, 0);
-        }
-        /* After that inverse heap-sort, heap[0..count-1] is ascending by
-         * (d2, idx). Copy out. */
-        int64_t* oi = out_indices + q * k;
-        double* od = out_distances + q * k;
-        for (int64_t e = 0; e < count; ++e) {
-            oi[e] = heap[e].idx;
-            od[e] = heap[e].d2;
-        }
-        mkl_free(heap);
+    if (heap == NULL) {
+        mkl_free(g); mkl_free(cn2); mkl_free(qn2);
+        return -9;
     }
 
+    for (int64_t q0 = 0; q0 < nq; q0 += q_chunk) {
+        int64_t bs = (q0 + q_chunk > nq) ? (nq - q0) : q_chunk;
+        int gemm_rc = hartonomous_gemm_f64(
+            0, 1,
+            bs, nc, d,
+            1.0,
+            queries + q0 * d, d,
+            corpus, d,
+            0.0,
+            g, nc);
+        if (gemm_rc != 0) {
+            mkl_free(heap); mkl_free(g); mkl_free(cn2); mkl_free(qn2);
+            return gemm_rc;
+        }
+
+        for (int64_t qr = 0; qr < bs; ++qr) {
+            int64_t q = q0 + qr;
+            const double* gq = g + qr * nc;
+            double qnorm = qn2[q];
+            /* Build heap of first k candidates. */
+            int64_t h_size = 0;
+            for (int64_t c = 0; c < nc; ++c) {
+                double d2 = qnorm + cn2[c] - 2.0 * gq[c];
+                /* Numerical floor: self-matches can produce tiny negatives. */
+                if (d2 < 0.0) { d2 = 0.0; }
+                nb_t cand = { d2, c };
+                if (h_size < k) {
+                    heap[h_size] = cand;
+                    sift_up(heap, h_size);
+                    h_size++;
+                } else if (worse(heap[0], cand)) {
+                    heap[0] = cand;
+                    sift_down(heap, h_size, 0);
+                }
+            }
+            /* Extract into the output sorted ascending. */
+            int64_t count = h_size;
+            /* heap sort: repeatedly swap root with last, shrink, sift. */
+            for (int64_t e = count - 1; e > 0; --e) {
+                nb_t t = heap[0]; heap[0] = heap[e]; heap[e] = t;
+                sift_down(heap, e, 0);
+            }
+            /* After that inverse heap-sort, heap[0..count-1] is ascending by
+             * (d2, idx). Copy out. */
+            int64_t* oi = out_indices + q * k;
+            double* od = out_distances + q * k;
+            for (int64_t e = 0; e < count; ++e) {
+                oi[e] = heap[e].idx;
+                od[e] = heap[e].d2;
+            }
+        }
+    }
+
+    mkl_free(heap);
     mkl_free(g);
     mkl_free(cn2);
     mkl_free(qn2);

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Query;
@@ -89,7 +90,7 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         byte[][] bpeHashes = new byte[bpeTokens.Count][];
         for (int i = 0; i < bpeTokens.Count; i++)
         {
-            bpeHashes[i] = bpeTokens[i].Hash;
+            bpeHashes[i] = bpeTokens[i].Hash.ToByteArray();
         }
 
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
@@ -186,6 +187,12 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
 
     private static NpgsqlParameter ByteaParameter(byte[]? value)
         => new() { NpgsqlDbType = NpgsqlDbType.Bytea, Value = value ?? (object)DBNull.Value };
+
+    private static NpgsqlParameter ByteaParameter(Hash32 value)
+        => ByteaParameter(value.ToByteArray());
+
+    private static NpgsqlParameter ByteaParameter(Hash32? value)
+        => value.HasValue ? ByteaParameter(value.Value) : ByteaParameter((byte[]?)null);
 
     private static NpgsqlParameter TextParameter(string? value)
         => new() { NpgsqlDbType = NpgsqlDbType.Text, Value = value ?? (object)DBNull.Value };

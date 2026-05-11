@@ -84,6 +84,20 @@ public static partial class TextDecomposeNative
     public static partial int UcdLoadedState();
 
     /// <summary>
+    /// Returns 1 when the loaded UCD atom catalog passes representative
+    /// hash/centroid/reverse-lookup checks independent of PostgreSQL.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_catalog_ready")]
+    public static partial int UcdCatalogReady();
+
+    /// <summary>
+    /// Returns 1 when libhartonomous has every generated UCD normalization and
+    /// segmentation table required by native text decomposition linked in.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_tables_ready")]
+    public static partial int UcdTablesReady();
+
+    /// <summary>
     /// Copies the four S^3 centroid components for <paramref name="cp"/>
     /// into <paramref name="out4"/>. The centroid is
     /// <c>super_fibonacci_4d(uca_index[cp], 0x110000)</c> — UCA-collation-rank
@@ -116,8 +130,8 @@ public static partial class TextDecomposeNative
     /// four doubles for the root composition centroid.
     ///
     /// Returns 0 on success; -1 null arg; -2 UcdLoad not called or failed;
-    /// -3 zero-length input; -9 allocation failure; or the callback's
-    /// non-zero return.
+    /// -3 zero-length input; -4 missing generated UCD tables; -9 allocation
+    /// failure; or the callback's non-zero return.
     /// </summary>
     [DllImport(Library, EntryPoint = "hartonomous_text_decompose",
         CallingConvention = CallingConvention.Cdecl)]

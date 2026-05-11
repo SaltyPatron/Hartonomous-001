@@ -1,4 +1,5 @@
 using System;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -27,7 +28,7 @@ public interface IIngestionBatch
     /// on substrate.entity's hash-only PK; type code is emitted separately
     /// as entity_classification evidence.
     /// </summary>
-    EntityHandle AddEntity(byte[] hash, string entityTypeCode);
+    EntityHandle AddEntity(Hash32 hash, string entityTypeCode);
 
     /// <summary>
     /// Append an n-ary edge. The pipeline computes the edge hash from

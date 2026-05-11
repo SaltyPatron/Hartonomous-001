@@ -1,4 +1,5 @@
 using System;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Decomposition;
 using Xunit;
 
@@ -6,7 +7,12 @@ namespace Hartonomous.Core.Tests.Decomposition;
 
 public sealed class TextIngestionCacheTests
 {
-    private static byte[] H(byte b) => new byte[] { b };
+    private static Hash32 H(byte b)
+    {
+        byte[] bytes = new byte[Hash32.Length];
+        bytes[0] = b;
+        return new Hash32(bytes);
+    }
 
     [Fact]
     public void Miss_then_hit_records_correct_counters()
@@ -15,7 +21,7 @@ public sealed class TextIngestionCacheTests
 
         Assert.False(c.TryGet("foo", out _));
         c.Add("foo", H(1));
-        Assert.True(c.TryGet("foo", out byte[]? hash));
+        Assert.True(c.TryGet("foo", out Hash32 hash));
         Assert.Equal(H(1), hash);
 
         Assert.Equal(1, c.Hits);
@@ -51,7 +57,7 @@ public sealed class TextIngestionCacheTests
         c.Add("k", H(1));
         c.Add("k", H(2));
 
-        Assert.True(c.TryGet("k", out byte[]? hash));
+        Assert.True(c.TryGet("k", out Hash32 hash));
         // First write wins; LRU semantics treat a duplicate Add as a no-op so
         // the cache does not evict-and-reinsert on repeated cache misses
         // racing the same content.

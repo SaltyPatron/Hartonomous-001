@@ -84,6 +84,7 @@ public sealed class InterfaceShapeTests
         Assert.Equal(typeof(Task), Method(t, "PopulateSequencePhysicalityAsync").ReturnType);
         Assert.Equal(typeof(Task), Method(t, "PopulateEdgeTrajectoriesAsync").ReturnType);
         Assert.Equal(typeof(Task), Method(t, "PrimeAllSignificanceAsync").ReturnType);
+        Assert.Equal(typeof(Task<HashSet<EdgeMemberKey>>), Method(t, "GetExistingEdgeMembersAsync").ReturnType);
         Assert.Equal(typeof(PipelineStats), Property(t, "Stats").PropertyType);
     }
 

@@ -15,9 +15,9 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 # Fast: exact B_raw + bucket table only
-python scan_safetensors.py --root D:\Models\hub --out condensing_report.md
+python scan_safetensors.py --root /vault/Data/hub --out condensing_report.md
 # Slower: sparsity / SVD (caps large tensors; see --help)
-python scan_safetensors.py --root D:\Models\hub --sparsity --max-models 5 --out condensing_report.md
+python scan_safetensors.py --root /vault/Data/hub --sparsity --max-models 5 --out condensing_report.md
 ```
 
 Use `--max-files` or `--max-models` while iterating; full trees can be large.

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
@@ -60,6 +61,31 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         Assert.NotNull(completedAt);
         Assert.Null(err);
     }
+
+    [Fact]
+    public async Task RunPhase_RequiredPhaseNoDecomposers_PersistsFailedRow()
+    {
+        SequentialPhaseRunner runner = new(
+            new Dictionary<Phase, IReadOnlyList<IDecomposer>>(),
+            new FakePipeline(),
+            new FakeReporter(),
+            NullLogger<SequentialPhaseRunner>.Instance,
+            new NpgsqlSessionStore(_ds));
+
+        await runner.HydrateStatusAsync(CancellationToken.None);
+        PhaseResult core = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
+        Assert.Equal(PhaseStatus.Completed, core.Status);
+
+        PhaseResult result = await runner.RunPhaseAsync(Phase.UcdUca, CancellationToken.None);
+        Assert.Equal(PhaseStatus.Failed, result.Status);
+
+        (string status, DateTime? startedAt, DateTime? completedAt, string? err) = await ReadPhaseStatusAsync(Phase.UcdUca, CancellationToken.None);
+        Assert.Equal("failed", status);
+        Assert.NotNull(startedAt);
+        Assert.NotNull(completedAt);
+        Assert.Contains("no registered decomposer", err);
+    }
+
 
     [Fact]
     public async Task RunPhase_DecomposerThrows_PersistsFailedRowWithMessage()
@@ -158,7 +184,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         await using NpgsqlConnection conn = await _ds.OpenConnectionAsync(ct);
         await using NpgsqlCommand cmd = new(
             "DELETE FROM monitor.phase_status WHERE phase_code = ANY($1)", conn);
-        cmd.Parameters.AddWithValue(new[] { Phase.CoreAlgebra.ToString() });
+        cmd.Parameters.AddWithValue(new[] { Phase.CoreAlgebra.ToString(), Phase.UcdUca.ToString() });
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -204,9 +230,10 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public Task PopulateSequencePhysicalityAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<byte[]> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
+        public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<Hash32> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
         public Task<HashSet<EntityClassificationKey>> GetExistingEntityClassificationsAsync(IReadOnlyCollection<EntityClassificationKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EntityClassificationKey>());
         public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());
+        public Task<HashSet<EdgeMemberKey>> GetExistingEdgeMembersAsync(IReadOnlyCollection<EdgeMemberKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeMemberKey>());
         public Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<PhysicalityKey>());
         public Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<SequenceKey>());
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -217,7 +244,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public string ProvenanceCode => "test";
         public int EntityCount => 0;
         public int EdgeCount => 0;
-        public EntityHandle AddEntity(byte[] hash, string entityTypeCode) => new(hash, entityTypeCode);
+        public EntityHandle AddEntity(Hash32 hash, string entityTypeCode) => new(hash, entityTypeCode);
         public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members) { }
         public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null, string attestationTypeCode = "lexical_curated_relation") { }
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }

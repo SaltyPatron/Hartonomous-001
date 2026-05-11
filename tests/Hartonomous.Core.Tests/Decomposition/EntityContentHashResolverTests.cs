@@ -10,63 +10,63 @@ public sealed class EntityContentHashResolverTests
     [Fact]
     public void GetCandidateHashes_Lemma_IncludesFlatAndMerkleHashes()
     {
-        IReadOnlyList<byte[]> hashes = EntityContentHashResolver.GetCandidateHashes(
+        IReadOnlyList<Hash32> hashes = EntityContentHashResolver.GetCandidateHashes(
             "cat", ["lemma"]);
 
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(ComputeFlatHash("cat")));
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(ComputeWordFormHash("cat")));
+        Assert.Contains(hashes, h => h.Equals(ComputeFlatHash("cat")));
+        Assert.Contains(hashes, h => h.Equals(ComputeWordFormHash("cat")));
     }
 
     [Fact]
     public void GetCandidateHashes_CapitalizedLemma_IncludesLowercaseCandidates()
     {
-        IReadOnlyList<byte[]> hashes = EntityContentHashResolver.GetCandidateHashes(
+        IReadOnlyList<Hash32> hashes = EntityContentHashResolver.GetCandidateHashes(
             "The", ["lemma"]);
 
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(ComputeFlatHash("The")));
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(ComputeWordFormHash("The")));
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(ComputeFlatHash("the")));
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(ComputeWordFormHash("the")));
+        Assert.Contains(hashes, h => h.Equals(ComputeFlatHash("The")));
+        Assert.Contains(hashes, h => h.Equals(ComputeWordFormHash("The")));
+        Assert.Contains(hashes, h => h.Equals(ComputeFlatHash("the")));
+        Assert.Contains(hashes, h => h.Equals(ComputeWordFormHash("the")));
     }
 
     [Fact]
     public void GetCandidateHashes_SingleCodepoint_IncludesCodepointHashWhenRequested()
     {
-        IReadOnlyList<byte[]> hashes = EntityContentHashResolver.GetCandidateHashes(
+        IReadOnlyList<Hash32> hashes = EntityContentHashResolver.GetCandidateHashes(
             "A", ["codepoint"]);
 
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(HashCodepoint('A')));
-        Assert.Contains(hashes, h => h.AsSpan().SequenceEqual(HashCodepoint('a')));
+        Assert.Contains(hashes, h => h.Equals(HashCodepoint('A')));
+        Assert.Contains(hashes, h => h.Equals(HashCodepoint('a')));
     }
 
     [Fact]
     public void GetCandidateHashes_MultiRuneCodepointRequest_DoesNotIncludeCodepointHash()
     {
-        IReadOnlyList<byte[]> hashes = EntityContentHashResolver.GetCandidateHashes(
+        IReadOnlyList<Hash32> hashes = EntityContentHashResolver.GetCandidateHashes(
             "ab", ["codepoint"]);
 
-        Assert.DoesNotContain(hashes, h => h.AsSpan().SequenceEqual(HashCodepoint('a')));
-        Assert.DoesNotContain(hashes, h => h.AsSpan().SequenceEqual(HashCodepoint('b')));
+        Assert.DoesNotContain(hashes, h => h.Equals(HashCodepoint('a')));
+        Assert.DoesNotContain(hashes, h => h.Equals(HashCodepoint('b')));
     }
 
-    private static byte[] ComputeFlatHash(string content)
+    private static Hash32 ComputeFlatHash(string content)
     {
-        return Blake3.Hash(Encoding.UTF8.GetBytes(content).AsSpan());
+        return Blake3.Hash32(Encoding.UTF8.GetBytes(content).AsSpan());
     }
 
-    private static byte[] ComputeWordFormHash(string form)
+    private static Hash32 ComputeWordFormHash(string form)
         => SubstrateTextDecomposer.ComputeRootHash(
             Encoding.UTF8.GetBytes(form).AsSpan(),
             "word_form");
 
-    private static byte[] HashCodepoint(int cpValue)
+    private static Hash32 HashCodepoint(int cpValue)
     {
         Span<byte> cpBytes = stackalloc byte[4];
         cpBytes[0] = (byte)(cpValue >> 24);
         cpBytes[1] = (byte)(cpValue >> 16);
         cpBytes[2] = (byte)(cpValue >> 8);
         cpBytes[3] = (byte)cpValue;
-        return Blake3.Hash(cpBytes);
+        return Blake3.Hash32(cpBytes);
     }
 
 }
