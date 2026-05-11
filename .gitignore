@@ -1,12 +1,31 @@
 # Build outputs
-bin/
-obj/
-build/
-out/
+# NOTE: directory patterns are deliberately NOT bare globs — bare `build/`
+# would match scripts/build/ (the canonical build entrypoints referenced
+# in CLAUDE.md and every rule file) and silently exclude them from the repo.
+# That bug went undetected and meant fresh clones had no way to build.
+[Bb]in/
+[Oo]bj/
+/build/
+/out/
+ext/**/build/
+ext/**/out/
 *.user
 *.suo
 .vs/
-.vscode/
+
+# Explicitly track scripts/build/ (build entrypoints) — guard against
+# any future broad `build/` rule re-shadowing them.
+!scripts/build/
+!scripts/build/**
+
+# VS Code workspace — track shared config (settings/launch/tasks/extensions),
+# ignore per-user state.
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
 
 # Native build
 ext/libhartonomous/build/
@@ -47,8 +66,25 @@ reports/
 artifacts/
 exports/
 
-# Claude Code
-.claude/
+# Claude Code — track project-load-bearing content (rules/, agents/, skills/,
+# hooks/, CLAUDE.md, shared settings.json), ignore per-user/runtime state.
+.claude/*
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/rules/
+!.claude/agents/
+!.claude/skills/
+!.claude/hooks/
+!.claude/commands/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/projects/
+.claude/todos/
+.claude/cache/
+.claude/shell-snapshots/
+.claude/statsig/
+.claude/ide/
+.claude/logs/
 
 # Generator outputs — math-derived UCD/UCA atom blob (per-block files
 # total ~91 MB across 397 files). Reproducible from

@@ -1,0 +1,221 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CLI: phases run Iso639",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run",
+        "--phase", "Iso639",
+        "--skip-deps"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: phases run UcdUca",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run",
+        "--phase", "UcdUca",
+        "--skip-deps"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: phases run WordNetOmw",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run",
+        "--phase", "WordNetOmw",
+        "--skip-deps"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: phases run UniversalDeps",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run",
+        "--phase", "UniversalDeps",
+        "--skip-deps"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: phases run ModelDecomp",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run",
+        "--phase", "ModelDecomp",
+        "--skip-deps"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: phases run Tatoeba",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run",
+        "--phase", "Tatoeba",
+        "--skip-deps"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: phases run (all)",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "run"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Information"
+      }
+    },
+    {
+      "name": "CLI: phases list",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "phases", "list"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "CLI: health",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "health"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "CLI: status",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "status"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "CLI: migrate status",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "migrate", "status"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "CLI: bootstrap",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "bootstrap"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "CLI: query",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "query",
+        "--text", "overload"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "CLI: godel",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Cli/Hartonomous.Cli.csproj",
+      "args": [
+        "godel",
+        "--text", "What is a synset?"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "HARTONOMOUS_LOG_LEVEL": "Debug"
+      }
+    },
+    {
+      "name": "API",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Hartonomous.Api/Hartonomous.Api.csproj",
+      "cwd": "${workspaceFolder}/src/Hartonomous.Api",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  ]
+}
