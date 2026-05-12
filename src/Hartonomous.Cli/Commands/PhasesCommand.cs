@@ -227,7 +227,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             [Phase.WordNetOmw] =
             [
                 new WordNetDecomposer(wordnetConfig, substrateTextDecomposer, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, wordNetSynsetBridge, refDataReader, junctionWriter, refDataWriter),
-                new OmwDecomposer(omwConfig, logFactory.CreateLogger<OmwDecomposer>(), cpProps, wordNetSynsetBridge, refDataReader, junctionWriter, refDataWriter),
+                new OmwDecomposer(omwConfig, substrateTextDecomposer, logFactory.CreateLogger<OmwDecomposer>(), cpProps, wordNetSynsetBridge, refDataReader, junctionWriter, refDataWriter),
             ],
             [Phase.UniversalDeps] =
             [

@@ -1,4 +1,5 @@
 using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Compute;
 using Hartonomous.Core.Compute.Ingestion;
 using Hartonomous.Decomposers.Safetensors;
 using Xunit;
@@ -58,7 +59,7 @@ public sealed class LaplacianEigenmapTests
         // the spec default of 80 is fine there. This test deliberately constructs
         // a 4-component graph, so budget accordingly.
         (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
-            rows, n, d,
+            ComputeFacade.Instance, rows, n, d,
             new LaplacianEigenmapOptions(K: 6, LanczosSteps: n, Seed: 42));
 
         Assert.Equal(n, x.Length);
@@ -133,8 +134,8 @@ public sealed class LaplacianEigenmapTests
         double[] rows2 = (double[])rows1.Clone();
 
         var opts = new LaplacianEigenmapOptions(K: 5, LanczosSteps: 24, Seed: 99);
-        (double[] x1, double[] y1, double[] z1) = LaplacianEigenmap.Project(rows1, nRows, nCols, opts);
-        (double[] x2, double[] y2, double[] z2) = LaplacianEigenmap.Project(rows2, nRows, nCols, opts);
+        (double[] x1, double[] y1, double[] z1) = LaplacianEigenmap.Project(ComputeFacade.Instance, rows1, nRows, nCols, opts);
+        (double[] x2, double[] y2, double[] z2) = LaplacianEigenmap.Project(ComputeFacade.Instance, rows2, nRows, nCols, opts);
 
         for (int i = 0; i < 32; i++)
         {
@@ -258,7 +259,7 @@ public sealed class LaplacianEigenmapTests
         }
 
         (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
-            rows, n, d,
+            ComputeFacade.Instance, rows, n, d,
             new LaplacianEigenmapOptions(K: 10, LanczosSteps: 80, Seed: 42));
 
         Assert.Equal(n, x.Length);

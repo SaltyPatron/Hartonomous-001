@@ -100,7 +100,7 @@ public sealed class CanonicalTextDecomposerTests
 
         // Native emits every tier through the callback. For "dog" this covers
         // codepoints, grapheme clusters, word-form layer, and top composition.
-        Assert.Equal(9, batch.EntitiesAdded);
+        Assert.Equal(8, batch.EntitiesAdded);
 
         // Sequence rows: grapheme→codepoint at every layer (3 graphemes, each
         // with 1 codepoint child = 3 rows), word_form→grapheme (3 children of

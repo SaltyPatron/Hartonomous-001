@@ -109,4 +109,19 @@ public sealed class TupleResolverLlamaTests
         Assert.Equal(PrimitiveKind.Linear, classifications[lmHead].Primitive);
         Assert.Equal(TupleSlot.LmHead, classifications[lmHead].Slot);
     }
+
+    [Fact]
+    public void TensorRoleCode_MapsResolvedSlotsToSeededRoles()
+    {
+        Assert.Equal("attention_query", ModelPassOrchestrator.TensorRoleCode(new TensorClassification(
+            PrimitiveKind.Linear, ArchetypeTuple.AttentionBlock, TupleSlot.Q, 0, null, null, ModalityHint.Text, null)));
+        Assert.Equal("ffn_gate", ModelPassOrchestrator.TensorRoleCode(new TensorClassification(
+            PrimitiveKind.Linear, ArchetypeTuple.SwiGluFfn, TupleSlot.Gate, 0, null, null, ModalityHint.Text, null)));
+        Assert.Equal("moe_expert_down", ModelPassOrchestrator.TensorRoleCode(new TensorClassification(
+            PrimitiveKind.Linear, ArchetypeTuple.MoeRouterBlock, TupleSlot.ExpertDown, 0, null, 2, ModalityHint.Text, null)));
+        Assert.Equal("vq_codebook", ModelPassOrchestrator.TensorRoleCode(new TensorClassification(
+            PrimitiveKind.Lookup, ArchetypeTuple.EmbeddingLookup, TupleSlot.Table, null, null, null, ModalityHint.CodecCodeword, null)));
+        Assert.Equal("logit_head", ModelPassOrchestrator.TensorRoleCode(new TensorClassification(
+            PrimitiveKind.Linear, ArchetypeTuple.EmbeddingLookup, TupleSlot.LmHead, null, null, null, ModalityHint.Text, null)));
+    }
 }

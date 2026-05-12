@@ -1,8 +1,20 @@
-## Documented anti-patterns from observed agent failures
+---
+description: Documented anti-pattern catalog with citations (AP-1..AP-32). Reference doc. Loads on code paths where AP relevance is high.
+paths:
+  - src/**
+  - sql/**
+  - ext/**
+  - docs/specs/**
+  - docs/recipes/**
+---
 
-**Canonical location.** This file is the single source of truth for Hartonomous anti-patterns. `docs/40-process/01-anti-patterns.md` and `docs/reference/anti-patterns.md` are stubs that link here. Adding a new AP, updating an existing one, or correcting a citation: do it here. The other locations do not need to be edited.
+## Substrate-shape violations — catalog
 
-Each section names a specific drift agents have produced, the rule that prevents it, and the citation that grounds the rule.
+This file catalogs specific shapes that violate the substrate's invariants — content-addressed cross-source consensus accumulation, four-pillar layer discipline, deterministic ingest, sign-aware sparse honest recording, primitive + tuple standardization, subservient-not-autonomous engine, A\*-over-typed-edges inference. Each entry names the violation, the substrate property it conflicts with, and the citation that grounds the correction.
+
+**Canonical location.** This file is the single source of truth. `docs/40-process/01-anti-patterns.md` and `docs/reference/anti-patterns.md` are stubs that link here. Adding a new entry, updating one, or correcting a citation: do it here.
+
+Read this file when planning new ingestion / inference / synthesis work or when encountering unfamiliar substrate-shape decisions. The entries are not "things agents typically do wrong" — they are concrete shapes that fragment the substrate, fragment cross-source consensus, defeat content-addressed identity, conflate infrastructure with substrate, or smuggle conventional-AI / autonomous-agent semantics into a content-addressed familiar.
 
 ### AP-1: Arena cherry-picking
 
@@ -98,11 +110,11 @@ If lemmas have no `has_sense` outbound edges, or edge mu is uniformly default, f
 
 **Citation**: Substrate Law #8, `docs/specs/engine/inference.md`
 
-### AP-11: Approximation methods
+### AP-11: Approximation methods on substrate content
 
-**Failure**: Adding HNSW, LSH, random projection, randomized SVD, stochastic trace estimation, sampling-based inference, ANN, quantization, Nyström.
+**Failure**: Adding HNSW, LSH, random projection, randomized SVD, stochastic trace estimation, sampling-based inference, ANN, quantization-as-storage, Nyström, sketch-based methods on substrate state.
 
-**Rule**: Banned. The substrate is exact-math by design (Law #6). MKL `CBWR=AUTO,STRICT`. Fixed seeds for all PRNG. BF16 → F32 → F64 lossless decode. Sparsity is honest recording (don't store what doesn't exist), not approximation.
+**Rule**: Banned at ingest. The substrate is exact-math by design (Law #6). `MKL CBWR=AUTO,STRICT`; fixed seeds for all PRNG; BF16 / F32 / F64 / AWQ-Q4 / GGUF / FP8 → f64 lossless decode. Sparsity is honest non-storage (don't store what doesn't exist) — NOT approximation. The LTH discrimination is the per-tensor adaptive magnitude threshold (Han et al. 2015 magnitude pruning): every weight above the tensor's own jitter floor is the winning ticket and gets emitted; every weight below is gradient-descent noise and gets discarded. Threshold-only — top-K is NOT how the substrate discriminates signal from jitter (top-K truncates real signal at a count cutoff and keeps noise that made the count). The three-tier determinism boundary (per [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §XI) permits relaxed determinism at synthesis time (sparse-aware solvers, iterative SVD for very large V×V cases) and free approximation at analytics-cache time (rebuildable from substrate state), strictly NOT at ingest.
 
 ### AP-12: Treating geometry as a sidecar
 
@@ -222,15 +234,15 @@ If lemmas have no `has_sense` outbound edges, or edge mu is uniformly default, f
 
 **Citation**: [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §VI; `docs/specs/recomposers/synthesis-library.md`; AP-5 (closely related — the original framing that distillation ≠ round-trip; AP-28 names the specific code shape that violates it).
 
-### AP-29: Fireflies-as-inference
+### AP-29: Routing inference through fireflies as the answer mechanism
 
-**Failure**: Treating embedding-layer Voronoi consensus or firefly proximity as the mechanism for answering queries. Or: building the Gödel Engine to route inference through firefly clusters first, then attestation edges as a refinement. Or: claiming the substrate's "answer" comes from finding the firefly cluster nearest to the query embedding.
+**Failure**: Building the engine so that the path from prompt to answer goes through embedding-similarity / Voronoi-cluster-nearest-to-the-query-embedding first, then attestation edges as a refinement. Or: claiming the substrate's "answer" comes from finding the firefly cluster the query embedding lands inside.
 
-**Rule**: Fireflies are a **derived value-add side-channel, NOT the inference mechanism**. Inference mechanism is A* over attestation edges with Glicko-2 significance per arena (per [`35-inference-and-godel.md`](35-inference-and-godel.md) §"The invention"). Query answers come from path traversal, not embedding similarity. Fireflies enable cross-model consensus visualization, conventional embedding-style queries with consensus weighting, polysemy/drift detection, frayed-edge geometric anomaly detection — none of which are the path-from-prompt-to-answer that inference is.
+**Rule**: Inference is path traversal — A\* over typed attestation edges with per-arena Glicko-2 mu (per [`35-inference-and-godel.md`](35-inference-and-godel.md)). Fireflies are one of several queryable substrate surfaces alongside edge `LINESTRINGZM` trajectories for Fréchet matching, recursive Merkle centroids for compositional position, Voronoi consensus over per-token firefly clusters, Hausdorff over firefly clouds for cross-model divergence, and edge-archetype matching for frayed-edge detection. The engine consults whichever surface the question calls for. The path from prompt to answer is edge traversal; geometric surfaces inform the walk but do not replace it.
 
-**Why**: Embedding-similarity-based answering reproduces conventional vector-DB / RAG / semantic-search patterns and loses everything that makes the substrate a different kind of AI: per-hop filtering, explanation trace, honest abstention, arena weighting, closed-loop Glicko learning from outcomes. Frayed-edge detection (when a query lands outside any Voronoi consensus cell) IS used by the engine — but as a *signal* to abstain or to flag for curiosity-driven exploration, not as the mechanism for producing an answer.
+**Why**: Embedding-similarity-based answering reproduces conventional vector-DB / RAG / semantic-search patterns and loses what makes the substrate a different kind of AI — per-hop filtering, explanation trace as substrate content, honest abstention, arena weighting, closed-loop Glicko learning from outcomes. Frayed-edge detection (a query landing outside any Voronoi consensus cell) is used by the engine as a *signal* to honestly abstain or flag for the practitioner's curiosity-driven exploration, not as the mechanism for producing an answer.
 
-**Citation**: [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §VII; [`35-inference-and-godel.md`](35-inference-and-godel.md) §"The invention", §"Honest abstention vs hallucination", §"Voronoi consensus on firefly clouds"; `docs/specs/engine/embedding-physicality.md`.
+**Citation**: [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §VII; [`35-inference-and-godel.md`](35-inference-and-godel.md); [`docs/specs/engine/embedding-physicality.md`](../../docs/specs/engine/embedding-physicality.md).
 
 ### AP-30: Per-name role contamination
 
@@ -261,3 +273,45 @@ If lemmas have no `has_sense` outbound edges, or edge mu is uniformly default, f
 **Why**: Per-architecture decomposers fragment the substrate (each file's slight emission variation produces edges with different identities, breaking cross-architecture consensus) and produce unbounded code growth (every new architecture is a new file rather than a table row). The standardization framing — substrate is canonical form for AI — requires that the dialect-to-canonical translation happens in DATA (resolver tables), not CODE (per-dialect decomposers). Once the primitive + tuple decomposer set is correct, ingesting a new architecture is data-only.
 
 **Citation**: [`docs/01-tensor-primitive-spec.md`](../../docs/01-tensor-primitive-spec.md) §0, §III, §VI, §VIII ("substrate as standard").
+
+### AP-33: Top-K signal truncation at ingest
+
+**Failure**: A decomposer reads a Track 2 tensor, computes the per-(participant_a, participant_b) score matrix (Q^T·K projection, FFN response, embedding cosine, conv kernel response, etc.), and selects the top-K cells to emit as attestation edges. The "top-K above floor" pattern in `docs/00-substrate-spec.md` §III.3 line 129 and §V.2 line 179 carries this shape and is on the same correction path as this AP — the spec is the source of truth, but the spec needs to align to threshold-only LTH discrimination.
+
+**Rule**: Signal discrimination at ingest is **threshold-only against the per-tensor adaptive magnitude floor** (Han et al. 2015 magnitude pruning; Frankle & Carbin 2018 Lottery Ticket Hypothesis). Every cell whose score is above the tensor's own jitter floor is emitted as an attestation edge with sign-aware Glicko event; every cell below is gradient-descent noise that doesn't encode learned function and produces no edge. There is no top-K truncation step — the substrate stores the full winning ticket the tensor's distribution defines, not an arbitrary count of it. Empirically pre-trained transformers carry 10–40% real signal and 60–90% jitter (Chen et al. 2020; AWQ); the substrate stores the signal and discards the jitter via the per-tensor threshold, which is the model's own distribution speaking. Top-K would arbitrarily truncate real signal at a count cutoff (losing learned function that didn't make the top-N) and would keep sub-floor jitter that happened to make the count (storing noise).
+
+**Why**: The Lottery Ticket Hypothesis identifies the winning ticket from the trained tensor's own weight distribution, not from a count budget. Top-K artificial truncation breaks Multi-Source LTH — cross-model corroboration requires that every model attest the same cells above its own floor; top-K from model A and top-K from model B with different total signal density attest a non-comparable subset. Threshold-only preserves the winning-ticket sparsity each model actually carries.
+
+**Citation**: [`docs/specs/recomposers/algorithms/lottery-ticket-foundations.md`](../../docs/specs/recomposers/algorithms/lottery-ticket-foundations.md) (Han et al. 2015 magnitude pruning; Chen et al. 2020 BERT LTH; AWQ activation-aware quantization); [`.claude/rules/30-native-and-determinism.md`](30-native-and-determinism.md) "Sparse honest recording — the Lottery Ticket discrimination".
+
+### AP-34: Activation-based ingestion via synthetic prompts
+
+**Failure**: Approaching model ingestion as "run synthetic prompts through the model and observe what activates" — probe with curated inputs, watch hidden states fire, store the activations as substrate state. Or framing decomposition as "tickle it a few different ways and see what comes out." This is the interpretability-via-probing reflex from mechanistic interpretability tooling; it is not how the substrate ingests.
+
+**Rule**: Hartonomous ingestion is **direct weight decomposition**, not activation-based observation. The trained tensor's own |x| distribution IS the activation pattern the model has internalized — what the model "knows" is the configuration of its weights, accessible without running anything. The substrate reads the weights directly, applies the math the tensor's geometry defines (Q^T·K projection, FFN response, embedding row cosine, conv kernel response), thresholds against the per-tensor adaptive floor, and emits attestation edges for surviving cells. No synthetic prompts, no forward passes, no activation observation, no GPU.
+
+**Why**: Activation-based probing inherits all the problems of conventional interpretability: probe-set coverage bias (you only see what the curated prompts activate), non-determinism (different probe sets surface different activations), GPU dependency (running the model requires the model), and architecture-specific tooling (each model family needs its own probing harness). Direct weight decomposition is determinism-by-construction (Law #6), probe-free (no coverage bias), CPU-only (no GPU dependency), and architecture-agnostic (the 4 primitives + ~13 tuples + per-architecture resolver tables work for any HuggingFace model). The trained weight IS the learned function; you don't need to ask the model to repeat itself.
+
+**Citation**: [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §III.1 ("Initial mu derives from the tensor math itself — singular value magnitude, attention concentration, activation norm. There is NO prompt-based observation at ingest."); [`.claude/rules/30-native-and-determinism.md`](30-native-and-determinism.md); [`docs/familiar-principle.md`](../../docs/familiar-principle.md) Property 1 (local-first, no GPU).
+
+### AP-35: Per-model fireflies emitted without anchor-Procrustes alignment
+
+**Failure**: `EmbeddingLayerDecomposer` runs the projection pipeline (k-NN graph → normalized Laplacian → top-3 non-trivial eigenvectors at `λ_2, λ_3, λ_4` → Gram-Schmidt → L2-norm salience) and stores the resulting POINTZM fireflies directly without aligning to the substrate's canonical anchor frame. Result: each ingested model's fireflies sit in that model's own per-model Laplacian-eigenmap basis with eigenvector signs and orderings determined by numerical solver state. Cross-model centroid aggregation averages coordinates in mismatched bases; the resulting "consensus centroid" is geometrically meaningless; Voronoi cell tightness is uninterpretable; Mode 1 centroid synthesis fails silently.
+
+**Rule**: Anchor-token Procrustes alignment runs at decomposition time, after the projection pipeline and before storage. (1) Select shared word_forms whose tokenizer-frequency crosses the substrate's anchor threshold (finite-set selection for alignment basis, not signal discrimination — threshold-based, not top-K-based). (2) Claim or fetch canonical anchor positions from `substrate.embedding_alignment_anchor` via `substrate.claim_or_get_embedding_anchor`; the first ingested model's anchor positions establish the canonical frame, subsequent models align to it. (3) Compute the Kabsch rotation matrix that maps this model's anchor-firefly positions onto the canonical anchor positions (`ext/libhartonomous/src/procrustes.c`; C# binding `Hartonomous.Core.Compute.Ingestion.ProcrustesAlign.F64`; sub-millisecond per model). (4) Apply the rotation to all of this model's fireflies via `substrate.apply_firefly_rotation` before storage. Post-alignment fireflies share the canonical frame; cross-model centroid aggregation becomes meaningful; Mode 1 centroid consensus synthesis is viable.
+
+**Why**: Laplacian-eigenmap output is determined up to an arbitrary orthogonal transformation — eigenvector signs are not constrained by the spectral problem (any v and −v are valid eigenvectors), and small numerical differences in the solver order eigenvalues differently across models with similar k-NN graphs. The substrate's content-addressed entity identity provides the alignment anchor: every shared word_form across models can serve as a Procrustes anchor. Without the alignment step, the substrate's "shared 4D frame" is shared in name only — the coordinates are in incommensurable bases per ingested model. Cluster-shape consensus (Mode 2 — Hausdorff / Fréchet on MULTIPOINTZM clusters per word_form) is rotation-aware per-entity and works without alignment, but only Mode 1 (centroid) gives the simplest Build-a-bear embedding synthesis path.
+
+**Citation**: [`docs/specs/recomposers/algorithms/embedding-synthesis-from-fireflies.md`](../../docs/specs/recomposers/algorithms/embedding-synthesis-from-fireflies.md) Coordinate-frame caveat (2026-05-09); `docs/build-plan.md:267` (`#51 EmbeddingAlignmentPass`); [`.claude/rules/25-physicality-4d.md`](25-physicality-4d.md) "Anchor-Procrustes alignment" section; `sql/schema/functions/{claim_or_get_embedding_anchor, get_firefly_coords, apply_firefly_rotation}.sql`; `sql/schema/tables/reference/embedding_alignment_anchor.sql`.
+
+### AP-36: Gödel Engine framed as autonomous goal-pursuer
+
+**Failure**: Documenting or implementing the Gödel Engine as a system that initiates work on its own — runs background OODA cycles without practitioner setup, pursues long-horizon goals between queries, autonomously ingests sources without approval, self-modifies its heuristics or schema. The Gödel-machine connotation of the name (Schmidhuber's recursive self-improvement, AGI-style autonomy) bleeds into the framing and treats the engine as an agent acting on its own initiative.
+
+**Rule**: The Gödel Engine is the substrate's reasoning system / task manager / queue processor / orchestrator. It asks questions of itself, reasons of itself, tells itself to do stuff, processes its own queue, and uses inference / generation / traversal / frayed-edge surveys / ingestion as the tools that execute its decisions. **Subservience (Familiar Principle Property 2) is the operational boundary, not the negation of the engine's reasoning capability**: the practitioner initiates (Tasked Mode — explicit goal) or schedules (Scheduled Mode — practitioner-set cron); the engine handles execution within those bounds. Macro-level Act (actual new-source ingestion) carries a removable-but-currently-active human approval gate; macro cycles have cost budgets; engine-directed work carries the `godel_engine_directed` provenance class for audit; the long-horizon goal queue is bounded; the engine does NOT self-modify code / heuristics / schema. Within these bounds the engine IS a sophisticated orchestrator — CoT / ToT / ReAct / Reflexion / Self-Consistency / GoT / hypothesis-driven reasoning emerge naturally from the OODA structure at the appropriate scale.
+
+The Gödel name refers to **self-reference** (the engine asks questions of itself, reasons about its own state, decomposes its own task queue) — not to Gödel-machine recursive self-improvement. The substrate has the incompleteness property — it can see its own gaps (frayed edges) and formulate what it would need to fill them — but the engine does not transcend incompleteness on its own; it surfaces the findings for the practitioner to act on.
+
+**Why**: Treating the engine as autonomous violates the loyalty property (Property 1 — bonded to the specific practitioner) and turns the substrate into a different category of system. Treating the engine as merely a passive lookup mechanism loses the reasoning structure that makes complex query decomposition, partial-result synthesis, contradiction resolution, and cross-domain hypothesis formation possible. Both extremes are wrong. The orchestrator-with-subservience-boundary framing is the correct one — and matches [`docs/specs/engine/godel-engine.md`](../../docs/specs/engine/godel-engine.md)'s "Operational Boundaries" section once the autonomy connotation of the name is set aside.
+
+**Citation**: [`docs/specs/engine/godel-engine.md`](../../docs/specs/engine/godel-engine.md) (full spec — orchestrator framing; OODA at three scales; reasoning strategies; operational boundaries); [`.claude/rules/35-inference-and-godel.md`](35-inference-and-godel.md); [`docs/familiar-principle.md`](../../docs/familiar-principle.md) Properties 1 and 2.

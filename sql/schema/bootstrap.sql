@@ -80,6 +80,7 @@
 -- @include schema/seed/edge_role.sql
 -- @include schema/seed/significance_context.sql
 -- @include schema/seed/attestation_type.sql
+-- @include schema/seed/tensor_role.sql
 -- @include schema/seed/provenance.sql
 -- @include schema/seed/bidi_class.sql
 -- @include schema/seed/east_asian_width.sql
@@ -175,6 +176,7 @@
 -- @include schema/tables/models/model_source.sql
 -- @include schema/tables/models/model_pass_checkpoint.sql
 -- @include schema/tables/models/entity_model_source.sql
+-- @include schema/tables/models/safetensor_observation.sql
 -- @include schema/tables/reference/embedding_alignment_anchor.sql
 
 -- ── Phase 10: monitor tables ─────────────────────────────────────────
@@ -223,6 +225,9 @@
 -- @include schema/indexes/idx_model_source_publisher.sql
 -- @include schema/indexes/idx_morph_feature_key.sql
 -- @include schema/indexes/idx_pattern_deprel_deprel.sql
+-- @include schema/indexes/idx_safetensor_observation_edge.sql
+-- @include schema/indexes/idx_safetensor_observation_source.sql
+-- @include schema/indexes/idx_safetensor_observation_tensor.sql
 -- @include schema/indexes/idx_sequence_child.sql
 -- @include schema/indexes/idx_session_started.sql
 -- @include schema/indexes/idx_significance_snapshot_target.sql
@@ -258,7 +263,6 @@
 -- @include schema/functions/populate_languages.sql
 -- @include schema/functions/populate_morph_features.sql
 -- @include schema/functions/populate_deprels.sql
--- @include schema/functions/populate_senses.sql
 -- Upserters
 -- @include schema/functions/upsert_reference_edge_type.sql
 -- @include schema/functions/upsert_homogeneous_edge_types.sql
@@ -319,6 +323,7 @@
 -- @include schema/functions/record_entity_comparison.sql
 -- @include schema/functions/record_corroboration.sql
 -- @include schema/functions/record_outcome.sql
+-- @include schema/functions/record_outcomes_bulk.sql
 -- @include schema/functions/record_attestation.sql
 -- @include schema/functions/record_attestations_bulk.sql
 -- @include schema/functions/initialize_edge_significance.sql
@@ -342,6 +347,7 @@
 -- @include schema/functions/populate_codepoint_property_range_from_ext.sql
 -- @include schema/functions/unicode_edge_hash.sql
 -- @include schema/functions/populate_unicode_case_edges_from_properties.sql
+-- @include schema/functions/ucd_materialization_counts.sql
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local
 --  temp table — no persistent staging, no auto-discovered drain manifest.)
@@ -373,6 +379,7 @@
 -- @include schema/functions/break_property_code_map.sql
 -- @include schema/functions/query_entities.sql
 -- @include schema/functions/query_tensors_for_architecture.sql
+-- @include schema/functions/query_tensors_for_model_source.sql
 -- @include schema/functions/query_fireflies_for_vocab.sql
 -- @include schema/functions/query_ffn_neurons_by_hidden_dim.sql
 -- @include schema/functions/query_attention_components.sql

@@ -1,29 +1,15 @@
 using System;
-using Hartonomous.Core.Compute.Common;
-using Hartonomous.Core.Native;
+using Hartonomous.Core.Compute.Internal;
 
 namespace Hartonomous.Core.Tests.Native;
 
 /// <summary>
-/// Cross-language parity guard: the managed Glicko-2 mirror in
-/// <see cref="Glicko2"/> must agree byte-for-byte with the canonical C
-/// implementation in <c>ext/libhartonomous/src/glicko_bulk.c</c> on the
-/// single-opponent case. Drift between the two surfaces is the regression
-/// the user explicitly named — three independent reimplementations is
-/// banned. The native bulk function is the source of truth; the managed
-/// mirror is a test-only reference.
+/// Native Glicko-2 guard. There is no managed mirror; C in
+/// <c>ext/libhartonomous/src/glicko_bulk.c</c> is the implementation surface
+/// reached through centralized <see cref="NativeCompute"/>.
 /// </summary>
 public sealed class Glicko2NativeTests
 {
-    // The managed mirror and the C reference both run Step 5 (volatility) via
-    // Illinois iteration with ConvergenceEpsilon = 1e-6. They terminate at
-    // points within 1e-6 of the true root and naturally disagree by O(1e-6) —
-    // observed real-world delta is ~7e-7. ParityTolerance must therefore sit
-    // above the convergence noise floor and below any meaningful drift; 1e-5
-    // is two orders above the floor and at least three orders below what a
-    // one-line algorithmic change would produce.
-    private const double ParityTolerance = 1e-5;
-
     private static (double NewMu, double NewSigma, double NewVol) RunNative(
         double mu, double sigma, double vol,
         double oppMu, double oppSigma, double score)
@@ -38,7 +24,7 @@ public sealed class Glicko2NativeTests
         Span<double> newSigma   = stackalloc double[1];
         Span<double> newVol     = stackalloc double[1];
 
-        int rc = Glicko2Native.Glicko2BulkUpdate(
+        int rc = NativeCompute.Glicko2BulkUpdate(
             1, muIn, sigmaIn, volIn, oppMuIn, oppSigmaIn, scoreIn,
             newMu, newSigma, newVol);
         Assert.Equal(0, rc);
@@ -46,50 +32,45 @@ public sealed class Glicko2NativeTests
     }
 
     [Fact]
-    public void DefaultPlayerWinsAgainstWeakOpponent_NativeMatchesManaged()
+    public void DefaultPlayerWinsAgainstWeakOpponent_IncreasesRating()
     {
-        // Mirrors the gtest fixture in test_glicko_bulk.cc:
-        //   GlickoBulk.DefaultPlayerWinsAgainstWeakOpponent
         const double mu = 1500.0, sigma = 350.0, vol = 0.06;
         const double oppMu = 1200.0, oppSigma = 30.0, score = 1.0;
 
-        Glicko2.Result managed = Glicko2.Update(mu, sigma, vol,
-            [new Glicko2.Opponent(oppMu, oppSigma, score)]);
         (double nMu, double nSigma, double nVol) = RunNative(mu, sigma, vol, oppMu, oppSigma, score);
 
-        Assert.InRange(nMu - managed.Rating, -ParityTolerance, ParityTolerance);
-        Assert.InRange(nSigma - managed.Deviation, -ParityTolerance, ParityTolerance);
-        Assert.InRange(nVol - managed.Volatility, -ParityTolerance, ParityTolerance);
+        Assert.True(nMu > mu);
+        Assert.True(nSigma < sigma);
+        Assert.True(nVol > 0.0);
+        Assert.True(double.IsFinite(nMu));
+        Assert.True(double.IsFinite(nSigma));
+        Assert.True(double.IsFinite(nVol));
     }
 
     [Fact]
-    public void EqualPlayerDraw_NativeMatchesManaged()
+    public void EqualPlayerDraw_DoesNotMoveRating()
     {
         const double mu = 1500.0, sigma = 200.0, vol = 0.06;
         const double oppMu = 1500.0, oppSigma = 200.0, score = 0.5;
 
-        Glicko2.Result managed = Glicko2.Update(mu, sigma, vol,
-            [new Glicko2.Opponent(oppMu, oppSigma, score)]);
         (double nMu, double nSigma, double nVol) = RunNative(mu, sigma, vol, oppMu, oppSigma, score);
 
-        Assert.InRange(nMu - managed.Rating, -ParityTolerance, ParityTolerance);
-        Assert.InRange(nSigma - managed.Deviation, -ParityTolerance, ParityTolerance);
-        Assert.InRange(nVol - managed.Volatility, -ParityTolerance, ParityTolerance);
+        Assert.InRange(nMu, mu - 1e-12, mu + 1e-12);
+        Assert.True(nSigma < sigma);
+        Assert.True(nVol > 0.0);
     }
 
     [Fact]
-    public void LossToStrongOpponent_NativeMatchesManaged()
+    public void LossToStrongOpponent_DecreasesRating()
     {
         const double mu = 1500.0, sigma = 200.0, vol = 0.06;
         const double oppMu = 2000.0, oppSigma = 30.0, score = 0.0;
 
-        Glicko2.Result managed = Glicko2.Update(mu, sigma, vol,
-            [new Glicko2.Opponent(oppMu, oppSigma, score)]);
         (double nMu, double nSigma, double nVol) = RunNative(mu, sigma, vol, oppMu, oppSigma, score);
 
-        Assert.InRange(nMu - managed.Rating, -ParityTolerance, ParityTolerance);
-        Assert.InRange(nSigma - managed.Deviation, -ParityTolerance, ParityTolerance);
-        Assert.InRange(nVol - managed.Volatility, -ParityTolerance, ParityTolerance);
+        Assert.True(nMu < mu);
+        Assert.True(nSigma < sigma);
+        Assert.True(nVol > 0.0);
     }
 
     [Fact]

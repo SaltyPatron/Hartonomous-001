@@ -24,6 +24,16 @@ public sealed class ComputeFacade : IComputeFacade
         public KnnGraphF64 BuildKnnCosineGraphF64(int n, int d, double[] flat, int k)
             => KnnCosineGraph.BuildF64(n, d, flat, k);
 
+        public void GemmF64(
+            TransposeOp opA, TransposeOp opB,
+            long m, long n, long k,
+            double alpha,
+            ReadOnlySpan<double> a, long lda,
+            ReadOnlySpan<double> b, long ldb,
+            double beta,
+            Span<double> c, long ldc)
+            => Gemm.F64(opA, opB, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+
         public SparseEigsResult SparseSymEigsF64(
             int n, long nnz,
             long[] rowPtr, long[] colIdx, double[] values,

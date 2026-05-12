@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Hartonomous.Decomposers.Safetensors;
 
 /// <summary>
@@ -21,4 +23,5 @@ public sealed record TensorClassification(
     int? HeadIndex,
     int? ExpertIndex,
     ModalityHint Modality,
-    byte[]? AdaptationOf);
+    byte[]? AdaptationOf,
+    IReadOnlyList<FusedTensorMember>? FusedMembers = null);

@@ -115,5 +115,3 @@ public sealed partial class TextGenerationOp : BaseAiOperation
         public static partial void InferComplete(ILogger logger, int seedCount, long distinctTargets, int sqlElapsedMs);
     }
 }
-
-public sealed record TextGenerationResponse : OperationResponse;

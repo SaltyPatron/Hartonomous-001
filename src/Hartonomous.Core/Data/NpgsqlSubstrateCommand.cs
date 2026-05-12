@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Hartonomous.Core.Compute.Common;
 using Npgsql;
 
 namespace Hartonomous.Core.Data;
@@ -26,7 +27,7 @@ public static class NpgsqlSubstrateCommand
         NpgsqlCommand command = new(BuildFunctionCall(functionName, parameterValues.Count), connection);
         foreach (object? value in parameterValues)
         {
-            command.Parameters.AddWithValue(value ?? DBNull.Value);
+            command.Parameters.AddWithValue(NormalizeParameterValue(value));
         }
 
         return command;
@@ -70,6 +71,14 @@ public static class NpgsqlSubstrateCommand
 
     private static string BuildFunctionCall(string functionName, int parameterCount)
         => BuildRoutineCall(SelectAllFrom, functionName, parameterCount);
+
+    private static object NormalizeParameterValue(object? value)
+        => value switch
+        {
+            null => DBNull.Value,
+            Hash32 hash => hash.ToByteArray(),
+            _ => value,
+        };
 
     private static string BuildRoutineCall(string prefix, string routineName, int parameterCount)
     {

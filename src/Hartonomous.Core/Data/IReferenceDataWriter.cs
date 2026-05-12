@@ -144,11 +144,4 @@ public interface IReferenceDataWriter
         string entityTypeCode,
         CancellationToken ct);
 
-    /// <summary>
-    /// Bulk-insert WordNet sense rows into <c>substrate.sense</c>, ignoring
-    /// duplicates by <c>code</c>.
-    /// </summary>
-    Task PopulateSensesAsync(
-        IReadOnlyList<(string Code, string Gloss, int LexnameId, int PosId)> senses,
-        CancellationToken ct);
 }

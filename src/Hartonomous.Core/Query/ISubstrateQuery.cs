@@ -32,6 +32,14 @@ public interface ISubstrateQuery
         CancellationToken ct);
 
     /// <summary>
+    /// Return tensors in deterministic enumeration order for one concrete
+    /// ingested package/model_source, via sequence(model_package -> tensor).
+    /// </summary>
+    Task<IReadOnlyList<PackageTensorHandle>> QueryTensorsForModelSourceAsync(
+        long modelSourceId,
+        CancellationToken ct);
+
+    /// <summary>
     /// Token entities carrying embedding_firefly physicality, narrowed to the
     /// supplied vocabulary set and significance threshold in the chosen arena.
     /// </summary>

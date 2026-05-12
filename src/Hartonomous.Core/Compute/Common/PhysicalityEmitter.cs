@@ -28,12 +28,8 @@ public static class PhysicalityEmitter
 {
     public const int UnicodeCodepointSpace = 0x110000;
 
-    private const double TwoPi = 2.0 * Math.PI;
-    private const double Phi = 1.4142135623730951;
-    private const double Psi = 1.533751168755204288118041;
-
     /// <summary>
-    /// Pure Super-Fibonacci S³ projection. Deterministic given (index, totalPoints).
+    /// Native Super-Fibonacci S³ projection. Deterministic given (index, totalPoints).
     /// Used by callers that have their OWN ordering (e.g. embedding fireflies in
     /// concept space). For Unicode codepoints, callers MUST use
     /// <see cref="CodepointS3Position"/> instead — the embedded blob's UCA-rank
@@ -41,17 +37,10 @@ public static class PhysicalityEmitter
     /// </summary>
     public static (double X, double Y, double Z, double M) SuperFibonacciS3(int index, int totalPoints)
     {
-        double s = index + 0.5;
-        double n = totalPoints;
-        double r = Math.Sqrt(s / n);
-        double bigR = Math.Sqrt(1.0 - s / n);
-        double alpha = TwoPi * s / Phi;
-        double beta = TwoPi * s / Psi;
-        return (
-            r * Math.Sin(alpha),
-            r * Math.Cos(alpha),
-            bigR * Math.Sin(beta),
-            bigR * Math.Cos(beta));
+        Span<double> parameters = stackalloc double[] { index + 0.5, totalPoints };
+        Span<double> result = stackalloc double[4];
+        SuperFibonacci.Project(parameters, result);
+        return (result[0], result[1], result[2], result[3]);
     }
 
     /// <summary>

@@ -32,4 +32,5 @@ require_cmd psql
 [[ -d ext/libhartonomous ]] || die "missing ext/libhartonomous"
 [[ -d ext/hartonomous_pg ]] || die "missing ext/hartonomous_pg"
 dotnet --version | awk -F. '{ if ($1 < 9) exit 1 }' || die ".NET SDK 9+ required"
+scripts/linux/verify-repo-discipline.sh --strict --max-findings 40
 info "Linux preflight checks passed"

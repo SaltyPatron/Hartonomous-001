@@ -109,5 +109,3 @@ public sealed partial class ClassificationOp : BaseAiOperation
         public static partial void ClassifyComplete(ILogger logger, string junctionKind, int hitCount, int sqlElapsedMs);
     }
 }
-
-public sealed record ClassificationResponse : OperationResponse;

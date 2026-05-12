@@ -18,7 +18,9 @@
 -- p_weights[i] > 0 — magnitude of the measurement (|projection|, |response|,
 -- |cosine|). Scales the per-event mu/sigma/volatility delta linearly. Weight
 -- = 1 reproduces the canonical single-game Glicko step; weight > 1 amplifies
--- the move; weight < 1 attenuates.
+-- the move; weight < 1 attenuates. Sigma/volatility are clamped to a small
+-- positive floor on write so a high-corroboration batch can converge toward
+-- certainty without violating the strictly-positive domains.
 --
 -- All four input arrays must be the same length. Rows with weight <= 0 or
 -- NULL score are skipped. Auto-creates missing rows at default before update.
@@ -144,9 +146,9 @@ BEGIN
     -- Glicko delta scaled by per-event weight. games += 1 per event regardless
     -- of weight (weight scales the rating-period magnitude, not the count).
     UPDATE substrate.edge_significance es
-       SET mu         = es.mu         + u.delta_mu,
-           sigma      = es.sigma      + u.delta_sigma,
-           volatility = es.volatility + u.delta_volatility,
+       SET mu         = es.mu + u.delta_mu,
+           sigma      = GREATEST(1e-9::DOUBLE PRECISION, es.sigma + u.delta_sigma),
+           volatility = GREATEST(1e-9::DOUBLE PRECISION, es.volatility + u.delta_volatility),
            games      = es.games + u.games
       FROM (
           SELECT raw.edge_type_id,

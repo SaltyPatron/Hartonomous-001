@@ -61,59 +61,7 @@ internal static class WiktionaryJsonlParser
         }
     }
 
-    /// <summary>
-    /// Streaming reader variant — exposes <see cref="BytesRead"/> /
-    /// <see cref="TotalBytes"/> so the caller can report progress as a
-    /// fraction of the input file consumed. Entry count alone tells you
-    /// nothing about how far through a 2.9 GB JSONL file you are; bytes
-    /// consumed do.
-    /// </summary>
-    public sealed class StreamingReader : IEnumerable<WiktEntry>, IDisposable
-    {
-        private readonly FileStream _fs;
-        private readonly StreamReader _sr;
-        private readonly string[]? _prefilter;
-        public long TotalBytes { get; }
-        public long BytesRead => _fs.Position;
-        public long EntriesParsed { get; private set; }
-
-        public StreamingReader(string path, IReadOnlyCollection<string>? langCodeFilter)
-        {
-            _fs = File.OpenRead(path);
-            _sr = new StreamReader(_fs, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 20);
-            _prefilter = BuildPrefilter(langCodeFilter);
-            TotalBytes = _fs.Length;
-        }
-
-        public IEnumerator<WiktEntry> GetEnumerator()
-        {
-            string? line;
-            while ((line = _sr.ReadLine()) is not null)
-            {
-                if (_prefilter is not null && !LineCarriesAllowedLangCode(line, _prefilter))
-                {
-                    continue;
-                }
-                WiktEntry? entry = ParseLine(line);
-                if (entry is null)
-                {
-                    continue;
-                }
-                EntriesParsed++;
-                yield return entry;
-            }
-        }
-
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
-
-        public void Dispose()
-        {
-            _sr.Dispose();
-            _fs.Dispose();
-        }
-    }
-
-    private static string[]? BuildPrefilter(IReadOnlyCollection<string>? langCodeFilter)
+    internal static string[]? BuildPrefilter(IReadOnlyCollection<string>? langCodeFilter)
     {
         if (langCodeFilter is null || langCodeFilter.Count == 0)
         {
@@ -131,7 +79,7 @@ internal static class WiktionaryJsonlParser
         return patterns;
     }
 
-    private static bool LineCarriesAllowedLangCode(string line, string[] patterns)
+    internal static bool LineCarriesAllowedLangCode(string line, string[] patterns)
     {
         foreach (string p in patterns)
         {

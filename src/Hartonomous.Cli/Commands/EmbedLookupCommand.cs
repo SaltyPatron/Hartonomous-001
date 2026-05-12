@@ -110,5 +110,3 @@ internal static class EmbedLookupCommand
         return cmd;
     }
 }
-
-internal sealed record EmbedLookupRequest : OperationRequest;

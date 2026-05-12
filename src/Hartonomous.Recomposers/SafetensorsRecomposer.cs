@@ -65,6 +65,39 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         return new SafetensorsFile(tensors, modelName);
     }
 
+    public async Task<SafetensorsFile> RecomposeModelSourceAsync(
+        long modelSourceId,
+        RecompositionOptions options,
+        CancellationToken ct)
+    {
+        if (_query is null)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(RecomposeModelSourceAsync)} requires an {nameof(ISubstrateQuery)} implementation.");
+        }
+
+        IReadOnlyList<PackageTensorHandle> packageTensors =
+            await _query.QueryTensorsForModelSourceAsync(modelSourceId, ct);
+        if (packageTensors.Count == 0)
+        {
+            return new SafetensorsFile(new Dictionary<string, TensorData>(StringComparer.Ordinal),
+                $"model_source_{modelSourceId}");
+        }
+
+        Dictionary<string, TensorData> tensors = new(packageTensors.Count, StringComparer.Ordinal);
+        foreach (PackageTensorHandle packageTensor in packageTensors)
+        {
+            ct.ThrowIfCancellationRequested();
+            EntityHandle tensor = packageTensor.Tensor;
+            (string name, string dtype, int[] shape) = await ReadTensorMetadataAsync(tensor, options, ct);
+            byte[] bytes = await AssembleTensorBytesAsync(tensor, dtype, shape, options, ct);
+            tensors[name] = new TensorData(dtype, shape, bytes);
+        }
+
+        string modelName = await ResolveModelNameAsync(packageTensors[0].Package, options, ct);
+        return new SafetensorsFile(tensors, modelName);
+    }
+
     public override Modality OutputModality => Modality.ModelWeights;
 
     public override async Task<SafetensorsFile> RecomposeAsync(
@@ -72,8 +105,9 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         RecompositionOptions options,
         CancellationToken ct)
     {
-        IReadOnlyList<EntityHandle> tensorHandles = await EntityReader.GetOutboundEdgeTargetsAsync(
-            entity, "has_tensor", ct);
+        IReadOnlyList<EntityHandle> tensorHandles = entity.EntityTypeCode == "model_package"
+            ? await ReadPackageTensorSequenceAsync(entity, ct)
+            : await EntityReader.GetOutboundEdgeTargetsAsync(entity, "has_tensor", ct);
 
         Dictionary<string, TensorData> tensors = new(tensorHandles.Count, StringComparer.Ordinal);
         foreach (EntityHandle tensor in tensorHandles)
@@ -86,6 +120,43 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
 
         string modelName = await ResolveModelNameAsync(entity, options, ct);
         return new SafetensorsFile(tensors, modelName);
+    }
+
+    private async Task<IReadOnlyList<EntityHandle>> ReadPackageTensorSequenceAsync(
+        EntityHandle package,
+        CancellationToken ct)
+    {
+        IReadOnlyList<(EntityHandle Child, int Position)> children =
+            await EntityReader.GetCompositionChildrenAsync(package, ct);
+        List<(EntityHandle Tensor, int Position)> ordered = new(children.Count);
+        foreach ((EntityHandle child, int position) in children)
+        {
+            if (string.Equals(child.EntityTypeCode, "tensor", StringComparison.Ordinal))
+            {
+                ordered.Add((child, position));
+            }
+            else if (string.Equals(child.EntityTypeCode, "model_package_tensor", StringComparison.Ordinal))
+            {
+                IReadOnlyList<(EntityHandle Child, int Position)> occurrenceChildren =
+                    await EntityReader.GetCompositionChildrenAsync(child, ct);
+                foreach ((EntityHandle occurrenceChild, int occurrencePosition) in occurrenceChildren)
+                {
+                    if (occurrencePosition == 1
+                        && string.Equals(occurrenceChild.EntityTypeCode, "tensor", StringComparison.Ordinal))
+                    {
+                        ordered.Add((occurrenceChild, position));
+                        break;
+                    }
+                }
+            }
+        }
+        ordered.Sort(static (left, right) => left.Position.CompareTo(right.Position));
+        EntityHandle[] tensors = new EntityHandle[ordered.Count];
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            tensors[i] = ordered[i].Tensor;
+        }
+        return tensors;
     }
 
     public override async Task RecomposeToStreamAsync(
@@ -117,12 +188,12 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         SafetensorsFile file = await RecomposeAsync(entity, options, ct);
         IReadOnlyDictionary<string, string>? auditMetadata = BuildAuditMetadata(options);
 
-        List<ShardSplitter.TensorEntry> entries = new(file.Tensors.Count);
+        List<TensorEntry> entries = new(file.Tensors.Count);
         foreach (KeyValuePair<string, TensorData> kv in file.Tensors)
         {
-            entries.Add(new ShardSplitter.TensorEntry(kv.Key, kv.Value.Data.Length));
+            entries.Add(new TensorEntry(kv.Key, kv.Value.Data.Length));
         }
-        IReadOnlyList<ShardSplitter.ShardPlan> plans =
+        IReadOnlyList<ShardPlan> plans =
             ShardSplitter.Plan(entries, options.MaxShardBytes);
 
         if (plans.Count == 0)
@@ -138,7 +209,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             return;
         }
 
-        foreach (ShardSplitter.ShardPlan plan in plans)
+        foreach (ShardPlan plan in plans)
         {
             ct.ThrowIfCancellationRequested();
             Dictionary<string, TensorData> shardTensors = new(plan.TensorNames.Count, StringComparer.Ordinal);
@@ -248,7 +319,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         {
             elementCount *= shape[i];
         }
-        int bytesPerElement = BytesPerElement(dtype);
+        int bytesPerElement = SafetensorsDtypePacker.BytesPerElement(dtype);
         long totalBytes = elementCount * bytesPerElement;
         if (totalBytes < 0)
         {
@@ -286,7 +357,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             double[] sliced = new double[length];
             Array.Copy(values, sliced, length);
             ApplyNoiseFloor(sliced, options.NoiseFloor);
-            PackToWire(sliced, dtype, buffer);
+            SafetensorsDtypePacker.PackToWire(sliced, dtype, buffer);
             return buffer;
         }
 
@@ -330,7 +401,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         if (anyScattered)
         {
             ApplyNoiseFloor(accum, options.NoiseFloor);
-            PackToWire(accum, dtype, buffer);
+            SafetensorsDtypePacker.PackToWire(accum, dtype, buffer);
             return buffer;
         }
 
@@ -368,7 +439,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             }
         }
         ApplyNoiseFloor(accum, options.NoiseFloor);
-        PackToWire(accum, dtype, buffer);
+        SafetensorsDtypePacker.PackToWire(accum, dtype, buffer);
         return buffer;
     }
 
@@ -400,221 +471,6 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
             }
         }
         return null;
-    }
-
-    private static void PackToWire(double[] accum, string dtype, byte[] buffer)
-    {
-        switch (dtype)
-        {
-            case "F64":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    System.Buffers.Binary.BinaryPrimitives.WriteDoubleLittleEndian(
-                        buffer.AsSpan(i * 8, 8), accum[i]);
-                }
-                break;
-            case "F32":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    System.Buffers.Binary.BinaryPrimitives.WriteSingleLittleEndian(
-                        buffer.AsSpan(i * 4, 4), (float)accum[i]);
-                }
-                break;
-            case "F16":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    System.Buffers.Binary.BinaryPrimitives.WriteHalfLittleEndian(
-                        buffer.AsSpan(i * 2, 2), (Half)(float)accum[i]);
-                }
-                break;
-            case "BF16":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    int bits = BitConverter.SingleToInt32Bits((float)accum[i]);
-                    ushort bf = (ushort)(bits >> 16);
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(
-                        buffer.AsSpan(i * 2, 2), bf);
-                }
-                break;
-            case "I8":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    int v = (int)Math.Round(accum[i]);
-                    if (v < sbyte.MinValue) { v = sbyte.MinValue; }
-                    else if (v > sbyte.MaxValue) { v = sbyte.MaxValue; }
-                    buffer[i] = (byte)(sbyte)v;
-                }
-                break;
-            case "U8":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    int v = (int)Math.Round(accum[i]);
-                    if (v < 0) { v = 0; }
-                    else if (v > byte.MaxValue) { v = byte.MaxValue; }
-                    buffer[i] = (byte)v;
-                }
-                break;
-            case "I16":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    int v = (int)Math.Round(accum[i]);
-                    if (v < short.MinValue) { v = short.MinValue; }
-                    else if (v > short.MaxValue) { v = short.MaxValue; }
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(
-                        buffer.AsSpan(i * 2, 2), (short)v);
-                }
-                break;
-            case "I32":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    int v = (int)Math.Round(accum[i]);
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
-                        buffer.AsSpan(i * 4, 4), v);
-                }
-                break;
-            case "I64":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    long v = (long)Math.Round(accum[i]);
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(
-                        buffer.AsSpan(i * 8, 8), v);
-                }
-                break;
-            case "BOOL":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    buffer[i] = accum[i] != 0 ? (byte)1 : (byte)0;
-                }
-                break;
-            case "F8_E4M3":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    buffer[i] = F32ToE4M3((float)accum[i]);
-                }
-                break;
-            case "F8_E5M2":
-                for (int i = 0; i < accum.Length; i++)
-                {
-                    buffer[i] = F32ToE5M2((float)accum[i]);
-                }
-                break;
-            default:
-                throw new NotSupportedException($"PackToWire: dtype '{dtype}' not implemented.");
-        }
-    }
-
-    /// <summary>
-    /// IEEE-style float32 → FP8 E4M3 (1 sign / 4 exp / 3 mantissa, bias 7).
-    /// No infinity encoding; NaN = S.1111.111; max normal = ±448 (S.1111.110).
-    /// Round-to-nearest-even. Overflow saturates to ±448.
-    /// </summary>
-    private static byte F32ToE4M3(float x)
-    {
-        if (float.IsNaN(x)) { return 0x7F; }
-        int bits = BitConverter.SingleToInt32Bits(x);
-        int sign = (bits >>> 31) & 1;
-        int rawExp = (bits >> 23) & 0xFF;
-        int mant23 = bits & 0x7FFFFF;
-        if (rawExp == 0 && mant23 == 0) { return (byte)(sign << 7); }
-        if (float.IsInfinity(x)) { return (byte)((sign << 7) | 0x7E); }
-        int unbiased = rawExp - 127;
-
-        // Subnormal range: 2^-9 .. 2^-7 (smallest subnormal = 2^-9 with mant=0b001).
-        if (unbiased < -9)
-        {
-            // Below smallest subnormal — round only if 2^-10 with rounding-up; else zero.
-            // Conservative: flush to zero.
-            return (byte)(sign << 7);
-        }
-        if (unbiased < -6)
-        {
-            int shift = -6 - unbiased;            // 1..3
-            int implicit24 = mant23 | 0x800000;   // include implicit 1
-            int dropBits = 20 + shift;            // produce 3-bit mantissa
-            int roundBit = 1 << (dropBits - 1);
-            int lowerMask = roundBit - 1;
-            int high = implicit24 >> dropBits;
-            int lower = implicit24 & lowerMask;
-            if ((implicit24 & roundBit) != 0 && (lower != 0 || (high & 1) != 0)) { high++; }
-            if (high > 0x7)
-            {
-                // Carried into normal exp=1 (smallest normal in E4M3).
-                return (byte)((sign << 7) | (1 << 3) | (high & 0x7));
-            }
-            return (byte)((sign << 7) | high);
-        }
-
-        // Normal: bias 7, 3-bit mantissa.
-        int biased = unbiased + 7;
-        int dropBits2 = 20;
-        int roundBit2 = 1 << (dropBits2 - 1);
-        int lowerMask2 = roundBit2 - 1;
-        int high2 = mant23 >> dropBits2;
-        int lower2 = mant23 & lowerMask2;
-        if ((mant23 & roundBit2) != 0 && (lower2 != 0 || (high2 & 1) != 0))
-        {
-            high2++;
-            if (high2 == 8) { high2 = 0; biased++; }
-        }
-        // Saturate at ±448 (biased=15, mant=6). 0x7F is NaN — never produce it for finite input.
-        if (biased > 15 || (biased == 15 && high2 >= 7))
-        {
-            return (byte)((sign << 7) | 0x7E);
-        }
-        return (byte)((sign << 7) | (biased << 3) | high2);
-    }
-
-    /// <summary>
-    /// IEEE-style float32 → FP8 E5M2 (1 sign / 5 exp / 2 mantissa, bias 15).
-    /// IEEE-shaped: ±inf at S.11111.00, NaN at S.11111.{nonzero}.
-    /// Round-to-nearest-even. Overflow → ±inf.
-    /// </summary>
-    private static byte F32ToE5M2(float x)
-    {
-        if (float.IsNaN(x)) { return 0x7E; }
-        int bits = BitConverter.SingleToInt32Bits(x);
-        int sign = (bits >>> 31) & 1;
-        int rawExp = (bits >> 23) & 0xFF;
-        int mant23 = bits & 0x7FFFFF;
-        if (rawExp == 0 && mant23 == 0) { return (byte)(sign << 7); }
-        if (float.IsInfinity(x)) { return (byte)((sign << 7) | 0x7C); }
-        int unbiased = rawExp - 127;
-
-        // Subnormal range for E5M2: smallest = 2^-16 (mant=01).
-        if (unbiased < -16) { return (byte)(sign << 7); }
-        if (unbiased < -14)
-        {
-            int shift = -14 - unbiased;           // 1..2
-            int implicit24 = mant23 | 0x800000;
-            int dropBits = 21 + shift;            // produce 2-bit mantissa
-            int roundBit = 1 << (dropBits - 1);
-            int lowerMask = roundBit - 1;
-            int high = implicit24 >> dropBits;
-            int lower = implicit24 & lowerMask;
-            if ((implicit24 & roundBit) != 0 && (lower != 0 || (high & 1) != 0)) { high++; }
-            if (high > 0x3)
-            {
-                return (byte)((sign << 7) | (1 << 2) | (high & 0x3));
-            }
-            return (byte)((sign << 7) | high);
-        }
-
-        int biased = unbiased + 15;
-        int dropBits2 = 21;
-        int roundBit2 = 1 << (dropBits2 - 1);
-        int lowerMask2 = roundBit2 - 1;
-        int high2 = mant23 >> dropBits2;
-        int lower2 = mant23 & lowerMask2;
-        if ((mant23 & roundBit2) != 0 && (lower2 != 0 || (high2 & 1) != 0))
-        {
-            high2++;
-            if (high2 == 4) { high2 = 0; biased++; }
-        }
-        if (biased >= 31)
-        {
-            return (byte)((sign << 7) | 0x7C); // ±inf
-        }
-        return (byte)((sign << 7) | (biased << 2) | high2);
     }
 
     private async Task<string> ResolveModelNameAsync(
@@ -651,16 +507,4 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         return dims;
     }
 
-    private static int BytesPerElement(string dtype) => dtype switch
-    {
-        "F64" => 8,
-        "F32" => 4,
-        "F16" or "BF16" => 2,
-        "I64" or "U64" => 8,
-        "I32" or "U32" => 4,
-        "I16" or "U16" => 2,
-        "I8" or "U8" or "BOOL" => 1,
-        "F8_E4M3" or "F8_E5M2" => 1,
-        _ => throw new NotSupportedException($"Unknown safetensors dtype '{dtype}'"),
-    };
 }

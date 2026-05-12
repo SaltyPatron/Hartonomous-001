@@ -59,22 +59,4 @@ public sealed record TargetArchitectureSpec(
     double? RmsNormEps,
     MoeSpec? Moe,
     IReadOnlyList<LoraSpec>? Lora,
-    string OutputDtype);
-
-/// <summary>MoE configuration sub-record. Omit at the parent level for monolith.</summary>
-/// <param name="NumExperts">Total experts per layer.</param>
-/// <param name="TopK">Number of experts each token routes through.</param>
-/// <param name="SharedExperts">Always-on shared experts (Qwen-MoE, Mixtral
-/// shared variants). 0 for none.</param>
-public sealed record MoeSpec(
-    int NumExperts,
-    int TopK,
-    int SharedExperts);
-
-/// <summary>LoRA adapter spec. One per target tensor role to adapt.</summary>
-/// <param name="TargetRoleCode">The TensorRole.ToCode() value the adapter
-/// modifies (e.g. "attention_query", "ffn_down").</param>
-/// <param name="Rank">A·B factorization rank.</param>
-public sealed record LoraSpec(
-    string TargetRoleCode,
-    int Rank);
+    string OutputDtype    );

@@ -35,4 +35,5 @@ namespace Hartonomous.Core.Text;
 public readonly record struct TextDecomposeOptions(
     string ProvenanceCode,
     string TopEntityType,
-    double TrustMu);
+    double TrustMu,
+    ITextEmissionCache? EmissionCache = null);

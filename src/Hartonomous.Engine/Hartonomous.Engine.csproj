@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Ingestion\Sql\*.sql" />
+    <EmbeddedResource Include="Traversal\Sql\*.sql" />
   </ItemGroup>
 
   <PropertyGroup>

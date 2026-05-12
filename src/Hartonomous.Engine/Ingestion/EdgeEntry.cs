@@ -19,7 +19,7 @@ namespace Hartonomous.Engine.Ingestion;
 /// Each event is buffered into the rating-event channel at flush and drained
 /// in bulk via substrate.record_attestations_bulk per (arena, attestation_type)
 /// chunk. Per docs/01-tensor-primitive-spec.md §V and AP-31. Empty = no rating
-/// events fired (legacy prime-only emission); populated = sign-bearing
+/// events fired; populated = sign-bearing
 /// observation that ALWAYS fires (cross-model accumulation), distinct from
 /// the SignificanceOverrides prime-on-conflict default.</para>
 /// </summary>

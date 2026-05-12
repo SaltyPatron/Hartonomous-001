@@ -9,7 +9,7 @@ DECLARE
 BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
-            ('substrate.entity_type',           21),
+            ('substrate.entity_type',           23),
             ('substrate.physicality_type',      14),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
@@ -18,7 +18,7 @@ BEGIN
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            112),
+            ('substrate.edge_type',            120),
             ('substrate.attestation_type',      27)
         ) AS t(table_name, expected)
     LOOP

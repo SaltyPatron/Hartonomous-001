@@ -562,14 +562,3 @@ public sealed partial class DonorPackageCataloger
         public IConfigSnapshot? GetSubConfig(string path) => null;
     }
 }
-
-public sealed record CatalogRunSummary(
-    string HubRoot,
-    string OutputRoot,
-    int Discovered,
-    int Ingested,
-    int UnsupportedV1,
-    int Rejected,
-    int DiscoveryFailed,
-    int UnclassifiedTensors,
-    int UniquePatterns);

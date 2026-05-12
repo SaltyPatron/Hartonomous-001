@@ -413,36 +413,7 @@ public sealed class NpgsqlReferenceDataWriter : IReferenceDataWriter
         }
     }
 
-    public async Task PopulateSensesAsync(
-        IReadOnlyList<(string Code, string Gloss, int LexnameId, int PosId)> senses,
-        CancellationToken ct)
-    {
-        if (senses.Count == 0)
-        {
-            return;
-        }
 
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        for (int offset = 0; offset < senses.Count; offset += ChunkSize)
-        {
-            int count = Math.Min(ChunkSize, senses.Count - offset);
-            string[] codes = new string[count];
-            string[] glosses = new string[count];
-            int[] lexnameIds = new int[count];
-            int[] posIds = new int[count];
-
-            for (int i = 0; i < count; i++)
-            {
-                (codes[i], glosses[i], lexnameIds[i], posIds[i]) = senses[offset + i];
-            }
-
-            await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
-                conn,
-                SubstrateFunctionNames.PopulateSenses,
-                new object?[] { codes, glosses, lexnameIds, posIds });
-            _ = await cmd.ExecuteScalarAsync(ct);
-        }
-    }
 
     private static string SerializeCodepointPropertyPayload(
         IReadOnlyList<(

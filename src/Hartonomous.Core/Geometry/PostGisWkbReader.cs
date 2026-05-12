@@ -4,13 +4,10 @@ using System.Buffers.Binary;
 namespace Hartonomous.Core.Geometry;
 
 /// <summary>
-/// Inverse of the Engine-side PostGisWkbBuilder for the path that needs a
-/// single 4D representative <see cref="Point4D"/> out of any GeometryZM
-/// WKB. Used on call paths where the WKB came from a producer that didn't
-/// keep the centroid alongside (notably the native text_decompose ABI,
-/// which returns WKB only). Decomposers that already have the centroid in
-/// hand should pass it directly via PhysicalityRecord/PhysicalityEntry
-/// instead of round-tripping through this reader.
+/// Fallback WKB centroid reader for external or legacy producers that cannot
+/// supply the representative <see cref="Point4D"/> alongside GeometryZM bytes.
+/// Hot substrate producers must pass the centroid directly; native text
+/// decomposition already does this through its callback ABI.
 ///
 /// <para>
 /// Supported subtypes: POINTZM (3001), LINESTRINGZM (3002), POLYGONZM

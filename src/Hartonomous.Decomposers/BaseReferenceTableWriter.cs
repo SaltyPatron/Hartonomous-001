@@ -217,11 +217,6 @@ internal abstract class BaseReferenceTableWriter
         CancellationToken ct) =>
         _writer.UpsertHomogeneousEdgeTypesAsync(codes, category, entityTypeCode, ct);
 
-    protected Task PopulateSenseRowsAsync(
-        IReadOnlyList<(string Code, string Gloss, int LexnameId, int PosId)> senses,
-        CancellationToken ct) =>
-        _writer.PopulateSensesAsync(senses, ct);
-
     // Virtual so subclasses can extend if they ever own disposable state. The base
     // owns nothing now (audit A.3 — single connection pool comes from the pipeline).
     public virtual ValueTask DisposeAsync() => ValueTask.CompletedTask;

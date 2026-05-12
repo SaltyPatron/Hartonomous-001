@@ -4,20 +4,6 @@ using Hartonomous.Core.Compute.Internal;
 
 namespace Hartonomous.Core.Compute.Common;
 
-/// <summary>
-/// Snapshot of the native runtime's acceleration state at the moment of the
-/// call. Lets callers assert MKL is linked, see which CBWR branch is active,
-/// and observe the MKL/OpenMP thread pools. This is the introspection
-/// surface used by boundary tests to prove that the expected native
-/// acceleration is really what's running, not a silent scalar fallback.
-/// </summary>
-public readonly record struct RuntimeInfoSnapshot(
-    bool HasMkl,
-    string MklVersion,
-    int MklMaxThreads,
-    int OmpMaxThreads,
-    int CbwrBranch);
-
 public static class RuntimeInfo
 {
     public static unsafe RuntimeInfoSnapshot Query()

@@ -27,6 +27,8 @@ One type per file. File name = type name. `IDecomposer.cs`, `WordNetDecomposer.c
 
 Exception: a record and its companion static factory can share a file if the factory exists solely for that record.
 
+The Linux discipline verifier enforces this convention in strict preflight. Public/internal nested DTOs, companion records, exception types, and marker interfaces must have their own files unless they match the factory exception.
+
 ---
 
 ## Logging
@@ -92,3 +94,7 @@ public PhaseRunner(IEnumerable<IDecomposer> decomposers) { }
 ### No Unconstrained Generics
 
 Every generic parameter has at least one constraint — `where T : class`, `where T : IEntity`, `where T : struct`. Unconstrained generics are a code smell that means the abstraction is too vague.
+
+## Native Compute Boundary
+
+Numerical and heavy algorithmic work outside `Hartonomous.Core.Compute` must enter through `IComputeFacade` or `ComputeFacade.Instance`. Decomposers and engine services do not reference numerical packages or native wrappers directly. The strict Linux verifier rejects non-Core compute package references and decomposer-side pipeline bypasses.

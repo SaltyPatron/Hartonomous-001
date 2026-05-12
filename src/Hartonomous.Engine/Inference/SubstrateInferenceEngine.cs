@@ -207,11 +207,3 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
         Message = "substrate.infer: {Seeds} seeds, {Targets} distinct targets, best={BestCode} mu={BestMu:F1} sql_elapsed={ElapsedMs}ms")]
     private static partial void LogSubstrateInfer(ILogger logger, int seeds, long targets, string bestCode, double bestMu, int elapsedMs);
 }
-
-internal sealed record SubstrateInferOutput(
-    string? AnswerText,
-    int SeedCount,
-    long DistinctTargets,
-    byte[]? BestTargetHash,
-    double BestTotalMu,
-    int ElapsedMs);

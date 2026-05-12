@@ -67,12 +67,3 @@ public interface IMetadataDecomposer
         IIngestionBatch batch,
         CancellationToken ct);
 }
-
-/// <summary>
-/// Context for metadata decomposition. Carries provenance and trust prior for
-/// the emitted text_composition entities + edges.
-/// </summary>
-public sealed record MetadataDecomposeContext(
-    string ProvenanceCode,
-    double TrustMu,
-    string SourceFilePath);

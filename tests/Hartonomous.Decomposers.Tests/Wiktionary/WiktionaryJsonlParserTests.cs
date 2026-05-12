@@ -206,6 +206,38 @@ public sealed class WiktionaryJsonlParserTests
     }
 
     [Fact]
+    public void ReadChunks_AssignsMonotonicIndexesAfterPrefilter()
+    {
+        string path = Path.Combine(Path.GetTempPath(),
+            $"wikt-chunks-{System.Guid.NewGuid():N}.jsonl");
+        try
+        {
+            File.WriteAllText(path, string.Join('\n',
+            [
+                """{"word":"a","lang_code":"en","pos":"noun"}""",
+                """{"word":"b","lang_code":"fr","pos":"noun"}""",
+                """{"word":"c","lang_code":"en","pos":"verb"}""",
+                """{"word":"d","lang_code":"en","pos":"noun"}""",
+            ]), Encoding.UTF8);
+
+            using WiktionaryJsonlStreamingReader reader = new(path, ["en"]);
+            List<WiktionaryJsonlLineChunk> chunks = reader.ReadChunks(2).ToList();
+
+            Assert.Equal(2, chunks.Count);
+            Assert.Equal(0, chunks[0].Index);
+            Assert.Equal(1, chunks[1].Index);
+            Assert.Equal(2, chunks[0].Lines.Count);
+            Assert.Single(chunks[1].Lines);
+            Assert.All(chunks.SelectMany(c => c.Lines), line => Assert.Contains("\"lang_code\":\"en\"", line));
+            Assert.Equal(reader.TotalBytes, chunks[^1].BytesReadAfterChunk);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ParseLine_NonObjectRoot_ReturnsNull()
     {
         Assert.Null(WiktionaryJsonlParser.ParseLine("[]"));

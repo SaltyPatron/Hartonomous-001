@@ -75,27 +75,3 @@ public interface ISynthesisRecomposer
         Stream output,
         CancellationToken ct);
 }
-
-/// <summary>
-/// Per-recomposition aggregate statistics. Written to safetensors header
-/// metadata for audit / coverage reporting.
-/// </summary>
-/// <param name="TensorCount">Number of tensors synthesized.</param>
-/// <param name="TotalBytes">Total bytes of weight data written.</param>
-/// <param name="MeanCoverage">Coverage averaged across all tensors.</param>
-/// <param name="MinCoverage">Worst-coverage tensor's aggregate coverage.</param>
-/// <param name="ZeroFractionMean">Mean fraction of cells that ended at exact
-/// zero post-honest-abstention. Per Lottery Ticket Hypothesis baseline this
-/// is typically 60-90% for transformer weights.</param>
-/// <param name="ContributingSourceCount">Distinct model_source_ids that
-/// contributed at least one attestation across the synthesis.</param>
-/// <param name="PerTensorCoverage">Per-tensor (name → coverage) for header
-/// metadata.</param>
-public sealed record RecompositionReport(
-    int TensorCount,
-    long TotalBytes,
-    double MeanCoverage,
-    double MinCoverage,
-    double ZeroFractionMean,
-    int ContributingSourceCount,
-    IReadOnlyDictionary<string, double> PerTensorCoverage);

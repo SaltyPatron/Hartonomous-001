@@ -74,7 +74,7 @@ public sealed class SubstrateFunctionSmokeTests
         long provenance = await _fx.ExecScalarLongAsync("SELECT count(*) FROM substrate.provenance");
 
         Assert.Equal(21, entityTypes);
-        Assert.Equal(112, edgeTypes);
+        Assert.Equal(111, edgeTypes);
         Assert.Equal(7, edgeRoles);
         Assert.Equal(27, attestation);
         Assert.Equal(10, arenas);

@@ -13,6 +13,14 @@ var contextId = await substrateCatalog.ResolveContextIdAsync(contextCode, ct);
 await using var cmd = new NpgsqlCommand("SELECT substrate.resolve_context_id(@code)", conn);
 ```
 
+Allowed SQL homes:
+
+- Canonical database objects under `sql/schema/`, included by `sql/schema/bootstrap.sql` and regenerated into the extension SQL.
+- Embedded ingestion/traversal SQL resources that are tightly coupled to engine internals and loaded from `.sql` files, not string literals.
+- Test-only SQL in tests whose purpose is direct schema assertion.
+
+`scripts/linux/ci-preflight.sh` runs `scripts/linux/verify-repo-discipline.sh --strict`; new inline SQL, direct `NpgsqlCommand` construction, raw substrate PostGIS calls, schema-shape drift, and unclassified database loops fail the Linux preflight.
+
 ## Naming Conventions (SQL Objects)
 
 - Tables: `snake_case`, singular, such as `entity`, `edge_member`, `entity_pos`.
@@ -37,3 +45,14 @@ The `public` schema is reserved for extension-level native helper primitives whe
 Pre-v1 schema work lands in `sql/schema/`. The include order is declared in `sql/schema/bootstrap.sql`; `scripts/build/ExtensionSql.ps1` expands that manifest and the C-binding template into `ext/hartonomous_pg/sql/hartonomous--1.0.sql`, which PostgreSQL executes when `CREATE EXTENSION hartonomous` runs.
 
 Do not add active migration files for pre-v1 schema changes. Historical migration files under `sql/migrations.archive/` are audit material only.
+
+## RBAR and Loop Classification
+
+Per-row database round trips are prohibited. Loops near database execution must be one of:
+
+- bounded chunk loops where each iteration performs COPY, array-parameterized set work, or a named bulk substrate function;
+- bounded readiness/retry loops with fixed exhaustion and fail-loud behavior;
+- validation-only loops over tiny fixed inventories;
+- explicit reconstruction walks with a hard depth bound and no writes.
+
+Classifications live in `scripts/verify/repo_discipline_classifications.json`; anything outside that ledger is a verifier finding until it is refactored or classified with a concrete reason.

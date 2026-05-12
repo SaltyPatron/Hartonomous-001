@@ -48,3 +48,5 @@ Edge significance is primed by the phase-owned post-pass across every current ro
 - Do not make producers resolve surrogate entity ids. Hashes are the foreign keys.
 - Do not call significance priming from a producer or from `FlushAsync`.
 - Do not insert structural type, POS, sense, language, or placement metadata into `substrate.entity`.
+
+`scripts/linux/verify-repo-discipline.sh --strict` enforces the mechanical parts of this contract: decomposer-owned channels, COPY, phase-wide ID resolution, direct compute dependencies, unclassified DB loops, and inline SQL fail preflight.

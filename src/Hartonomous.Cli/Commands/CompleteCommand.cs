@@ -116,5 +116,3 @@ internal static class CompleteCommand
     }
 
 }
-
-internal sealed record CompleteRequest : OperationRequest;

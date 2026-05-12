@@ -34,7 +34,6 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
     private const int TopSourceTokens = 1024;
-    private const int TopKPerSourceRow = 48;
     private const int SourceChunkSize = 256;
     private const int TargetChunkSize = 4096;
     private const double ModelDerivedTrustMu = 60_000.0;
@@ -81,7 +80,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             edgesEmitted += await EmitChunkedFfnAttestations(
                 session, context, usable, vocabHashByIdx,
                 embed, vocabSize, hiddenDim, tensors.Value,
-                attestationType, ct);
+                attestationType, t, ct);
             tuplesProcessed++;
         }
 
@@ -167,7 +166,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
         IPassSession session, ModelPassContext context,
         bool[] usable, Hash32?[] vocabHashByIdx,
         double[] embed, int vocabSize, int hiddenDim,
-        FfnTensors fn, string attestationTypeCode, CancellationToken ct)
+        FfnTensors fn, string attestationTypeCode, ResolvedTuple tuple, CancellationToken ct)
     {
         // Source ranking via ||embed[v]||. The previous code ran the FULL
         // FFN forward on every vocab token to rank by ||response[v]|| —
@@ -196,18 +195,18 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
         // Memory: vocab × hidden × 8B = ~94 MB MiniLM, ~4 GB Llama-8B.
         double[] response = new double[(long)vocabSize * hiddenDim];
         double[] upFull   = new double[(long)vocabSize * fn.Intermediate];
-        Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
-                 vocabSize, fn.Intermediate, hiddenDim,
-                 1.0, embed, hiddenDim, fn.Up, hiddenDim,
-                 0.0, upFull, fn.Intermediate);
+        context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                           vocabSize, fn.Intermediate, hiddenDim,
+                                           1.0, embed, hiddenDim, fn.Up, hiddenDim,
+                                           0.0, upFull, fn.Intermediate);
 
         if (fn.IsSwiGlu && fn.Gate is not null)
         {
             double[] gateFull = new double[(long)vocabSize * fn.Intermediate];
-            Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
-                     vocabSize, fn.Intermediate, hiddenDim,
-                     1.0, embed, hiddenDim, fn.Gate, hiddenDim,
-                     0.0, gateFull, fn.Intermediate);
+            context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                               vocabSize, fn.Intermediate, hiddenDim,
+                                               1.0, embed, hiddenDim, fn.Gate, hiddenDim,
+                                               0.0, gateFull, fn.Intermediate);
             long actLen = (long)vocabSize * fn.Intermediate;
             for (long i = 0; i < actLen; i++)
             {
@@ -225,10 +224,10 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             }
         }
 
-        Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
-                 vocabSize, hiddenDim, fn.Intermediate,
-                 1.0, upFull, fn.Intermediate, fn.Down, fn.Intermediate,
-                 0.0, response, hiddenDim);
+        context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                           vocabSize, hiddenDim, fn.Intermediate,
+                                           1.0, upFull, fn.Intermediate, fn.Down, fn.Intermediate,
+                                           0.0, response, hiddenDim);
 
         // Sigmoid temperature: scale based on mean response norm and dim.
         // Need to compute response norms briefly (fast — already have response).
@@ -269,94 +268,87 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                  hiddenDim * sizeof(double));
             }
 
-            (int Tok, double SignedValue)[][] topK = new (int, double)[sChunkLen][];
-            int[] topKFilled = new int[sChunkLen];
-            for (int i = 0; i < sChunkLen; i++) { topK[i] = new (int, double)[TopKPerSourceRow]; }
-            double[] topKMinAbs = new double[sChunkLen];
-            int[] topKMinIdx = new int[sChunkLen];
-            for (int i = 0; i < sChunkLen; i++) { topKMinAbs[i] = double.PositiveInfinity; topKMinIdx[i] = -1; }
+            // Threshold-only LTH discrimination (AP-33): pair-score values
+            // above the per-tensor noise floor (== temperature, the stddev
+            // estimate of pair values) are signal; emit inline. No top-K
+            // count cap. Pairs below floor produce sigmoid ≈ 0.5 (Glicko
+            // draw); honest-abstention drops them at emission.
+            double noiseFloor = temperature;
 
             // Per target chunk: pair score = sourceResponse · embed[b].
-            // Embed slice is read directly — no recomputation.
             for (int tChunkStart = 0; tChunkStart < vocabSize; tChunkStart += TargetChunkSize)
             {
                 int tChunkLen = Math.Min(TargetChunkSize, vocabSize - tChunkStart);
 
                 int embedRowOffset = checked(tChunkStart * hiddenDim);
                 int embedSliceLen  = checked(tChunkLen * hiddenDim);
-                Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
-                         sChunkLen, tChunkLen, hiddenDim,
-                         1.0,
-                         sourceGather.AsSpan(0, checked(sChunkLen * hiddenDim)), hiddenDim,
-                         embed.AsSpan(embedRowOffset, embedSliceLen), hiddenDim,
-                         0.0,
-                         sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
+                context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                                   sChunkLen, tChunkLen, hiddenDim,
+                                                   1.0,
+                                                   sourceGather.AsSpan(0, checked(sChunkLen * hiddenDim)), hiddenDim,
+                                                   embed.AsSpan(embedRowOffset, embedSliceLen), hiddenDim,
+                                                   0.0,
+                                                   sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
 
+                // Inline emit pairs above per-tensor noise floor.
                 for (int i = 0; i < sChunkLen; i++)
                 {
                     int a = sources[sChunkStart + i];
+                    Hash32? aHash = vocabHashByIdx[a];
+                    if (aHash is null) { continue; }
                     long rowOff = (long)i * tChunkLen;
                     for (int j = 0; j < tChunkLen; j++)
                     {
                         int b = tChunkStart + j;
                         if (b == a || !usable[b]) { continue; }
                         double signed = sBlock[rowOff + j];
-                        double abs = Math.Abs(signed);
-                        if (topKFilled[i] < TopKPerSourceRow)
+                        if (Math.Abs(signed) < noiseFloor) { continue; }
+
+                        Hash32? bHash = vocabHashByIdx[b];
+                        if (bHash is null) { continue; }
+
+                        EntityHandle aH;
+                        EntityHandle bH;
+                        if (aHash.Value.CompareTo(bHash.Value) <= 0)
                         {
-                            topK[i][topKFilled[i]] = (b, signed);
-                            topKFilled[i]++;
-                            if (topKFilled[i] == TopKPerSourceRow)
-                            {
-                                RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
-                            }
+                            aH = new EntityHandle(aHash.Value, "word_form");
+                            bH = new EntityHandle(bHash.Value, "word_form");
                         }
-                        else if (abs > topKMinAbs[i])
+                        else
                         {
-                            topK[i][topKMinIdx[i]] = (b, signed);
-                            RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
+                            aH = new EntityHandle(bHash.Value, "word_form");
+                            bH = new EntityHandle(aHash.Value, "word_form");
                         }
+
+                        double score = Sigmoid(signed / temperature);
+                        EdgeRatingEvent[] events =
+                        [
+                            new EdgeRatingEvent(
+                                "model_trust", attestationTypeCode, score, 1.0,
+                                ModelSourceId: context.Source.ModelSourceId,
+                                TupleCode: tuple.Tuple.ToString(),
+                                SlotCode: fn.IsSwiGlu ? "Gate,Up,Down" : "Intermediate,Output",
+                                ModalityCode: tuple.Modality.ToString(),
+                                LayerIndex: tuple.LayerIndex,
+                                HeadIndex: tuple.HeadIndex,
+                                ExpertIndex: tuple.ExpertIndex),
+                            new EdgeRatingEvent(
+                                "semantic_relevance", attestationTypeCode, score, 1.0,
+                                ModelSourceId: context.Source.ModelSourceId,
+                                TupleCode: tuple.Tuple.ToString(),
+                                SlotCode: fn.IsSwiGlu ? "Gate,Up,Down" : "Intermediate,Output",
+                                ModalityCode: tuple.Modality.ToString(),
+                                LayerIndex: tuple.LayerIndex,
+                                HeadIndex: tuple.HeadIndex,
+                                ExpertIndex: tuple.ExpertIndex),
+                        ];
+                        session.Batch.AddEdge("model_ffn_factor", context.ProvenanceCode,
+                        [
+                            new EdgeMemberSpec(aH, "source", 0),
+                            new EdgeMemberSpec(bH, "target", 1),
+                        ], System.Array.Empty<EdgeSignificanceSpec>(), events);
+                        emitted++;
                     }
-                }
-            }
-
-            for (int i = 0; i < sChunkLen; i++)
-            {
-                int a = sources[sChunkStart + i];
-                Hash32? aHash = vocabHashByIdx[a];
-                if (aHash is null) { continue; }
-
-                for (int j = 0; j < topKFilled[i]; j++)
-                {
-                    (int b, double signed) = topK[i][j];
-                    Hash32? bHash = vocabHashByIdx[b];
-                    if (bHash is null) { continue; }
-
-                    EntityHandle aH;
-                    EntityHandle bH;
-                    if (aHash.Value.CompareTo(bHash.Value) <= 0)
-                    {
-                        aH = new EntityHandle(aHash.Value, "word_form");
-                        bH = new EntityHandle(bHash.Value, "word_form");
-                    }
-                    else
-                    {
-                        aH = new EntityHandle(bHash.Value, "word_form");
-                        bH = new EntityHandle(aHash.Value, "word_form");
-                    }
-
-                    double score = Sigmoid(signed / temperature);
-                    EdgeRatingEvent[] events =
-                    [
-                        new EdgeRatingEvent("model_trust",        attestationTypeCode, score, 1.0),
-                        new EdgeRatingEvent("semantic_relevance", attestationTypeCode, score, 1.0),
-                    ];
-                    session.Batch.AddEdge("model_ffn_factor", context.ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(aH, "source", 0),
-                        new EdgeMemberSpec(bH, "target", 1),
-                    ], System.Array.Empty<EdgeSignificanceSpec>(), events);
-                    emitted++;
                 }
             }
 
@@ -474,17 +466,6 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
         for (int i = 0; i < filled; i++)
         {
             if (buf[i].Val < minVal) { minVal = buf[i].Val; minIdx = i; }
-        }
-    }
-
-    private static void RecomputeMinAbs((int Tok, double Signed)[] buf, int filled, out double minAbs, out int minIdx)
-    {
-        minAbs = double.PositiveInfinity;
-        minIdx = -1;
-        for (int i = 0; i < filled; i++)
-        {
-            double abs = Math.Abs(buf[i].Signed);
-            if (abs < minAbs) { minAbs = abs; minIdx = i; }
         }
     }
 

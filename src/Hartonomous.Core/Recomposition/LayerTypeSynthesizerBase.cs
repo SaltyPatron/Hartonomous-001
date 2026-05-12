@@ -195,18 +195,3 @@ public abstract class LayerTypeSynthesizerBase : ILayerTypeSynthesizer
         return buf;
     }
 }
-
-public sealed class SynthesisShapeMismatchException : Exception
-{
-    public SynthesisShapeMismatchException(string message) : base(message) { }
-}
-
-public sealed class SynthesisDispatchException : Exception
-{
-    public SynthesisDispatchException(string message) : base(message) { }
-}
-
-public sealed class SynthesisDtypeException : Exception
-{
-    public SynthesisDtypeException(string message) : base(message) { }
-}

@@ -145,9 +145,9 @@ Junction table names are validated against an allowlist. Never interpolate user-
 
 All numerical compute for ingestion and inference goes through a single C# facade rooted at `Hartonomous.Core.Compute.*`. The facade is the ONLY caller of the native compute library. No other project references MKL, Eigen, Spectra, or any other compute dependency directly.
 
-- `Hartonomous.Core.Compute.Ingestion.*` — exact primitives used during decomposition (SVD, Lanczos eigensolve, sparse matvec, chunked GEMM, k-NN construction, tensor dtype decode).
+- `Hartonomous.Core.Compute.Ingestion.*` — exact primitives used during decomposition (SVD, Lanczos eigensolve, sparse matvec, chunked GEMM, k-NN construction, Laplacian eigenmap, Procrustes / Kabsch alignment for cross-model firefly commensurability, tensor dtype decode — BF16 / F32 / F64 / AWQ-Q4 / GGUF / FP8 → f64 lossless).
 - `Hartonomous.Core.Compute.Inference.*` — exact primitives used during query traversal (S3 distance, Fréchet distance extensions, Voronoi cell operations).
-- `Hartonomous.Core.Compute.Common.*` — primitives used by both (BLAKE3, Super-Fibonacci S3 projection, Hilbert index, Gram-Schmidt, orthonormalization, deterministic top-k with stable tie-break).
+- `Hartonomous.Core.Compute.Common.*` — primitives used by both (BLAKE3, Super-Fibonacci S3 projection, Hilbert index, Gram-Schmidt, orthonormalization, deterministic ordering by mu). Ordering is reproducible across runs by Law #6 (MKL CBWR=AUTO,STRICT + declared seeds give bitwise-identical IEEE-754 outputs); Glicko-2 handles equal-mu paths via the draw outcome `score = 0.5`, so no separate tie-break primitive is needed. Decomposition-time signal discrimination is the per-tensor adaptive magnitude threshold (Lottery Ticket Hypothesis — Frankle & Carbin 2018; Han et al. 2015 magnitude pruning), never a top-K or any ordering operation.
 
 Decomposers, analysis passes, recomposers, and the engine call into the facade by name. They do not import `Microsoft.ML.OnnxRuntime`, `MKL.NET`, `Eigen.NET`, or any transitive native binding. If a primitive doesn't exist in the facade yet, add it there — don't bypass.
 

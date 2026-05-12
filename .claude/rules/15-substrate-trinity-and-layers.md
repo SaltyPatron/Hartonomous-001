@@ -1,40 +1,51 @@
-## Entity is the trinity: Atom + Composition + Relation
+---
+description: The four pillars expressed as schema. Atom + composition + relation + geometry as one vocabulary; reference + junction as separate infrastructure layer. Loads on substrate-touching code.
+paths:
+  - sql/**
+  - src/Hartonomous.Core/**
+  - src/Hartonomous.Decomposers/**
+  - src/Hartonomous.Engine/**
+  - src/Hartonomous.Recomposers/**
+  - ext/**
+  - docs/specs/sql/**
+  - docs/specs/decomposers/**
+  - docs/specs/engine/**
+---
 
-Every architectural decision must respect that the substrate's vocabulary boils down to three concepts. The schema separates them across tables for partitioning and performance, but they are one vocabulary.
+## The substrate is one vocabulary, partitioned across tables for indexing
 
-Canonical specification: [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §II for the four-pillar substrate model and §III for per-role units as attestation edges (NOT phantom entities).
+Atoms, compositions, and relations are one substrate vocabulary. The schema splits them across tables for partitioning and index reasons, but they are facets of the same content-addressed Merkle DAG — each row is a node or edge whose identity is BLAKE3 of content.
 
-| Concept | Storage | Examples |
+| Concept | Storage | Content of the identity |
 |---|---|---|
-| **Atom** | `substrate.entity` (PK = `hash`), classified by `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)` for leaf entity types | `codepoint` (UCD properties on `codepoint_property` junction), `audio_chunk` sample, `pixel_region` atom |
-| **Composition** | `substrate.entity` (PK = `hash`), classified by `substrate.entity_classification` for higher-tier types; hash = Merkle of ordered child hashes; geometry = LINESTRINGZM through child centroids in `substrate.physicality` | `grapheme_cluster`, `word_form`, `lemma`, `text_composition`, `paragraph`, `document`, `synset`, `audio_recording`, plus model-side structural artifacts: `tensor`, `model_architecture`, `tokenizer_model` |
-| **Relation** | `substrate.edge` keyed `(edge_type_id, hash)` + `substrate.edge_member` with `entity_hash` single-column FK to entity and composite `(edge_type_id, edge_hash)` FK to edge | `has_sense`, `has_lemma`, `aligned_to_synset`, `lexicalized_compound`, `in_model`, `co_occurrence`, `recording_of`, `model_attention_pattern`, `model_concept_similarity`, `model_ffn_factor`, etc. |
+| **Atom** | `substrate.entity` (PK `hash`), classified for structural kind in `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)` | BLAKE3 over content bytes alone (codepoint integer, audio sample, pixel intensity, etc.) |
+| **Composition** | `substrate.entity` (PK `hash`), classified the same way for higher-tier types | Merkle hash over ordered child hashes. Geometry: LINESTRINGZM through child centroids in `substrate.physicality` |
+| **Relation** | `substrate.edge(edge_type_id, hash)` + `substrate.edge_member(edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)` | `ComputeEdgeHash(edge_type_id, role-ordered participant hashes)`. Edge `geom` = LINESTRINGZM through participants' centroids in role order |
+| **Geometry** | `substrate.physicality(physicality_type_id, entity_hash, content_hash, geom geometry(GeometryZM))` | Per-tier-of-modality 4D realization. POINTZM for atoms, LINESTRINGZM / MULTILINESTRINGZM / POLYGONZM / etc. for compositions. Memoized per-entity; centroids are write-once and referenced by hash from every parent. |
+| **Per-arena Glicko-2 ratings** | `substrate.entity_significance(context_type_id, entity_hash)` + `substrate.edge_significance(context_type_id, edge_type_id, edge_hash)` | What this content / relation is worth in this arena. Cross-source corroboration fires separate `attestation_type`-distinguished rating events on the same row. |
+| **Sequence / reconstruction** | `substrate.sequence(parent_hash, ordinal, child_hash, rle_count)` | Ordering metadata for compositions; never enters identity hash. |
 
-> **Note on per-role units of Track 2 transformation tensors** (FFN rows, attention head Q/K patterns, MoE expert neurons, LoRA rank components, embedding rows, etc.): these are NOT compositions in the substrate. They manifest as **typed attestation EDGES** in the Relation row above, between existing content entities (typically two `word_form` tokens). The phantom entity types `attention_pattern`, `attention_head`, `ffn_neuron`, `embedding_position`, etc. that appear in older docs and in transitional `entity_type` seed rows 19-54 are deprecated by the 2026-05-08 architectural correction. See [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §III and AP-25 in [`45-anti-patterns.md`](45-anti-patterns.md).
+Identity is content. Hash IS the foreign key. There are no surrogate `id BIGSERIAL` columns on the entity surface. Same content from any decomposer collapses to one entity row via `ON CONFLICT (hash) DO NOTHING`. Multiple structural classifications of the same content (e.g. `dog` is both `word_form` and `lemma`) materialize as multiple rows in `substrate.entity_classification` against the same `entity_hash`. Atoms carry metadata via junction tables (`codepoint_property` is the canonical example). Compositions emerge through LINESTRINGZM physicality (vertices ARE child centroids) plus typed adjacency edges; the recursion is unbounded — a tier-T composition's LINESTRINGZM has vertices that are tier-(T−1) centroids, each of which is itself the aggregate of a tier-(T−2) LINESTRINGZM.
 
-Identity = BLAKE3 hash. Hash IS the foreign key everywhere on the entity surface — there are no surrogate `id BIGSERIAL` columns. Same content from any decomposer collapses to one entity row via `ON CONFLICT (hash) DO NOTHING`. Multiple structural classifications of the same content (e.g. `dog` is both `word_form` and `lemma`) materialize as multiple rows in `substrate.entity_classification` against the same `entity_hash`. Atoms carry metadata via junction tables (`codepoint_property` is the canonical example). Compositions emerge through their **LINESTRINGZM physicality (vertices = ordered child centroids)** plus typed adjacency edges between consecutive atoms — the composition's hash is the Merkle of its ordered child hashes, and recursive: a parent composition's LINESTRINGZM uses each child composition's centroid as a single vertex. Relations carry trajectory geometry through participants in role order plus a Glicko-2 rating per arena.
+Placement metadata — position, ordinal, filename, tensor name, source offset, line number, model id — NEVER enters the hash. It lives on `substrate.sequence`, on typed edges (`has_source`, `in_model`), on model-source tables, or on provenance. Same content in two places is one entity with two edges.
 
-Atoms, compositions, and relations are stored separately for indexing reasons. They are NOT separate concepts — they are one substrate vocabulary partitioned by structural kind.
-
-## Two strict layers — see `docs/specs/sql/infrastructure-vs-substrate.md`
-
-**App-layer infrastructure** (bounded cardinality, microsecond JOIN, rebuildable from seeds):
-- Reference tables: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `semantic_relation_type`, `general_category`, `script`, `block`, `break_property`, `language`, `tensor_role`, `architecture_class`, plus runtime additions.
-- Junction tables: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`. Glicko-2 junction confidence currently appears on `entity_pos` and `pattern_deprel`.
+## Two strict layers — substrate vs infrastructure
 
 **Substrate content** (content-addressed, irreducible, deterministic):
-- `substrate.entity` (PK `hash` only — NOT composite with entity_type_id)
-- `substrate.entity_classification` (PK `(entity_hash, entity_type_id, provenance_id)`) — carries the structural classification(s)
-- `substrate.edge` (PK `(edge_type_id, hash)`)
-- `substrate.edge_member` (composite hash FKs to edge and entity)
-- `substrate.physicality` (composite hash FK to entity, geometry(GeometryZM))
-- `substrate.entity_significance` (PK `(context_type_id, entity_hash)`)
-- `substrate.edge_significance` (PK `(context_type_id, edge_type_id, edge_hash)`)
-- `substrate.sequence` (composition/reconstruction ordering: `parent_hash`, `ordinal`, `child_hash`, `rle_count`)
+- `substrate.entity` (PK `hash` only — NOT composite with `entity_type_id`)
+- `substrate.entity_classification` — the structural classification(s)
+- `substrate.edge` + `substrate.edge_member`
+- `substrate.physicality`
+- `substrate.entity_significance` + `substrate.edge_significance`
+- `substrate.sequence`
 
-Pushing classification (POS, sense, language) into `substrate.entity` is the most common drift. It belongs in reference + junction tables. Macrolanguage / supersession / has_alternate_name are likewise NOT substrate.edge content — they're metadata between language CODES (rows in `substrate.language` reference table), and live in reference-layer junctions.
+**App-layer infrastructure** (bounded cardinality, microsecond JOIN, rebuildable from seeds):
+- Reference vocabularies: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `attestation_type`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `semantic_relation_type`, `general_category`, `script`, `block`, `break_property`, `language`, `tensor_role`, `architecture_class`.
+- Junctions: `entity_classification`, `entity_pos` (Glicko-2), `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel` (Glicko-2), `provenance_edge_authority`.
 
-## Glicko-2 lives on FOUR distinct surfaces
+Pushing classification (POS, sense, language, structural-kind) into `substrate.entity` is the most common drift. It belongs in the reference + junction layer. Macrolanguage / supersession / has_alternate_name are also NOT substrate.edge content — they're metadata between language CODES (rows in `substrate.language` reference table) and live in reference-layer junctions.
+
+## Glicko-2 on four surfaces — what each rates
 
 | Surface | Rates |
 |---|---|
@@ -45,26 +56,30 @@ Pushing classification (POS, sense, language) into `substrate.entity` is the mos
 
 Substrate significance rates *what is there*. Junction Glicko rates *what we say about what is there*. Do not merge relation trust, entity trust, and classification confidence.
 
-## Arenas are open-vocabulary, not a fixed list of 10
+## Arenas — open vocabulary, no hardcoded list
 
-`substrate.significance_context` ships with 10 starter codes from `sql/schema/seed/significance_context.sql` (`lexical_disambiguation`, `syntactic_role_fitness`, `translation_quality`, `model_trust`, `source_authority`, `semantic_relevance`, `corroboration_strength`, `frequency_significance`, `attention_pattern_confidence`, `morphological_productivity`). The architecture allows arbitrary additions: `pragmatic_register` (proposed in `docs/specs/engine/substrate-governance.md`), `English-medical-pharmacology`, `Qwen3-vs-Llama3-attention`, `arXiv-2024-vs-textbook-2010`, etc.
+`substrate.significance_context` ships with starter codes in `sql/schema/seed/significance_context.sql`. Practitioners add their own at runtime. The pipeline's edge-significance priming cross-products against whatever arenas exist at insert time — no `WHERE context_type_id IN (...)` filter. New arenas added later auto-backfill into existing edges via substrate functions. Code that hardcodes a subset is wrong (AP-1).
 
-Code that hard-codes the 10 starter arena codes is wrong. The pipeline's edge-significance priming MUST cross-product against whatever arenas exist at insert time, with no WHERE filter on context code. Adding a new arena later MUST auto-backfill into existing edges via a substrate function (not a one-shot migration).
+## Seed-uses-core
 
-## Seed-uses-core (non-negotiable)
+Every text-bearing content from any seed (Wiktionary citations, WordNet glosses, UD sentences, Tatoeba sentences, safetensors config JSON values, image captions, audio transcripts) routes through the core text decomposer (`Hartonomous.Core.Text.CanonicalTextDecomposer.Emit`). Same content collapses to one `text_composition` regardless of source. Seed decomposers MUST NOT call `ComputeHash(string)` or `ComputeAtomicStringHash(string)` on user-visible text to produce text_composition-tier entities — that fragments the substrate.
 
-Every text-bearing content from any seed (Wiktionary citations, WordNet glosses, UD sentences, Tatoeba sentences, safetensors config JSON values, image captions, audio transcripts) MUST be routed through the core text decomposer (`Hartonomous.Core.Text.CanonicalTextDecomposer.Emit` or the core text path). Same content collapses to ONE `text_composition` regardless of which seed contributed it. Seed decomposers MUST NOT call `ComputeHash(string)` or `ComputeAtomicStringHash(string)` on user-visible text to produce text_composition-tier entities themselves — that produces phantom duplicates instead of reusing the existing core decomposer's hashing.
+## Per-role units of Track 2 tensors = attestation EDGES, not phantom entities
 
-## Inference vs ingestion (Law #8)
+Every per-role unit of every Track 2 transformation tensor (each FFN row, each attention head's QK pattern, each MoE expert neuron, each LoRA rank component, each layer norm scale) **manifests as a typed attestation EDGE between existing content entities** — typically two `word_form` tokens the unit binds, resolved through the model's tokenizer to existing content. The `edge_type_id` encodes the relationship; the `attestation_type` encodes the evidence kind; the edge's `LINESTRINGZM` trajectory is the unit's spectral fingerprint; the Glicko mu derives from the tensor math. Sign is preserved via Glicko `score`.
 
-- **Ingestion** (`src/Hartonomous.Decomposers/`): deterministic, records ALL candidate senses/structures/evidence without disambiguation. Same input + same decomposer version = byte-identical state.
-- **Inference** (`src/Hartonomous.Engine/`): traverses existing edges, reweights via Glicko-2. May create session-scoped output compositions. Does NOT create new structural knowledge edges. If inference code calls `IIngestionPipeline.SubmitBatchAsync()` with structural edges, that's a boundary violation.
+Cross-model corroboration fires separate `attestation_type`-distinguished rating events on the same edge identity. Phantom per-role-unit entity types (`attention_head`, `ffn_neuron`, `embedding_position`, `attention_pattern`, `moe_expert_neuron`, `lora_component`, etc.) are deprecated by the 2026-05-08 architectural correction (`sql/schema/seed/entity_type.sql:59-98`) because they fragment cross-model consensus into per-source debris. Working template: `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`.
 
-## Cross-references
-- [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) — canonical substrate specification (authoritative; this rule is a slice of §II and §IV)
-- `docs/familiar-principle.md` — the conceptual frame
-- `docs/specs/sql/infrastructure-vs-substrate.md` — full layer discipline + probe case studies
-- `docs/specs/engine/arenas-and-significance.md` — Glicko-2 mechanics + arena examples
-- `.claude/rules/25-physicality-4d.md` — the geometry layer
-- `.claude/rules/35-inference-and-godel.md` — A* + Glicko-2 inference centerpiece
-- `.claude/rules/45-anti-patterns.md` — failure modes documented from observed drift (canonical AP location; AP-25 covers per-role-unit-as-entity sabotage)
+## Ingestion vs inference (Law #8)
+
+- **Ingestion** (`src/Hartonomous.Decomposers/`) — deterministic; records ALL candidate senses/structures/evidence without disambiguation. Same input + same decomposer version = byte-identical state. Decomposers are pure producers; the single `StreamingIngestionPipeline` owns channels, COPY-into-temp-inflight-then-INSERT-SELECT drain, inline edge trajectory build (with end-of-phase backfill fallback), and end-of-phase significance priming across whatever arenas exist.
+- **Inference** (`src/Hartonomous.Engine/`) — traverses existing edges, reweights via Glicko-2. May create session-scoped output composition entities (the answer itself, with `user_session` provenance, plus the explanation trace as substrate content). Does NOT create new structural knowledge edges. Glicko-2 updates from outcomes are not "new edges."
+
+Cross-references:
+- [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) — authoritative substrate spec
+- [`docs/familiar-principle.md`](../../docs/familiar-principle.md) — conceptual frame
+- [`docs/specs/sql/infrastructure-vs-substrate.md`](../../docs/specs/sql/infrastructure-vs-substrate.md) — full layer-discipline probe study
+- [`docs/specs/engine/arenas-and-significance.md`](../../docs/specs/engine/arenas-and-significance.md) — Glicko-2 mechanics
+- [`.claude/rules/25-physicality-4d.md`](25-physicality-4d.md) — the geometry layer
+- [`.claude/rules/35-inference-and-godel.md`](35-inference-and-godel.md) — traversal mechanics
+- [`.claude/rules/45-anti-patterns.md`](45-anti-patterns.md) — drift catalog

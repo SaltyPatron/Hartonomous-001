@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -36,15 +37,15 @@ namespace Hartonomous.Decomposers.Wiktionary;
 ///   <item>entity_pos / entity_language junctions on every lemma, source_authority
 ///     significance on every emitted entity</item>
 /// </list>
-/// Hash-FK shape end-to-end: no Channel.CreateBounded, no Parallel.ForEachAsync,
-/// no decomposer-owned ResolveEntityIdsAsync. Streaming line-by-line; pipeline
-/// owns batching/transaction/parallelism.
+/// Hash-FK shape end-to-end: no Channel.CreateBounded and no decomposer-owned
+/// ResolveEntityIdsAsync. The decomposer fans JSONL line chunks through the
+/// shared ParallelChunkProcessor; the central pipeline owns batching,
+/// transactions, substrate diffing, channels, and drain parallelism.
 ///
-/// Cross-lingual translations and etymon links emit non-English lemma entities
-/// even under the T0 English LanguageFilter — the filter applies to the SOURCE
-/// entry's language, not to the TARGETS of the cross-lingual edges. (Foreign
-/// lemmas pointed-at by translations carry their own entity_language junction
-/// tagging the target language code.)
+/// Cross-lingual translations and etymon links emit target-language lemma
+/// entities with their own entity_language junctions. When a caller supplies a
+/// LanguageFilter it applies only to SOURCE entries; the unfiltered default
+/// ingests every language present in the selected wiktextract source.
 /// </summary>
 public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 {
@@ -54,6 +55,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 
     protected override double TrustPriorMu => 68000.0;
     protected override ICodepointProperties CodepointProperties => _codepointProperties;
+
+    private const int LineChunkSize = 4096;
 
     private readonly string _jsonlPath;
     private readonly string _configuredSource;
@@ -70,10 +73,10 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
-        : base(config, substrateTextDecomposer, logger)
+        : base(config, substrateTextDecomposer, logger, textCacheCapacity: 1_000_000)
     {
         _configuredSource = config.SourceDirectory;
-        _jsonlPath = ResolveJsonlPath(config.SourceDirectory);
+        _jsonlPath = ResolveJsonlPath(config.SourceDirectory, config.LanguageFilter);
         _codepointProperties = codepointProperties;
         _referenceDataReader = referenceDataReader;
         _junctionWriter = junctionWriter;
@@ -86,7 +89,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
     {
         if (!File.Exists(_jsonlPath))
         {
-            string candidates = string.Join(", ", CandidateJsonlPaths(_configuredSource));
+            string candidates = string.Join(", ", CandidateJsonlPaths(_configuredSource, LanguageFilter));
             throw new SourceValidationException(
                 $"[wiktextract] Wiktionary JSONL source not found. Expected one of: {candidates}. "
                 + "Move the wiktextract .jsonl into /vault/Data/Wiktionary or pass --source / configure Hartonomous:Decomposers:Wiktionary:SourcePath explicitly.");
@@ -95,9 +98,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         return Task.CompletedTask;
     }
 
-    private static string ResolveJsonlPath(string configured)
+    private static string ResolveJsonlPath(string configured, IReadOnlyCollection<string>? langCodeFilter)
     {
-        foreach (string candidate in CandidateJsonlPaths(configured))
+        foreach (string candidate in CandidateJsonlPaths(configured, langCodeFilter))
         {
             if (File.Exists(candidate))
             {
@@ -108,19 +111,43 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         return Path.Combine(configured, "raw-wiktextract-data.jsonl");
     }
 
-    private static IEnumerable<string> CandidateJsonlPaths(string configured)
+    private static IEnumerable<string> CandidateJsonlPaths(string configured, IReadOnlyCollection<string>? langCodeFilter)
     {
         if (Path.GetExtension(configured).Equals(".jsonl", StringComparison.OrdinalIgnoreCase))
         {
             yield return configured;
         }
 
-        // Prefer the kaikki.org English-only extract when it's been dropped alongside
-        // the raw multilingual master dump. The kaikki extract is ~3–5 GB vs the
-        // master's ~21 GB and contains only English entries, so the language filter
-        // becomes a no-op and the parser does no wasted work.
-        yield return Path.Combine(configured, "kaikki.org-dictionary-English.jsonl");
-        yield return Path.Combine(configured, "raw-wiktextract-data.jsonl");
+        string raw = Path.Combine(configured, "raw-wiktextract-data.jsonl");
+        string english = Path.Combine(configured, "kaikki.org-dictionary-English.jsonl");
+        if (IsEnglishOnlyFilter(langCodeFilter))
+        {
+            yield return english;
+            yield return raw;
+        }
+        else
+        {
+            yield return raw;
+            yield return english;
+        }
+    }
+
+    private static bool IsEnglishOnlyFilter(IReadOnlyCollection<string>? langCodeFilter)
+    {
+        if (langCodeFilter is null || langCodeFilter.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (string code in langCodeFilter)
+        {
+            if (!string.Equals(code, "en", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(code, "eng", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     protected override async Task DecomposeCoreAsync(
@@ -132,337 +159,195 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             new(_referenceDataReader!, _junctionWriter!, _referenceDataWriter!);
         try
         {
-            IRecordSink sink = pipeline as IRecordSink
-                ?? throw new InvalidOperationException("Wiktionary requires a streaming IRecordSink pipeline.");
-
             Dictionary<string, int> posIdMap = await refWriter.LoadPosMapAsync(ct);
             Dictionary<string, int> langIdMap = await refWriter.LoadLanguageCodeMapAsync(ct);
-            Dictionary<string, int> edgeTypeIdMap = await refWriter.LoadEdgeTypeMapAsync(ct);
-
-            int? engLangId =
-                langIdMap.TryGetValue("eng", out int e3) ? e3
-                : langIdMap.TryGetValue("en",  out int e1) ? e1
-                : (int?)null;
 
             long entryCount = 0;
             long entityCount = 0;
             long edgeCount = 0;
             int checkpointNum = 0;
-            Dictionary<string, long> edgeCountByType = new(StringComparer.Ordinal);
+            int batchNum = 0;
+            ConcurrentDictionary<string, long> edgeCountByType =
+                new(Environment.ProcessorCount, 64, StringComparer.Ordinal);
 
-            using WiktionaryJsonlParser.StreamingReader reader =
+            using WiktionaryJsonlStreamingReader reader =
                 new(_jsonlPath, LanguageFilter);
 
             long nextProgressBytes = 128L * 1024L * 1024L;
+            long maxBytesRead = 0;
+            object progressGate = new();
+            ConcurrentDictionary<long, TaskCompletionSource> chunkCompletion = new();
 
-            async Task ReportProgressCheckpointAsync(bool force = false)
+            TaskCompletionSource CompletionFor(long chunkIndex)
+                => chunkCompletion.GetOrAdd(
+                    chunkIndex,
+                    static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+
+            Task PreviousChunkCompletion(long chunkIndex)
+                => chunkIndex == 0 ? Task.CompletedTask : CompletionFor(chunkIndex - 1).Task;
+
+            async ValueTask ReportProgressCheckpointAsync(WiktionaryJsonlLineChunk chunk, bool force = false)
             {
-                if (!force && reader.BytesRead < nextProgressBytes)
+                long bytesRead = UpdateMax(ref maxBytesRead, chunk.BytesReadAfterChunk);
+                bool shouldReport = false;
+                int checkpointNow = 0;
+                lock (progressGate)
+                {
+                    if (force || bytesRead >= nextProgressBytes)
+                    {
+                        checkpointNow = ++checkpointNum;
+                        nextProgressBytes = bytesRead + (128L * 1024L * 1024L);
+                        shouldReport = true;
+                    }
+                }
+
+                if (!shouldReport)
                 {
                     return;
                 }
-                checkpointNum++;
-                double pct = reader.TotalBytes > 0
-                    ? 100.0 * (double)reader.BytesRead / (double)reader.TotalBytes
+
+                double pct = chunk.TotalBytes > 0
+                    ? 100.0 * (double)bytesRead / (double)chunk.TotalBytes
                     : 0.0;
-                Log.Progress(Logger, pct, reader.BytesRead, reader.TotalBytes, reader.EntriesParsed, checkpointNum);
-                await ReportProgressAsync(reporter, entityCount, edgeCount, checkpointNum, "wiktionary", ct)
-                    .ConfigureAwait(false);
-                nextProgressBytes = reader.BytesRead + (128L * 1024L * 1024L);
+                long entriesSnapshot = Interlocked.Read(ref entryCount);
+                if (Logger.IsEnabled(LogLevel.Information))
+                {
+                    Log.Progress(Logger, pct, bytesRead, chunk.TotalBytes, entriesSnapshot, checkpointNow);
+                }
+                await reporter.ReportAsync(new ProgressSnapshot
+                {
+                    DecomposerCode = ProvenanceCode,
+                    CurrentPhase = "ingestion",
+                    EntitiesCreated = Interlocked.Read(ref entityCount),
+                    EdgesCreated = Interlocked.Read(ref edgeCount),
+                    CurrentFile = "wiktionary",
+                    CurrentBatch = Volatile.Read(ref batchNum),
+                }, ct).ConfigureAwait(false);
             }
 
-            void BumpEdge(string code)
+            await ParallelChunkProcessor.RunAsync(
+                reader.ReadChunks(LineChunkSize),
+                async (chunk, taskCt) =>
             {
-                edgeCountByType.TryGetValue(code, out long current);
-                edgeCountByType[code] = current + 1;
-                edgeCount++;
-            }
+                List<IIngestionBatch> completedBatches = [];
+                IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
-            async Task EmitEdgeByCodeAsync(string edgeCode, EdgeMemberSpec[] members)
-            {
-                await EmitEdgeAsync(sink, edgeTypeIdMap, edgeCode, ProvenanceCode, members, ct).ConfigureAwait(false);
-                BumpEdge(edgeCode);
-            }
-
-            // Resolve a non-English language by code → id, returning null if the language
-            // is not in substrate.language master. (Wiktionary uses ISO 639-1 / 639-3 mix.)
-            int? ResolveLangId(string? langCode)
-            {
-                if (string.IsNullOrEmpty(langCode))
+                void FlushBatch()
                 {
-                    return null;
-                }
-                return langIdMap.TryGetValue(langCode, out int id) ? id : (int?)null;
-            }
-
-            foreach (WiktEntry entry in reader)
-            {
-                ct.ThrowIfCancellationRequested();
-                entryCount++;
-
-                if (!LanguageAllowed(entry.LangCode))
-                {
-                    continue;
-                }
-                if (string.IsNullOrEmpty(entry.Word) || entry.Senses.Count == 0)
-                {
-                    continue;
-                }
-
-                (EntityHandle lemmaHandle, _, _) =
-                    await EmitTextAsync(sink, entry.Word, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
-                await EmitEntitySignificanceAsync(sink, lemmaHandle, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
-                entityCount++;
-
-                string? upos = WiktPosMap.ToUpos(entry.Pos);
-                if (upos is not null && posIdMap.TryGetValue(upos, out int posId))
-                {
-                    await EmitJunctionAsync(sink, "entity_pos", lemmaHandle, posId, TrustPriorMu, ct).ConfigureAwait(false);
-                }
-                if (engLangId is int langId)
-                {
-                    await EmitJunctionAsync(sink, "entity_language", lemmaHandle, langId, null, ct).ConfigureAwait(false);
-                }
-
-                // ── Forms (lemma → word_form, plus inflection_of back-edge). ──
-                // Inflected forms ARE word_forms — content-addressed by their
-                // UTF-8 bytes. The inflection relationship lives on the
-                // inflection_of edge, not on a separate entity type.
-                foreach (WiktForm form in entry.Forms)
-                {
-                    if (string.IsNullOrEmpty(form.Form) || form.Form == entry.Word)
+                    if (batch.EntityCount == 0 && batch.EdgeCount == 0)
                     {
-                        continue;
-                    }
-                    (EntityHandle infHandle, _, _) =
-                        await EmitTextAsync(sink, form.Form, _codepointProperties, "word_form", TrustPriorMu, ct).ConfigureAwait(false);
-                    await EmitEntitySignificanceAsync(sink, infHandle, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
-                    entityCount++;
-
-                    if (engLangId is int infLang)
-                    {
-                        await EmitJunctionAsync(sink, "entity_language", infHandle, infLang, null, ct).ConfigureAwait(false);
+                        return;
                     }
 
-                    await EmitEdgeByCodeAsync("has_form",
-                    [
-                        new EdgeMemberSpec(lemmaHandle, "source", 0),
-                        new EdgeMemberSpec(infHandle,   "target", 1),
-                    ]).ConfigureAwait(false);
-
-                    await EmitEdgeByCodeAsync("inflection_of",
-                    [
-                        new EdgeMemberSpec(infHandle,   "source", 0),
-                        new EdgeMemberSpec(lemmaHandle, "target", 1),
-                    ]).ConfigureAwait(false);
+                    completedBatches.Add(batch);
+                    batch = pipeline.CreateBatch(ProvenanceCode);
                 }
 
-                // ── Hyphenations (lemma scope). Each hyphenation pattern is text
-                // content; routed through TextDecomposer for canonical Merkle dedup. ──
-                foreach (WiktHyphenation hyph in entry.Hyphenations)
+                void FlushBatchIfFull()
                 {
-                    string repr = HyphenationRepresentation(hyph);
-                    if (string.IsNullOrEmpty(repr))
+                    if (batch.EntityCount + batch.EdgeCount >= BatchSize)
                     {
-                        continue;
-                    }
-                    EntityHandle hyphDoc = await IngestTextAsync(sink, repr, ct).ConfigureAwait(false);
-                    // The has_hyphenation edge is lemma → text_composition; the
-                    // hyphenation pattern itself routes through canonical text.
-                    await EmitEdgeByCodeAsync("has_hyphenation",
-                    [
-                        new EdgeMemberSpec(lemmaHandle, "source", 0),
-                        new EdgeMemberSpec(hyphDoc,     "target", 1),
-                    ]).ConfigureAwait(false);
-                }
-
-                // ── Pronunciations (lemma scope). One has_pronunciation edge per
-                // distinct phonetic / audio attribute; ipa, enpr, audio file refs all
-                // route through TextDecomposer so the same IPA string from any source
-                // collapses to one document entity. ──
-                foreach (WiktSound sound in entry.Sounds)
-                {
-                    foreach (string attr in EnumerateSoundAttrs(sound))
-                    {
-                        EntityHandle pDoc = await IngestTextAsync(sink, attr, ct).ConfigureAwait(false);
-                        await EmitEdgeByCodeAsync("has_pronunciation",
-                        [
-                            new EdgeMemberSpec(lemmaHandle, "source", 0),
-                            new EdgeMemberSpec(pDoc,        "target", 1),
-                        ]).ConfigureAwait(false);
+                        FlushBatch();
                     }
                 }
 
-                // ── Entry-level etymology text → has_etymology edge. ──
-                EntityHandle? etymologyDoc = null;
-                if (!string.IsNullOrEmpty(entry.EtymologyText))
+                try
                 {
-                    etymologyDoc = await IngestTextAsync(sink, entry.EtymologyText, ct).ConfigureAwait(false);
-                    await EmitEdgeByCodeAsync("has_etymology",
-                    [
-                        new EdgeMemberSpec(lemmaHandle,       "source", 0),
-                        new EdgeMemberSpec(etymologyDoc.Value, "target", 1),
-                    ]).ConfigureAwait(false);
-                }
-
-                // ── Etymology templates: 8 distinct edge types based on Name. ──
-                // Templates carry args[1] = source-language code, args[2] = source-word,
-                // args[3] = gloss. We emit a foreign lemma entity for the source word
-                // and an etym_<kind> edge from the entry-level lemma. Etymology in
-                // wiktextract is entry-level, not sense-level, so the lemma is the
-                // substrate anchor.
-                foreach (WiktEtymologyTemplate t in entry.EtymologyTemplates)
-                {
-                    string? edgeCode = EtymologyTemplateNameToEdgeCode(t.Name);
-                    if (edgeCode is null)
+                    void AddEdgeByCode(string edgeCode, EdgeMemberSpec[] members)
                     {
-                        continue;
+                        batch.AddEdge(edgeCode, ProvenanceCode, members);
+                        edgeCountByType.AddOrUpdate(edgeCode, 1, static (_, current) => current + 1);
+                        Interlocked.Increment(ref edgeCount);
                     }
 
-                    // Source word lives in args["2"] (or "1" for some template variants).
-                    string? srcWord = ArgOrNull(t.Args, "2") ?? ArgOrNull(t.Args, "1");
-                    string? srcLang = ArgOrNull(t.Args, "1");
-                    if (string.IsNullOrEmpty(srcWord))
+                    foreach (string line in chunk.Lines)
                     {
-                        // Template carries no concrete word — emit edge to a document
-                        // composed of the expansion text (still semantic content).
-                        if (!string.IsNullOrEmpty(t.Expansion))
-                        {
-                            EntityHandle expansionDoc = await IngestTextAsync(sink, t.Expansion, ct).ConfigureAwait(false);
-                            await EmitEdgeByCodeAsync(edgeCode,
-                            [
-                                new EdgeMemberSpec(lemmaHandle,   "source", 0),
-                                new EdgeMemberSpec(expansionDoc,  "target", 1),
-                            ]).ConfigureAwait(false);
-                        }
-                        continue;
-                    }
-
-                    (EntityHandle srcLemma, _, _) =
-                        await EmitTextAsync(sink, srcWord, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
-                    await EmitEntitySignificanceAsync(sink, srcLemma, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
-                    entityCount++;
-                    int? srcLangId = ResolveLangId(srcLang);
-                    if (srcLangId is int sl)
-                    {
-                        await EmitJunctionAsync(sink, "entity_language", srcLemma, sl, null, ct).ConfigureAwait(false);
-                    }
-
-                    await EmitEdgeByCodeAsync(edgeCode,
-                    [
-                        new EdgeMemberSpec(lemmaHandle, "source", 0),
-                        new EdgeMemberSpec(srcLemma,    "target", 1),
-                    ]).ConfigureAwait(false);
-                }
-
-                // ── Translations (lemma → foreign lemma; cross_lingual). ──
-                foreach (WiktTranslation tr in entry.Translations)
-                {
-                    if (string.IsNullOrEmpty(tr.Word))
-                    {
-                        continue;
-                    }
-                    (EntityHandle foreignLemma, _, _) =
-                        await EmitTextAsync(sink, tr.Word, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
-                    await EmitEntitySignificanceAsync(sink, foreignLemma, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
-                    entityCount++;
-                    int? trLangId = ResolveLangId(tr.LangCode);
-                    if (trLangId is int tl)
-                    {
-                        await EmitJunctionAsync(sink, "entity_language", foreignLemma, tl, null, ct).ConfigureAwait(false);
-                    }
-
-                    // translation_of: source-language lemma → target-language lemma.
-                    await EmitEdgeByCodeAsync("translation_of",
-                    [
-                        new EdgeMemberSpec(lemmaHandle,   "source", 0),
-                        new EdgeMemberSpec(foreignLemma,  "target", 1),
-                    ]).ConfigureAwait(false);
-                }
-
-                // ── Entry-level semantic relations (lemma → lemma). ──
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-                entityCount += await EmitRelationsAsync(sink, edgeTypeIdMap, lemmaHandle, entry.Related,         "related",         ResolveLangId, BumpEdge, ct).ConfigureAwait(false);
-
-                // ── Sense gloss/example/wikidata evidence on the lemma. ──
-                foreach (WiktSense sense in entry.Senses)
-                {
-                    if (sense.Glosses.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    string joinedGloss = string.Join("\n", sense.Glosses);
-                    if (joinedGloss.Length == 0)
-                    {
-                        continue;
-                    }
-
-                    // Sense entity removed — sense is the lemma's
-                    // gloss/example/wikidata metadata, attached directly to
-                    // the lemma. Multi-sense lemmas get N has_gloss edges
-                    // (one per Wiktionary sense), each pointing to a different
-                    // text_composition. Provenance=wiktextract on every edge
-                    // distinguishes Wiktionary's sense data from any other
-                    // dictionary's.
-                    EntityHandle glossDoc = await IngestTextAsync(sink, joinedGloss, ct).ConfigureAwait(false);
-                    await EmitEdgeByCodeAsync("has_gloss",
-                    [
-                        new EdgeMemberSpec(lemmaHandle, "source", 0),
-                        new EdgeMemberSpec(glossDoc,    "target", 1),
-                    ]).ConfigureAwait(false);
-
-                    foreach (WiktExample ex in sense.Examples)
-                    {
-                        if (string.IsNullOrEmpty(ex.Text))
+                        taskCt.ThrowIfCancellationRequested();
+                        WiktEntry? entry = WiktionaryJsonlParser.ParseLine(line);
+                        if (entry is null)
                         {
                             continue;
                         }
-                        EntityHandle exDoc = await IngestTextAsync(sink, ex.Text, ct).ConfigureAwait(false);
-                        await EmitEdgeByCodeAsync("has_example",
-                        [
-                            new EdgeMemberSpec(lemmaHandle, "source", 0),
-                            new EdgeMemberSpec(exDoc,       "target", 1),
-                        ]).ConfigureAwait(false);
-                    }
+                        long entriesNow = Interlocked.Increment(ref entryCount);
 
-                    foreach (string wd in sense.Wikidata)
-                    {
-                        if (string.IsNullOrEmpty(wd))
+                        if (!LanguageAllowed(entry.LangCode))
                         {
                             continue;
                         }
-                        EntityHandle wdDoc = await IngestTextAsync(sink, wd, ct).ConfigureAwait(false);
-                        await EmitEdgeByCodeAsync("has_wikidata",
-                        [
-                            new EdgeMemberSpec(lemmaHandle, "source", 0),
-                            new EdgeMemberSpec(wdDoc,       "target", 1),
-                        ]).ConfigureAwait(false);
+                        if (string.IsNullOrEmpty(entry.Word) || entry.Senses.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        Interlocked.Add(ref entityCount, EmitEntry(batch, entry, posIdMap, langIdMap, AddEdgeByCode));
+
+                        FlushBatchIfFull();
+
+                        if (entriesNow % 250_000 == 0)
+                        {
+                            if (Logger.IsEnabled(LogLevel.Information))
+                            {
+                                long entitiesSnapshot = Interlocked.Read(ref entityCount);
+                                long edgesSnapshot = Interlocked.Read(ref edgeCount);
+                                Log.EntriesProcessed(
+                                    Logger,
+                                    entriesNow,
+                                    entitiesSnapshot,
+                                    edgesSnapshot);
+                            }
+                        }
                     }
+
+                    FlushBatch();
+                    await PreviousChunkCompletion(chunk.Index).WaitAsync(taskCt).ConfigureAwait(false);
+
+                    foreach (IIngestionBatch readyBatch in completedBatches)
+                    {
+                        int batchNow = Interlocked.Increment(ref batchNum);
+                        await ReportProgressAsync(
+                            pipeline,
+                            reporter,
+                            readyBatch,
+                            Interlocked.Read(ref entityCount),
+                            Interlocked.Read(ref edgeCount),
+                            batchNow,
+                            "wiktionary",
+                            taskCt).ConfigureAwait(false);
+                    }
+
+                    await ReportProgressCheckpointAsync(chunk).ConfigureAwait(false);
+                    CompletionFor(chunk.Index).TrySetResult();
+                    chunkCompletion.TryRemove(chunk.Index - 1, out _);
                 }
-
-                await ReportProgressCheckpointAsync().ConfigureAwait(false);
-
-                if (entryCount % 250_000 == 0)
+                catch (Exception ex)
                 {
-                    Log.EntriesProcessed(Logger, entryCount, entityCount, edgeCount);
+                    CompletionFor(chunk.Index).TrySetException(ex);
+                    throw;
                 }
-            }
+            },
+            ParallelChunkProcessor.DefaultDegreeOfParallelism(),
+            ct).ConfigureAwait(false);
 
             await pipeline.DrainPendingAsync(ct).ConfigureAwait(false);
-            await ReportProgressCheckpointAsync(force: true).ConfigureAwait(false);
+            await ReportProgressCheckpointAsync(
+                new WiktionaryJsonlLineChunk(-1, [], Volatile.Read(ref maxBytesRead), reader.TotalBytes),
+                force: true).ConfigureAwait(false);
 
             foreach (KeyValuePair<string, long> kv in edgeCountByType)
             {
                 Log.EdgesByType(Logger, kv.Key, kv.Value);
             }
-            Log.DecompositionComplete(Logger, entryCount, entityCount, edgeCount);
+            if (Logger.IsEnabled(LogLevel.Information))
+            {
+                long entriesSnapshot = Interlocked.Read(ref entryCount);
+                long entitiesSnapshot = Interlocked.Read(ref entityCount);
+                long edgesSnapshot = Interlocked.Read(ref edgeCount);
+                Log.DecompositionComplete(
+                    Logger,
+                    entriesSnapshot,
+                    entitiesSnapshot,
+                    edgesSnapshot);
+            }
             LogTextCacheStats();
         }
         finally
@@ -471,15 +356,255 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         }
     }
 
-    private async Task<int> EmitRelationsAsync(
-        IRecordSink sink,
-        Dictionary<string, int> edgeTypeIdMap,
+    private static long UpdateMax(ref long target, long value)
+    {
+        long current;
+        do
+        {
+            current = Volatile.Read(ref target);
+            if (value <= current)
+            {
+                return current;
+            }
+        }
+        while (Interlocked.CompareExchange(ref target, value, current) != current);
+
+        return value;
+    }
+
+    private long EmitEntry(
+        IIngestionBatch batch,
+        WiktEntry entry,
+        Dictionary<string, int> posIdMap,
+        Dictionary<string, int> langIdMap,
+        Action<string, EdgeMemberSpec[]> addEdge)
+    {
+        long entityCount = 0;
+
+        int? ResolveLangId(string? langCode)
+        {
+            if (string.IsNullOrEmpty(langCode))
+            {
+                return null;
+            }
+            return langIdMap.TryGetValue(langCode, out int id) ? id : (int?)null;
+        }
+
+        (EntityHandle lemmaHandle, _, _) =
+            EmitText(batch, entry.Word, _codepointProperties, "lemma", TrustPriorMu);
+        batch.AddSignificance(lemmaHandle, "source_authority", TrustPriorMu);
+        entityCount++;
+
+        string? upos = WiktPosMap.ToUpos(entry.Pos);
+        if (upos is not null && posIdMap.TryGetValue(upos, out int posId))
+        {
+            batch.AddJunction("entity_pos", lemmaHandle, posId, TrustPriorMu);
+        }
+        int? sourceLangId = ResolveLangId(entry.LangCode);
+        if (sourceLangId is int langId)
+        {
+            batch.AddJunction("entity_language", lemmaHandle, langId);
+        }
+
+        foreach (WiktForm form in entry.Forms)
+        {
+            if (string.IsNullOrEmpty(form.Form) || form.Form == entry.Word)
+            {
+                continue;
+            }
+            (EntityHandle infHandle, _, _) =
+                EmitText(batch, form.Form, _codepointProperties, "word_form", TrustPriorMu);
+            batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
+            entityCount++;
+
+            if (sourceLangId is int infLang)
+            {
+                batch.AddJunction("entity_language", infHandle, infLang);
+            }
+
+            addEdge("has_form",
+            [
+                new EdgeMemberSpec(lemmaHandle, "source", 0),
+                new EdgeMemberSpec(infHandle,   "target", 1),
+            ]);
+
+            addEdge("inflection_of",
+            [
+                new EdgeMemberSpec(infHandle,   "source", 0),
+                new EdgeMemberSpec(lemmaHandle, "target", 1),
+            ]);
+        }
+
+        foreach (WiktHyphenation hyph in entry.Hyphenations)
+        {
+            string repr = HyphenationRepresentation(hyph);
+            if (string.IsNullOrEmpty(repr))
+            {
+                continue;
+            }
+            EntityHandle hyphDoc = IngestText(batch, repr);
+            addEdge("has_hyphenation",
+            [
+                new EdgeMemberSpec(lemmaHandle, "source", 0),
+                new EdgeMemberSpec(hyphDoc,     "target", 1),
+            ]);
+        }
+
+        foreach (WiktSound sound in entry.Sounds)
+        {
+            foreach (string attr in EnumerateSoundAttrs(sound))
+            {
+                EntityHandle pDoc = IngestText(batch, attr);
+                addEdge("has_pronunciation",
+                [
+                    new EdgeMemberSpec(lemmaHandle, "source", 0),
+                    new EdgeMemberSpec(pDoc,        "target", 1),
+                ]);
+            }
+        }
+
+        if (!string.IsNullOrEmpty(entry.EtymologyText))
+        {
+            EntityHandle etymologyDoc = IngestText(batch, entry.EtymologyText);
+            addEdge("has_etymology",
+            [
+                new EdgeMemberSpec(lemmaHandle,  "source", 0),
+                new EdgeMemberSpec(etymologyDoc, "target", 1),
+            ]);
+        }
+
+        foreach (WiktEtymologyTemplate t in entry.EtymologyTemplates)
+        {
+            string? edgeCode = EtymologyTemplateNameToEdgeCode(t.Name);
+            if (edgeCode is null)
+            {
+                continue;
+            }
+
+            string? srcWord = ArgOrNull(t.Args, "2") ?? ArgOrNull(t.Args, "1");
+            string? srcLang = ArgOrNull(t.Args, "1");
+            if (string.IsNullOrEmpty(srcWord))
+            {
+                if (!string.IsNullOrEmpty(t.Expansion))
+                {
+                    EntityHandle expansionDoc = IngestText(batch, t.Expansion);
+                    addEdge(edgeCode,
+                    [
+                        new EdgeMemberSpec(lemmaHandle,  "source", 0),
+                        new EdgeMemberSpec(expansionDoc, "target", 1),
+                    ]);
+                }
+                continue;
+            }
+
+            (EntityHandle srcLemma, _, _) =
+                EmitText(batch, srcWord, _codepointProperties, "lemma", TrustPriorMu);
+            batch.AddSignificance(srcLemma, "source_authority", TrustPriorMu);
+            entityCount++;
+            int? srcLangId = ResolveLangId(srcLang);
+            if (srcLangId is int sl)
+            {
+                batch.AddJunction("entity_language", srcLemma, sl);
+            }
+
+            addEdge(edgeCode,
+            [
+                new EdgeMemberSpec(lemmaHandle, "source", 0),
+                new EdgeMemberSpec(srcLemma,    "target", 1),
+            ]);
+        }
+
+        foreach (WiktTranslation tr in entry.Translations)
+        {
+            if (string.IsNullOrEmpty(tr.Word))
+            {
+                continue;
+            }
+            (EntityHandle foreignLemma, _, _) =
+                EmitText(batch, tr.Word, _codepointProperties, "lemma", TrustPriorMu);
+            batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
+            entityCount++;
+            int? trLangId = ResolveLangId(tr.LangCode);
+            if (trLangId is int tl)
+            {
+                batch.AddJunction("entity_language", foreignLemma, tl);
+            }
+
+            addEdge("translation_of",
+            [
+                new EdgeMemberSpec(lemmaHandle,  "source", 0),
+                new EdgeMemberSpec(foreignLemma, "target", 1),
+            ]);
+        }
+
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Related,         "related",         ResolveLangId, addEdge);
+
+        foreach (WiktSense sense in entry.Senses)
+        {
+            if (sense.Glosses.Count == 0)
+            {
+                continue;
+            }
+
+            string joinedGloss = string.Join("\n", sense.Glosses);
+            if (joinedGloss.Length == 0)
+            {
+                continue;
+            }
+
+            EntityHandle glossDoc = IngestText(batch, joinedGloss);
+            addEdge("has_gloss",
+            [
+                new EdgeMemberSpec(lemmaHandle, "source", 0),
+                new EdgeMemberSpec(glossDoc,    "target", 1),
+            ]);
+
+            foreach (WiktExample ex in sense.Examples)
+            {
+                if (string.IsNullOrEmpty(ex.Text))
+                {
+                    continue;
+                }
+                EntityHandle exDoc = IngestText(batch, ex.Text);
+                addEdge("has_example",
+                [
+                    new EdgeMemberSpec(lemmaHandle, "source", 0),
+                    new EdgeMemberSpec(exDoc,       "target", 1),
+                ]);
+            }
+
+            foreach (string wd in sense.Wikidata)
+            {
+                if (string.IsNullOrEmpty(wd))
+                {
+                    continue;
+                }
+                EntityHandle wdDoc = IngestText(batch, wd);
+                addEdge("has_wikidata",
+                [
+                    new EdgeMemberSpec(lemmaHandle, "source", 0),
+                    new EdgeMemberSpec(wdDoc,       "target", 1),
+                ]);
+            }
+        }
+
+        return entityCount;
+    }
+
+    private int EmitRelations(
+        IIngestionBatch batch,
         EntityHandle source,
         IReadOnlyList<WiktRelation> relations,
         string edgeCode,
         Func<string?, int?> resolveLang,
-        Action<string> bumpEdge,
-        CancellationToken ct)
+        Action<string, EdgeMemberSpec[]> addEdge)
     {
         int entityCount = 0;
 
@@ -490,8 +615,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 continue;
             }
             (EntityHandle target, _, _) =
-                await EmitTextAsync(sink, rel.Word, _codepointProperties, "lemma", TrustPriorMu, ct).ConfigureAwait(false);
-            await EmitEntitySignificanceAsync(sink, target, "source_authority", TrustPriorMu, ct).ConfigureAwait(false);
+                EmitText(batch, rel.Word, _codepointProperties, "lemma", TrustPriorMu);
+            batch.AddSignificance(target, "source_authority", TrustPriorMu);
             entityCount++;
 
             // If WiktRelation carried a language code on a target headword,
@@ -501,12 +626,11 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             // extended.
             _ = resolveLang;
 
-            await EmitEdgeAsync(sink, edgeTypeIdMap, edgeCode, ProvenanceCode,
+            addEdge(edgeCode,
             [
                 new EdgeMemberSpec(source, "source", 0),
                 new EdgeMemberSpec(target, "target", 1),
-            ], ct).ConfigureAwait(false);
-            bumpEdge(edgeCode);
+            ]);
         }
 
         return entityCount;

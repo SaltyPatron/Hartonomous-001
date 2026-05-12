@@ -122,20 +122,3 @@ internal sealed partial class ModelConfigPass : IMetadataDecomposerPass
         public static partial void PassComplete(ILogger logger, string modelId, int edges);
     }
 }
-
-/// <summary>
-/// Marker interface for passes that ALSO satisfy the
-/// <see cref="Hartonomous.Core.Decomposition.IMetadataDecomposer"/> contract
-/// per spec §V.4. This bridge interface lets passes that already integrate
-/// with the orchestrator's <see cref="IPassSession"/> lifecycle (no need to
-/// rewrite to consume Stream + EntityHandle directly) declare their accepted
-/// file patterns. The dispatch in <see cref="SafetensorsDecomposer"/>
-/// continues to drive these by <see cref="ModelPassContext"/>; the file
-/// pattern is metadata for orchestrator-level coverage reporting and for the
-/// future Phase B.0 audit that confirms every model package's metadata files
-/// have a registered decomposer.
-/// </summary>
-internal interface IMetadataDecomposerPass : IModelAnalysisPass
-{
-    IReadOnlyList<string> AcceptedFilePatterns { get; }
-}

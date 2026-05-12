@@ -34,4 +34,6 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     -- Model package artifacts
     ('tensor',             'model_weights'),
     ('model_architecture', 'model_weights'),
+    ('model_package',      'model_weights'),
+    ('model_package_tensor','model_weights'),
     ('tokenizer_model',    'model_weights');

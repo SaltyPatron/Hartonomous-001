@@ -73,6 +73,36 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         return await ReadHandlesAsync(cmd, useTypeId: false, ct);
     }
 
+    public async Task<IReadOnlyList<PackageTensorHandle>> QueryTensorsForModelSourceAsync(
+        long modelSourceId,
+        CancellationToken ct)
+    {
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.QueryTensorsForModelSource,
+            [IntParameter(checked((int)modelSourceId))]);
+
+        List<PackageTensorHandle> results = [];
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string packageTypeCode = reader.GetString(0).Trim();
+            byte[] packageHash = (byte[])reader.GetValue(1);
+            int ordinal = reader.GetInt32(2);
+            string occurrenceTypeCode = reader.GetString(3).Trim();
+            byte[] occurrenceHash = (byte[])reader.GetValue(4);
+            string tensorTypeCode = reader.GetString(5).Trim();
+            byte[] tensorHash = (byte[])reader.GetValue(6);
+            results.Add(new PackageTensorHandle(
+                new EntityHandle(packageHash, packageTypeCode),
+                ordinal,
+                new EntityHandle(occurrenceHash, occurrenceTypeCode),
+                new EntityHandle(tensorHash, tensorTypeCode)));
+        }
+        return results;
+    }
+
     public async Task<IReadOnlyList<EntityHandle>> QueryFireflyForVocabAsync(
         IReadOnlyList<EntityHandle> bpeTokens,
         double minSignificanceMu,

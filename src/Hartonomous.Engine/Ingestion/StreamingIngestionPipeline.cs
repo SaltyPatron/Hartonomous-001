@@ -86,7 +86,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     /// phases that emit tens of millions of records.
     /// </summary>
     private const int CopyChunkRows = 32_768;
-    private const int DiffChunkRows = CopyChunkRows;
+
+    /// <summary>
+    /// Bounded substrate-diff window. This is intentionally larger than the
+    /// COPY chunk so one streamed producer window can ask PostgreSQL about all
+    /// candidate keys in one multi-result command, while drains still write in
+    /// smaller COPY chunks. It is not an all-dataset preload.
+    /// </summary>
+    private const int DiffChunkRows = CopyChunkRows * 4;
 
     /// <summary>
     /// Idle timeout per drain task. If the channel is empty for this long,
@@ -99,6 +106,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly CodeResolver _codeResolver;
     private readonly ILogger<StreamingIngestionPipeline> _logger;
     private readonly CancellationTokenSource _shutdown = new();
+    private readonly IngestionResourceMonitor _resourceMonitor = new();
 
     // One channel per record kind so each drain task can commit independently
     // without coordinating with other kinds. SingleReader=true means the
@@ -241,6 +249,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly ConcurrentDictionary<Hash32, byte> _sequenceDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _entitySignificanceDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _edgeSignificanceDedup = new();
+    private long _entityDedupCount;
+    private long _entityClassificationDedupCount;
+    private long _edgeDedupCount;
+    private long _edgeMemberDedupCount;
+    private long _physicalityDedupCount;
+    private long _sequenceDedupCount;
+    private long _entitySignificanceDedupCount;
+    private long _edgeSignificanceDedupCount;
 
     // Phase-scoped centroid index. Every PhysicalityEntry processed by
     // SubmitBatchAsync drops its (entity_hash → Point4D) here. Edges built
@@ -418,6 +434,28 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                             : "waiting for producer records";
                 Log.PipelineState(_logger, phaseElapsed, pipelineState, bufferedRows, submittedTotal, drainedTotal,
                     backlogTotal, _producerDedupHits);
+                IngestionResourceSnapshot resources = _resourceMonitor.Capture();
+                Log.ResourceSnapshot(
+                    _logger,
+                    phaseElapsed,
+                    resources.ProcessCpuPercent,
+                    resources.ProcessCpuCores,
+                    resources.SystemCpuPercent,
+                    resources.SystemIoWaitPercent,
+                    ToMib(resources.WorkingSetBytes),
+                    ToMib(resources.ManagedHeapBytes),
+                    resources.ThreadPoolBusyWorkers,
+                    resources.ThreadPoolMaxWorkers,
+                    ToMib(resources.SystemMemoryAvailableBytes),
+                    ToMib(resources.SystemMemoryTotalBytes),
+                    ToMib(resources.SwapFreeBytes),
+                    ToMib(resources.SwapTotalBytes),
+                    resources.ProcessReadMibPerSec,
+                    resources.ProcessWriteMibPerSec,
+                    ToGib(resources.PostgresDriveAvailableBytes),
+                    ToGib(resources.PostgresDriveTotalBytes),
+                    ToGib(resources.RootDriveAvailableBytes),
+                    ToGib(resources.RootDriveTotalBytes));
 
                 for (int i = 0; i < KindIndex.Count; i++)
                 {
@@ -441,12 +479,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 #pragma warning restore CA1873
             }
         }
+
         catch (Exception ex) // BOUNDARY: periodic telemetry must never take down ingestion; it logs and exits.
         {
             // Snapshot loop must NEVER take down the pipeline. Log and exit.
             Log.SnapshotLoopCrashed(_logger, ex);
         }
     }
+
+    private static double ToMib(long bytes) => bytes <= 0 ? 0.0 : bytes / 1048576.0;
+
+    private static double ToGib(long bytes) => bytes <= 0 ? 0.0 : bytes / 1073741824.0;
 
     public StreamingPipelineStats Stats => new()
     {
@@ -482,11 +525,20 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             throw new ArgumentException("Batch must be created by this pipeline.", nameof(batch));
         }
 
+        List<IngestionRecord> records = await MaterializeBatchRecordsAsync(b, ct).ConfigureAwait(false);
+        if (records.Count == 0)
+        {
+            return;
+        }
+
         List<(long Sequence, List<IngestionRecord> Records)> buffersToFlush = [];
         await _ingressGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await SubmitBatchUnderGateAsync(b, buffersToFlush, ct).ConfigureAwait(false);
+            foreach (IngestionRecord record in records)
+            {
+                BufferRecordUnderGate(record, buffersToFlush);
+            }
         }
         finally
         {
@@ -499,29 +551,39 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         }
     }
 
-    private async ValueTask SubmitBatchUnderGateAsync(
+    private async ValueTask<List<IngestionRecord>> MaterializeBatchRecordsAsync(
         IngestionBatch b,
-        List<(long Sequence, List<IngestionRecord> Records)> buffersToFlush,
         CancellationToken ct)
     {
+        int estimatedCount =
+            b.Entities.Count
+            + b.Physicalities.Count
+            + b.Junctions.Count
+            + b.Sequences.Count
+            + b.Significances.Count
+            + b.EntityModelSources.Count;
+        foreach (EdgeEntry edge in b.Edges)
+        {
+            estimatedCount += 2 + edge.Members.Length + edge.SignificanceOverrides.Length + edge.RatingEvents.Length;
+        }
+
+        List<IngestionRecord> records = new(estimatedCount);
         string batchProvenance = b.ProvenanceCode;
         foreach (EntityEntry e in b.Entities)
         {
-            BufferRecordUnderGate(
-                new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance),
-                buffersToFlush);
+            records.Add(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance));
         }
 
         foreach (PhysicalityEntry p in b.Physicalities)
         {
             Hash32 contentHash = Hartonomous.Core.Compute.Common.Blake3.Hash32(p.Wkb.AsSpan());
             _centroids[p.Entity.Hash] = p.Centroid;
-            BufferRecordUnderGate(new PhysicalityRecord(
+            records.Add(new PhysicalityRecord(
                 p.PhysicalityTypeCode,
                 p.Entity.Hash,
                 contentHash,
                 p.Wkb,
-                p.Centroid), buffersToFlush);
+                p.Centroid));
         }
 
         Dictionary<string, int> edgeTypeIds = new(StringComparer.Ordinal);
@@ -563,30 +625,28 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
             }
 
-            BufferRecordUnderGate(
-                new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode, inlineGeomWkb),
-                buffersToFlush);
+            records.Add(new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode, inlineGeomWkb));
             for (int j = 0; j < sorted.Length; j++)
             {
-                BufferRecordUnderGate(new EdgeMemberRecord(
+                records.Add(new EdgeMemberRecord(
                     edge.EdgeTypeCode, edgeHash,
                     sorted[j].Entity.Hash,
                     sorted[j].RoleCode,
-                    sorted[j].Position), buffersToFlush);
+                    sorted[j].Position));
             }
 
             EdgeSignificanceSpec[] overrides = edge.SignificanceOverrides;
             for (int o = 0; o < overrides.Length; o++)
             {
                 EdgeSignificanceSpec sig = overrides[o];
-                BufferRecordUnderGate(new EdgeSignificanceRecord(
+                records.Add(new EdgeSignificanceRecord(
                     sig.ContextTypeCode,
                     string.IsNullOrEmpty(sig.AttestationTypeCode)
                         ? ProvenanceAuthorityAttestation
                         : sig.AttestationTypeCode,
                     edge.EdgeTypeCode,
                     edgeHash,
-                    sig.InitialMu), buffersToFlush);
+                    sig.InitialMu));
             }
 
             // Sign-bearing rating events fire for every observation; the SQL
@@ -596,63 +656,68 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             for (int e = 0; e < events.Length; e++)
             {
                 EdgeRatingEvent ev = events[e];
-                BufferRecordUnderGate(new EdgeRatingEventRecord(
+                records.Add(new EdgeRatingEventRecord(
                     ev.ContextTypeCode, ev.AttestationTypeCode,
                     edge.EdgeTypeCode, edgeHash,
-                    ev.Score, ev.Weight), buffersToFlush);
+                    ev.Score, ev.Weight,
+                    ev.ModelSourceId,
+                    ev.TensorHash,
+                    ev.PackageTensorHash,
+                    ev.SourceTensorName,
+                    ev.PrimitiveCode,
+                    ev.TupleCode,
+                    ev.SlotCode,
+                    ev.ModalityCode,
+                    ev.LayerIndex,
+                    ev.HeadIndex,
+                    ev.ExpertIndex,
+                    ev.AdapterName,
+                    ev.FusedSlice));
             }
-            BufferRecordUnderGate(new EdgeRatingEventRecord(
+            records.Add(new EdgeRatingEventRecord(
                 SourceAuthorityContext,
                 ProvenanceAuthorityAttestation,
                 edge.EdgeTypeCode,
                 edgeHash,
                 Score: 1.0,
-                Weight: ProvenanceAuthorityEventWeight), buffersToFlush);
+                Weight: ProvenanceAuthorityEventWeight));
         }
 
         foreach (JunctionEntry j in b.Junctions)
         {
-            BufferRecordUnderGate(new JunctionRecord(
+            records.Add(new JunctionRecord(
                 j.JunctionTable, j.Entity.Hash,
                 j.ReferenceId,
                 j.AttestationTypeCode ?? "lexical_curated_relation",
-                j.Mu), buffersToFlush);
+                j.Mu));
         }
 
         foreach (SequenceEntry s in b.Sequences)
         {
-            BufferRecordUnderGate(new SequenceRecord(
+            records.Add(new SequenceRecord(
                 s.Parent.Hash,
                 s.Ordinal,
                 s.Child.Hash,
-                s.RleCount), buffersToFlush);
+                s.RleCount));
         }
 
         foreach (SignificanceEntry sig in b.Significances)
         {
-            BufferRecordUnderGate(new EntitySignificanceRecord(
+            records.Add(new EntitySignificanceRecord(
                 sig.ContextTypeCode,
                 sig.AttestationTypeCode ?? "provenance_authority_corroboration",
                 sig.Entity.Hash,
-                sig.InitialMu), buffersToFlush);
+                sig.InitialMu));
         }
 
         foreach (EntityModelSourceEntry e in b.EntityModelSources)
         {
-            BufferRecordUnderGate(new EntityModelSourceRecord(
+            records.Add(new EntityModelSourceRecord(
                 e.Entity.Hash,
-                e.ModelSourceId), buffersToFlush);
+                e.ModelSourceId));
         }
-    }
 
-    private static List<Hash32> ToHashList(HashSet<HashKey> keys)
-    {
-        List<Hash32> hashes = new(keys.Count);
-        foreach (HashKey key in keys)
-        {
-            hashes.Add(key.Hash);
-        }
-        return hashes;
+        return records;
     }
 
     public async Task DrainPendingAsync(CancellationToken ct)
@@ -955,6 +1020,329 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         return existing;
     }
 
+    private async Task<(
+        HashSet<HashKey> ExistingEntities,
+        HashSet<EntityClassificationKey> ExistingClassifications,
+        HashSet<EdgeKey> ExistingEdges,
+        HashSet<EdgeMemberKey> ExistingEdgeMembers,
+        HashSet<PhysicalityKey> ExistingPhysicalities,
+        HashSet<SequenceKey> ExistingSequences,
+        HashSet<Hash32> ExistingEntitySignificances)> GetExistingIngressKeysAsync(
+            HashSet<HashKey> entityCandidates,
+            HashSet<EntityClassificationKey> classificationCandidates,
+            HashSet<EdgeKey> edgeCandidates,
+            HashSet<EdgeMemberKey> edgeMemberCandidates,
+            HashSet<PhysicalityKey> physicalityCandidates,
+            HashSet<SequenceKey> sequenceCandidates,
+            Dictionary<Hash32, EntitySignificanceRecord> entitySignificanceCandidates,
+            CancellationToken ct)
+    {
+        HashSet<HashKey> existingEntities = new(entityCandidates.Count);
+        HashSet<EntityClassificationKey> existingClassifications = new(classificationCandidates.Count);
+        HashSet<EdgeKey> existingEdges = new(edgeCandidates.Count);
+        HashSet<EdgeMemberKey> existingEdgeMembers = new(edgeMemberCandidates.Count);
+        HashSet<PhysicalityKey> existingPhysicalities = new(physicalityCandidates.Count);
+        HashSet<SequenceKey> existingSequences = new(sequenceCandidates.Count);
+        HashSet<Hash32> existingEntitySignificances = new(entitySignificanceCandidates.Count);
+
+        if (entityCandidates.Count == 0
+            && classificationCandidates.Count == 0
+            && edgeCandidates.Count == 0
+            && edgeMemberCandidates.Count == 0
+            && physicalityCandidates.Count == 0
+            && sequenceCandidates.Count == 0
+            && entitySignificanceCandidates.Count == 0)
+        {
+            return (
+                existingEntities,
+                existingClassifications,
+                existingEdges,
+                existingEdgeMembers,
+                existingPhysicalities,
+                existingSequences,
+                existingEntitySignificances);
+        }
+
+        byte[][] entityHashArr = new byte[entityCandidates.Count][];
+        int i = 0;
+        foreach (HashKey k in entityCandidates)
+        {
+            entityHashArr[i++] = k.Hash.ToByteArray();
+        }
+
+        Dictionary<string, int> entityTypeIds = new(StringComparer.Ordinal);
+        Dictionary<string, int> provenanceIds = new(StringComparer.Ordinal);
+        byte[][] classificationHashArr = new byte[classificationCandidates.Count][];
+        int[] classificationTypeArr = new int[classificationCandidates.Count];
+        int[] classificationProvenanceArr = new int[classificationCandidates.Count];
+        i = 0;
+        foreach (EntityClassificationKey k in classificationCandidates)
+        {
+            classificationHashArr[i] = k.EntityHash.ToByteArray();
+            classificationTypeArr[i] = await ResolveEntityTypeIdAsync(
+                entityTypeIds, k.EntityTypeCode, ct).ConfigureAwait(false);
+            classificationProvenanceArr[i] = await ResolveProvenanceIdAsync(
+                provenanceIds, k.ProvenanceCode, ct).ConfigureAwait(false);
+            i++;
+        }
+
+        Dictionary<string, int> edgeTypeIds = new(StringComparer.Ordinal);
+        int[] edgeTypeArr = new int[edgeCandidates.Count];
+        byte[][] edgeHashArr = new byte[edgeCandidates.Count][];
+        i = 0;
+        foreach (EdgeKey k in edgeCandidates)
+        {
+            edgeTypeArr[i] = await ResolveEdgeTypeIdAsync(edgeTypeIds, k.EdgeTypeCode, ct).ConfigureAwait(false);
+            edgeHashArr[i] = k.EdgeHash.ToByteArray();
+            i++;
+        }
+
+        Dictionary<string, int> roleIds = new(StringComparer.Ordinal);
+        int[] memberEdgeTypeArr = new int[edgeMemberCandidates.Count];
+        byte[][] memberEdgeHashArr = new byte[edgeMemberCandidates.Count][];
+        byte[][] memberEntityHashArr = new byte[edgeMemberCandidates.Count][];
+        int[] memberRoleArr = new int[edgeMemberCandidates.Count];
+        int[] memberPositionArr = new int[edgeMemberCandidates.Count];
+        i = 0;
+        foreach (EdgeMemberKey k in edgeMemberCandidates)
+        {
+            memberEdgeTypeArr[i] = await ResolveEdgeTypeIdAsync(edgeTypeIds, k.EdgeTypeCode, ct).ConfigureAwait(false);
+            memberEdgeHashArr[i] = k.EdgeHash.ToByteArray();
+            memberEntityHashArr[i] = k.EntityHash.ToByteArray();
+            memberRoleArr[i] = await ResolveEdgeRoleIdAsync(roleIds, k.RoleCode, ct).ConfigureAwait(false);
+            memberPositionArr[i] = k.RolePosition;
+            i++;
+        }
+
+        Dictionary<string, int> physicalityTypeIds = new(StringComparer.Ordinal);
+        int[] physicalityTypeArr = new int[physicalityCandidates.Count];
+        byte[][] physicalityEntityHashArr = new byte[physicalityCandidates.Count][];
+        byte[][] physicalityContentHashArr = new byte[physicalityCandidates.Count][];
+        i = 0;
+        foreach (PhysicalityKey k in physicalityCandidates)
+        {
+            physicalityTypeArr[i] = await ResolvePhysicalityTypeIdAsync(
+                physicalityTypeIds, k.PhysicalityTypeCode, ct).ConfigureAwait(false);
+            physicalityEntityHashArr[i] = k.EntityHash.ToByteArray();
+            physicalityContentHashArr[i] = k.ContentHash.ToByteArray();
+            i++;
+        }
+
+        byte[][] sequenceParentHashArr = new byte[sequenceCandidates.Count][];
+        int[] sequenceOrdinalArr = new int[sequenceCandidates.Count];
+        i = 0;
+        foreach (SequenceKey k in sequenceCandidates)
+        {
+            sequenceParentHashArr[i] = k.ParentHash.ToByteArray();
+            sequenceOrdinalArr[i] = k.Ordinal;
+            i++;
+        }
+
+        Dictionary<string, int> contextIds = new(StringComparer.Ordinal);
+        Dictionary<string, int> attestationTypeIds = new(StringComparer.Ordinal);
+        int[] entitySignificanceContextArr = new int[entitySignificanceCandidates.Count];
+        byte[][] entitySignificanceHashArr = new byte[entitySignificanceCandidates.Count][];
+        int[] entitySignificanceAttestationArr = new int[entitySignificanceCandidates.Count];
+        i = 0;
+        foreach (EntitySignificanceRecord k in entitySignificanceCandidates.Values)
+        {
+            entitySignificanceContextArr[i] = await ResolveSignificanceContextIdAsync(
+                contextIds, k.ContextTypeCode, ct).ConfigureAwait(false);
+            entitySignificanceHashArr[i] = k.EntityHash.ToByteArray();
+            entitySignificanceAttestationArr[i] = await ResolveAttestationTypeIdAsync(
+                attestationTypeIds, k.AttestationTypeCode, ct).ConfigureAwait(false);
+            i++;
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingIngressKeys, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = entityHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = classificationHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = classificationTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = classificationProvenanceArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = edgeTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = edgeHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = memberEdgeTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = memberEdgeHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = memberEntityHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = memberRoleArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = memberPositionArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = physicalityTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = physicalityEntityHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = physicalityContentHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = sequenceParentHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = sequenceOrdinalArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = entitySignificanceContextArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = entitySignificanceHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = entitySignificanceAttestationArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await r.ReadAsync(ct).ConfigureAwait(false))
+        {
+            int kind = r.GetInt32(0);
+            switch (kind)
+            {
+                case 0:
+                    existingEntities.Add(new HashKey((byte[])r[3]));
+                    break;
+                case 1:
+                    existingClassifications.Add(new EntityClassificationKey(
+                        (byte[])r[3],
+                        r.GetString(1),
+                        r.GetString(2)));
+                    break;
+                case 2:
+                    existingEdges.Add(new EdgeKey(r.GetString(1), (byte[])r[3]));
+                    break;
+                case 3:
+                    existingEdgeMembers.Add(new EdgeMemberKey(
+                        r.GetString(1),
+                        (byte[])r[3],
+                        (byte[])r[4],
+                        r.GetString(2),
+                        r.GetInt32(5)));
+                    break;
+                case 4:
+                    existingPhysicalities.Add(new PhysicalityKey(
+                        r.GetString(1),
+                        (byte[])r[3],
+                        (byte[])r[4]));
+                    break;
+                case 5:
+                    existingSequences.Add(new SequenceKey((byte[])r[3], r.GetInt32(5)));
+                    break;
+                case 6:
+                    existingEntitySignificances.Add(ComposeKey(r.GetString(1), r.GetString(2), new Hash32((byte[])r[3])));
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown ingress key probe result kind: {kind}");
+            }
+        }
+
+        return (
+            existingEntities,
+            existingClassifications,
+            existingEdges,
+            existingEdgeMembers,
+            existingPhysicalities,
+            existingSequences,
+            existingEntitySignificances);
+    }
+
+    private void MarkExistingIngressKeys(
+        HashSet<HashKey> existingEntities,
+        HashSet<EntityClassificationKey> existingClassifications,
+        HashSet<EdgeKey> existingEdges,
+        HashSet<EdgeMemberKey> existingEdgeMembers,
+        HashSet<PhysicalityKey> existingPhysicalities,
+        HashSet<SequenceKey> existingSequences,
+        HashSet<Hash32> existingEntitySignificances)
+    {
+        foreach (HashKey key in existingEntities)
+        {
+            MarkDedup(_entityDedup, ref _entityDedupCount, key.Hash);
+        }
+        foreach (EntityClassificationKey key in existingClassifications)
+        {
+            MarkDedup(_entityClassificationDedup, ref _entityClassificationDedupCount, ComposeKey(key.EntityTypeCode, key.ProvenanceCode, key.EntityHash));
+        }
+        foreach (EdgeKey key in existingEdges)
+        {
+            MarkDedup(_edgeDedup, ref _edgeDedupCount, ComposeKey(key.EdgeTypeCode, key.EdgeHash));
+        }
+        foreach (EdgeMemberKey key in existingEdgeMembers)
+        {
+            MarkDedup(_edgeMemberDedup, ref _edgeMemberDedupCount, ComposeKey(
+                key.EdgeTypeCode,
+                key.RoleCode,
+                key.EdgeHash,
+                key.EntityHash,
+                key.RolePosition));
+        }
+        foreach (PhysicalityKey key in existingPhysicalities)
+        {
+            MarkDedup(_physicalityDedup, ref _physicalityDedupCount, ComposeKey(key.PhysicalityTypeCode, key.EntityHash, key.ContentHash));
+        }
+        foreach (SequenceKey key in existingSequences)
+        {
+            MarkDedup(_sequenceDedup, ref _sequenceDedupCount, ComposeKey(key.ParentHash, key.Ordinal));
+        }
+        foreach (Hash32 key in existingEntitySignificances)
+        {
+            MarkDedup(_entitySignificanceDedup, ref _entitySignificanceDedupCount, key);
+        }
+    }
+
+    private async Task<int> ResolveEntityTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.EntityTypeIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
+    private async Task<int> ResolveEdgeTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.EdgeTypeIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
+    private async Task<int> ResolvePhysicalityTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.PhysicalityTypeIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
+    private async Task<int> ResolveProvenanceIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.ProvenanceIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
+    private async Task<int> ResolveEdgeRoleIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.EdgeRoleIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
+    private async Task<int> ResolveSignificanceContextIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.SignificanceContextIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
+    private async Task<int> ResolveAttestationTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
+    {
+        if (!cache.TryGetValue(code, out int id))
+        {
+            id = await _codeResolver.AttestationTypeIdAsync(code, ct).ConfigureAwait(false);
+            cache.Add(code, id);
+        }
+        return id;
+    }
+
     public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
     {
         // Populate geom on edges where the producer didn't (or couldn't)
@@ -1178,198 +1566,44 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         Interlocked.Exchange(ref _ingressDiffRows, buffer.Count);
 
-        HashSet<HashKey> entityCandidates = new();
-        HashSet<EntityClassificationKey> classificationCandidates = new();
-        HashSet<EdgeKey> edgeCandidates = new();
         HashSet<EdgeKey> edgeRecordsInBuffer = new();
-        HashSet<EdgeMemberKey> edgeMemberCandidates = new();
-        HashSet<PhysicalityKey> physicalityCandidates = new();
-        HashSet<SequenceKey> sequenceCandidates = new();
-
         foreach (IngestionRecord record in buffer)
         {
-            switch (record)
+            if (record is EdgeRecord edge)
             {
-                case EntityRecord r:
-                    if (!_entityDedup.ContainsKey(r.Hash))
-                    {
-                        entityCandidates.Add(new HashKey(r.Hash));
-                    }
-                    if (!_entityClassificationDedup.ContainsKey(
-                            ComposeKey(r.EntityTypeCode, r.ProvenanceCode, r.Hash)))
-                    {
-                        classificationCandidates.Add(
-                            new EntityClassificationKey(r.Hash, r.EntityTypeCode, r.ProvenanceCode));
-                    }
-                    break;
-                case EntityClassificationRecord r:
-                    if (!_entityClassificationDedup.ContainsKey(
-                            ComposeKey(r.EntityTypeCode, r.ProvenanceCode, r.EntityHash)))
-                    {
-                        classificationCandidates.Add(
-                            new EntityClassificationKey(r.EntityHash, r.EntityTypeCode, r.ProvenanceCode));
-                    }
-                    break;
-                case EdgeRecord r:
-                {
-                    EdgeKey key = new(r.EdgeTypeCode, r.EdgeHash);
-                    if (!_edgeDedup.ContainsKey(ComposeKey(r.EdgeTypeCode, r.EdgeHash)))
-                    {
-                        edgeCandidates.Add(key);
-                    }
-                    edgeRecordsInBuffer.Add(key);
-                    break;
-                }
-                case EdgeMemberRecord r:
-                {
-                    if (!_edgeDedup.ContainsKey(ComposeKey(r.EdgeTypeCode, r.EdgeHash)))
-                    {
-                        edgeCandidates.Add(new EdgeKey(r.EdgeTypeCode, r.EdgeHash));
-                    }
-                    if (!_edgeMemberDedup.ContainsKey(
-                            ComposeKey(r.EdgeTypeCode, r.RoleCode, r.EdgeHash, r.EntityHash, r.RolePosition)))
-                    {
-                        edgeMemberCandidates.Add(new EdgeMemberKey(
-                            r.EdgeTypeCode,
-                            r.EdgeHash,
-                            r.EntityHash,
-                            r.RoleCode,
-                            r.RolePosition));
-                    }
-                    break;
-                }
-                case PhysicalityRecord r:
-                    _centroids[r.EntityHash] = r.Centroid;
-                    if (!_physicalityDedup.ContainsKey(
-                            ComposeKey(r.PhysicalityTypeCode, r.EntityHash, r.ContentHash)))
-                    {
-                        physicalityCandidates.Add(
-                            new PhysicalityKey(r.PhysicalityTypeCode, r.EntityHash, r.ContentHash));
-                    }
-                    break;
-                case SequenceRecord r:
-                    if (!_sequenceDedup.ContainsKey(ComposeKey(r.ParentEntityHash, r.Ordinal)))
-                    {
-                        sequenceCandidates.Add(new SequenceKey(r.ParentEntityHash, r.Ordinal));
-                    }
-                    break;
+                edgeRecordsInBuffer.Add(new EdgeKey(edge.EdgeTypeCode, edge.EdgeHash));
+            }
+            else if (record is PhysicalityRecord physicality)
+            {
+                _centroids[physicality.EntityHash] = physicality.Centroid;
             }
         }
 
-        Task<HashSet<HashKey>> existingEntitiesTask = entityCandidates.Count == 0
-            ? Task.FromResult(new HashSet<HashKey>())
-            : GetExistingEntityHashesAsync(ToHashList(entityCandidates), ct);
-        Task<HashSet<EntityClassificationKey>> existingClassificationsTask = classificationCandidates.Count == 0
-            ? Task.FromResult(new HashSet<EntityClassificationKey>())
-            : GetExistingEntityClassificationsAsync(classificationCandidates, ct);
-        Task<HashSet<EdgeKey>> existingEdgesTask = edgeCandidates.Count == 0
-            ? Task.FromResult(new HashSet<EdgeKey>())
-            : GetExistingEdgesAsync(edgeCandidates, ct);
-        Task<HashSet<EdgeMemberKey>> existingEdgeMembersTask = edgeMemberCandidates.Count == 0
-            ? Task.FromResult(new HashSet<EdgeMemberKey>())
-            : GetExistingEdgeMembersAsync(edgeMemberCandidates, ct);
-        Task<HashSet<PhysicalityKey>> existingPhysicalitiesTask = physicalityCandidates.Count == 0
-            ? Task.FromResult(new HashSet<PhysicalityKey>())
-            : GetExistingPhysicalitiesAsync(physicalityCandidates, ct);
-        Task<HashSet<SequenceKey>> existingSequencesTask = sequenceCandidates.Count == 0
-            ? Task.FromResult(new HashSet<SequenceKey>())
-            : GetExistingSequenceRowsAsync(sequenceCandidates, ct);
-
-        await Task.WhenAll(
-            existingEntitiesTask,
-            existingClassificationsTask,
-            existingEdgesTask,
-            existingEdgeMembersTask,
-            existingPhysicalitiesTask,
-            existingSequencesTask).ConfigureAwait(false);
-
-        HashSet<HashKey> existingEntities = existingEntitiesTask.Result;
-        HashSet<EntityClassificationKey> existingClassifications = existingClassificationsTask.Result;
-        HashSet<EdgeKey> existingEdges = existingEdgesTask.Result;
-        HashSet<EdgeMemberKey> existingEdgeMembers = existingEdgeMembersTask.Result;
-        HashSet<PhysicalityKey> existingPhysicalities = existingPhysicalitiesTask.Result;
-        HashSet<SequenceKey> existingSequences = existingSequencesTask.Result;
-
         foreach (IngestionRecord record in buffer)
         {
             switch (record)
             {
-                case EntityRecord r:
-                {
-                    EntityClassificationKey classificationKey =
-                        new(r.Hash, r.EntityTypeCode, r.ProvenanceCode);
-                    if (!existingEntities.Contains(new HashKey(r.Hash)))
-                    {
-                        await EmitDirectAsync(r, ct).ConfigureAwait(false);
-                    }
-                    else if (!existingClassifications.Contains(classificationKey))
-                    {
-                        await EmitDirectAsync(
-                            new EntityClassificationRecord(r.Hash, r.EntityTypeCode, r.ProvenanceCode),
-                            ct).ConfigureAwait(false);
-                    }
-                    break;
-                }
-                case EntityClassificationRecord r:
-                {
-                    EntityClassificationKey key = new(r.EntityHash, r.EntityTypeCode, r.ProvenanceCode);
-                    if (!existingClassifications.Contains(key))
-                    {
-                        await EmitDirectAsync(r, ct).ConfigureAwait(false);
-                    }
-                    break;
-                }
-                case EdgeRecord r:
-                {
-                    EdgeKey key = new(r.EdgeTypeCode, r.EdgeHash);
-                    if (!existingEdges.Contains(key))
-                    {
-                        await EmitDirectAsync(r, ct).ConfigureAwait(false);
-                    }
-                    break;
-                }
                 case EdgeMemberRecord r:
                 {
                     EdgeKey key = new(r.EdgeTypeCode, r.EdgeHash);
-                    EdgeMemberKey memberKey = new(
-                        r.EdgeTypeCode,
-                        r.EdgeHash,
-                        r.EntityHash,
-                        r.RoleCode,
-                        r.RolePosition);
-                    if (!existingEdgeMembers.Contains(memberKey))
-                    {
-                        Hash32 edgeDedupKey = ComposeKey(r.EdgeTypeCode, r.EdgeHash);
-                        if (existingEdges.Contains(key)
-                            || edgeRecordsInBuffer.Contains(key)
-                            || _edgeDedup.ContainsKey(edgeDedupKey))
-                        {
-                            await EmitDirectAsync(r, ct).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            throw new InvalidOperationException(
-                                $"Edge member references missing edge {r.EdgeTypeCode}:{r.EdgeHash.ToHexString()}.");
-                        }
-                    }
-                    break;
-                }
-                case PhysicalityRecord r:
-                {
-                    PhysicalityKey key = new(r.PhysicalityTypeCode, r.EntityHash, r.ContentHash);
-                    if (!existingPhysicalities.Contains(key))
+                    Hash32 edgeDedupKey = ComposeKey(r.EdgeTypeCode, r.EdgeHash);
+                    if (edgeRecordsInBuffer.Contains(key) || _edgeDedup.ContainsKey(edgeDedupKey))
                     {
                         await EmitDirectAsync(r, ct).ConfigureAwait(false);
+                        break;
                     }
-                    break;
+
+                    throw new InvalidOperationException(
+                        $"Edge member references missing edge {r.EdgeTypeCode}:{r.EdgeHash.ToHexString()}.");
                 }
-                case SequenceRecord r:
+                case EntityRecord:
+                case EntityClassificationRecord:
+                case EdgeRecord:
+                case PhysicalityRecord:
+                case SequenceRecord:
+                case EntitySignificanceRecord:
                 {
-                    SequenceKey key = new(r.ParentEntityHash, r.Ordinal);
-                    if (!existingSequences.Contains(key))
-                    {
-                        await EmitDirectAsync(r, ct).ConfigureAwait(false);
-                    }
+                    await EmitDirectAsync(record, ct).ConfigureAwait(false);
                     break;
                 }
                 default:
@@ -1411,7 +1645,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private async ValueTask EmitEntityWithClassificationAsync(EntityRecord r, CancellationToken ct)
     {
         Hash32 key = r.Hash;
-        if (TryAddDedup(_entityDedup, key))
+        if (TryAddDedup(_entityDedup, ref _entityDedupCount, key))
         {
             await WriteTrackedAsync(_entities.Writer, r, KindIndex.Entity, ct).ConfigureAwait(false);
         }
@@ -1423,7 +1657,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private async ValueTask EmitEntityClassificationAsync(EntityClassificationRecord r, CancellationToken ct)
     {
         Hash32 key = ComposeKey(r.EntityTypeCode, r.ProvenanceCode, r.EntityHash);
-        if (TryAddDedup(_entityClassificationDedup, key))
+        if (TryAddDedup(_entityClassificationDedup, ref _entityClassificationDedupCount, key))
         {
             await WriteTrackedAsync(_entityClassifications.Writer, r, KindIndex.EntityClassification, ct)
                 .ConfigureAwait(false);
@@ -1434,7 +1668,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         // Dedup key includes edge type because (edge_type_id, hash) is the PK.
         Hash32 key = ComposeKey(r.EdgeTypeCode, r.EdgeHash);
-        if (TryAddDedup(_edgeDedup, key))
+        if (TryAddDedup(_edgeDedup, ref _edgeDedupCount, key))
         {
             await WriteTrackedAsync(_edges.Writer, r, KindIndex.Edge, ct).ConfigureAwait(false);
         }
@@ -1443,7 +1677,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private async ValueTask EmitEdgeMemberAsync(EdgeMemberRecord r, CancellationToken ct)
     {
         Hash32 key = ComposeKey(r.EdgeTypeCode, r.RoleCode, r.EdgeHash, r.EntityHash, r.RolePosition);
-        if (TryAddDedup(_edgeMemberDedup, key))
+        if (TryAddDedup(_edgeMemberDedup, ref _edgeMemberDedupCount, key))
         {
             await WriteTrackedAsync(_edgeMembers.Writer, r, KindIndex.EdgeMember, ct)
                 .ConfigureAwait(false);
@@ -1454,7 +1688,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         // (physicality_type_id, entity_hash, content_hash) is the PK.
         Hash32 key = ComposeKey(r.PhysicalityTypeCode, r.EntityHash, r.ContentHash);
-        if (TryAddDedup(_physicalityDedup, key))
+        if (TryAddDedup(_physicalityDedup, ref _physicalityDedupCount, key))
         {
             await WriteTrackedAsync(_physicalities.Writer, r, KindIndex.Physicality, ct).ConfigureAwait(false);
         }
@@ -1464,7 +1698,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         // (parent_hash, ordinal) is the PK; child_hash and rle_count not in PK.
         Hash32 key = ComposeKey(r.ParentEntityHash, r.Ordinal);
-        if (TryAddDedup(_sequenceDedup, key))
+        if (TryAddDedup(_sequenceDedup, ref _sequenceDedupCount, key))
         {
             await WriteTrackedAsync(_sequences.Writer, r, KindIndex.Sequence, ct).ConfigureAwait(false);
         }
@@ -1476,7 +1710,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         // different attestation_types is intentionally distinct rating data,
         // not a duplicate. Collapsing them would conflate evidence kinds.
         Hash32 key = ComposeKey(r.ContextTypeCode, r.AttestationTypeCode, r.EntityHash);
-        if (TryAddDedup(_entitySignificanceDedup, key))
+        if (TryAddDedup(_entitySignificanceDedup, ref _entitySignificanceDedupCount, key))
         {
             await WriteTrackedAsync(_entitySignificances.Writer, r, KindIndex.EntitySignificance, ct).ConfigureAwait(false);
         }
@@ -1489,7 +1723,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         // vs model_attention_pattern attestations on the same edge are
         // distinct rating rows, not duplicates.
         Hash32 key = ComposeKey(r.ContextTypeCode, r.AttestationTypeCode, r.EdgeTypeCode, r.EdgeHash);
-        if (TryAddDedup(_edgeSignificanceDedup, key))
+        if (TryAddDedup(_edgeSignificanceDedup, ref _edgeSignificanceDedupCount, key))
         {
             await WriteTrackedAsync(_edgeSignificances.Writer, r, KindIndex.EdgeSignificance, ct).ConfigureAwait(false);
         }
@@ -1538,19 +1772,34 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     /// (re-emission of an earlier hash) but ON CONFLICT DO NOTHING in the
     /// drain INSERT-SELECT catches them. Bounded memory by design.
     /// </summary>
-    private bool TryAddDedup(ConcurrentDictionary<Hash32, byte> dedup, Hash32 key)
+    private bool TryAddDedup(ConcurrentDictionary<Hash32, byte> dedup, ref long approximateCount, Hash32 key)
     {
-        if (dedup.Count >= DedupCapacityPerChannel)
+        if (Volatile.Read(ref approximateCount) >= DedupCapacityPerChannel)
         {
             // Best-effort reset; another thread may add concurrently — fine.
             dedup.Clear();
+            Volatile.Write(ref approximateCount, 0);
         }
         if (dedup.TryAdd(key, 0))
         {
+            Interlocked.Increment(ref approximateCount);
             return true;
         }
         Interlocked.Increment(ref _producerDedupHits);
         return false;
+    }
+
+    private static void MarkDedup(ConcurrentDictionary<Hash32, byte> dedup, ref long approximateCount, Hash32 key)
+    {
+        if (Volatile.Read(ref approximateCount) >= DedupCapacityPerChannel)
+        {
+            dedup.Clear();
+            Volatile.Write(ref approximateCount, 0);
+        }
+        if (dedup.TryAdd(key, 0))
+        {
+            Interlocked.Increment(ref approximateCount);
+        }
     }
 
     /// <summary>
@@ -1896,6 +2145,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         catch (OperationCanceledException) { /* shutdown */ } // BOUNDARY: dispose ignores cancellation caused by pipeline shutdown.
         _shutdown.Dispose();
         _ingressGate.Dispose();
+        _codeResolver.Dispose();
         await _dataSource.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -1923,11 +2173,12 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             drainSql: sql.Drain,
             kindName: "entities",
             kindIndex: KindIndex.Entity,
-            writeRow: async (writer, rec) =>
+            writeRow: (writer, rec) =>
             {
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.Hash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(rec.Hash.ToByteArray(), NpgsqlDbType.Bytea);
                 Interlocked.Increment(ref _entitiesEmitted);
+                return ValueTask.CompletedTask;
             },
             ct).ConfigureAwait(false);
     }
@@ -1957,10 +2208,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     provenanceId = await _codeResolver.ProvenanceIdAsync(rec.ProvenanceCode, ct).ConfigureAwait(false);
                     provenanceIds.Add(rec.ProvenanceCode, provenanceId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(typeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(provenanceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(typeId, NpgsqlDbType.Integer);
+                writer.Write(provenanceId, NpgsqlDbType.Integer);
                 Interlocked.Increment(ref _entityClassificationsEmitted);
             },
             ct).ConfigureAwait(false);
@@ -1995,17 +2246,17 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     provenanceId = await _codeResolver.ProvenanceIdAsync(rec.ProvenanceCode, ct).ConfigureAwait(false);
                     provenanceIds.Add(rec.ProvenanceCode, provenanceId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(edgeTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(provenanceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(edgeTypeId, NpgsqlDbType.Integer);
+                writer.Write(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(provenanceId, NpgsqlDbType.Integer);
                 if (rec.GeomWkb is null)
                 {
-                    await writer.WriteNullAsync(ct).ConfigureAwait(false);
+                    writer.WriteNull();
                 }
                 else
                 {
-                    await writer.WriteAsync(rec.GeomWkb, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                    writer.Write(rec.GeomWkb, NpgsqlDbType.Bytea);
                 }
                 Interlocked.Increment(ref _edgesEmitted);
             },
@@ -2037,12 +2288,12 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     roleId = await _codeResolver.EdgeRoleIdAsync(rec.RoleCode, ct).ConfigureAwait(false);
                     roleIds.Add(rec.RoleCode, roleId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(edgeTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(roleId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.RolePosition, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(edgeTypeId, NpgsqlDbType.Integer);
+                writer.Write(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(roleId, NpgsqlDbType.Integer);
+                writer.Write(rec.RolePosition, NpgsqlDbType.Integer);
                 Interlocked.Increment(ref _edgeMembersEmitted);
             },
             ct).ConfigureAwait(false);
@@ -2076,18 +2327,18 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                         .AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
                     attestationTypeIds.Add(rec.AttestationTypeCode, attestationTypeId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.JunctionTable, NpgsqlDbType.Text, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.ReferenceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(attestationTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(rec.JunctionTable, NpgsqlDbType.Text);
+                writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(rec.ReferenceId, NpgsqlDbType.Integer);
+                writer.Write(attestationTypeId, NpgsqlDbType.Integer);
                 if (rec.Mu.HasValue)
                 {
-                    await writer.WriteAsync(rec.Mu.Value, NpgsqlDbType.Double, ct).ConfigureAwait(false);
+                    writer.Write(rec.Mu.Value, NpgsqlDbType.Double);
                 }
                 else
                 {
-                    await writer.WriteNullAsync(ct).ConfigureAwait(false);
+                    writer.WriteNull();
                 }
                 Interlocked.Increment(ref _junctionsEmitted);
             },
@@ -2117,11 +2368,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     physTypeId = await _codeResolver.PhysicalityTypeIdAsync(rec.PhysicalityTypeCode, ct).ConfigureAwait(false);
                     physicalityTypeIds.Add(rec.PhysicalityTypeCode, physTypeId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(physTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.ContentHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.Wkb, NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(physTypeId, NpgsqlDbType.Integer);
+                writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(rec.ContentHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(rec.Wkb, NpgsqlDbType.Bytea);
                 Interlocked.Increment(ref _physicalitiesEmitted);
             },
             ct).ConfigureAwait(false);
@@ -2138,14 +2389,15 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             drainSql: sql.Drain,
             kindName: "sequences",
             kindIndex: KindIndex.Sequence,
-            writeRow: async (writer, rec) =>
+            writeRow: (writer, rec) =>
             {
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.ParentEntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.Ordinal, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.ChildEntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.RleCount, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(rec.ParentEntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(rec.Ordinal, NpgsqlDbType.Integer);
+                writer.Write(rec.ChildEntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(rec.RleCount, NpgsqlDbType.Integer);
                 Interlocked.Increment(ref _sequencesEmitted);
+                return ValueTask.CompletedTask;
             },
             ct).ConfigureAwait(false);
     }
@@ -2175,11 +2427,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     attestationTypeId = await _codeResolver.AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
                     attestationTypeIds.Add(rec.AttestationTypeCode, attestationTypeId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(contextId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(attestationTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.InitialMu, NpgsqlDbType.Double, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(contextId, NpgsqlDbType.Integer);
+                writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(attestationTypeId, NpgsqlDbType.Integer);
+                writer.Write(rec.InitialMu, NpgsqlDbType.Double);
                 Interlocked.Increment(ref _entitySignificancesEmitted);
             },
             ct).ConfigureAwait(false);
@@ -2216,12 +2468,12 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     attestationTypeId = await _codeResolver.AttestationTypeIdAsync(rec.AttestationTypeCode, ct).ConfigureAwait(false);
                     attestationTypeIds.Add(rec.AttestationTypeCode, attestationTypeId);
                 }
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(contextId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(edgeTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync(attestationTypeId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.InitialMu, NpgsqlDbType.Double, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(contextId, NpgsqlDbType.Integer);
+                writer.Write(edgeTypeId, NpgsqlDbType.Integer);
+                writer.Write(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write(attestationTypeId, NpgsqlDbType.Integer);
+                writer.Write(rec.InitialMu, NpgsqlDbType.Double);
                 Interlocked.Increment(ref _edgeSignificancesEmitted);
             },
             ct).ConfigureAwait(false);
@@ -2238,12 +2490,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             drainSql: sql.Drain,
             kindName: "entity_model_sources",
             kindIndex: KindIndex.EntityModelSource,
-            writeRow: async (writer, rec) =>
+            writeRow: (writer, rec) =>
             {
-                await writer.StartRowAsync(ct).ConfigureAwait(false);
-                await writer.WriteAsync(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea, ct).ConfigureAwait(false);
-                await writer.WriteAsync((int)rec.ModelSourceId, NpgsqlDbType.Integer, ct).ConfigureAwait(false);
+                writer.StartRow();
+                writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
+                writer.Write((int)rec.ModelSourceId, NpgsqlDbType.Integer);
                 Interlocked.Increment(ref _entityModelSourcesEmitted);
+                return ValueTask.CompletedTask;
             },
             ct).ConfigureAwait(false);
     }
@@ -2279,6 +2532,102 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             Dictionary<string, int> contextIds = new(StringComparer.Ordinal);
             Dictionary<string, int> attestationTypeIds = new(StringComparer.Ordinal);
 
+            async ValueTask InsertSafetensorObservationsAsync(
+                List<EdgeRatingEventRecord> batch,
+                int contextTypeId,
+                int attestationTypeId,
+                Dictionary<string, int> edgeTypeIdCache,
+                CancellationToken cancellationToken)
+            {
+                List<EdgeRatingEventRecord> observations = new(batch.Count);
+                foreach (EdgeRatingEventRecord r in batch)
+                {
+                    if (r.ModelSourceId.HasValue
+                        || r.TensorHash.HasValue
+                        || r.PackageTensorHash.HasValue
+                        || !string.IsNullOrEmpty(r.TupleCode))
+                    {
+                        observations.Add(r);
+                    }
+                }
+                if (observations.Count == 0)
+                {
+                    return;
+                }
+
+                int n = observations.Count;
+                int?[] modelSourceIds = new int?[n];
+                int[] contextTypeIds = new int[n];
+                int[] attestationTypeIdsArr = new int[n];
+                int[] edgeTypeIdsArr = new int[n];
+                byte[][] edgeHashes = new byte[n][];
+                double[] scores = new double[n];
+                double[] weights = new double[n];
+                byte[]?[] tensorHashes = new byte[]?[n];
+                byte[]?[] packageTensorHashes = new byte[]?[n];
+                string?[] sourceTensorNames = new string?[n];
+                string?[] primitiveCodes = new string?[n];
+                string?[] tupleCodes = new string?[n];
+                string?[] slotCodes = new string?[n];
+                string?[] modalityCodes = new string?[n];
+                int?[] layerIndexes = new int?[n];
+                int?[] headIndexes = new int?[n];
+                int?[] expertIndexes = new int?[n];
+                string?[] adapterNames = new string?[n];
+                string?[] fusedSlices = new string?[n];
+
+                for (int i = 0; i < n; i++)
+                {
+                    EdgeRatingEventRecord r = observations[i];
+                    if (!edgeTypeIdCache.TryGetValue(r.EdgeTypeCode, out int edgeTypeId))
+                    {
+                        edgeTypeId = await _codeResolver.EdgeTypeIdAsync(r.EdgeTypeCode, cancellationToken).ConfigureAwait(false);
+                        edgeTypeIdCache.Add(r.EdgeTypeCode, edgeTypeId);
+                    }
+                    modelSourceIds[i] = r.ModelSourceId.HasValue ? checked((int)r.ModelSourceId.Value) : null;
+                    contextTypeIds[i] = contextTypeId;
+                    attestationTypeIdsArr[i] = attestationTypeId;
+                    edgeTypeIdsArr[i] = edgeTypeId;
+                    edgeHashes[i] = r.EdgeHash.ToByteArray();
+                    scores[i] = r.Score;
+                    weights[i] = r.Weight;
+                    tensorHashes[i] = r.TensorHash?.ToByteArray();
+                    packageTensorHashes[i] = r.PackageTensorHash?.ToByteArray();
+                    sourceTensorNames[i] = r.SourceTensorName;
+                    primitiveCodes[i] = r.PrimitiveCode;
+                    tupleCodes[i] = r.TupleCode;
+                    slotCodes[i] = r.SlotCode;
+                    modalityCodes[i] = r.ModalityCode;
+                    layerIndexes[i] = r.LayerIndex;
+                    headIndexes[i] = r.HeadIndex;
+                    expertIndexes[i] = r.ExpertIndex;
+                    adapterNames[i] = r.AdapterName;
+                    fusedSlices[i] = r.FusedSlice;
+                }
+
+                await using NpgsqlCommand obsCmd = new(IngestionSql.InsertSafetensorObservations, conn);
+                obsCmd.Parameters.Add(new NpgsqlParameter("model_source_ids", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = modelSourceIds });
+                obsCmd.Parameters.Add(new NpgsqlParameter("context_type_ids", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = contextTypeIds });
+                obsCmd.Parameters.Add(new NpgsqlParameter("attestation_type_ids", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = attestationTypeIdsArr });
+                obsCmd.Parameters.Add(new NpgsqlParameter("edge_type_ids", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = edgeTypeIdsArr });
+                obsCmd.Parameters.Add(new NpgsqlParameter("edge_hashes", NpgsqlDbType.Array | NpgsqlDbType.Bytea) { Value = edgeHashes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("scores", NpgsqlDbType.Array | NpgsqlDbType.Double) { Value = scores });
+                obsCmd.Parameters.Add(new NpgsqlParameter("weights", NpgsqlDbType.Array | NpgsqlDbType.Double) { Value = weights });
+                obsCmd.Parameters.Add(new NpgsqlParameter("tensor_hashes", NpgsqlDbType.Array | NpgsqlDbType.Bytea) { Value = tensorHashes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("package_tensor_hashes", NpgsqlDbType.Array | NpgsqlDbType.Bytea) { Value = packageTensorHashes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("source_tensor_names", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = sourceTensorNames });
+                obsCmd.Parameters.Add(new NpgsqlParameter("primitive_codes", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = primitiveCodes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("tuple_codes", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = tupleCodes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("slot_codes", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = slotCodes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("modality_codes", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = modalityCodes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("layer_indexes", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = layerIndexes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("head_indexes", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = headIndexes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("expert_indexes", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = expertIndexes });
+                obsCmd.Parameters.Add(new NpgsqlParameter("adapter_names", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = adapterNames });
+                obsCmd.Parameters.Add(new NpgsqlParameter("fused_slices", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = fusedSlices });
+                await obsCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             async ValueTask FlushBucketAsync((int Arena, int Atest) key, List<EdgeRatingEventRecord> batch)
             {
                 if (batch.Count == 0) { return; }
@@ -2301,15 +2650,21 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     weights[i]  = r.Weight;
                 }
                 long start = Stopwatch.GetTimestamp();
-                await using NpgsqlCommand cmd = new("SELECT substrate.record_attestations_bulk($1, $2, $3, $4, $5, $6)", conn);
+                await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+                    conn,
+                    SubstrateFunctionNames.RecordAttestationsBulk,
+                    new[]
+                    {
+                        new NpgsqlParameter { Value = key.Arena, NpgsqlDbType = NpgsqlDbType.Integer },
+                        new NpgsqlParameter { Value = key.Atest, NpgsqlDbType = NpgsqlDbType.Integer },
+                        new NpgsqlParameter { Value = etypeIds, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer },
+                        new NpgsqlParameter { Value = hashes, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea },
+                        new NpgsqlParameter { Value = scores, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Double },
+                        new NpgsqlParameter { Value = weights, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Double },
+                    });
                 cmd.CommandTimeout = 0;
-                cmd.Parameters.Add(new NpgsqlParameter { Value = key.Arena, NpgsqlDbType = NpgsqlDbType.Integer });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = key.Atest, NpgsqlDbType = NpgsqlDbType.Integer });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = etypeIds, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = hashes, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = scores, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Double });
-                cmd.Parameters.Add(new NpgsqlParameter { Value = weights, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Double });
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                await InsertSafetensorObservationsAsync(batch, key.Arena, key.Atest, edgeTypeIds, ct).ConfigureAwait(false);
                 Interlocked.Add(ref _drainElapsedTicks[KindIndex.EdgeRatingEvent], Stopwatch.GetTimestamp() - start);
                 Interlocked.Add(ref _drainRowsCommitted[KindIndex.EdgeRatingEvent], n);
                 Interlocked.Add(ref _edgeRatingEventsEmitted, n);
@@ -2581,6 +2936,30 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         public static partial void LiveSnapshot(ILogger logger, TimeSpan phaseElapsed, string kind, string state,
             long submittedRows, long drainedRows, long backlogRows,
             TimeSpan drainElapsed, TimeSpan waitElapsed, double rowsPerSec);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Pipeline resources: t={PhaseElapsed} processCpu={ProcessCpuPercent:F1}% processCores={ProcessCpuCores:F2} systemCpu={SystemCpuPercent:F1}% ioWait={SystemIoWaitPercent:F1}% rss={WorkingSetMib:F0}MiB heap={HeapMib:F0}MiB threadpool={BusyWorkers}/{MaxWorkers} memAvail={MemAvailableMib:F0}/{MemTotalMib:F0}MiB swapFree={SwapFreeMib:F0}/{SwapTotalMib:F0}MiB procRead={ReadMibPerSec:F1}MiB/s procWrite={WriteMibPerSec:F1}MiB/s pgDiskFree={PostgresFreeGib:F1}/{PostgresTotalGib:F1}GiB rootFree={RootFreeGib:F1}/{RootTotalGib:F1}GiB")]
+        public static partial void ResourceSnapshot(
+            ILogger logger,
+            TimeSpan phaseElapsed,
+            double processCpuPercent,
+            double processCpuCores,
+            double systemCpuPercent,
+            double systemIoWaitPercent,
+            double workingSetMib,
+            double heapMib,
+            int busyWorkers,
+            int maxWorkers,
+            double memAvailableMib,
+            double memTotalMib,
+            double swapFreeMib,
+            double swapTotalMib,
+            double readMibPerSec,
+            double writeMibPerSec,
+            double postgresFreeGib,
+            double postgresTotalGib,
+            double rootFreeGib,
+            double rootTotalGib);
 
         [LoggerMessage(Level = LogLevel.Error,
             Message = "Pipeline periodic snapshot loop crashed")]

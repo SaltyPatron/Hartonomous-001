@@ -118,5 +118,3 @@ public sealed partial class EmbeddingLookupOp : BaseAiOperation
         public static partial void EmbedLookupComplete(ILogger logger, int hitCount, string distanceKind, int sqlElapsedMs);
     }
 }
-
-public sealed record EmbeddingLookupResponse : OperationResponse;

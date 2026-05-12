@@ -1,5 +1,5 @@
 ---
-description: SQL, ingestion, and database-write rules for Hartonomous.
+description: The substrate expressed in SQL — schema layout, schema-qualified functions, set-based bulk patterns, 4D operators. Loads on SQL and ingestion paths.
 paths:
   - sql/**
   - scripts/db/**
@@ -8,69 +8,103 @@ paths:
   - src/**/Npgsql*.cs
 ---
 
-## Schema layout (pre-v1 is bootstrap-only — no migrations directory)
+## The substrate's SQL layout — pre-v1 bootstrap-only
 
-The substrate is pre-v1. There is no active migrations directory. The canonical schema lives in `sql/schema/`; `sql/schema/bootstrap.sql` declares the build-time include order for generated extension SQL. Runtime setup installs `CREATE EXTENSION hartonomous`; `scripts/db/Reset.ps1 -Force` drops the database and installs from the generated extension. The historical migration sequence (`0001` … `0064`) is preserved under `sql/migrations.archive/` for audit only — those files are not applied at boot.
-
-Top-level directories under `sql/schema/`:
+There is no active migrations directory for current work. The canonical schema lives in `sql/schema/`. `sql/schema/bootstrap.sql` declares the build-time include order for the generated extension SQL. Runtime database setup is `CREATE EXTENSION hartonomous`; `scripts/build/ExtensionSql.ps1` concatenates the canonical schema files and the C-binding template into the extension script. The historical migration sequence (`0001` … `0064`) is preserved under `sql/migrations.archive/` for audit only — those files are not applied at boot.
 
 | Path | Content |
 |------|---------|
-| `sql/schema/bootstrap.sql` | Build-time include manifest. `scripts/build/ExtensionSql.ps1` expands it into the generated extension SQL installed by `CREATE EXTENSION hartonomous`. |
+| `sql/schema/bootstrap.sql` | Build-time include manifest. `scripts/build/ExtensionSql.ps1` expands this into the generated extension SQL installed by `CREATE EXTENSION hartonomous`. |
 | `sql/schema/extensions/` | `CREATE EXTENSION` statements (postgis, btree_gist, pg_trgm, hartonomous). |
-| `sql/schema/schemas/` | `CREATE SCHEMA substrate, monitor` statements. |
+| `sql/schema/schemas/` | `CREATE SCHEMA substrate, monitor`. |
 | `sql/schema/domains/` | Domain definitions: `hash_value` = BYTEA(32), `significance_mu`, `significance_sigma`, `significance_volatility`, `tier_number`, `rle_count`, `ordinal_position`, `code_value`. |
 | `sql/schema/types/` | Composite type definitions. |
-| `sql/schema/tables/core/` | `entity`, `sequence`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `entity_model_source`. `entity` is hash-only and not type-partitioned; edge/member/significance/physicality tables partition by their own type/context keys. |
-| `sql/schema/tables/reference/` | Reference vocabulary: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `semantic_relation_type`, `general_category`, `script`, `block`, `break_property`, `language`, `tensor_role`, `architecture_class`. |
+| `sql/schema/tables/core/` | `entity` (hash-only, not type-partitioned), `sequence`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `entity_model_source`. Edge / member / significance / physicality tables partition by their own type / context keys. |
+| `sql/schema/tables/reference/` | Reference vocabulary: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `attestation_type`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `semantic_relation_type`, `general_category`, `script`, `block`, `break_property`, `language`, `tensor_role`, `architecture_class`. |
 | `sql/schema/tables/junctions/` | Junction tables: `entity_classification`, `entity_pos` (Glicko-2), `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel` (Glicko-2), `provenance_edge_authority`. |
 | `sql/schema/tables/monitor/` | Monitor schema: ingestion progress, phase status, comparison events, inference metrics. |
-| `sql/schema/indexes/` | One `CREATE INDEX` per file. Indexes are included after all tables exist and before functions. |
-| `sql/schema/functions/` | Named substrate functions — composition queries, 4D operators, Glicko-2 record_*, recompose_*, infer / complete / classify / rerank / embed_lookup, model inventory, etc. |
+| `sql/schema/indexes/` | One `CREATE INDEX` per file. Indexes included after tables exist and before functions. |
+| `sql/schema/functions/` | Named substrate functions — composition queries, 4D / S³ operators, Glicko-2 record_*, recompose_*, infer / complete / classify / rerank / embed_lookup, model inventory, etc. |
 | `sql/schema/procedures/` | Stored procedures (write-effecting bulk operations). |
-| `sql/schema/views/` | Substrate / monitor views. |
+| `sql/schema/views/` | Substrate and monitor views. |
 | `sql/schema/seed/` | Phase 1 seed inserts for reference vocabulary. |
 
-Every canonical schema file contains exactly one primary database object definition. Table indexes are separate files under `sql/schema/indexes/`; helper functions are separate files under `sql/schema/functions/`; views are one view per file under `sql/schema/views/`.
+Every canonical schema file contains exactly one primary database object definition. Table indexes are separate files; helper functions are separate files; views are one view per file.
 
-The 4D operator surface lives in one-function-per-file sources such as `sql/schema/functions/dist_4d.sql`, `frechet_4d_geom.sql`, `hausdorff_4d_geom.sql`, and helper files. **Use substrate 4D/S3 functions on substrate physicality, never the raw PostGIS `ST_Distance`/`ST_Centroid`/`ST_FrechetDistance`/`ST_HausdorffDistance` (AP-4 — they silently project to 2D and drop M).**
+## How the substrate is expressed through SQL
 
-**`public.point4d` / `public.linestring4d` (pt4d / ls4d) are internal native compute primitives**, not substrate-level user-visible types. They exist so the C kernels in libhartonomous can take flat (x,y,z,m) sequences with zero PostGIS marshalling overhead. They are correct as-is and are NOT scheduled for excision. **What they are not** is a substitute for substrate-level GeometryZM storage. The substrate-level operators (`substrate.dist_4d`, `substrate.frechet_4d_geom`, `substrate.hausdorff_4d_geom`) dispatch on `GeometryType(g)` and preserve subtype structure (POLYGON exterior ring, MULTILINESTRING per-branch, GEOMETRYCOLLECTION per-component) before delegating to the native kernels — they DO NOT flatten every subtype to a single vertex stream, because that would lose structural distinction and produce wrong answers. There is no plan to migrate substrate physicality off PostGIS — GeometryZM is the universal store; pt4d/ls4d are how the C kernels receive their inputs.
+**All database interaction is schema-qualified and named.** The C# layer calls SQL by procedure / function name; it does not construct SQL. Set-based bulk patterns are the only acceptable inline forms:
 
-`traverse_astar` is implemented in C in the `hartonomous` PostgreSQL extension (`ext/hartonomous_pg/src/pg_traversal.c`, exposed via `ext/hartonomous_pg/sql/hartonomous--1.0.sql`). It is NOT a SQL function file. There is no plpgsql implementation.
+- `INSERT ... SELECT FROM unnest($1::bigint[], $2::int[]) ON CONFLICT DO NOTHING` for bulk inserts (`BaseReferenceTableWriter` pattern).
+- `COPY ... FROM STDIN (FORMAT binary)` via `NpgsqlBinaryImporter` for seed-phase multi-million-row loads.
+- `WHERE hash = ANY($1)` for bulk existence checks.
 
-Glicko-2 update math is implemented in C as `hartonomous_glicko2_bulk_update` (`ext/libhartonomous/src/glicko_bulk.c`) and exposed as the SQL function `hartonomous.glicko2_bulk_update(...)` via `ext/hartonomous_pg/src/pg_glicko_bulk.c`. SQL functions in `sql/schema/functions/record_*.sql` and any C# rating code (`Hartonomous.Core.Compute.Common.Glicko2`) call through to the canonical C implementation — no plpgsql or C# reimplementations of the formula.
+Per-row round-trips inside loops are prohibited (AP-2). One transaction per batch — the pipeline opens a transaction, does all work, commits. No per-row transactions. Junction table names and column names are validated against an allowlist via `BaseReferenceTableWriter.AssertSafeIdentifier()`; user-provided strings never interpolate into SQL.
 
-To re-apply schema after edits: `scripts/db/Reset.ps1 -Force` (drop + recreate + bootstrap). To bootstrap a fresh database: `hartonomous bootstrap` or `scripts/db/Bootstrap.ps1`. There is no migration tooling in the V1 path.
+## Streaming ingestion pipeline
 
-## Batch everything
+One `StreamingIngestionPipeline` (`src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs`) owns 10 bounded `Channel<TRecord>` (one per record kind: entity, entity_classification, edge, edge_member, junction, physicality, sequence, entity_significance, edge_significance, entity_model_source) and 10 per-kind drain tasks each holding a long-lived `NpgsqlConnection`. Decomposers emit into the `IRecordSink` producer surface; they do NOT own channels.
 
-Never execute individual `INSERT`, `CALL`, or `SELECT` per row inside a loop. Use set-based operations:
+Each drain task drains within the same connection that COPYed:
+1. `TRUNCATE pg_temp.X_inflight`
+2. `COPY pg_temp.X_inflight FROM STDIN BINARY` (up to `CopyChunkRows = 32,768` rows)
+3. `INSERT INTO substrate.X SELECT … FROM pg_temp.X_inflight ON CONFLICT DO NOTHING`
 
-- `INSERT ... SELECT FROM unnest($1::bigint[], $2::int[]) ON CONFLICT DO NOTHING` for bulk inserts (pattern used by `BaseReferenceTableWriter`)
-- `COPY ... FROM STDIN (FORMAT binary)` for seed-phase multi-million-row loads
-- `WHERE hash = ANY($1)` for bulk existence checks
-- `NpgsqlBinaryImporter` for COPY operations in C#
+before reading the next chunk. Temp tables auto-drop when the connection closes. Channel capacity per kind: 262,144. Idle flush after 250 ms. Backpressure: `EmitAsync` awaits naturally when a channel is full.
 
-The per-row round-trip pattern (`NpgsqlCommand` inside `foreach`) is prohibited. It was the cause of 10-minute runs that should take 30 seconds.
+There is no persistent staging schema. The removed-in-`0ce4e5e` staging-era artifacts (`substrate.staging_*` tables, `substrate.drain_staging_*_chunk` functions, `substrate.flush_*_from_staging.sql`, `BackgroundSignificancePrimer.cs`, `StagingFlushWorker.cs`) MUST NOT be reintroduced.
 
-## Transaction scope
+Edge LINESTRINGZM geometry is built **inline** when all participants' POINTZM centroids are present in the batch centroid map. When participants span batches, `geom` is left NULL and backfilled by `PopulateEdgeTrajectoriesAsync` at end of phase. End-of-phase significance priming happens via `PrimeAllSignificanceAsync`, cross-producting against whatever arenas exist in `substrate.significance_context` at that moment (open vocabulary, no WHERE filter on context code — AP-1).
 
-One transaction per batch. The pipeline opens a transaction, does all work, commits. No per-row transactions. `IIngestionPipeline.SubmitBatchAsync()` is the boundary.
+Bulk substrate-existence-check: decomposers MUST call `IIngestionPipeline.GetExisting{EntityHashes,EntityClassifications,Edges,Physicalities,SequenceRows}Async` ONCE per kind per chunk and emit only the diff. Blind emission relying on `ON CONFLICT DO NOTHING` to clean up produces the 30:1+ amplification observed in 2026-05-08 telemetry (AP-19).
 
-## SQL injection prevention
+## Compute helpers in SQL and C
 
-Junction table names and column names are validated against an allowlist via `BaseReferenceTableWriter.AssertSafeIdentifier()`. Never interpolate user-provided strings into SQL. Dynamic table routing must use known-safe identifiers only.
+`traverse_astar` is implemented in C in the `hartonomous` PostgreSQL extension (`ext/hartonomous_pg/src/pg_traversal.c`, exposed via `ext/hartonomous_pg/sql/hartonomous--1.0.sql`). Not a SQL function file. No plpgsql implementation.
 
-## Schema separation
+Glicko-2 update math is implemented in C as `hartonomous_glicko2_bulk_update` (`ext/libhartonomous/src/glicko_bulk.c`) and exposed as the SQL function `hartonomous.glicko2_bulk_update(...)` via `ext/hartonomous_pg/src/pg_glicko_bulk.c`. The SQL functions in `sql/schema/functions/record_*.sql` and any C# rating code (`Hartonomous.Core.Compute.Common.Glicko2`) call through to the canonical C implementation — no plpgsql or C# reimplementations of the formula.
 
-- `substrate.*`: core tables (entity, edge, edge_member, sequence, physicality, entity_significance, edge_significance) and reference/junction tables
-- `monitor.*`: ingestion progress, phase status, inference metrics, substrate health views
+To re-apply schema after edits: `scripts/db/Reset.ps1 -Force` (drop + recreate + bootstrap). To bootstrap a fresh database: `hartonomous bootstrap` or `scripts/db/Bootstrap.ps1`.
 
-## Infrastructure versus content
+## 4D operators on substrate physicality
 
-Reference vocabularies and junction planes enable fast indexed lookups. They are not substitutes for entity or edge content. Infrastructure decomposers populate reference tables; content decomposers populate the entity and edge substrate. Do not push classification rows into `substrate.entity` or `substrate.edge` for convenience.
+Raw PostGIS `ST_Distance`, `ST_3DDistance`, `ST_Centroid`, `ST_FrechetDistance`, `ST_HausdorffDistance` silently project to 2D / 3D and drop dimensions. They are forbidden on substrate physicality (AP-4). Use:
+
+| Substrate operator | What it does |
+|---|---|
+| `substrate.st_4d_distance(a, b)` | 4D Euclidean across (X, Y, Z, M) |
+| `substrate.st_4d_centroid` | 4D centroid aggregate |
+| `substrate.st_4d_frechet_distance(a, b)` | 4D Fréchet on trajectories |
+| `substrate.st_4d_hausdorff_distance(a, b)` | 4D Hausdorff on point clouds |
+| `substrate.st_s3_distance(a, b)` | S³ geodesic for unit-quaternion atoms |
+| `substrate.st_s3_centroid` | direction-only centroid for S³ atoms |
+| `substrate.st_4d_dot`, `substrate.st_4d_norm`, `substrate.st_4d_normalize` | inner-product, norm, normalize |
+
+The substrate-level operators dispatch on `GeometryType(g)` and preserve subtype structure (POLYGON exterior ring, MULTILINESTRING per-branch, GEOMETRYCOLLECTION per-component) before delegating to the native kernels in `ext/libhartonomous/`. They do NOT flatten subtypes to a vertex stream — that would lose structural distinction and produce wrong answers.
+
+`public.point4d` / `public.linestring4d` (pt4d / ls4d) are **internal native compute primitives**, not substrate-level user-visible types. They exist so the C kernels in libhartonomous can take a flat (x,y,z,m) sequence with zero PostGIS marshalling overhead. They are NOT a substitute for substrate-level GeometryZM storage, and they are NOT a reason to skip subtype-aware substrate operators.
+
+## Infrastructure versus substrate content
+
+Reference vocabularies and junction planes enable fast indexed lookups. They are NOT substitutes for entity or edge content. Infrastructure decomposers populate reference tables; content decomposers populate the entity and edge substrate. Do NOT push classification rows into `substrate.entity` or `substrate.edge` for convenience (AP-8). Macrolanguage / supersession / has_alternate_name are NOT substrate.edge content — they're metadata between language CODES (rows in `substrate.language` reference table) and live in reference-layer junctions.
+
+## Resolve reference IDs once, not per row
+
+Calling `substrate.resolve_attestation_type_id('foo')` (or any reference-id resolver) inside a `SELECT ... FROM big_set` clause evaluates the function per row in many plans, even for STABLE functions. Resolve reference IDs ONCE in the function's `DECLARE` block, store in a local variable, use the variable inside the SELECT (AP-23). Same for any `id` lookup against bounded reference vocabularies.
 
 ## Connection string policy
 
-Connection strings come from: (1) CLI arguments, (2) `HARTONOMOUS_DB` env var. `DecomposerConfig.ConnectionString` is `required` — no hardcoded defaults in library code. `DefaultConnectionString()` in the CLI is the single fallback source.
+Connection strings come from CLI arguments (highest precedence) and `HARTONOMOUS_DB` env var. `DecomposerConfig.ConnectionString` is `required` — no hardcoded defaults in library code. `DefaultConnectionString()` in the CLI is the single fallback source.
+
+## Schema separation
+
+- `substrate.*` — core tables (entity, edge, edge_member, sequence, physicality, entity_significance, edge_significance) plus reference and junction tables.
+- `monitor.*` — ingestion progress, phase status, inference metrics, substrate health views.
+
+## Cross-references
+- [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §II (four pillars), §IV (Glicko-2 surfaces)
+- [`docs/specs/sql/infrastructure-vs-substrate.md`](../../docs/specs/sql/infrastructure-vs-substrate.md) — full layer-discipline probe study
+- [`docs/specs/sql/mantissa-exploitation.md`](../../docs/specs/sql/mantissa-exploitation.md) — per-partition axis convention
+- [`.claude/rules/15-substrate-trinity-and-layers.md`](15-substrate-trinity-and-layers.md) — substrate vs infrastructure layers
+- [`.claude/rules/25-physicality-4d.md`](25-physicality-4d.md) — 4D operator surface
+- [`.claude/rules/45-anti-patterns.md`](45-anti-patterns.md) — drift catalog

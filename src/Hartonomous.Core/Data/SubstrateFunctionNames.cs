@@ -55,8 +55,14 @@ public static class SubstrateFunctionNames
     public const string PopulateLanguages = "substrate.populate_languages";
     public const string PopulateMorphFeatures = "substrate.populate_morph_features";
     public const string PromptDocumentReady = "substrate.prompt_document_ready";
+    public const string PopulateBlocksFromExt = "substrate.populate_blocks_from_ext";
+    public const string PopulateBreakPropertiesFromExt = "substrate.populate_break_properties_from_ext";
+    public const string PopulateCodepointAtomsChunk = "substrate.populate_codepoint_atoms_chunk";
+    public const string PopulateCodepointPropertyRangeFromExt = "substrate.populate_codepoint_property_range_from_ext";
+    public const string PopulateGeneralCategoriesFromExt = "substrate.populate_general_categories_from_ext";
     public const string PopulateScripts = "substrate.populate_scripts";
-    public const string PopulateSenses = "substrate.populate_senses";
+    public const string PopulateScriptsFromExt = "substrate.populate_scripts_from_ext";
+    public const string PopulateUnicodeCaseEdgesFromProperties = "substrate.populate_unicode_case_edges_from_properties";
     public const string PreviewTargetArch = "substrate.preview_target_arch";
     public const string QueryAttentionComponents = "substrate.query_attention_components";
     public const string QueryEntities = "substrate.query_entities";
@@ -64,6 +70,7 @@ public static class SubstrateFunctionNames
     public const string QueryFirefliesForVocab = "substrate.query_fireflies_for_vocab";
     public const string QuerySingularDirectionsForRole = "substrate.query_singular_directions_for_role";
     public const string QueryTensorsForArchitecture = "substrate.query_tensors_for_architecture";
+    public const string QueryTensorsForModelSource = "substrate.query_tensors_for_model_source";
     public const string ReferenceCodeDoubleMap = "substrate.reference_code_double_map";
     public const string ReferenceCodeMap = "substrate.reference_code_map";
     public const string ReferenceCodeTextMap = "substrate.reference_code_text_map";
@@ -72,7 +79,9 @@ public static class SubstrateFunctionNames
     public const string ReferenceKeyValueMap = "substrate.reference_key_value_map";
     public const string RecomposeText = "substrate.recompose_text";
     public const string RecomposeAuditWalk = "substrate.recompose_audit_walk";
+    public const string RecordAttestationsBulk = "substrate.record_attestations_bulk";
     public const string RecordOutcome = "substrate.record_outcome";
+    public const string RecordOutcomesBulk = "substrate.record_outcomes_bulk";
     public const string RecordEdgeComparison = "substrate.record_edge_comparison";
     public const string RecordEntityComparison = "substrate.record_entity_comparison";
     public const string InitializeEdgeSignificance = "substrate.initialize_edge_significance";
@@ -86,6 +95,8 @@ public static class SubstrateFunctionNames
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
     public const string TraversalNeighbors = "substrate.traversal_neighbors";
+    public const string UcdMaterializationCounts = "substrate.ucd_materialization_counts";
+    public const string UcdVersion = "substrate.ucd_version";
     public const string UpsertArchitectureClass = "substrate.upsert_architecture_class";
     public const string UpsertHomogeneousEdgeTypes = "substrate.upsert_homogeneous_edge_types";
     public const string UpsertModelPassCheckpoint = "substrate.upsert_model_pass_checkpoint";
@@ -137,8 +148,14 @@ public static class SubstrateFunctionNames
         PopulateLanguages,
         PopulateMorphFeatures,
         PromptDocumentReady,
+        PopulateBlocksFromExt,
+        PopulateBreakPropertiesFromExt,
+        PopulateCodepointAtomsChunk,
+        PopulateCodepointPropertyRangeFromExt,
+        PopulateGeneralCategoriesFromExt,
         PopulateScripts,
-        PopulateSenses,
+        PopulateScriptsFromExt,
+        PopulateUnicodeCaseEdgesFromProperties,
         PreviewTargetArch,
         QueryAttentionComponents,
         QueryEntities,
@@ -146,6 +163,7 @@ public static class SubstrateFunctionNames
         QueryFirefliesForVocab,
         QuerySingularDirectionsForRole,
         QueryTensorsForArchitecture,
+        QueryTensorsForModelSource,
         ReferenceCodeDoubleMap,
         ReferenceCodeMap,
         ReferenceCodeTextMap,
@@ -154,7 +172,9 @@ public static class SubstrateFunctionNames
         ReferenceKeyValueMap,
         RecomposeText,
         RecomposeAuditWalk,
+        RecordAttestationsBulk,
         RecordOutcome,
+        RecordOutcomesBulk,
         RecordEdgeComparison,
         RecordEntityComparison,
         InitializeEdgeSignificance,
@@ -168,6 +188,8 @@ public static class SubstrateFunctionNames
         ResolveEntityHandles,
         SignificanceContextIds,
         TraversalNeighbors,
+        UcdMaterializationCounts,
+        UcdVersion,
         UpsertArchitectureClass,
         UpsertHomogeneousEdgeTypes,
         UpsertModelPassCheckpoint,

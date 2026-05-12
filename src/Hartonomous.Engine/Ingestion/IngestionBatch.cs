@@ -108,6 +108,15 @@ internal sealed class IngestionBatch : IIngestionBatch
         _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb, centroid));
     }
 
+    public void AddPhysicality(
+        EntityHandle entity,
+        string physicalityTypeCode,
+        byte[] geomWkb,
+        Point4D centroid)
+    {
+        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb, centroid));
+    }
+
     public void AddPhysicalityPoint4d(
         EntityHandle entity,
         string physicalityTypeCode,

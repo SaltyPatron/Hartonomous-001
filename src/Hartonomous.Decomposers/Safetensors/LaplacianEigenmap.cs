@@ -1,4 +1,4 @@
-using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Compute;
 using Hartonomous.Core.Compute.Ingestion;
 
 namespace Hartonomous.Decomposers.Safetensors;
@@ -13,6 +13,7 @@ public static class LaplacianEigenmap
     /// in place (callers should treat it as consumed).
     /// </summary>
     public static (double[] X, double[] Y, double[] Z) Project(
+        IComputeFacade compute,
         double[] flatRows,
         int n,
         int d,
@@ -20,6 +21,7 @@ public static class LaplacianEigenmap
         Action<string>? onStage = null)
     {
         options ??= LaplacianEigenmapOptions.Default;
+        ArgumentNullException.ThrowIfNull(compute);
 
         if (n < 4)
         {
@@ -56,7 +58,7 @@ public static class LaplacianEigenmap
 
         // 2. Exact symmetric k-NN cosine graph via the facade.
         onStage?.Invoke($"build k-NN graph (n={n}, d={d}, k={options.K})");
-        KnnGraphF64 graph = KnnCosineGraph.BuildF64(n, d, flat, options.K);
+        KnnGraphF64 graph = compute.Ingestion.BuildKnnCosineGraphF64(n, d, flat, options.K);
         onStage?.Invoke($"k-NN graph built (nnz={graph.Nnz})");
 
         // 3. M = D^(-1/2) · W · D^(-1/2). Top-4 eigenvectors of M = top-1 trivial constant +
@@ -120,7 +122,7 @@ public static class LaplacianEigenmap
         double[] eigvals = new double[k];
         double[] eigvecsCM = new double[(long)n * k];
         onStage?.Invoke($"Lanczos eigensolve (k={k}, maxIter={maxIter}, nnz={uNnz})");
-        SparseEigsResult eigsResult = SparseSymEigs.F64(
+        SparseEigsResult eigsResult = compute.Ingestion.SparseSymEigsF64(
             n, uNnz,
             uRowPtr, uColIdx, uValues,
             k, maxIter,
@@ -225,7 +227,7 @@ public static class LaplacianEigenmap
         Array.Copy(e1, 0, basis, 0, n);
         Array.Copy(e2, 0, basis, n, n);
         Array.Copy(e3, 0, basis, 2 * n, n);
-        GramSchmidt.OrthonormalizeInPlace(basis, 3, n);
+        compute.Common.GramSchmidtOrthonormalize(basis, 3, n);
         Array.Copy(basis, 0, e1, 0, n);
         Array.Copy(basis, n, e2, 0, n);
         Array.Copy(basis, 2 * n, e3, 0, n);

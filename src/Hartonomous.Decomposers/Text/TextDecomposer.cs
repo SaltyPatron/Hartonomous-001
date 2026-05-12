@@ -18,8 +18,8 @@ using Microsoft.Extensions.Logging;
 namespace Hartonomous.Decomposers.Text;
 
 /// <summary>
-/// Decomposes arbitrary UTF-8 text into the substrate using the UAX #29
-/// segmentation stack already built in <c>Hartonomous.Core.Text.Segmentation</c>.
+/// Decomposes arbitrary UTF-8 text into the substrate by marshaling to the
+/// native <c>hartonomous_text_decompose</c> implementation.
 ///
 /// Levels:
 ///   1. Codepoints — content-addressed via BLAKE3, dedup against UCD-seeded entities.

@@ -139,11 +139,14 @@ internal sealed partial class ModelPassOrchestrator
         Dictionary<string, int> tensorRoleMap = await _refWriter.LoadTensorRoleMapAsync(ct);
 
         byte[] archHash = BuildArchitectureSignature(arch);
+        byte[] packageHash = BuildPackageSignature(model);
 
         IIngestionBatch batch = _pipeline.CreateBatch(_provenanceCode);
         EntityHandle modelEntity = batch.AddEntity(new Hash32(archHash), "model_architecture");
+        EntityHandle packageEntity = batch.AddEntity(new Hash32(packageHash), "model_package");
         batch.AddJunction("model_architecture_class", modelEntity, archClassId);
         batch.AddEntityModelSource(modelEntity, modelSourceId);
+        batch.AddEntityModelSource(packageEntity, modelSourceId);
 
         // Architecture class name as a substrate document (seed-uses-core).
         // Two snapshots that share an architecture class collapse to ONE
@@ -197,7 +200,7 @@ internal sealed partial class ModelPassOrchestrator
         // Hash + classify each tensor. We track the EntityHandle returned by
         // batch.AddEntity directly — no cross-batch resolve, since the hash
         // IS the substrate FK.
-        List<(SafetensorsTensorInfo Info, TensorClassification Classification, byte[] Hash, EntityHandle Entity)> staged = [];
+        List<(SafetensorsTensorInfo Info, TensorClassification Classification, byte[] Hash, EntityHandle Entity, EntityHandle PackageTensor)> staged = [];
         int tensorIdx = 0;
         foreach (SafetensorsTensorInfo tensor in rawTensors)
         {
@@ -219,7 +222,11 @@ internal sealed partial class ModelPassOrchestrator
             Log.TensorHashed(_logger, tensorIdx, tensor.Name, hashSw.ElapsedMilliseconds);
 
             EntityHandle tensorH = batch.AddEntity(new Hash32(tensorHash), "tensor");
+            EntityHandle packageTensorH = batch.AddEntity(
+                new Hash32(BuildPackageTensorSignature(packageHash, tensorIdx, tensor)),
+                "model_package_tensor");
             batch.AddEntityModelSource(tensorH, modelSourceId);
+            batch.AddEntityModelSource(packageTensorH, modelSourceId);
             // tensor_tensor_role junction will be re-emitted in §IX.3b math layer
             // once the classification dictionary from TupleResolver maps tensors
             // to (PrimitiveKind, ArchetypeTuple, TupleSlot) triples and the junction
@@ -229,6 +236,8 @@ internal sealed partial class ModelPassOrchestrator
                 new EdgeMemberSpec(modelEntity, "source", 0),
                 new EdgeMemberSpec(tensorH, "target", 1),
             ]);
+            batch.AddSequence(packageEntity, tensorIdx, packageTensorH);
+            batch.AddSequence(packageTensorH, 1, tensorH);
 
             // Tensor name + dtype + shape as substrate documents (seed-uses-core).
             // Identical strings across models collapse to ONE document with N
@@ -236,7 +245,7 @@ internal sealed partial class ModelPassOrchestrator
             // header on export — without them the substrate cannot be
             // round-tripped from UCD/UCA + AI model alone.
             EmitTensorMetadataDocuments(batch, tensorH, tensor, ct);
-            staged.Add((tensor, cls, tensorHash, tensorH));
+            staged.Add((tensor, cls, tensorHash, tensorH, packageTensorH));
 
             if (batch.EntityCount >= _batchSize || batch.EdgeCount >= _batchSize)
             {
@@ -260,12 +269,12 @@ internal sealed partial class ModelPassOrchestrator
         List<TensorHandle> tensorHandles = new(staged.Count);
         foreach (var s in staged)
         {
-            tensorHandles.Add(new TensorHandle(s.Info, s.Classification, s.Hash, s.Entity));
+            tensorHandles.Add(new TensorHandle(s.Info, s.Classification, s.Hash, s.Entity, s.PackageTensor));
         }
 
         ModelSourceHandle sourceHandle = new(
             modelSourceId, model.PublisherSlug, model.ModelSlug, model.Revision, model.RevisionHex, model.ModelId,
-            Path.GetDirectoryName(model.ConfigPath)!);
+            Path.GetDirectoryName(model.ConfigPath)!, packageEntity);
         string checkpointKey = $"model_source:{modelSourceId}";
 
         // Resolve tensor classifications + tuple groupings via TupleResolver
@@ -275,6 +284,7 @@ internal sealed partial class ModelPassOrchestrator
         // (NormalizationPass for γ/β contour emission, etc.).
         TupleResolution.TupleResolver resolver = new();
         (var classifications, var tuples) = resolver.Resolve(arch.ArchitectureClass, tensorHandles);
+        await PersistTensorResolverOutputAsync(classifications, tensorRoleMap, ct);
 
         return new ModelPassContext(
             Source: sourceHandle,
@@ -289,6 +299,147 @@ internal sealed partial class ModelPassOrchestrator
     }
 
     // LookupId removed — hash-as-PK substrate eliminates surrogate-id resolution.
+
+    private async Task PersistTensorResolverOutputAsync(
+        IReadOnlyDictionary<TensorHandle, TensorClassification> classifications,
+        Dictionary<string, int> tensorRoleMap,
+        CancellationToken ct)
+    {
+        IIngestionBatch roleBatch = _pipeline.CreateBatch(_provenanceCode);
+        int roleCount = 0;
+        foreach ((TensorHandle tensor, TensorClassification classification) in classifications)
+        {
+            EntityHandle placementEntity = tensor.PackageTensorEntity ?? tensor.Entity;
+            EmitTensorPlacementMetadata(roleBatch, placementEntity, tensor.Info, classification, ct);
+            roleCount++;
+            if (classification.FusedMembers is { Count: > 0 } fusedMembers)
+            {
+                foreach (FusedTensorMember fused in fusedMembers)
+                {
+                    AddTensorRole(roleBatch, placementEntity, classification with { Slot = fused.Slot }, tensorRoleMap);
+                }
+                continue;
+            }
+
+            AddTensorRole(roleBatch, placementEntity, classification, tensorRoleMap);
+        }
+
+        if (roleCount > 0)
+        {
+            await _pipeline.SubmitBatchAsync(roleBatch, ct);
+        }
+    }
+
+    private static void AddTensorRole(
+        IIngestionBatch batch,
+        EntityHandle placementEntity,
+        TensorClassification classification,
+        Dictionary<string, int> tensorRoleMap)
+    {
+        string? roleCode = TensorRoleCode(classification);
+        if (roleCode is null)
+        {
+            return;
+        }
+        if (!tensorRoleMap.TryGetValue(roleCode, out int roleId))
+        {
+            throw new InvalidOperationException(
+                $"Tensor role '{roleCode}' is not present in substrate.tensor_role. "
+                + "The canonical tensor_role seed must be loaded before safetensors ingestion.");
+        }
+        batch.AddJunction("tensor_tensor_role", placementEntity, roleId);
+    }
+
+    internal static string? TensorRoleCode(TensorClassification classification)
+    {
+        return classification.Slot switch
+        {
+            TupleSlot.Q => "attention_query",
+            TupleSlot.K => "attention_key",
+            TupleSlot.V => "attention_value",
+            TupleSlot.O => "attention_output",
+            TupleSlot.QNorm or TupleSlot.KNorm or TupleSlot.Scale or TupleSlot.Offset
+                or TupleSlot.RunningMean or TupleSlot.RunningVar or TupleSlot.NumBatchesTracked => "layer_norm",
+            TupleSlot.PosBiasTable or TupleSlot.PosBiasIndex => "position_embedding",
+            TupleSlot.Intermediate or TupleSlot.Up => "ffn_up",
+            TupleSlot.Output or TupleSlot.Down => "ffn_down",
+            TupleSlot.Gate => "ffn_gate",
+            TupleSlot.Base => null,
+            TupleSlot.LoraA => "lora_a",
+            TupleSlot.LoraB => "lora_b",
+            TupleSlot.Router => "moe_router",
+            TupleSlot.ExpertGate => "moe_expert_gate",
+            TupleSlot.ExpertUp => "moe_expert_up",
+            TupleSlot.ExpertDown => "moe_expert_down",
+            TupleSlot.SharedExpertGate or TupleSlot.SharedExpertUp or TupleSlot.SharedExpertDown => "moe_shared_expert",
+            TupleSlot.Conv1 or TupleSlot.Conv2 or TupleSlot.Conv3 or TupleSlot.ConvShortcut
+                or TupleSlot.DepthwiseConv or TupleSlot.PointwiseConv1 or TupleSlot.PointwiseConv2
+                or TupleSlot.PatchConv => "conv_kernel",
+            TupleSlot.Table => classification.Modality switch
+            {
+                ModalityHint.Position => "position_embedding",
+                ModalityHint.CodecCodeword => "vq_codebook",
+                _ => "token_embedding",
+            },
+            TupleSlot.PatchNorm => "layer_norm",
+            TupleSlot.ClassProj => "class_head",
+            TupleSlot.BboxProj => "bbox_head",
+            TupleSlot.ObjectQueries => "object_query",
+            TupleSlot.LmHead => "logit_head",
+            _ => null,
+        };
+    }
+
+    private void EmitTensorPlacementMetadata(
+        IIngestionBatch batch,
+        EntityHandle placementEntity,
+        SafetensorsTensorInfo tensorInfo,
+        TensorClassification classification,
+        CancellationToken ct)
+    {
+        EmitMetadataEdge(batch, placementEntity, "has_package_tensor_primitive", classification.Primitive.ToString(), ct);
+        EmitMetadataEdge(batch, placementEntity, "has_package_tensor_tuple", classification.Tuple.ToString(), ct);
+        string slotText = classification.FusedMembers is { Count: > 0 } fusedMembers
+            ? string.Join(",", fusedMembers.Select(m => m.Slot.ToString()))
+            : classification.Slot.ToString();
+        EmitMetadataEdge(batch, placementEntity, "has_package_tensor_slot", slotText, ct);
+        EmitMetadataEdge(batch, placementEntity, "has_package_tensor_modality", classification.Modality.ToString(), ct);
+        if (classification.Primitive == PrimitiveKind.Linear
+            && TensorMemberMaterializer.IsPointwiseLinearShape(tensorInfo.Shape))
+        {
+            EmitMetadataEdge(batch, placementEntity, "has_package_tensor_linearized_shape",
+                FormatShape(TensorMemberMaterializer.LinearizedShape(tensorInfo.Shape)), ct);
+        }
+        if (classification.FusedMembers is { Count: > 0 } fused)
+        {
+            foreach (FusedTensorMember member in fused)
+            {
+                FusedTensorSlice slice = member.Slice;
+                EmitMetadataEdge(batch, placementEntity, "has_package_tensor_fused_slice",
+                    string.Concat(
+                        member.Slot.ToString(),
+                        ":axis=", slice.Axis.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        ";offset=", slice.Offset.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        ";length=", slice.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                    ct);
+            }
+        }
+        if (classification.LayerIndex is int layerIndex)
+        {
+            EmitMetadataEdge(batch, placementEntity, "has_package_tensor_layer_index",
+                layerIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        }
+        if (classification.HeadIndex is int headIndex)
+        {
+            EmitMetadataEdge(batch, placementEntity, "has_package_tensor_head_index",
+                headIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        }
+        if (classification.ExpertIndex is int expertIndex)
+        {
+            EmitMetadataEdge(batch, placementEntity, "has_package_tensor_expert_index",
+                expertIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        }
+    }
 
     /// <summary>
     /// Topological sort over <see cref="IModelAnalysisPass.Dependencies"/>, filtered
@@ -377,6 +528,38 @@ internal sealed partial class ModelPassOrchestrator
             .WriteInt32LE(arch.VocabSize)
             .WriteInt32LE(arch.IntermediateSize)
             .WriteInt32LE(arch.MaxPositionEmbeddings)
+            .Finalize();
+
+    private byte[] BuildPackageSignature(DiscoveredModel model)
+    {
+        string packageFormat = model.Reader?.PackageFormat ?? "safetensors";
+        string packageRoot = model.Reader?.PackageRoot
+            ?? Path.GetDirectoryName(model.ConfigPath)
+            ?? string.Empty;
+        ICanonicalSignatureBuilder builder = new CanonicalSignatureBuilder(_compute.Common, "mpkg")
+            .WriteUtf8(model.PublisherSlug)
+            .WriteUtf8(model.ModelSlug)
+            .WriteUtf8(model.RevisionHex)
+            .WriteUtf8(packageFormat)
+            .WriteUtf8(packageRoot)
+            .WriteInt32LE(model.SafetensorsFiles.Count);
+        foreach (string path in model.SafetensorsFiles.Order(StringComparer.Ordinal))
+        {
+            builder.WriteUtf8(path);
+        }
+        return builder.Finalize();
+    }
+
+    private byte[] BuildPackageTensorSignature(byte[] packageHash, int orderIndex, SafetensorsTensorInfo tensor)
+        => new CanonicalSignatureBuilder(_compute.Common, "pten")
+            .WriteHash(packageHash)
+            .WriteInt32LE(orderIndex)
+            .WriteUtf8(tensor.Name)
+            .WriteUtf8(DtypeToWireFormat(tensor.Dtype))
+            .WriteUtf8(FormatShape(tensor.Shape))
+            .WriteUtf8(tensor.FilePath)
+            .WriteInt64LE(tensor.BeginByte)
+            .WriteInt64LE(tensor.EndByte)
             .Finalize();
 
     /// <summary>

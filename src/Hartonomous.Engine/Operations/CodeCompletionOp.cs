@@ -114,5 +114,3 @@ public sealed partial class CodeCompletionOp : BaseAiOperation
         public static partial void CompleteDone(ILogger logger, string lang, int seeds, long distinctTargets, int sqlElapsedMs);
     }
 }
-
-public sealed record CodeCompletionResponse : OperationResponse;

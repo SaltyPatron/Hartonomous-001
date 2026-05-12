@@ -28,4 +28,17 @@ public sealed record EdgeRatingEventRecord(
     string EdgeTypeCode,
     Hash32 EdgeHash,
     double Score,
-    double Weight) : IngestionRecord;
+    double Weight,
+    long? ModelSourceId = null,
+    Hash32? TensorHash = null,
+    Hash32? PackageTensorHash = null,
+    string? SourceTensorName = null,
+    string? PrimitiveCode = null,
+    string? TupleCode = null,
+    string? SlotCode = null,
+    string? ModalityCode = null,
+    int? LayerIndex = null,
+    int? HeadIndex = null,
+    int? ExpertIndex = null,
+    string? AdapterName = null,
+    string? FusedSlice = null) : IngestionRecord;

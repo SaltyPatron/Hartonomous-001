@@ -28,6 +28,8 @@ public sealed class TupleResolver
             new BertArchitectureProfile(),
             new LlamaArchitectureProfile(),
             new Qwen3MoeArchitectureProfile(),
+            new DaVitArchitectureProfile(),
+            new FluxVaeArchitectureProfile(),
         })
     {
     }
@@ -90,6 +92,11 @@ public sealed class TupleResolver
             TensorClassification? classification = ResolveTensor(t, name, innerName, active);
             if (classification is null) { continue; }
             classifications[t] = classification;
+            if (classification.Tuple == ArchetypeTuple.Unknown
+                || (classification.Slot == TupleSlot.Unknown && classification.FusedMembers is not { Count: > 0 }))
+            {
+                continue;
+            }
 
             string tupleId = BuildTupleId(classification);
             if (!tupleBuckets.TryGetValue(tupleId, out List<TupleMember>? bucket))
@@ -99,7 +106,17 @@ public sealed class TupleResolver
                 tupleMeta[tupleId] = (classification.Tuple, classification.Modality,
                     classification.LayerIndex, classification.HeadIndex, classification.ExpertIndex);
             }
-            bucket.Add(new TupleMember(classification.Slot, t, FusedSplit: null));
+            if (classification.FusedMembers is { Count: > 0 } fusedMembers)
+            {
+                foreach (FusedTensorMember fused in fusedMembers)
+                {
+                    bucket.Add(new TupleMember(fused.Slot, t, fused.Slice));
+                }
+            }
+            else
+            {
+                bucket.Add(new TupleMember(classification.Slot, t, FusedSplit: null));
+            }
         }
 
         List<ResolvedTuple> tuples = new(tupleBuckets.Count);
@@ -114,7 +131,7 @@ public sealed class TupleResolver
 
     private static TensorClassification? ResolveTensor(
         TensorHandle handle, string outerName, string innerName,
-        IReadOnlyList<IArchitectureProfile> activeProfiles)
+        List<IArchitectureProfile> activeProfiles)
     {
         // Try each profile's rules; first match wins. Order matters: more-specific
         // profiles (Qwen3MoE) run after their parents (Llama) and override the
@@ -133,14 +150,103 @@ public sealed class TupleResolver
                 int? layerIdx = ExtractInt(m, rule.LayerGroupName);
                 int? headIdx = ExtractInt(m, rule.HeadGroupName);
                 int? expertIdx = ExtractInt(m, rule.ExpertGroupName);
+                IReadOnlyList<FusedTensorMember>? fusedMembers = ResolveFusedMembers(handle.Info, rule);
                 best = new TensorClassification(
                     rule.Primitive, rule.Tuple, rule.Slot,
                     layerIdx, headIdx, expertIdx,
-                    rule.Modality, AdaptationOf: null);
+                    rule.Modality, AdaptationOf: null, fusedMembers);
                 break;  // first-match-wins within profile
             }
         }
-        return best;
+        return best ?? (activeProfiles.Count == 0 ? ResolveByShape(handle) : null);
+    }
+
+    private static TensorClassification? ResolveByShape(TensorHandle handle)
+    {
+        SafetensorsTensorInfo info = handle.Info;
+        PrimitiveKind primitive = ShapeFallbackPrimitive(info);
+        if (primitive == PrimitiveKind.Unknown)
+        {
+            return null;
+        }
+
+        return new TensorClassification(
+            primitive,
+            ArchetypeTuple.Unknown,
+            TupleSlot.Unknown,
+            LayerIndex: null,
+            HeadIndex: null,
+            ExpertIndex: null,
+            Modality: ModalityHint.Unknown,
+            AdaptationOf: null);
+    }
+
+    private static PrimitiveKind ShapeFallbackPrimitive(SafetensorsTensorInfo info)
+    {
+        long[] shape = info.Shape;
+        if (TensorMemberMaterializer.IsPointwiseLinearShape(shape))
+        {
+            return PrimitiveKind.Linear;
+        }
+        if (shape.Length == 2)
+        {
+            return PrimitiveKind.Linear;
+        }
+        if (shape.Length is 3 or 4 or 5)
+        {
+            return PrimitiveKind.LocalKernel;
+        }
+        if (shape.Length == 1 && LooksLikeNormalization(info.Name))
+        {
+            return PrimitiveKind.Normalization;
+        }
+        return PrimitiveKind.Unknown;
+    }
+
+    private static bool LooksLikeNormalization(string name)
+        => name.Contains("norm", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("ln_", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("batchnorm", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("batch_norm", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("rms", StringComparison.OrdinalIgnoreCase);
+
+    private static List<FusedTensorMember>? ResolveFusedMembers(
+        SafetensorsTensorInfo info,
+        NamePatternRule rule)
+    {
+        if (rule.FusedSplits is null || rule.FusedSplits.Count == 0)
+        {
+            return null;
+        }
+
+        long[] shape = TensorMemberMaterializer.LinearizedShape(info.Shape);
+        List<FusedTensorMember> members = new(rule.FusedSplits.Count);
+        foreach (FusedSplitSpec spec in rule.FusedSplits)
+        {
+            if ((uint)spec.Axis >= (uint)shape.Length)
+            {
+                throw new InvalidOperationException(
+                    $"Fused tensor {info.Name} cannot split axis {spec.Axis}; rank is {shape.Length}.");
+            }
+            if (spec.Parts < 1 || (uint)spec.Ordinal >= (uint)spec.Parts)
+            {
+                throw new InvalidOperationException(
+                    $"Fused tensor {info.Name} has invalid split {spec.Ordinal}/{spec.Parts}.");
+            }
+
+            long axisLength = shape[spec.Axis];
+            if (axisLength % spec.Parts != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Fused tensor {info.Name} axis {spec.Axis} length {axisLength} is not divisible by {spec.Parts}.");
+            }
+            long length = axisLength / spec.Parts;
+            members.Add(new FusedTensorMember(
+                spec.Slot,
+                new FusedTensorSlice(length * spec.Ordinal, length, spec.Axis)));
+        }
+
+        return members;
     }
 
     private static int? ExtractInt(Match m, string? groupName)

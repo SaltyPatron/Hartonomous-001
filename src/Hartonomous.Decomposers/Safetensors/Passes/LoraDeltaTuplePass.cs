@@ -31,7 +31,6 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> Dependencies => ["tuple.embedding_lookup"];
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
-    private const int TopKPerSide = 32;
     private const double NoiseFraction = 0.10;
     private const double ModelDerivedTrustMu = 60_000.0;
     private const int FlushThreshold = 5_000;
@@ -135,8 +134,10 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
             double noiseFloor = meanAbs * NoiseFraction;
             if (noiseFloor <= 0) { continue; }
 
-            // Top-K above noise floor; emit pairs.
-            int[] topTokens = TopKByValue(response, vocabHashes, noiseFloor, TopKPerSide);
+            // Threshold-only LTH discrimination (AP-33): every token above the
+            // per-tensor noise floor is signal; no top-K count cap. Pairs are
+            // the cartesian product of above-floor tokens.
+            int[] topTokens = AboveNoiseFloor(response, vocabHashes, noiseFloor);
             if (topTokens.Length < 2) { continue; }
 
             for (int i = 0; i < topTokens.Length; i++)
@@ -240,50 +241,16 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
         return map;
     }
 
-    private static int[] TopKByValue(double[] norm, Dictionary<int, Hash32> vocabHashes, double noiseFloor, int k)
+    private static int[] AboveNoiseFloor(double[] norm, Dictionary<int, Hash32> vocabHashes, double noiseFloor)
     {
-        if (k < 1) { return Array.Empty<int>(); }
-        (int Tok, double Val)[] buf = new (int, double)[k];
-        int filled = 0;
-        double minVal = double.PositiveInfinity;
-        int minIdx = -1;
+        List<int> result = new();
         for (int v = 0; v < norm.Length; v++)
         {
             if (!vocabHashes.ContainsKey(v)) { continue; }
-            double val = norm[v];
-            if (val < noiseFloor) { continue; }
-            if (filled < k)
-            {
-                buf[filled] = (v, val);
-                filled++;
-                if (filled == k)
-                {
-                    RecomputeMin(buf, filled, out minVal, out minIdx);
-                }
-            }
-            else if (val > minVal)
-            {
-                buf[minIdx] = (v, val);
-                RecomputeMin(buf, filled, out minVal, out minIdx);
-            }
+            if (norm[v] < noiseFloor) { continue; }
+            result.Add(v);
         }
-        int[] result = new int[filled];
-        for (int i = 0; i < filled; i++) { result[i] = buf[i].Tok; }
-        return result;
-    }
-
-    private static void RecomputeMin((int Tok, double Val)[] buf, int filled, out double minVal, out int minIdx)
-    {
-        minVal = double.PositiveInfinity;
-        minIdx = -1;
-        for (int i = 0; i < filled; i++)
-        {
-            if (buf[i].Val < minVal)
-            {
-                minVal = buf[i].Val;
-                minIdx = i;
-            }
-        }
+        return result.ToArray();
     }
 
     private static partial class Log

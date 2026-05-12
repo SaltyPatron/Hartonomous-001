@@ -57,5 +57,4 @@ internal static class RecompositionEndpoints
         });
     }
 
-    internal sealed record RecomposeRequest(string EntityTypeCode, string EntityHashHex, int? MaxDepth);
 }

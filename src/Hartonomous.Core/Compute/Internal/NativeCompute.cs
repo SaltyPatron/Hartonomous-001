@@ -121,6 +121,19 @@ internal static partial class NativeCompute
         ReadOnlySpan<byte> src, nuint srcBytes, int srcDtype,
         Span<double> dst, long dstCount);
 
+    [LibraryImport(Library, EntryPoint = "hartonomous_glicko2_bulk_update")]
+    internal static partial int Glicko2BulkUpdate(
+        long n,
+        ReadOnlySpan<double> mu,
+        ReadOnlySpan<double> sigma,
+        ReadOnlySpan<double> volatility,
+        ReadOnlySpan<double> oppMu,
+        ReadOnlySpan<double> oppSigma,
+        ReadOnlySpan<double> score,
+        Span<double> newMu,
+        Span<double> newSigma,
+        Span<double> newVolatility);
+
     [LibraryImport(Library, EntryPoint = "hartonomous_gemm_f64")]
     internal static partial int GemmF64(
         int opA, int opB,

@@ -8,14 +8,14 @@ namespace Hartonomous.Core.Recomposition;
 /// Per-attestation-type weights for blending stratified rating rows during
 /// distillation. Same edge can carry separate ratings under
 /// corpus_co_occurrence_window, lexical_curated_relation,
-/// model_attention_pattern, inference_outcome_accept, etc. — the blend
+/// model_attention_qk_pattern, inference_outcome_accept, etc. — the blend
 /// determines how much each kind contributes to the recomposer's effective
 /// μ when filtering edges.
 ///
 /// Examples:
 ///   - Lexicon-only student: weights = { "lexical_curated_relation": 1.0 }
-///   - Model-circuit-only student: weights = { "model_attention_pattern": 0.5,
-///       "model_ffn_factor_alignment": 0.5 }
+///   - Model-circuit-only student: weights = { "model_attention_qk_pattern": 0.5,
+///       "model_attention_vo_pattern": 0.5, "model_ffn_full_path": 0.5 }
 ///   - Outcome-trained student: weights = { "inference_outcome_accept": 1.0 }
 ///   - Default consensus: weights = null → equal-weight blend across every
 ///     attestation_type present on the edge.
@@ -52,10 +52,22 @@ public sealed class AttestationTypeBlend
     /// </summary>
     public static AttestationTypeBlend ModelCircuitOnly { get; } = new(new Dictionary<string, double>
     {
-        ["model_attention_pattern"] = 1.0,
-        ["model_ffn_factor_alignment"] = 1.0,
-        ["model_per_role_unit_circuit"] = 1.0,
+        ["model_attention_qk_pattern"] = 1.0,
+        ["model_attention_vo_pattern"] = 1.0,
+        ["model_cross_modal_alignment"] = 1.0,
+        ["model_ffn_full_path"] = 1.0,
+        ["model_input_embedding"] = 0.5,
         ["model_embedding_proximity"] = 0.5,
+        ["model_lm_head_projection"] = 0.5,
+        ["model_layer_norm_evidence"] = 0.3,
+        ["model_local_kernel_evidence"] = 0.4,
+        ["model_position_embedding"] = 0.3,
+        ["model_moe_router"] = 0.4,
+        ["model_moe_expert_response"] = 0.4,
+        ["model_lora_adapter_evidence"] = 0.5,
+        ["model_codec_evidence"] = 0.4,
+        ["model_detection_class_attestation"] = 0.5,
+        ["model_detection_bbox_attestation"] = 0.5,
     });
 
     /// <summary>

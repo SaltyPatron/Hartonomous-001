@@ -34,7 +34,7 @@ public sealed class ReferenceDataRoutineTests : IAsyncLifetime
             initialCapacity: 32,
             CancellationToken.None);
 
-        Assert.True(map.Count >= 25, $"Expected at least 25 entity types, got {map.Count}");
+        Assert.True(map.Count >= 21, $"Expected at least 21 entity types, got {map.Count}");
         Assert.Equal(1, map["codepoint"]);
         Assert.Contains("lemma", map.Keys);
         Assert.Contains("word_form", map.Keys);

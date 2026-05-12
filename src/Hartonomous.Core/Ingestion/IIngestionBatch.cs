@@ -1,5 +1,6 @@
 using System;
 using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Geometry;
 
 namespace Hartonomous.Core.Ingestion;
 
@@ -49,9 +50,9 @@ public interface IIngestionBatch
     /// <paramref name="significance"/> receive the provenance default.
     ///
     /// Default implementation drops the significance specs and falls back to
-    /// the 3-arg overload — fakes and shims that don't model the prime path
-    /// remain compatible without per-test boilerplate; the real pipeline
-    /// implementation overrides this to honor the overrides.
+    /// the 3-arg overload for test doubles and producer surfaces that do not
+    /// model producer-calibrated priors; the pipeline implementation overrides
+    /// this to honor the overrides.
     /// </summary>
     void AddEdge(
         string edgeTypeCode,
@@ -118,6 +119,13 @@ public interface IIngestionBatch
         EntityHandle entity,
         string physicalityTypeCode,
         byte[] geomWkb);
+
+    void AddPhysicality(
+        EntityHandle entity,
+        string physicalityTypeCode,
+        byte[] geomWkb,
+        Point4D centroid)
+        => AddPhysicality(entity, physicalityTypeCode, geomWkb);
 
     /// <summary>
     /// Append a 4D POINTZM physicality row (s3_position, hilbert_value,

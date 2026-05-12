@@ -34,7 +34,9 @@ namespace Hartonomous.Decomposers;
 public abstract partial class TextIngestingDecomposer : BaseDecomposer
 {
     private readonly TextIngestionCache _textCache;
+    private readonly TextEmissionCache _textEmissionCache = new();
     private readonly SubstrateTextDecomposer _substrateTextDecomposer;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _textEmissionGates = new(StringComparer.Ordinal);
 
     // Centroid sidecar for the sync EmitText path. Same-text fast-path needs
     // the geometry on cache hit (synset LINESTRINGZM vertices, etc.) — the
@@ -68,29 +70,54 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     /// downstream edges can FK to it); the substrate already has the
     /// codepoint/grapheme/word/composition DAG from a prior call. On cache
     /// miss, <see cref="SubstrateTextDecomposer.EmitAsync"/> hands UTF-8
-    /// bytes to the C extension which writes the full DAG to substrate
-    /// core tables in a single SPI call; we register the returned root
-    /// hash on the batch and cache it for subsequent calls.
+    /// bytes to the C extension which emits the full DAG into the central
+    /// ingestion batch/sink; we register the returned root hash on the batch
+    /// and cache it for subsequent calls.
     /// </summary>
     protected EntityHandle IngestText(IIngestionBatch batch, string text)
     {
         if (_textCache.TryGet(text, out Hash32 cachedHash))
         {
-            return batch.AddEntity(cachedHash, "text_composition");
+            return AddCachedTextComposition(batch, cachedHash);
         }
+
+        SemaphoreSlim? gate = GetTextEmissionGate(text);
+        if (gate is not null)
+        {
+            gate.Wait();
+            try
+            {
+                if (_textCache.TryGet(text, out cachedHash))
+                {
+                    return AddCachedTextComposition(batch, cachedHash);
+                }
+
+                return IngestTextCacheMiss(batch, text);
+            }
+            finally
+            {
+                ReleaseTextEmissionGate(text, gate);
+            }
+        }
+
+        return IngestTextCacheMiss(batch, text);
+    }
+
+    private EntityHandle IngestTextCacheMiss(IIngestionBatch batch, string text)
+    {
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         // In-process native call. libhartonomous's hartonomous_text_decompose
         // walks the codepoint/grapheme/word/composition DAG against the
-        // embedded UCD blob and fires a callback per emission; the callback
-        // populates `batch`. No SQL roundtrip, no Postgres handshake — just
-        // one P/Invoke + N callback fires.
+        // embedded UCD blob and fires callbacks into the central ingestion
+        // batch. No SQL roundtrip, no Postgres handshake.
         Hartonomous.Core.Text.TextDecomposeResult r = _substrateTextDecomposer.Emit(
             batch,
             utf8,
             new Hartonomous.Core.Text.TextDecomposeOptions(
                 ProvenanceCode: ProvenanceCode,
                 TopEntityType: "text_composition",
-                TrustMu: TrustPriorMu));
+                TrustMu: TrustPriorMu,
+                EmissionCache: _textEmissionCache));
         _textCache.Add(text, r.RootHash);
         return r.RootHandle;
     }
@@ -99,8 +126,33 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
     {
         if (_textCache.TryGet(text, out Hash32 cachedHash))
         {
-            return await EmitEntityAsync(sink, cachedHash, "text_composition", ProvenanceCode, ct).ConfigureAwait(false);
+            return await EmitCachedTextCompositionAsync(sink, cachedHash, ct).ConfigureAwait(false);
         }
+
+        SemaphoreSlim? gate = GetTextEmissionGate(text);
+        if (gate is not null)
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (_textCache.TryGet(text, out cachedHash))
+                {
+                    return await EmitCachedTextCompositionAsync(sink, cachedHash, ct).ConfigureAwait(false);
+                }
+
+                return await IngestTextCacheMissAsync(sink, text, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                ReleaseTextEmissionGate(text, gate);
+            }
+        }
+
+        return await IngestTextCacheMissAsync(sink, text, ct).ConfigureAwait(false);
+    }
+
+    private async ValueTask<EntityHandle> IngestTextCacheMissAsync(IRecordSink sink, string text, CancellationToken ct)
+    {
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         Hartonomous.Core.Text.TextDecomposeResult r = await _substrateTextDecomposer.EmitAsync(
             sink,
@@ -108,7 +160,8 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
             new Hartonomous.Core.Text.TextDecomposeOptions(
                 ProvenanceCode: ProvenanceCode,
                 TopEntityType: "text_composition",
-                TrustMu: TrustPriorMu),
+                TrustMu: TrustPriorMu,
+                EmissionCache: _textEmissionCache),
             ct).ConfigureAwait(false);
         _textCache.Add(text, r.RootHash);
         return r.RootHandle;
@@ -186,6 +239,51 @@ public abstract partial class TextIngestingDecomposer : BaseDecomposer
         // because identical content from any concurrent task produces an
         // identical centroid (deterministic native decompose).
         _centroidCache[text] = centroid;
+    }
+
+    protected override SemaphoreSlim? GetTextEmissionGate(string text)
+    {
+        if (text.Length > _textCache.MaxKeyLength)
+        {
+            return null;
+        }
+
+        return _textEmissionGates.GetOrAdd(text, static _ => new SemaphoreSlim(1, 1));
+    }
+
+    protected override void ReleaseTextEmissionGate(string text, SemaphoreSlim gate)
+    {
+        gate.Release();
+        if (_textEmissionGates.TryGetValue(text, out SemaphoreSlim? current)
+            && ReferenceEquals(current, gate))
+        {
+            _textEmissionGates.TryRemove(text, out _);
+        }
+    }
+
+    protected override ITextEmissionCache? TextEmissionCache => _textEmissionCache;
+
+    private EntityHandle AddCachedTextComposition(IIngestionBatch batch, Hash32 hash)
+    {
+        if (_textEmissionCache.TryRegisterEntity("text_composition", hash, ProvenanceCode))
+        {
+            return batch.AddEntity(hash, "text_composition");
+        }
+
+        return new EntityHandle(hash, "text_composition");
+    }
+
+    private async ValueTask<EntityHandle> EmitCachedTextCompositionAsync(
+        IRecordSink sink,
+        Hash32 hash,
+        CancellationToken ct)
+    {
+        if (_textEmissionCache.TryRegisterEntity("text_composition", hash, ProvenanceCode))
+        {
+            return await EmitEntityAsync(sink, hash, "text_composition", ProvenanceCode, ct).ConfigureAwait(false);
+        }
+
+        return new EntityHandle(hash, "text_composition");
     }
 
     private static partial class TextCacheLog

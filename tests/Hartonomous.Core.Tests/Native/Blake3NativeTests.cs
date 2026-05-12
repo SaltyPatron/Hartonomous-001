@@ -1,5 +1,5 @@
 using System;
-using Hartonomous.Core.Native;
+using Hartonomous.Core.Compute.Common;
 
 namespace Hartonomous.Core.Tests.Native;
 
@@ -20,8 +20,8 @@ public sealed class Blake3NativeTests
     [Fact]
     public void EmptyInput_MatchesOfficialVector()
     {
-        Span<byte> hash = stackalloc byte[Blake3Native.HashLen];
-        Blake3Native.Blake3(ReadOnlySpan<byte>.Empty, 0, hash);
+        Span<byte> hash = stackalloc byte[Blake3.HashLen];
+        Blake3.Hash(ReadOnlySpan<byte>.Empty, hash);
 
         Assert.Equal(
             "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
@@ -32,8 +32,8 @@ public sealed class Blake3NativeTests
     public void SingleZeroByte_MatchesOfficialVector()
     {
         ReadOnlySpan<byte> input = stackalloc byte[] { 0x00 };
-        Span<byte> hash = stackalloc byte[Blake3Native.HashLen];
-        Blake3Native.Blake3(input, (nuint)input.Length, hash);
+        Span<byte> hash = stackalloc byte[Blake3.HashLen];
+        Blake3.Hash(input, hash);
 
         Assert.Equal(
             "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213",
@@ -48,8 +48,8 @@ public sealed class Blake3NativeTests
         {
             input[i] = (byte)(i % 251);
         }
-        Span<byte> hash = stackalloc byte[Blake3Native.HashLen];
-        Blake3Native.Blake3(input, (nuint)input.Length, hash);
+        Span<byte> hash = stackalloc byte[Blake3.HashLen];
+        Blake3.Hash(input, hash);
 
         Assert.Equal(
             "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7",

@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Threading;
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Errors;
 using Hartonomous.Core.Ingestion;
@@ -518,9 +519,41 @@ public abstract partial class BaseDecomposer : IDecomposer
         // zero work past the cache lookup).
         if (TryGetCachedTextEntry(text, out Hash32 cachedHash, out (double X, double Y, double Z, double M) cachedCentroid))
         {
-            Hartonomous.Core.Ingestion.EntityHandle cachedHandle = batch.AddEntity(cachedHash, topEntityType);
+            Hartonomous.Core.Ingestion.EntityHandle cachedHandle = AddCachedTextEntity(batch, cachedHash, topEntityType);
             return (cachedHandle, cachedHash, cachedCentroid);
         }
+
+        SemaphoreSlim? gate = GetTextEmissionGate(text);
+        if (gate is not null)
+        {
+            gate.Wait();
+            try
+            {
+                if (TryGetCachedTextEntry(text, out cachedHash, out cachedCentroid))
+                {
+                    Hartonomous.Core.Ingestion.EntityHandle cachedHandle = AddCachedTextEntity(batch, cachedHash, topEntityType);
+                    return (cachedHandle, cachedHash, cachedCentroid);
+                }
+
+                return EmitTextCacheMiss(batch, text, topEntityType, trustMu);
+            }
+            finally
+            {
+                ReleaseTextEmissionGate(text, gate);
+            }
+        }
+
+        return EmitTextCacheMiss(batch, text, topEntityType, trustMu);
+    }
+
+    private (Hartonomous.Core.Ingestion.EntityHandle Handle, Hash32 Hash, (double X, double Y, double Z, double M) Centroid)
+        EmitTextCacheMiss(
+            Hartonomous.Core.Ingestion.IIngestionBatch batch,
+            string text,
+            string topEntityType,
+            double trustMu)
+    {
+        ArgumentNullException.ThrowIfNull(text);
 
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         // Routes through libhartonomous's in-process native pipeline
@@ -535,7 +568,8 @@ public abstract partial class BaseDecomposer : IDecomposer
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: ProvenanceCode,
                     TopEntityType: topEntityType,
-                    TrustMu: trustMu));
+                    TrustMu: trustMu,
+                    EmissionCache: TextEmissionCache));
         CacheTextEntry(text, r.RootHash, r.RootCentroid);
         return (r.RootHandle, r.RootHash, r.RootCentroid);
     }
@@ -567,9 +601,44 @@ public abstract partial class BaseDecomposer : IDecomposer
         if (TryGetCachedTextHash(text, out Hash32 cachedHash))
         {
             Hartonomous.Core.Ingestion.EntityHandle cachedHandle =
-                await EmitEntityAsync(sink, cachedHash, topEntityType, ProvenanceCode, ct).ConfigureAwait(false);
+                await EmitCachedTextEntityAsync(sink, cachedHash, topEntityType, ct).ConfigureAwait(false);
             return (cachedHandle, cachedHash, default);
         }
+
+        SemaphoreSlim? gate = GetTextEmissionGate(text);
+        if (gate is not null)
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (TryGetCachedTextHash(text, out cachedHash))
+                {
+                    Hartonomous.Core.Ingestion.EntityHandle cachedHandle =
+                        await EmitCachedTextEntityAsync(sink, cachedHash, topEntityType, ct).ConfigureAwait(false);
+                    return (cachedHandle, cachedHash, default);
+                }
+
+                return await EmitTextCacheMissAsync(sink, text, topEntityType, trustMu, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                ReleaseTextEmissionGate(text, gate);
+            }
+        }
+
+        return await EmitTextCacheMissAsync(sink, text, topEntityType, trustMu, ct).ConfigureAwait(false);
+    }
+
+    private async ValueTask<(Hartonomous.Core.Ingestion.EntityHandle Handle, Hash32 Hash, (double X, double Y, double Z, double M) Centroid)>
+        EmitTextCacheMissAsync(
+            Hartonomous.Core.Ingestion.IRecordSink sink,
+            string text,
+            string topEntityType,
+            double trustMu,
+            CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         Hartonomous.Core.Text.TextDecomposeResult r =
             await Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStaticAsync(
@@ -578,7 +647,8 @@ public abstract partial class BaseDecomposer : IDecomposer
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: ProvenanceCode,
                     TopEntityType: topEntityType,
-                    TrustMu: trustMu),
+                    TrustMu: trustMu,
+                    EmissionCache: TextEmissionCache),
                 ct).ConfigureAwait(false);
         CacheTextHash(text, r.RootHash);
         return (r.RootHandle, r.RootHash, r.RootCentroid);
@@ -601,6 +671,42 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// overrides.
     /// </summary>
     protected virtual void CacheTextHash(string text, Hash32 hash) { }
+
+    protected virtual SemaphoreSlim? GetTextEmissionGate(string text) => null;
+
+    protected virtual void ReleaseTextEmissionGate(string text, SemaphoreSlim gate)
+    {
+        gate.Release();
+    }
+
+    protected virtual Hartonomous.Core.Text.ITextEmissionCache? TextEmissionCache => null;
+
+    private Hartonomous.Core.Ingestion.EntityHandle AddCachedTextEntity(
+        Hartonomous.Core.Ingestion.IIngestionBatch batch,
+        Hash32 hash,
+        string topEntityType)
+    {
+        if (TextEmissionCache?.TryRegisterEntity(topEntityType, hash, ProvenanceCode) ?? true)
+        {
+            return batch.AddEntity(hash, topEntityType);
+        }
+
+        return new Hartonomous.Core.Ingestion.EntityHandle(hash, topEntityType);
+    }
+
+    private async ValueTask<Hartonomous.Core.Ingestion.EntityHandle> EmitCachedTextEntityAsync(
+        Hartonomous.Core.Ingestion.IRecordSink sink,
+        Hash32 hash,
+        string topEntityType,
+        CancellationToken ct)
+    {
+        if (TextEmissionCache?.TryRegisterEntity(topEntityType, hash, ProvenanceCode) ?? true)
+        {
+            return await EmitEntityAsync(sink, hash, topEntityType, ProvenanceCode, ct).ConfigureAwait(false);
+        }
+
+        return new Hartonomous.Core.Ingestion.EntityHandle(hash, topEntityType);
+    }
 
     /// <summary>
     /// Subclass hook: return a previously-emitted (hash, centroid) for

@@ -17,9 +17,6 @@ public static class ShardSplitter
         WriteIndented = true,
     };
 
-    public sealed record TensorEntry(string Name, long ByteSize);
-    public sealed record ShardPlan(int ShardIndex, int ShardCount, IReadOnlyList<string> TensorNames, long TotalBytes);
-
     public static IReadOnlyList<ShardPlan> Plan(IReadOnlyList<TensorEntry> tensors, long maxShardBytes)
     {
         if (tensors is null || tensors.Count == 0)

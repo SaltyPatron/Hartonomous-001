@@ -48,7 +48,6 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> Dependencies => [];
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
-    private const int TopKPerToken = 64;
     private const double ModelDerivedTrustMu = 60_000.0;
     private const int FlushThreshold = 5_000;
 
@@ -137,7 +136,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
             int seed = (int)(tensorSeed & 0x7FFFFFFF);
             LaplacianEigenmapOptions opts = _baseOptions with { Seed = seed };
             (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
-                embed, vocabSize, hiddenDim, opts,
+                context.Compute, embed, vocabSize, hiddenDim, opts,
                 onStage: msg => Log.Stage(_logger, table.Info.Name, msg));
 
             // Per-row firefly POINTZM + entity_model_source + entity_significance.
@@ -222,13 +221,13 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                                      hiddenDim * sizeof(double));
                 }
 
-                // Per-source running top-K accumulator.
-                (int Tok, double SignedCos)[][] topK = new (int, double)[sChunkLen][];
-                int[] topKFilled = new int[sChunkLen];
-                for (int i = 0; i < sChunkLen; i++) { topK[i] = new (int, double)[TopKPerToken]; }
-                double[] topKMinAbs = new double[sChunkLen];
-                int[] topKMinIdx = new int[sChunkLen];
-                for (int i = 0; i < sChunkLen; i++) { topKMinAbs[i] = double.PositiveInfinity; topKMinIdx[i] = -1; }
+                // Threshold-only LTH discrimination (AP-33): cosine values
+                // above the per-tensor noise floor (CosineTemperature) are
+                // signal; emit inline. No top-K count cap — top-K would
+                // truncate the winning ticket the model's |cos| distribution
+                // defines. Pairs below floor produce sigmoid ≈ 0.5 (Glicko
+                // draw, no rating movement) and are honest-abstention dropped.
+                const double NoiseFloor = CosineTemperature;
 
                 for (int tChunkStart = 0; tChunkStart < vocabSize; tChunkStart += CosineTargetChunkSize)
                 {
@@ -236,78 +235,79 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
 
                     int embedRowOffset = checked(tChunkStart * hiddenDim);
                     int embedSliceLen  = checked(tChunkLen * hiddenDim);
-                    Gemm.F64(TransposeOp.None, TransposeOp.Transpose,
-                             sChunkLen, tChunkLen, hiddenDim,
-                             1.0,
-                             sourceGather.AsSpan(0, checked(sChunkLen * hiddenDim)), hiddenDim,
-                             embedNormed.AsSpan(embedRowOffset, embedSliceLen), hiddenDim,
-                             0.0,
-                             sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
+                    context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                                       sChunkLen, tChunkLen, hiddenDim,
+                                                       1.0,
+                                                       sourceGather.AsSpan(0, checked(sChunkLen * hiddenDim)), hiddenDim,
+                                                       embedNormed.AsSpan(embedRowOffset, embedSliceLen), hiddenDim,
+                                                       0.0,
+                                                       sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
 
                     for (int i = 0; i < sChunkLen; i++)
                     {
                         int rowT = usableTokens[sChunkStart + i];
+                        Hash32? hashT = vocabHashByIdx[rowT];
+                        if (hashT is null) { continue; }
                         long rowOff = (long)i * tChunkLen;
                         for (int j = 0; j < tChunkLen; j++)
                         {
                             int rowS = tChunkStart + j;
                             if (rowS == rowT || !usable[rowS]) { continue; }
                             double cos = sBlock[rowOff + j];
-                            double abs = Math.Abs(cos);
-                            if (topKFilled[i] < TopKPerToken)
+                            if (Math.Abs(cos) < NoiseFloor) { continue; }
+
+                            Hash32? hashS = vocabHashByIdx[rowS];
+                            if (hashS is null) { continue; }
+
+                            EntityHandle a, b;
+                            if (hashT.Value.CompareTo(hashS.Value) <= 0)
                             {
-                                topK[i][topKFilled[i]] = (rowS, cos);
-                                topKFilled[i]++;
-                                if (topKFilled[i] == TopKPerToken)
-                                {
-                                    RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
-                                }
+                                a = new EntityHandle(hashT.Value, "word_form");
+                                b = new EntityHandle(hashS.Value, "word_form");
                             }
-                            else if (abs > topKMinAbs[i])
+                            else
                             {
-                                topK[i][topKMinIdx[i]] = (rowS, cos);
-                                RecomputeMinAbs(topK[i], topKFilled[i], out topKMinAbs[i], out topKMinIdx[i]);
+                                a = new EntityHandle(hashS.Value, "word_form");
+                                b = new EntityHandle(hashT.Value, "word_form");
                             }
+
+                            double score = SigmoidLocal(cos / CosineTemperature);
+                            EdgeRatingEvent[] events =
+                            [
+                                new EdgeRatingEvent(
+                                    "model_trust", "model_input_embedding", score, 1.0,
+                                    ModelSourceId: context.Source.ModelSourceId,
+                                    TensorHash: table.Entity.Hash,
+                                    PackageTensorHash: table.PackageTensorEntity?.Hash,
+                                    SourceTensorName: table.Info.Name,
+                                    PrimitiveCode: PrimitiveKind.Lookup.ToString(),
+                                    TupleCode: t.Tuple.ToString(),
+                                    SlotCode: TupleSlot.Table.ToString(),
+                                    ModalityCode: t.Modality.ToString(),
+                                    LayerIndex: t.LayerIndex,
+                                    HeadIndex: t.HeadIndex,
+                                    ExpertIndex: t.ExpertIndex),
+                                new EdgeRatingEvent(
+                                    "semantic_relevance", "model_input_embedding", score, 1.0,
+                                    ModelSourceId: context.Source.ModelSourceId,
+                                    TensorHash: table.Entity.Hash,
+                                    PackageTensorHash: table.PackageTensorEntity?.Hash,
+                                    SourceTensorName: table.Info.Name,
+                                    PrimitiveCode: PrimitiveKind.Lookup.ToString(),
+                                    TupleCode: t.Tuple.ToString(),
+                                    SlotCode: TupleSlot.Table.ToString(),
+                                    ModalityCode: t.Modality.ToString(),
+                                    LayerIndex: t.LayerIndex,
+                                    HeadIndex: t.HeadIndex,
+                                    ExpertIndex: t.ExpertIndex),
+                            ];
+                            session.Batch.AddEdge("model_concept_similarity", context.ProvenanceCode,
+                            [
+                                new EdgeMemberSpec(a, "source", 0),
+                                new EdgeMemberSpec(b, "target", 1),
+                            ], System.Array.Empty<EdgeSignificanceSpec>(), events);
+                            edgesEmitted++;
                         }
-                    }
-                }
-
-                for (int i = 0; i < sChunkLen; i++)
-                {
-                    int rowT = usableTokens[sChunkStart + i];
-                    Hash32? hashT = vocabHashByIdx[rowT];
-                    if (hashT is null) { continue; }
-
-                    for (int k = 0; k < topKFilled[i]; k++)
-                    {
-                        (int otherRow, double signedCos) = topK[i][k];
-                        Hash32? hashS = vocabHashByIdx[otherRow];
-                        if (hashS is null) { continue; }
-
-                        EntityHandle a, b;
-                        if (hashT.Value.CompareTo(hashS.Value) <= 0)
-                        {
-                            a = new EntityHandle(hashT.Value, "word_form");
-                            b = new EntityHandle(hashS.Value, "word_form");
-                        }
-                        else
-                        {
-                            a = new EntityHandle(hashS.Value, "word_form");
-                            b = new EntityHandle(hashT.Value, "word_form");
-                        }
-
-                        double score = SigmoidLocal(signedCos / CosineTemperature);
-                        EdgeRatingEvent[] events =
-                        [
-                            new EdgeRatingEvent("model_trust",        "model_input_embedding", score, 1.0),
-                            new EdgeRatingEvent("semantic_relevance", "model_input_embedding", score, 1.0),
-                        ];
-                        session.Batch.AddEdge("model_concept_similarity", context.ProvenanceCode,
-                        [
-                            new EdgeMemberSpec(a, "source", 0),
-                            new EdgeMemberSpec(b, "target", 1),
-                        ], System.Array.Empty<EdgeSignificanceSpec>(), events);
-                        edgesEmitted++;
                     }
                 }
 
@@ -316,21 +316,6 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
         }
 
         Log.Complete(_logger, context.Source.ModelId, tuplesProcessed, fireflies, edgesEmitted);
-    }
-
-    private static void RecomputeMinAbs((int Row, double SignedCos)[] buf, int filled, out double minVal, out int minIdx)
-    {
-        minVal = double.PositiveInfinity;
-        minIdx = -1;
-        for (int i = 0; i < filled; i++)
-        {
-            double absV = Math.Abs(buf[i].SignedCos);
-            if (absV < minVal)
-            {
-                minVal = absV;
-                minIdx = i;
-            }
-        }
     }
 
     private static TokenizerModel? TryLoadTokenizer(string snapshotDir)

@@ -54,9 +54,9 @@ public sealed class MixAndMatchTests
         // starts with tensor 2. Three shards, one tensor each.
         var entries = new[]
         {
-            new ShardSplitter.TensorEntry("model.layers.0.weight",  3_000_000_000L),
-            new ShardSplitter.TensorEntry("model.layers.1.weight",  3_000_000_000L),
-            new ShardSplitter.TensorEntry("model.layers.2.weight",  3_000_000_000L),
+            new TensorEntry("model.layers.0.weight",  3_000_000_000L),
+            new TensorEntry("model.layers.1.weight",  3_000_000_000L),
+            new TensorEntry("model.layers.2.weight",  3_000_000_000L),
         };
         var plans = ShardSplitter.Plan(entries, maxShardBytes: 5_000_000_000L);
         Assert.Equal(3, plans.Count);
@@ -68,8 +68,8 @@ public sealed class MixAndMatchTests
         // tensors at 5 GB max should land in one shard.
         var packed = new[]
         {
-            new ShardSplitter.TensorEntry("model.layers.0.weight",  2_000_000_000L),
-            new ShardSplitter.TensorEntry("model.layers.1.weight",  2_000_000_000L),
+            new TensorEntry("model.layers.0.weight",  2_000_000_000L),
+            new TensorEntry("model.layers.1.weight",  2_000_000_000L),
         };
         var packedPlans = ShardSplitter.Plan(packed, maxShardBytes: 5_000_000_000L);
         Assert.Single(packedPlans);
@@ -81,9 +81,9 @@ public sealed class MixAndMatchTests
     {
         var entries = new[]
         {
-            new ShardSplitter.TensorEntry("model.embed_tokens.weight", 1_000_000L),
-            new ShardSplitter.TensorEntry("model.layers.0.weight",     1_000_000L),
-            new ShardSplitter.TensorEntry("lm_head.weight",            1_000_000L),
+            new TensorEntry("model.embed_tokens.weight", 1_000_000L),
+            new TensorEntry("model.layers.0.weight",     1_000_000L),
+            new TensorEntry("lm_head.weight",            1_000_000L),
         };
         var plans = ShardSplitter.Plan(entries, maxShardBytes: 5_000_000_000L);
         string indexJson = ShardSplitter.BuildIndexJson(plans);

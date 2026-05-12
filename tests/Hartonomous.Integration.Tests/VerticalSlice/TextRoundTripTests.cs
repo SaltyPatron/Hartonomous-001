@@ -98,6 +98,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
             _cpProps);
 
         await decomposer.DecomposeAsync(_pipeline, new NoOpReporter(), CancellationToken.None);
+        await _pipeline.DrainPendingAsync(CancellationToken.None);
 
         EntityHandle? docHandle = decomposer.LastDocumentHandle;
         Assert.NotNull(docHandle);
@@ -135,6 +136,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
 
         long preCount = await GetTotalEntityCountAsync();
         await decomposer.DecomposeAsync(_pipeline, new NoOpReporter(), CancellationToken.None);
+        await _pipeline.DrainPendingAsync(CancellationToken.None);
         long postCount = await GetTotalEntityCountAsync();
 
         EntityHandle? docHandle = decomposer.LastDocumentHandle;
@@ -150,6 +152,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
 
         // Idempotency on the real-world corpus.
         await decomposer.DecomposeAsync(_pipeline, new NoOpReporter(), CancellationToken.None);
+        await _pipeline.DrainPendingAsync(CancellationToken.None);
         long reCount = await GetTotalEntityCountAsync();
         Assert.Equal(postCount, reCount);
 
@@ -172,9 +175,11 @@ public sealed class TextRoundTripTests : IAsyncLifetime
             _cpProps);
 
         await decomposer.DecomposeAsync(_pipeline, new NoOpReporter(), CancellationToken.None);
+        await _pipeline.DrainPendingAsync(CancellationToken.None);
         long countAfterFirstRun = await GetTotalEntityCountAsync();
 
         await decomposer.DecomposeAsync(_pipeline, new NoOpReporter(), CancellationToken.None);
+        await _pipeline.DrainPendingAsync(CancellationToken.None);
         long countAfterSecondRun = await GetTotalEntityCountAsync();
 
         Assert.Equal(countAfterFirstRun, countAfterSecondRun);

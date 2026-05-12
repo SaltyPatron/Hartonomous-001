@@ -1,0 +1,100 @@
+[
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Decomposers/Ucd/UnicodeSql.cs",
+    "text_contains": "lo < MaxCodepoints; lo += PropertyChunkSize",
+    "classification": "allowed-bounded-chunk",
+    "reason": "UCD property materialization advances a fixed Unicode scalar range in chunks; each iteration calls a substrate bulk routine, not per-row SQL."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Data/NpgsqlJunctionWriter.cs",
+    "text_contains": "offset = 0; offset < entries.Count; offset += ChunkSize",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Junction writer chunks caller-provided rows into 50k array-parameterized procedure calls."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Data/NpgsqlReferenceDataWriter.cs",
+    "text_contains": "offset = 0; offset <",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Reference writer chunks seed/reference inventories into array-parameterized substrate functions."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Godel/GodelEngine.cs",
+    "text_contains": "i < MaxAttempts",
+    "classification": "allowed-bounded-poll",
+    "reason": "Prompt drain barrier polls a single readiness function with a fixed timeout after asynchronous pipeline submission."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Inference/SubstrateInferenceEngine.cs",
+    "text_contains": "i < MaxAttempts",
+    "classification": "allowed-bounded-poll",
+    "reason": "Prompt drain barrier polls a single readiness function with a fixed timeout after asynchronous pipeline submission."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Operations/PromptIngestion.cs",
+    "text_contains": "i < MaxAttempts",
+    "classification": "allowed-bounded-poll",
+    "reason": "Prompt ingestion polls a single readiness function with a fixed timeout after asynchronous pipeline submission."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "while (true)",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Streaming pipeline post-passes repeat substrate chunk routines until the routine reports zero rows; each routine is bulk/set-based."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "attempt < maxRetries",
+    "classification": "allowed-bounded-retry",
+    "reason": "Retry loops wrap bulk post-pass calls for transient connection failures and fail loud after fixed exhaustion."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "arenaId in arenaIds",
+    "classification": "allowed-open-vocabulary-arena-fanout",
+    "reason": "Significance priming must cross-product across open-vocabulary arenas; per-arena work is chunked through substrate.prime_unprimed_edges_chunk."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "!ct.IsCancellationRequested",
+    "classification": "allowed-channel-drain",
+    "reason": "Long-lived bounded-channel drain task owns COPY chunks; it is the central ingestion pipeline, not decomposer-private RBAR."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/recompose_text.sql",
+    "text_contains": "WITH RECURSIVE walk",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "Text reconstruction walks substrate.sequence with an explicit max-depth guard and RLE expansion; it does not write rows."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/seed/validate.sql",
+    "text_contains": "LOOP",
+    "classification": "allowed-validation-only",
+    "reason": "Seed validation loops over a tiny fixed VALUES inventory and raises a consolidated schema seed count error."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/seed/validate.sql",
+    "text_contains": "END LOOP",
+    "classification": "allowed-validation-only",
+    "reason": "Seed validation loops over a tiny fixed VALUES inventory and raises a consolidated schema seed count error."
+  },
+  {
+    "rule": "managed-text-segmentation-bypass",
+    "path": "src/Hartonomous.Engine/Godel/SubQuestionDecomposer.cs",
+    "text_contains": "SentenceBoundaries.Enumerate",
+    "classification": "allowed-prompt-planning-only",
+    "reason": "SubQuestionDecomposer uses sentence boundaries only to split an interactive prompt into planning units; substrate text identity and persistence remain owned by native text decomposition."
+  }
+]

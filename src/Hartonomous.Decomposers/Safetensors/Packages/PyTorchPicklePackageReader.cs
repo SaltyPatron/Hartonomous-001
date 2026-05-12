@@ -176,8 +176,8 @@ public sealed partial class PyTorchPicklePackageReader : BaseDonorPackageReader
 
         foreach (string shardPath in shardPaths)
         {
-            IReadOnlyList<PythonPickleParser.PickleTensorEntry> entries = PythonPickleParser.ParsePackage(shardPath);
-            foreach (PythonPickleParser.PickleTensorEntry entry in entries)
+            IReadOnlyList<PickleTensorEntry> entries = PythonPickleParser.ParsePackage(shardPath);
+            foreach (PickleTensorEntry entry in entries)
             {
                 if (tensorToShard is not null
                     && tensorToShard.TryGetValue(entry.Name, out string? expectedShardName))

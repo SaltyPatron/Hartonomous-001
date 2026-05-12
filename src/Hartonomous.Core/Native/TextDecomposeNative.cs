@@ -44,29 +44,11 @@ public static partial class TextDecomposeNative
     private const string Library = "hartonomous";
 
     /// <summary>
-    /// Native record passed to the emit callback. <c>HashA</c>, <c>HashB</c>,
-    /// and <c>Wkb</c> are pointers into native-allocated buffers that are valid
-    /// only for the duration of the callback — copy out anything you need.
-    /// </summary>
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Record
-    {
-        public int    Kind;
-        public int    Subkind;
-        public IntPtr HashA;
-        public IntPtr HashB;
-        public int    IntParam;
-        public double DoubleParam;
-        public IntPtr Wkb;
-        public nuint  WkbLen;
-    }
-
-    /// <summary>
     /// Callback signature. Return 0 to continue; non-zero aborts the walk and
     /// is propagated as the function's return code.
     /// </summary>
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate int EmitCallback(IntPtr ctx, ref Record record);
+    public delegate int EmitCallback(IntPtr ctx, ref TextDecomposeRecord record);
 
 #pragma warning disable CA1401 // P/Invoke method should not be visible
     [LibraryImport(Library, EntryPoint = "hartonomous_ucd_load",

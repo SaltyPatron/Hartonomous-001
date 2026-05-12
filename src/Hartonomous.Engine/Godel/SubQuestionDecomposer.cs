@@ -8,9 +8,10 @@ namespace Hartonomous.Engine.Godel;
 /// Splits a compound prompt into independent sub-questions. The decomposition
 /// is deterministic and substrate-aware:
 ///
-///   1. UAX #29 sentence boundaries via <see cref="SentenceBoundaries"/>
-    ///      (the same segmenter the canonical text decomposer uses for sentence
-    ///      text compositions). Sentences are the natural top-level split.
+///   1. UAX #29 sentence boundaries via <see cref="SentenceBoundaries"/>.
+///      This is prompt-planning segmentation only, not substrate text
+///      decomposition; substrate text identity is owned by the native
+///      text-decompose path.
 ///   2. Each sentence is split on conjunctions / clause-boundary punctuation
 ///      ("," then "and"|"or"|"but"|";"). Sub-clauses become sub-questions
 ///      only when they carry independent semantic targets — bare list items

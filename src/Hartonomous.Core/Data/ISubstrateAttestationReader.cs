@@ -83,38 +83,3 @@ public interface ISubstrateAttestationReader
         IReadOnlyList<byte[]> tokenBytes,
         CancellationToken ct);
 }
-
-/// <summary>
-/// One token-pair attestation edge from substrate, with consensus mu per
-/// arena requested.
-/// </summary>
-/// <param name="EdgeTypeCode">edge_type.code (e.g. "model_attention_pattern").</param>
-/// <param name="EdgeHash">edge identity (BLAKE3 of edge_type + ordered participant hashes).</param>
-/// <param name="Participants">Role-ordered participant entity handles (typically two word_form tokens).</param>
-/// <param name="ArenaMu">Per-arena consensus mu values for this edge under
-/// the requested attestation_type. Map keyed by arena code.</param>
-/// <param name="GamesAggregate">Sum of Glicko-2 games count across arenas
-/// for diagnostic ranking (more games = tighter consensus).</param>
-public sealed record AttestationRow(
-    string EdgeTypeCode,
-    byte[] EdgeHash,
-    IReadOnlyList<EntityHandle> Participants,
-    IReadOnlyDictionary<string, double> ArenaMu,
-    int GamesAggregate);
-
-/// <summary>
-/// One per-(model, token) firefly POINTZM physicality.
-/// </summary>
-/// <param name="TokenEntity">The word_form entity the firefly is attached to.</param>
-/// <param name="ModelSourceId">The model that emitted this firefly.</param>
-/// <param name="X">4D X coordinate.</param>
-/// <param name="Y">4D Y coordinate.</param>
-/// <param name="Z">4D Z coordinate.</param>
-/// <param name="M">4D M coordinate (typically magnitude).</param>
-public sealed record FireflyRow(
-    EntityHandle TokenEntity,
-    long ModelSourceId,
-    double X,
-    double Y,
-    double Z,
-    double M);

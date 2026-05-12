@@ -10,14 +10,6 @@ namespace Hartonomous.Decomposers.Safetensors.Packages;
 
 public sealed class PythonPickleParser
 {
-    public sealed record PickleTensorEntry(
-        string Name,
-        string DtypeCanonical,
-        int[] Shape,
-        string StorageKey,
-        long StorageElementOffset,
-        long ByteLength);
-
     private static readonly object Mark = new();
 
     private sealed record GlobalRef(string Module, string Name);

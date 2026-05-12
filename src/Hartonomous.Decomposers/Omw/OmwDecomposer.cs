@@ -11,6 +11,7 @@ using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
+using Hartonomous.Core.Text;
 using Hartonomous.Core.Text.Segmentation;
 using Hartonomous.Decomposers.Iso639;
 using Hartonomous.Decomposers.WordNet;
@@ -18,7 +19,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Omw;
 
-public sealed partial class OmwDecomposer : BaseDecomposer
+public sealed partial class OmwDecomposer : TextIngestingDecomposer
 {
     public override string ProvenanceCode => "omwn_consortium";
     public override string DisplayName => "Open Multilingual Wordnet (OMW)";
@@ -35,15 +36,20 @@ public sealed partial class OmwDecomposer : BaseDecomposer
     private readonly IReferenceDataWriter? _referenceDataWriter;
     private readonly IWordNetSynsetBridge _synsetBridge;
 
+    protected override ICodepointProperties CodepointProperties => _codepointProperties;
+
+    protected override double TrustPriorMu => CuratedTrustMu;
+
     public OmwDecomposer(
         DecomposerConfig config,
+        SubstrateTextDecomposer substrateTextDecomposer,
         ILogger<OmwDecomposer> logger,
         ICodepointProperties codepointProperties,
         IWordNetSynsetBridge synsetBridge,
         IReferenceDataReader? referenceDataReader = null,
         IJunctionWriter? junctionWriter = null,
         IReferenceDataWriter? referenceDataWriter = null)
-        : base(config, logger)
+        : base(config, substrateTextDecomposer, logger, textCacheCapacity: 1_000_000)
     {
         _sourceDir = config.SourceDirectory;
         _codepointProperties = codepointProperties;
@@ -106,15 +112,13 @@ public sealed partial class OmwDecomposer : BaseDecomposer
 
                 if (batchAlignments.Count > 0)
                 {
-                    // Hash-as-PK substrate: synset entities are identified by
-                    // (entity_type_id, hash). The WordNet phase already wrote
-                    // them; the OMW alignment edge writes (lemma_hash → synset_hash)
-                    // directly, no resolve step. ON CONFLICT in substrate.entity
-                    // makes re-emitting the synset entity here idempotent if a
-                    // particular synset wasn't seen in WordNet.
+                    // Hash-as-PK substrate: WordNet already wrote these synset
+                    // content entities earlier in this phase. OMW alignment
+                    // edges reference the existing hash directly; they do not
+                    // re-emit the synset entity.
                     foreach ((EntityHandle lemmaHandle, Hash32 synsetHash, double _) in batchAlignments)
                     {
-                        EntityHandle synsetHandle = batch.AddEntity(synsetHash, "synset");
+                        EntityHandle synsetHandle = new(synsetHash, "synset");
                         batch.AddEdge("aligned_to_synset", ProvenanceCode,
                         [
                             new EdgeMemberSpec(lemmaHandle, "source", 0),

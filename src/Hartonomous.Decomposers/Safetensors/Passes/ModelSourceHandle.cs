@@ -1,3 +1,5 @@
+using Hartonomous.Core.Ingestion;
+
 namespace Hartonomous.Decomposers.Safetensors.Passes;
 
 /// <summary>
@@ -13,4 +15,5 @@ public sealed record ModelSourceHandle(
     byte[] Revision,
     string RevisionHex,
     string ModelId,
-    string ModelDirectory);
+    string ModelDirectory,
+    EntityHandle? PackageEntity = null);

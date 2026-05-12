@@ -1,7 +1,6 @@
 using System;
-using System.IO;
-using System.Linq;
 using System.Reflection;
+using Hartonomous.Core.Data;
 
 namespace Hartonomous.Engine.Ingestion;
 
@@ -19,6 +18,8 @@ internal static class IngestionSql
     public static string GetExistingEdgeMembers { get; } = Read("get_existing_edge_members.sql");
     public static string GetExistingPhysicalities { get; } = Read("get_existing_physicalities.sql");
     public static string GetExistingSequenceRows { get; } = Read("get_existing_sequence_rows.sql");
+    public static string GetExistingIngressKeys { get; } = Read("get_existing_ingress_keys.sql");
+    public static string InsertSafetensorObservations { get; } = Read("safetensor_observation.insert.sql");
 
     public static DrainSqlSpec Entity { get; } = Drain("entity");
     public static DrainSqlSpec EntityClassification { get; } = Drain("entity_classification");
@@ -41,14 +42,6 @@ internal static class IngestionSql
     private static string Read(string fileName)
     {
         Assembly assembly = typeof(IngestionSql).Assembly;
-        string resourceSuffix = "." + fileName;
-        string resourceName = assembly.GetManifestResourceNames()
-            .SingleOrDefault(name => name.EndsWith(resourceSuffix, StringComparison.Ordinal))
-            ?? throw new InvalidOperationException($"Missing embedded ingestion SQL resource: {fileName}");
-
-        using Stream stream = assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Unable to open embedded ingestion SQL resource: {resourceName}");
-        using StreamReader reader = new(stream);
-        return reader.ReadToEnd().Trim();
+        return EmbeddedSqlResource.Read(assembly, fileName, "ingestion");
     }
 }

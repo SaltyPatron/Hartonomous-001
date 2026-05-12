@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Analysis;
+using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
@@ -96,7 +97,8 @@ public sealed class InterfaceShapeTests
         Assert.Equal(typeof(void), Method(t, "AddEdge", typeof(string), typeof(string), typeof(ReadOnlySpan<EdgeMemberSpec>)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddEdge", typeof(string), typeof(string), typeof(ReadOnlySpan<EdgeMemberSpec>), typeof(ReadOnlySpan<EdgeSignificanceSpec>)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddJunction").ReturnType);
-        Assert.Equal(typeof(void), Method(t, "AddPhysicality").ReturnType);
+        Assert.Equal(typeof(void), Method(t, "AddPhysicality", typeof(EntityHandle), typeof(string), typeof(byte[])).ReturnType);
+        Assert.Equal(typeof(void), Method(t, "AddPhysicality", typeof(EntityHandle), typeof(string), typeof(byte[]), typeof(Point4D)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicalityPoint4d").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicalityLineString4d").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddSignificance").ReturnType);

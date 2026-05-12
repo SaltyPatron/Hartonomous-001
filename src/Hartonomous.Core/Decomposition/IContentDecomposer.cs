@@ -67,25 +67,3 @@ public interface IContentDecomposer
         IIngestionBatch batch,
         CancellationToken ct);
 }
-
-/// <summary>
-/// Options for content decomposition. Provenance, top-level entity type code,
-/// trust prior. Same shape as <c>TextDecomposeOptions</c> but generic across
-/// content decomposers.
-/// </summary>
-public sealed record ContentDecomposeOptions(
-    string ProvenanceCode,
-    string TopEntityType,
-    double TrustMu);
-
-/// <summary>
-/// Result of content decomposition. Carries the root entity (the top-level
-/// composition for the content — e.g. a <c>text_composition</c> for text, an
-/// <c>audio_recording</c> for audio, an image-level entity for a single image)
-/// and the root hash for downstream edge binding.
-/// </summary>
-public sealed record ContentDecomposeResult(
-    EntityHandle RootHandle,
-    byte[] RootHash,
-    long EntityCount,
-    long EdgeCount);

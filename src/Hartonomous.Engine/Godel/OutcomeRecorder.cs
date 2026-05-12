@@ -17,12 +17,16 @@ namespace Hartonomous.Engine.Godel;
 /// every comparison. The substrate learns from interaction without a
 /// gradient.
 ///
-/// Calls substrate.record_outcome(arena_id, winner, losers[]) per arena.
-/// The default arena set is every row in substrate.significance_context
-/// (open-vocabulary, per AP-1).
+/// Calls substrate.record_outcomes_bulk once per response. SQL fans the
+/// flattened outcome groups across every row in substrate.significance_context
+/// (open-vocabulary, per AP-1), then routes each group through the set-based
+/// native-Glicko substrate.record_outcome implementation.
 /// </summary>
 public sealed partial class OutcomeRecorder
 {
+    private const string AcceptAttestationTypeCode = "inference_outcome_accept";
+    private const string RejectAttestationTypeCode = "inference_outcome_reject";
+
     private readonly NpgsqlDataSource _dataSource;
     private readonly ILogger<OutcomeRecorder> _logger;
 
@@ -58,20 +62,11 @@ public sealed partial class OutcomeRecorder
 
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
 
-        // Load arenas — open-vocabulary, no hardcoded list.
-        List<int> arenaIds = new();
-        await using (NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
-            conn,
-            SubstrateFunctionNames.SignificanceContextIds))
-        await using (NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
-            {
-                arenaIds.Add(reader.GetInt32(0));
-            }
-        }
-
-        int totalEvents = 0;
+        List<byte[]> winnerHashes = [];
+        List<int> winnerGroupIds = [];
+        List<byte[]> loserHashes = [];
+        List<int> loserGroupIds = [];
+        int groupId = 0;
         foreach (SubQuestionResult sq in response.SubQuestionResults)
         {
             if (sq.Candidates.Count < 2)
@@ -93,28 +88,42 @@ public sealed partial class OutcomeRecorder
             {
                 continue;
             }
-            byte[][] losersArr = losers.ToArray();
 
-            foreach (int arenaId in arenaIds)
+            winnerHashes.Add(winner);
+            winnerGroupIds.Add(groupId);
+            foreach (byte[] loser in losers)
             {
-                await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
-                    conn,
-                    SubstrateFunctionNames.RecordOutcome,
-                    new NpgsqlParameter[]
-                    {
-                        new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = arenaId },
-                        new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Bytea, Value = winner },
-                        new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = losersArr },
-                    });
-                object? raw = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-                int events = raw is int i ? i : 0;
-                totalEvents += events;
+                loserHashes.Add(loser);
+                loserGroupIds.Add(groupId);
             }
+            groupId++;
         }
-        LogOutcomeRecorded(_logger, accept ? "accept" : "reject", totalEvents, arenaIds.Count);
+
+        if (winnerHashes.Count == 0 || loserHashes.Count == 0)
+        {
+            return;
+        }
+
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.RecordOutcomesBulk,
+            [
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = winnerHashes.ToArray() },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer, Value = winnerGroupIds.ToArray() },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea, Value = loserHashes.ToArray() },
+                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer, Value = loserGroupIds.ToArray() },
+                new NpgsqlParameter
+                {
+                    NpgsqlDbType = NpgsqlDbType.Text,
+                    Value = accept ? AcceptAttestationTypeCode : RejectAttestationTypeCode,
+                },
+            ]);
+        object? raw = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        int totalEvents = raw is int i ? i : 0;
+        LogOutcomeRecorded(_logger, accept ? "accept" : "reject", totalEvents, winnerHashes.Count);
     }
 
     [LoggerMessage(Level = LogLevel.Information,
-        Message = "OutcomeRecorder: {Outcome} → {Events} comparison events across {Arenas} arenas")]
-    private static partial void LogOutcomeRecorded(ILogger logger, string outcome, int events, int arenas);
+        Message = "OutcomeRecorder: {Outcome} → {Events} comparison events across {Groups} outcome groups")]
+    private static partial void LogOutcomeRecorded(ILogger logger, string outcome, int events, int groups);
 }

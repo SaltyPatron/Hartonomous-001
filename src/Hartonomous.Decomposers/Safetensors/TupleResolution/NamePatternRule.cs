@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
 namespace Hartonomous.Decomposers.Safetensors.TupleResolution;
@@ -24,4 +25,11 @@ public sealed record NamePatternRule(
     string? LayerGroupName = null,
     string? HeadGroupName = null,
     string? ExpertGroupName = null,
-    string? AdapterNameGroupName = null);
+    string? AdapterNameGroupName = null,
+    IReadOnlyList<FusedSplitSpec>? FusedSplits = null);
+
+public sealed record FusedSplitSpec(
+    TupleSlot Slot,
+    int Axis,
+    int Ordinal,
+    int Parts);

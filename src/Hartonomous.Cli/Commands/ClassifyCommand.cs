@@ -95,5 +95,3 @@ internal static class ClassifyCommand
         return cmd;
     }
 }
-
-internal sealed record ClassifyRequest : OperationRequest;

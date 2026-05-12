@@ -109,6 +109,15 @@ FROM (VALUES
     ('has_tensor',               'model_derived', 'model_architecture', 'tensor'),              -- 45
     ('has_architecture_name',    'model_derived', 'model_architecture', 'text_composition'),    -- 46
     ('has_tensor_name',          'model_derived', 'tensor',             'text_composition'),    -- 47
+    ('has_package_tensor_primitive',    'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_tuple',        'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_slot',         'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_layer_index',  'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_head_index',   'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_expert_index', 'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_modality',     'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_fused_slice',  'model_derived', 'model_package_tensor', 'text_composition'),
+    ('has_package_tensor_linearized_shape', 'model_derived', 'model_package_tensor', 'text_composition'),
     ('has_tokenizer_model',      'model_derived', 'model_architecture', 'text_composition'),    -- 48
     ('has_token_in_tokenizer',   'model_derived', 'model_architecture', 'word_form'),           -- 49
     ('covers_lemma',             'model_derived', 'word_form',          'lemma'),               -- 50

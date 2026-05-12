@@ -30,7 +30,7 @@ public sealed class SubstrateTextDecomposer
 {
     private static int s_ucdLoaded;
     private static readonly object s_ucdLoadLock = new();
-    private static readonly TextDecomposeNative.EmitCallback s_noopEmit = static (IntPtr _, ref TextDecomposeNative.Record _) => 0;
+    private static readonly TextDecomposeNative.EmitCallback s_noopEmit = static (IntPtr _, ref TextDecomposeRecord _) => 0;
 
     /// <summary>
     /// Constructor signature kept compatible with the prior Npgsql-backed
@@ -209,7 +209,7 @@ public sealed class SubstrateTextDecomposer
 
         Hash32 rootHash = new(rootHashBuf);
         EntityHandle rootHandle = new(rootHash, options.TopEntityType);
-        batch.AddEntity(rootHash, options.TopEntityType);
+        AddTopEntityClassificationIfNeeded(batch, options, rootHash);
         context.FlushSequences();
 
         return new TextDecomposeResult(
@@ -338,9 +338,7 @@ public sealed class SubstrateTextDecomposer
 
         Hash32 rootHash = new(rootHashBuf);
         EntityHandle rootHandle = new(rootHash, options.TopEntityType);
-        await sink.EmitAsync(
-            new EntityRecord(options.TopEntityType, rootHash, options.ProvenanceCode),
-            ct).ConfigureAwait(false);
+        await EmitTopEntityClassificationIfNeededAsync(sink, options, rootHash, ct).ConfigureAwait(false);
 
         return new TextDecomposeResult(
             RootHandle: rootHandle,
@@ -369,6 +367,51 @@ public sealed class SubstrateTextDecomposer
         _                                        => "text_composition",
     };
 
+    private static bool ShouldEmitEntity(TextDecomposeOptions options, string entityTypeCode, Hash32 hash)
+        => options.EmissionCache?.TryRegisterEntity(entityTypeCode, hash, options.ProvenanceCode) ?? true;
+
+    private static bool ShouldEmitPhysicality(TextDecomposeOptions options, string physicalityTypeCode, Hash32 entityHash)
+        => options.EmissionCache?.TryRegisterPhysicality(physicalityTypeCode, entityHash) ?? true;
+
+    private static bool ShouldEmitSequence(TextDecomposeOptions options, Hash32 parentHash, int ordinal)
+        => options.EmissionCache?.TryRegisterSequence(parentHash, ordinal) ?? true;
+
+    private static bool ShouldEmitSignificance(
+        TextDecomposeOptions options,
+        string contextTypeCode,
+        string attestationTypeCode,
+        Hash32 entityHash)
+        => options.EmissionCache?.TryRegisterSignificance(contextTypeCode, attestationTypeCode, entityHash) ?? true;
+
+    private static void AddTopEntityClassificationIfNeeded(
+        IIngestionBatch batch,
+        TextDecomposeOptions options,
+        Hash32 rootHash)
+    {
+        string nativeRootType = EntityCodeFor(NativeKindFor(options.TopEntityType));
+        if (!string.Equals(nativeRootType, options.TopEntityType, StringComparison.Ordinal)
+            && ShouldEmitEntity(options, options.TopEntityType, rootHash))
+        {
+            batch.AddEntity(rootHash, options.TopEntityType);
+        }
+    }
+
+    private static async ValueTask EmitTopEntityClassificationIfNeededAsync(
+        IRecordSink sink,
+        TextDecomposeOptions options,
+        Hash32 rootHash,
+        CancellationToken ct)
+    {
+        string nativeRootType = EntityCodeFor(NativeKindFor(options.TopEntityType));
+        if (!string.Equals(nativeRootType, options.TopEntityType, StringComparison.Ordinal)
+            && ShouldEmitEntity(options, options.TopEntityType, rootHash))
+        {
+            await sink.EmitAsync(
+                new EntityRecord(options.TopEntityType, rootHash, options.ProvenanceCode),
+                ct).ConfigureAwait(false);
+        }
+    }
+
     private sealed class EmitContext
     {
         public IIngestionBatch Batch { get; }
@@ -386,7 +429,7 @@ public sealed class SubstrateTextDecomposer
             Options = options;
         }
 
-        public int OnRecord(IntPtr ctx, ref TextDecomposeNative.Record record)
+        public int OnRecord(IntPtr ctx, ref TextDecomposeRecord record)
         {
             switch (record.Kind)
             {
@@ -395,8 +438,11 @@ public sealed class SubstrateTextDecomposer
                     Hash32 hash = ReadHash(record.HashA);
                     string code = EntityCodeFor(record.Subkind);
                     KindByHash[hash] = code;
-                    Batch.AddEntity(hash, code);
-                    EntityCount++;
+                    if (ShouldEmitEntity(Options, code, hash))
+                    {
+                        Batch.AddEntity(hash, code);
+                        EntityCount++;
+                    }
                     break;
                 }
                 case TextDecomposeNative.RecClassification:
@@ -413,8 +459,16 @@ public sealed class SubstrateTextDecomposer
                         TextDecomposeNative.PhysContour    => "contour",
                         _                                   => "contour",
                     };
+                    if (!ShouldEmitPhysicality(Options, physCode, entHash))
+                    {
+                        break;
+                    }
                     byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
-                    Batch.AddPhysicality(eh, physCode, wkb);
+                    Batch.AddPhysicality(eh, physCode, wkb, new Hartonomous.Core.Geometry.Point4D(
+                        record.CentroidX,
+                        record.CentroidY,
+                        record.CentroidZ,
+                        record.CentroidM));
                     PhysicalityCount++;
                     break;
                 }
@@ -442,8 +496,12 @@ public sealed class SubstrateTextDecomposer
                         TextDecomposeNative.SigSourceAuthority => "source_authority",
                         _                                       => "source_authority",
                     };
-                    Batch.AddSignificance(eh, ctxCode, record.DoubleParam);
-                    SignificanceCount++;
+                    const string attestationTypeCode = "provenance_authority_corroboration";
+                    if (ShouldEmitSignificance(Options, ctxCode, attestationTypeCode, entHash))
+                    {
+                        Batch.AddSignificance(eh, ctxCode, record.DoubleParam, attestationTypeCode);
+                        SignificanceCount++;
+                    }
                     break;
                 }
             }
@@ -460,6 +518,11 @@ public sealed class SubstrateTextDecomposer
 
         private void AddSequence(EntityHandle parent, int ordinal, EntityHandle child)
         {
+            if (!ShouldEmitSequence(Options, parent.Hash, ordinal))
+            {
+                return;
+            }
+
             if (_sequences.Count > 0)
             {
                 PendingSequence tail = _sequences[^1];
@@ -514,7 +577,7 @@ public sealed class SubstrateTextDecomposer
             Options = options;
         }
 
-        public int OnRecord(IntPtr ctx, ref TextDecomposeNative.Record record)
+        public int OnRecord(IntPtr ctx, ref TextDecomposeRecord record)
         {
             switch (record.Kind)
             {
@@ -523,8 +586,11 @@ public sealed class SubstrateTextDecomposer
                     Hash32 hash = ReadHash(record.HashA);
                     string code = EntityCodeFor(record.Subkind);
                     KindByHash[hash] = code;
-                    Records.Add(new EntityRecord(code, hash, Options.ProvenanceCode));
-                    EntityCount++;
+                    if (ShouldEmitEntity(Options, code, hash))
+                    {
+                        Records.Add(new EntityRecord(code, hash, Options.ProvenanceCode));
+                        EntityCount++;
+                    }
                     break;
                 }
                 case TextDecomposeNative.RecClassification:
@@ -538,18 +604,16 @@ public sealed class SubstrateTextDecomposer
                         TextDecomposeNative.PhysContour    => "contour",
                         _                                   => "contour",
                     };
-                    byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
-                    // Native text_decompose hands back WKB only; pipeline
-                    // needs the representative Point4D for inline edge
-                    // build, so extract it here.
-                    if (!Hartonomous.Core.Geometry.PostGisWkbReader.TryExtractCentroid(
-                            wkb, out Hartonomous.Core.Geometry.Point4D centroid))
+                    if (!ShouldEmitPhysicality(Options, physCode, entHash))
                     {
-                        throw new InvalidOperationException(
-                            $"text_decompose returned a {physCode} WKB whose subtype is " +
-                            $"unsupported by PostGisWkbReader (entity " +
-                            $"{entHash.ToHexString()}, {wkb.Length} bytes).");
+                        break;
                     }
+                    byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
+                    Hartonomous.Core.Geometry.Point4D centroid = new(
+                        record.CentroidX,
+                        record.CentroidY,
+                        record.CentroidZ,
+                        record.CentroidM);
                     Records.Add(new PhysicalityRecord(
                         physCode,
                         entHash,
@@ -577,9 +641,13 @@ public sealed class SubstrateTextDecomposer
                     // Native text_decompose ships source_authority priors —
                     // attestation_type 'provenance_authority_corroboration'
                     // is the canonical match for ingestion-time priming.
-                    Records.Add(new EntitySignificanceRecord(
-                        ctxCode, "provenance_authority_corroboration", entHash, record.DoubleParam));
-                    SignificanceCount++;
+                    const string attestationTypeCode = "provenance_authority_corroboration";
+                    if (ShouldEmitSignificance(Options, ctxCode, attestationTypeCode, entHash))
+                    {
+                        Records.Add(new EntitySignificanceRecord(
+                            ctxCode, attestationTypeCode, entHash, record.DoubleParam));
+                        SignificanceCount++;
+                    }
                     break;
                 }
             }
@@ -588,6 +656,11 @@ public sealed class SubstrateTextDecomposer
 
         private void AddSequence(Hash32 parentHash, int ordinal, Hash32 childHash)
         {
+            if (!ShouldEmitSequence(Options, parentHash, ordinal))
+            {
+                return;
+            }
+
             if (Records.Count > 0 &&
                 Records[^1] is SequenceRecord tail &&
                 tail.Ordinal + tail.RleCount == ordinal &&

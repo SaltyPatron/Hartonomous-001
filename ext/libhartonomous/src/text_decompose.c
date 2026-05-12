@@ -440,7 +440,6 @@ static int td_word_boundaries(const TdDecoded* d, TdWords* out)
 
     out->indices[out->count++] = 0;
 
-    uint8_t prev_lit = td_wb(d->codepoints[0]);
     uint8_t prevSig  = td_wb(d->codepoints[0]);
     uint8_t prev2Sig = UC_WB_Other;
     int     riRun    = (prevSig == UC_WB_Regional_Indicator) ? 1 : 0;
@@ -529,7 +528,6 @@ static int td_word_boundaries(const TdDecoded* d, TdWords* out)
             riRun = (curr == UC_WB_Regional_Indicator) ? 1 : 0;
         }
 
-        prev_lit = curr;
         if (curr != UC_WB_Extend && curr != UC_WB_Format && curr != UC_WB_ZWJ) {
             prev2Sig = prevSig;
             prevSig  = curr;
@@ -742,7 +740,8 @@ int hartonomous_text_decompose(
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
             .hash_a = h, .hash_b = h,
-            .wkb = pt, .wkb_len = 37
+            .wkb = pt, .wkb_len = 37,
+            .centroid = { cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3] }
         }));
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
@@ -774,7 +773,8 @@ int hartonomous_text_decompose(
             EMIT(((hartonomous_text_record_t){
                 .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
                 .hash_a = gh, .hash_b = gh,
-                .wkb = pt, .wkb_len = 37
+                .wkb = pt, .wkb_len = 37,
+                .centroid = { gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3] }
             }));
         } else if (cpCount > 1) {
             size_t ls_len;
@@ -784,7 +784,8 @@ int hartonomous_text_decompose(
             EMIT(((hartonomous_text_record_t){
                 .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
                 .hash_a = gh, .hash_b = gh,
-                .wkb = ls_buf, .wkb_len = ls_len
+                .wkb = ls_buf, .wkb_len = ls_len,
+                .centroid = { gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3] }
             }));
         }
         for (int k = 0; k < cpCount; k++) {
@@ -830,7 +831,8 @@ int hartonomous_text_decompose(
             EMIT(((hartonomous_text_record_t){
                 .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
                 .hash_a = wh, .hash_b = wh,
-                .wkb = pt, .wkb_len = 37
+                .wkb = pt, .wkb_len = 37,
+                .centroid = { w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3] }
             }));
         } else if (gcCount > 1) {
             size_t ls_len;
@@ -840,7 +842,8 @@ int hartonomous_text_decompose(
             EMIT(((hartonomous_text_record_t){
                 .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
                 .hash_a = wh, .hash_b = wh,
-                .wkb = ls_buf, .wkb_len = ls_len
+                .wkb = ls_buf, .wkb_len = ls_len,
+                .centroid = { w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3] }
             }));
         }
         for (int k = 0; k < gcCount; k++) {
@@ -872,7 +875,8 @@ int hartonomous_text_decompose(
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
             .hash_a = comp_h, .hash_b = comp_h,
-            .wkb = pt, .wkb_len = 37
+            .wkb = pt, .wkb_len = 37,
+            .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }
         }));
     } else if (wN > 1) {
         size_t ls_len;
@@ -882,7 +886,8 @@ int hartonomous_text_decompose(
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
             .hash_a = comp_h, .hash_b = comp_h,
-            .wkb = ls_buf, .wkb_len = ls_len
+            .wkb = ls_buf, .wkb_len = ls_len,
+            .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }
         }));
     }
     for (int k = 0; k < wN; k++) {

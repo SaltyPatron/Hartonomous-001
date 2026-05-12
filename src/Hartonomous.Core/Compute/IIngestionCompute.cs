@@ -12,6 +12,15 @@ public interface IIngestionCompute
 {
     KnnGraphF64 BuildKnnCosineGraphF64(int n, int d, double[] flat, int k);
 
+    void GemmF64(
+        TransposeOp opA, TransposeOp opB,
+        long m, long n, long k,
+        double alpha,
+        ReadOnlySpan<double> a, long lda,
+        ReadOnlySpan<double> b, long ldb,
+        double beta,
+        Span<double> c, long ldc);
+
     SparseEigsResult SparseSymEigsF64(
         int n, long nnz,
         long[] rowPtr, long[] colIdx, double[] values,

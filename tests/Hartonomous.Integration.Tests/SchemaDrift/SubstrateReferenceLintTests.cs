@@ -26,8 +26,9 @@ namespace Hartonomous.Integration.Tests.SchemaDrift;
 [Trait("Category", "SchemaDrift")]
 public sealed class SubstrateReferenceLintTests
 {
-    private const string ConnectionString =
-        "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
+    private static string ConnectionString() =>
+        Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
+        ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
 
     /// <summary>
     /// Allowlist of <c>substrate.&lt;name&gt;</c> tokens that legitimately do NOT
@@ -154,7 +155,7 @@ public sealed class SubstrateReferenceLintTests
     {
         HashSet<string> objects = new(StringComparer.OrdinalIgnoreCase);
 
-        await using NpgsqlConnection conn = new(ConnectionString);
+        await using NpgsqlConnection conn = new(ConnectionString());
         await conn.OpenAsync();
 
         // pg_class: tables, views, materialized views, partitions, sequences, foreign tables.

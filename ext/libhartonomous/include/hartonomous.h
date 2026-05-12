@@ -758,6 +758,7 @@ typedef struct hartonomous_text_record {
     double          double_param;/* mu | 0 */
     const uint8_t*  wkb;         /* EWKB bytes | 0 */
     size_t          wkb_len;     /* 0 when wkb is 0 */
+    double          centroid[4]; /* representative XYZM for physicality records */
 } hartonomous_text_record_t;
 
 /* Callback fires once per emitted record. Return 0 to continue, non-zero to

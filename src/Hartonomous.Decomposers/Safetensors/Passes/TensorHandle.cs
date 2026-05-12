@@ -13,4 +13,5 @@ public sealed record TensorHandle(
     SafetensorsTensorInfo Info,
     TensorClassification Classification,
     byte[] ContentHash,
-    EntityHandle Entity);
+    EntityHandle Entity,
+    EntityHandle? PackageTensorEntity = null);

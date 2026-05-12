@@ -6,9 +6,10 @@ using Hartonomous.Core.Data;
 
 namespace Hartonomous.Engine.Ingestion;
 
-internal sealed class CodeResolver
+internal sealed class CodeResolver : IDisposable
 {
     private readonly IReferenceDataReader _reader;
+    private readonly SemaphoreSlim _cacheGate = new(1, 1);
     private Dictionary<string, int>? _entityTypes;
     private Dictionary<string, int>? _edgeTypes;
     private Dictionary<string, int>? _physicalityTypes;
@@ -23,81 +24,86 @@ internal sealed class CodeResolver
         _reader = reader;
     }
 
+    public void Dispose()
+    {
+        _cacheGate.Dispose();
+    }
+
     public async Task<int> EntityTypeIdAsync(string code, CancellationToken ct)
     {
-        _entityTypes ??= await _reader.LoadCodeMapAsync("substrate.entity_type", 32, ct);
-        if (_entityTypes.TryGetValue(code, out int id))
+        Dictionary<string, int> entityTypes = await EntityTypesAsync(ct).ConfigureAwait(false);
+        if (entityTypes.TryGetValue(code, out int id))
         {
             return id;
         }
-        _entityTypes = await _reader.LoadCodeMapAsync("substrate.entity_type", 32, ct);
-        return Resolve(_entityTypes, code, "entity_type");
+        entityTypes = await ReloadEntityTypesAsync(ct).ConfigureAwait(false);
+        return Resolve(entityTypes, code, "entity_type");
     }
 
     public async Task<int> EdgeTypeIdAsync(string code, CancellationToken ct)
     {
-        _edgeTypes ??= await _reader.LoadCodeMapAsync("substrate.edge_type", 64, ct);
-        if (_edgeTypes.TryGetValue(code, out int id))
+        Dictionary<string, int> edgeTypes = await EdgeTypesAsync(ct).ConfigureAwait(false);
+        if (edgeTypes.TryGetValue(code, out int id))
         {
             return id;
         }
-        _edgeTypes = await _reader.LoadCodeMapAsync("substrate.edge_type", 64, ct);
-        return Resolve(_edgeTypes, code, "edge_type");
+        edgeTypes = await ReloadEdgeTypesAsync(ct).ConfigureAwait(false);
+        return Resolve(edgeTypes, code, "edge_type");
     }
 
     public async Task<int> PhysicalityTypeIdAsync(string code, CancellationToken ct)
     {
-        _physicalityTypes ??= await _reader.LoadCodeMapAsync("substrate.physicality_type", 16, ct);
-        if (_physicalityTypes.TryGetValue(code, out int id))
+        Dictionary<string, int> physicalityTypes = await PhysicalityTypesAsync(ct).ConfigureAwait(false);
+        if (physicalityTypes.TryGetValue(code, out int id))
         {
             return id;
         }
-        _physicalityTypes = await _reader.LoadCodeMapAsync("substrate.physicality_type", 16, ct);
-        return Resolve(_physicalityTypes, code, "physicality_type");
+        physicalityTypes = await ReloadPhysicalityTypesAsync(ct).ConfigureAwait(false);
+        return Resolve(physicalityTypes, code, "physicality_type");
     }
 
     public async Task<int> SignificanceContextIdAsync(string code, CancellationToken ct)
     {
-        _significanceContexts ??= await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct);
-        if (_significanceContexts.TryGetValue(code, out int id))
+        Dictionary<string, int> significanceContexts = await SignificanceContextsAsync(ct).ConfigureAwait(false);
+        if (significanceContexts.TryGetValue(code, out int id))
         {
             return id;
         }
-        _significanceContexts = await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct);
-        return Resolve(_significanceContexts, code, "significance_context");
+        significanceContexts = await ReloadSignificanceContextsAsync(ct).ConfigureAwait(false);
+        return Resolve(significanceContexts, code, "significance_context");
     }
 
     public async Task<int> AttestationTypeIdAsync(string code, CancellationToken ct)
     {
-        _attestationTypes ??= await _reader.LoadCodeMapAsync("substrate.attestation_type", 16, ct);
-        if (_attestationTypes.TryGetValue(code, out int id))
+        Dictionary<string, int> attestationTypes = await AttestationTypesAsync(ct).ConfigureAwait(false);
+        if (attestationTypes.TryGetValue(code, out int id))
         {
             return id;
         }
-        _attestationTypes = await _reader.LoadCodeMapAsync("substrate.attestation_type", 16, ct);
-        return Resolve(_attestationTypes, code, "attestation_type");
+        attestationTypes = await ReloadAttestationTypesAsync(ct).ConfigureAwait(false);
+        return Resolve(attestationTypes, code, "attestation_type");
     }
 
     public async Task<int> ProvenanceIdAsync(string code, CancellationToken ct)
     {
-        _provenances ??= await _reader.LoadCodeMapAsync("substrate.provenance", 64, ct);
-        if (TryResolveHierarchical(_provenances, code, out int id))
+        Dictionary<string, int> provenances = await ProvenancesAsync(ct).ConfigureAwait(false);
+        if (TryResolveHierarchical(provenances, code, out int id))
         {
             return id;
         }
-        _provenances = await _reader.LoadCodeMapAsync("substrate.provenance", 64, ct);
-        return ResolveHierarchical(_provenances, code, "provenance");
+        provenances = await ReloadProvenancesAsync(ct).ConfigureAwait(false);
+        return ResolveHierarchical(provenances, code, "provenance");
     }
 
     public async Task<int> EdgeRoleIdAsync(string code, CancellationToken ct)
     {
-        _edgeRoles ??= await _reader.LoadCodeMapAsync("substrate.edge_role", 16, ct);
-        if (_edgeRoles.TryGetValue(code, out int id))
+        Dictionary<string, int> edgeRoles = await EdgeRolesAsync(ct).ConfigureAwait(false);
+        if (edgeRoles.TryGetValue(code, out int id))
         {
             return id;
         }
-        _edgeRoles = await _reader.LoadCodeMapAsync("substrate.edge_role", 16, ct);
-        return Resolve(_edgeRoles, code, "edge_role");
+        edgeRoles = await ReloadEdgeRolesAsync(ct).ConfigureAwait(false);
+        return Resolve(edgeRoles, code, "edge_role");
     }
 
     /// <summary>
@@ -107,8 +113,8 @@ internal sealed class CodeResolver
     /// </summary>
     public async Task<IReadOnlyList<string>> AllSignificanceContextCodesAsync(CancellationToken ct)
     {
-        _significanceContexts ??= await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct);
-        return [.. _significanceContexts.Keys];
+        Dictionary<string, int> significanceContexts = await SignificanceContextsAsync(ct).ConfigureAwait(false);
+        return [.. significanceContexts.Keys];
     }
 
     /// <summary>
@@ -119,8 +125,8 @@ internal sealed class CodeResolver
     /// </summary>
     public async Task<double> ProvenanceMuAsync(string provenanceCode, CancellationToken ct)
     {
-        _provenanceMus ??= await _reader.LoadCodeDoubleMapAsync("substrate.provenance", "initial_mu", 16, ct);
-        if (_provenanceMus.TryGetValue(provenanceCode, out double mu))
+        Dictionary<string, double> provenanceMus = await ProvenanceMusAsync(ct).ConfigureAwait(false);
+        if (provenanceMus.TryGetValue(provenanceCode, out double mu))
         {
             return mu;
         }
@@ -134,12 +140,223 @@ internal sealed class CodeResolver
                 break;
             }
             current = current[..lastSlash];
-            if (_provenanceMus.TryGetValue(current, out mu))
+            if (provenanceMus.TryGetValue(current, out mu))
             {
                 return mu;
             }
         }
         return 1500.0; // Glicko-2 default if provenance code not found
+    }
+
+    private async Task<Dictionary<string, int>> EntityTypesAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _entityTypes);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _entityTypes ??= await _reader.LoadCodeMapAsync("substrate.entity_type", 32, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> EdgeTypesAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _edgeTypes);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _edgeTypes ??= await _reader.LoadCodeMapAsync("substrate.edge_type", 64, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> PhysicalityTypesAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _physicalityTypes);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _physicalityTypes ??= await _reader.LoadCodeMapAsync("substrate.physicality_type", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> SignificanceContextsAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _significanceContexts);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _significanceContexts ??= await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> AttestationTypesAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _attestationTypes);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _attestationTypes ??= await _reader.LoadCodeMapAsync("substrate.attestation_type", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ProvenancesAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _provenances);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _provenances ??= await _reader.LoadCodeMapAsync("substrate.provenance", 64, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> EdgeRolesAsync(CancellationToken ct)
+    {
+        Dictionary<string, int>? map = Volatile.Read(ref _edgeRoles);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _edgeRoles ??= await _reader.LoadCodeMapAsync("substrate.edge_role", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, double>> ProvenanceMusAsync(CancellationToken ct)
+    {
+        Dictionary<string, double>? map = Volatile.Read(ref _provenanceMus);
+        if (map is not null) { return map; }
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _provenanceMus ??= await _reader.LoadCodeDoubleMapAsync("substrate.provenance", "initial_mu", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadEntityTypesAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _entityTypes = await _reader.LoadCodeMapAsync("substrate.entity_type", 32, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadEdgeTypesAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _edgeTypes = await _reader.LoadCodeMapAsync("substrate.edge_type", 64, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadPhysicalityTypesAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _physicalityTypes = await _reader.LoadCodeMapAsync("substrate.physicality_type", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadSignificanceContextsAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _significanceContexts = await _reader.LoadCodeMapAsync("substrate.significance_context", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadAttestationTypesAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _attestationTypes = await _reader.LoadCodeMapAsync("substrate.attestation_type", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadProvenancesAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _provenances = await _reader.LoadCodeMapAsync("substrate.provenance", 64, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, int>> ReloadEdgeRolesAsync(CancellationToken ct)
+    {
+        await _cacheGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _edgeRoles = await _reader.LoadCodeMapAsync("substrate.edge_role", 16, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
     }
 
     private static int Resolve(Dictionary<string, int> map, string code, string typeName)

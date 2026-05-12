@@ -1,3 +1,4 @@
+using Hartonomous.Core.Data;
 using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Ucd;
@@ -12,7 +13,7 @@ internal sealed partial class ExtensionCatalogVerificationPass : IUnicodeSeedPas
     {
         string version = await UnicodeSql.ExecuteScalarStringAsync(
             context.Connection,
-            "SELECT substrate.ucd_version()",
+            SubstrateFunctionNames.UcdVersion,
             ct);
         if (string.IsNullOrWhiteSpace(version))
         {
