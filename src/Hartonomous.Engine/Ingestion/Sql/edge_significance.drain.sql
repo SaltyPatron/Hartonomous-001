@@ -2,4 +2,5 @@ INSERT INTO substrate.edge_significance (context_type_id, edge_type_id, edge_has
 SELECT DISTINCT ON (context_type_id, edge_type_id, edge_hash, attestation_type_id)
        context_type_id, edge_type_id, edge_hash, attestation_type_id, mu
   FROM pg_temp.edge_significance_inflight
+ ORDER BY context_type_id, edge_type_id, edge_hash, attestation_type_id, mu DESC
 ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
