@@ -2304,7 +2304,14 @@ CREATE TABLE substrate.entity (
     -- Compositions store their child-sequence in physicality.geom as
     -- ID-encoded LINESTRINGZM (mantissa-packed vertices); this column
     -- carries the real-coord position for cross-tier and cross-edge math.
-    centroid_4d geometry(POINTZM) NOT NULL
+    --
+    -- TRANSITIONAL nullability: currently NULL-allowed because the
+    -- ingestion pipeline (S3.B) hasn't been migrated to compute and emit
+    -- the real-coord centroid per entity yet. Once the pipeline migration
+    -- lands, this becomes NOT NULL and every entity insert provides its
+    -- real-coord centroid (atoms: content-derived; compositions: recursive
+    -- mean of children's centroid_4d, computed at INSERT time).
+    centroid_4d geometry(POINTZM)
 );
 
 CREATE INDEX entity_centroid_4d_idx
