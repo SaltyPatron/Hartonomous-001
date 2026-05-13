@@ -1396,8 +1396,9 @@ CREATE TABLE substrate.provenance (
     -- Per-source uncertainty for Glicko-2 priors (was hardcoded 350 before
     -- the wide-band tier ladder reseed).
     initial_sigma        FLOAT8      NOT NULL DEFAULT 350.0,
-    -- Modalities this source is authoritative in. Empty array → text default.
-    modality_codes       substrate.modality_code[] NOT NULL DEFAULT '{}',
+    -- Modalities this source is authoritative in moved to junction
+    -- substrate.provenance_modality (proper relational shape — no array
+    -- columns in substrate.* tables; 1NF / FK / btree-indexability discipline).
     -- Lineage: code of an upstream source whose authority this one inherits.
     derives_from         VARCHAR(64),
     -- Lineage decay factor applied when the parent's trust flows through.
@@ -1419,13 +1420,11 @@ CREATE TABLE substrate.provenance (
 );
 
 COMMENT ON TABLE substrate.provenance IS
-    'Source of an entity or edge with trust prior. Carries the trust topology axes (modality, lineage, scope) the substrate combines into per-arena Glicko-2 priors via COALESCE(provenance_edge_authority.initial_mu, p.initial_mu × et.semantic_weight × p.derivation_decay).';
+    'Source of an entity or edge with trust prior. Carries the trust topology axes (lineage, scope) the substrate combines into per-arena Glicko-2 priors via COALESCE(provenance_edge_authority.initial_mu, p.initial_mu × et.semantic_weight × p.derivation_decay). Modality authority lives in the substrate.provenance_modality junction.';
 COMMENT ON COLUMN substrate.provenance.curator_class IS
     'authoritative_standard, academic_curated, academic_consortium, community_curated, community_contributed, model_derived, system_computed, user_input.';
 COMMENT ON COLUMN substrate.provenance.initial_mu IS
     'Glicko-2 prior μ. Wide-band ladder: 20K (user_session) → 100K (authoritative_standard). Edge-time prior is multiplied by edge_type.semantic_weight × derivation_decay (with optional provenance_edge_authority override).';
-COMMENT ON COLUMN substrate.provenance.modality_codes IS
-    'Modalities this source is authoritative in (text, audio, image, video, model_weights). Cross-modal claims fall back to default.';
 COMMENT ON COLUMN substrate.provenance.derives_from IS
     'Code of an upstream provenance whose authority this one inherits — together with derivation_decay, models trust lineage (OMW ← princeton_wordnet at 0.92).';
 COMMENT ON COLUMN substrate.provenance.scope_kind IS
@@ -1874,26 +1873,57 @@ ON CONFLICT (code) DO NOTHING;
 -- substrate.provenance seed — wide-band tier ladder.
 --
 -- Glicko-2 priors span 20K (user_session) to 100K (authoritative_standard).
--- modality_codes enumerates which modalities each source is authoritative
--- in. derives_from + derivation_decay model lineage (OMW = 0.92 × WordNet).
+-- Modality authority lives in substrate.provenance_modality (junction table
+-- with composite PK + bidirectional indexes — no array columns in
+-- substrate.*). derives_from + derivation_decay model lineage (OMW = 0.92
+-- × WordNet).
 --
 -- Tier ladder rationale: cross-modal cross-source comparison only works
 -- when a source's prior reflects its actual epistemic status. Flat 1500
 -- priors made A* over arenas degenerate to uniform-cost BFS — the
 -- topology was structurally absent from the substrate.
 INSERT INTO substrate.provenance
-    (code, curator_class, initial_mu, initial_sigma, modality_codes, derives_from, derivation_decay)
+    (code, curator_class, initial_mu, initial_sigma, derives_from, derivation_decay)
 VALUES
-    ('unicode_consortium',     'authoritative_standard', 100000,  50, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
-    ('sil_international',      'authoritative_standard', 100000,  50, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
-    ('princeton_wordnet',      'academic_curated',        90000, 100, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
-    ('omwn_consortium',        'academic_consortium',     85000, 100, ARRAY['text']::substrate.modality_code[],                                                'princeton_wordnet', 0.92),
-    ('universaldependencies',  'academic_consortium',     85000, 100, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
-    ('wiktextract',            'community_curated',       70000, 200, ARRAY['text']::substrate.modality_code[],                                                NULL,                1.00),
-    ('tatoeba',                'community_contributed',   50000, 350, ARRAY['text','audio']::substrate.modality_code[],                                        NULL,                1.00),
-    ('huggingface_model',      'model_derived',           60000, 350, ARRAY['text','model_weights']::substrate.modality_code[],                                NULL,                1.00),
-    ('system_computed',        'system_computed',         40000, 350, ARRAY['text','image','audio','video','model_weights']::substrate.modality_code[],        NULL,                1.00),
-    ('user_session',           'user_input',              20000, 500, ARRAY['text','image','audio','video','model_weights']::substrate.modality_code[],        NULL,                1.00);
+    ('unicode_consortium',     'authoritative_standard', 100000,  50, NULL,                1.00),
+    ('sil_international',      'authoritative_standard', 100000,  50, NULL,                1.00),
+    ('princeton_wordnet',      'academic_curated',        90000, 100, NULL,                1.00),
+    ('omwn_consortium',        'academic_consortium',     85000, 100, 'princeton_wordnet', 0.92),
+    ('universaldependencies',  'academic_consortium',     85000, 100, NULL,                1.00),
+    ('wiktextract',            'community_curated',       70000, 200, NULL,                1.00),
+    ('tatoeba',                'community_contributed',   50000, 350, NULL,                1.00),
+    ('huggingface_model',      'model_derived',           60000, 350, NULL,                1.00),
+    ('system_computed',        'system_computed',         40000, 350, NULL,                1.00),
+    ('user_session',           'user_input',              20000, 500, NULL,                1.00);
+
+-- Modality authority per source — one junction row per (provenance, modality).
+INSERT INTO substrate.provenance_modality (provenance_id, modality_code)
+SELECT p.id, m.modality_code
+  FROM substrate.provenance p
+  JOIN (
+      VALUES
+        ('unicode_consortium',     'text'::substrate.modality_code),
+        ('sil_international',      'text'::substrate.modality_code),
+        ('princeton_wordnet',      'text'::substrate.modality_code),
+        ('omwn_consortium',        'text'::substrate.modality_code),
+        ('universaldependencies',  'text'::substrate.modality_code),
+        ('wiktextract',            'text'::substrate.modality_code),
+        ('tatoeba',                'text'::substrate.modality_code),
+        ('tatoeba',                'audio'::substrate.modality_code),
+        ('huggingface_model',      'text'::substrate.modality_code),
+        ('huggingface_model',      'model_weights'::substrate.modality_code),
+        ('system_computed',        'text'::substrate.modality_code),
+        ('system_computed',        'image'::substrate.modality_code),
+        ('system_computed',        'audio'::substrate.modality_code),
+        ('system_computed',        'video'::substrate.modality_code),
+        ('system_computed',        'model_weights'::substrate.modality_code),
+        ('user_session',           'text'::substrate.modality_code),
+        ('user_session',           'image'::substrate.modality_code),
+        ('user_session',           'audio'::substrate.modality_code),
+        ('user_session',           'video'::substrate.modality_code),
+        ('user_session',           'model_weights'::substrate.modality_code)
+  ) AS m(code, modality_code)
+    ON p.code = m.code;
 
 -- ── sql/schema/seed/bidi_class.sql ───────────────────────────────────────
 INSERT INTO substrate.bidi_class (id, code, description) VALUES
@@ -2915,6 +2945,23 @@ CREATE TABLE IF NOT EXISTS substrate.entity_classification (
 
 COMMENT ON TABLE substrate.entity_classification IS
     'Per-entity classification metadata. Content (entity_hash) is identity; classification (entity_type_id) is metadata. Multiple decomposers can independently assert classifications on the same content; provenance distinguishes them.';
+
+-- ── sql/schema/tables/junctions/provenance_modality.sql ───────────────────────────────────────
+-- Junction: which modalities a provenance source is authoritative in.
+-- Replaces the prior substrate.provenance.modality_codes array column —
+-- proper relational shape with composite PK and bidirectional btree
+-- indexes (no array column, no 1NF violation, no FK-integrity bypass).
+CREATE TABLE substrate.provenance_modality (
+    provenance_id INT NOT NULL REFERENCES substrate.provenance(id) ON DELETE CASCADE,
+    modality_code substrate.modality_code NOT NULL,
+    PRIMARY KEY (provenance_id, modality_code)
+);
+
+CREATE INDEX provenance_modality_modality_idx
+    ON substrate.provenance_modality (modality_code);
+
+COMMENT ON TABLE substrate.provenance_modality IS
+    'Junction table: which modalities a provenance source is authoritative in. Replaces the prior modality_codes array column on substrate.provenance — proper relational shape (atomic columns, composite PK, FK to substrate.provenance(id), bidirectional indexes). Empty join = source authoritative for none / text default.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

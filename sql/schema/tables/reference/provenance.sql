@@ -29,8 +29,9 @@ CREATE TABLE substrate.provenance (
     -- Per-source uncertainty for Glicko-2 priors (was hardcoded 350 before
     -- the wide-band tier ladder reseed).
     initial_sigma        FLOAT8      NOT NULL DEFAULT 350.0,
-    -- Modalities this source is authoritative in. Empty array → text default.
-    modality_codes       substrate.modality_code[] NOT NULL DEFAULT '{}',
+    -- Modalities this source is authoritative in moved to junction
+    -- substrate.provenance_modality (proper relational shape — no array
+    -- columns in substrate.* tables; 1NF / FK / btree-indexability discipline).
     -- Lineage: code of an upstream source whose authority this one inherits.
     derives_from         VARCHAR(64),
     -- Lineage decay factor applied when the parent's trust flows through.
@@ -52,13 +53,11 @@ CREATE TABLE substrate.provenance (
 );
 
 COMMENT ON TABLE substrate.provenance IS
-    'Source of an entity or edge with trust prior. Carries the trust topology axes (modality, lineage, scope) the substrate combines into per-arena Glicko-2 priors via COALESCE(provenance_edge_authority.initial_mu, p.initial_mu × et.semantic_weight × p.derivation_decay).';
+    'Source of an entity or edge with trust prior. Carries the trust topology axes (lineage, scope) the substrate combines into per-arena Glicko-2 priors via COALESCE(provenance_edge_authority.initial_mu, p.initial_mu × et.semantic_weight × p.derivation_decay). Modality authority lives in the substrate.provenance_modality junction.';
 COMMENT ON COLUMN substrate.provenance.curator_class IS
     'authoritative_standard, academic_curated, academic_consortium, community_curated, community_contributed, model_derived, system_computed, user_input.';
 COMMENT ON COLUMN substrate.provenance.initial_mu IS
     'Glicko-2 prior μ. Wide-band ladder: 20K (user_session) → 100K (authoritative_standard). Edge-time prior is multiplied by edge_type.semantic_weight × derivation_decay (with optional provenance_edge_authority override).';
-COMMENT ON COLUMN substrate.provenance.modality_codes IS
-    'Modalities this source is authoritative in (text, audio, image, video, model_weights). Cross-modal claims fall back to default.';
 COMMENT ON COLUMN substrate.provenance.derives_from IS
     'Code of an upstream provenance whose authority this one inherits — together with derivation_decay, models trust lineage (OMW ← princeton_wordnet at 0.92).';
 COMMENT ON COLUMN substrate.provenance.scope_kind IS

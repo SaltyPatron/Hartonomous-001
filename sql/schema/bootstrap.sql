@@ -163,6 +163,7 @@
 -- @include schema/tables/junctions/pattern_deprel.sql
 -- @include schema/tables/junctions/provenance_edge_authority.sql
 -- @include schema/tables/junctions/entity_classification.sql
+-- @include schema/tables/junctions/provenance_modality.sql
 
 -- ── Phase 8b: post-junction seed (depends on junction tables existing) ─
 -- @include schema/seed/provenance_edge_authority.sql
