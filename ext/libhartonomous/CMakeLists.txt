@@ -187,6 +187,7 @@ set(HARTONOMOUS_SOURCES
     # ── Native text decomposition (was substrate.text_decompose round-trip) ──
     src/ucd_atoms_blob.c
     src/text_decompose.c
+    src/ucd_properties.c
     # ── Phase A.0.4 synthesis primitive stubs (Phase B.1 fills them in) ──
     src/synth_stubs.c
 )
@@ -213,6 +214,7 @@ target_sources(hartonomous PRIVATE
      ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_casing.c
      ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_pictographic.c
      ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_decomp.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/../hartonomous_pg/src/generated/pg_ucd_fcf.c
  )
 
 target_include_directories(hartonomous

@@ -16,9 +16,45 @@
 -- No partitioning by type. The entity table is a single index of hashes;
 -- B-tree on the PK gives O(log N) lookup. Per-type query patterns now
 -- JOIN substrate.entity_classification instead of partition-pruning.
+--
+-- hash_bits_0_51 + hash_bits_52_103 expose a 104-bit BLAKE3-derived prefix
+-- as two BIGINT columns, so trajectory-vertex (X, Z) mantissas — the X+Z
+-- 52-bit halves of each ingestion_trajectory LINESTRING4D vertex — can
+-- resolve to full hashes through a single batched composite-btree point
+-- lookup (substrate.entity_by_hash_prefix(BIGINT[], BIGINT[])).
+--
+-- The expressions are inlined here (rather than calling substrate.bb_hash_lo
+-- / bb_hash_hi) because GENERATED ALWAYS AS STORED requires the expression
+-- to be evaluable at CREATE TABLE time, and the bb_* function definitions
+-- live in the Phase 13 functions block. The two encodings are byte-for-byte
+-- equivalent: any change to bb_hash_lo / bb_hash_hi must mirror here.
 CREATE TABLE substrate.entity (
-    hash substrate.hash_value PRIMARY KEY
+    hash substrate.hash_value PRIMARY KEY,
+    hash_bits_0_51 BIGINT GENERATED ALWAYS AS (
+          (get_byte(hash, 0)::BIGINT)
+        | (get_byte(hash, 1)::BIGINT << 8)
+        | (get_byte(hash, 2)::BIGINT << 16)
+        | (get_byte(hash, 3)::BIGINT << 24)
+        | (get_byte(hash, 4)::BIGINT << 32)
+        | (get_byte(hash, 5)::BIGINT << 40)
+        | ((get_byte(hash, 6) & 15)::BIGINT << 48)
+    ) STORED,
+    hash_bits_52_103 BIGINT GENERATED ALWAYS AS (
+          ((get_byte(hash, 6) >> 4) & 15)::BIGINT
+        | (get_byte(hash, 7)::BIGINT << 4)
+        | (get_byte(hash, 8)::BIGINT << 12)
+        | (get_byte(hash, 9)::BIGINT << 20)
+        | (get_byte(hash, 10)::BIGINT << 28)
+        | (get_byte(hash, 11)::BIGINT << 36)
+        | (get_byte(hash, 12)::BIGINT << 44)
+    ) STORED
 );
 
 COMMENT ON TABLE substrate.entity IS
-    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type.';
+    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so trajectory-vertex X+Z mantissas resolve to full hashes via a composite-btree composite index (entity_hash_prefix_idx).';
+
+COMMENT ON COLUMN substrate.entity.hash_bits_0_51 IS
+    'Bits 0..51 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_lo(bytea). Lower half of the 104-bit hash prefix used for trajectory-vertex X mantissa packing and for batched lookup via substrate.entity_by_hash_prefix.';
+
+COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
+    'Bits 52..103 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_hi(bytea). Upper half of the 104-bit hash prefix used for trajectory-vertex Z mantissa packing.';

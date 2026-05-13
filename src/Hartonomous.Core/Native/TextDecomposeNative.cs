@@ -104,6 +104,67 @@ public static partial class TextDecomposeNative
     [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_from_hash")]
     public static unsafe partial int UcdCpFromHash(byte* hash32);
 
+    /// <summary>UAX-#29 Grapheme_Cluster_Break property byte for <paramref name="cp"/>.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_gcb")]
+    public static partial byte UcdCpGcb(int cp);
+
+    /// <summary>UAX-#29 Word_Break property byte for <paramref name="cp"/>.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_wb")]
+    public static partial byte UcdCpWb(int cp);
+
+    /// <summary>UAX-#29 Sentence_Break property byte for <paramref name="cp"/>.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_sb")]
+    public static partial byte UcdCpSb(int cp);
+
+    /// <summary>UAX-#14 Line_Break property byte for <paramref name="cp"/>.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_lb")]
+    public static partial byte UcdCpLb(int cp);
+
+    /// <summary>UCD InCB property byte for <paramref name="cp"/> (UAX-#29 GB9c support).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_incb")]
+    public static partial byte UcdCpIncb(int cp);
+
+    /// <summary>1 if <paramref name="cp"/> has Extended_Pictographic, 0 otherwise.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_extended_pictographic")]
+    public static partial int UcdCpExtendedPictographic(int cp);
+
+    /// <summary>
+    /// Simple case fold of <paramref name="cp"/>. Returns the codepoint
+    /// itself when no folding applies. Equivalent to UCD's
+    /// <c>Case_Folding.txt</c> 'C' status mapping.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_simple_case_fold")]
+    public static partial int UcdCpSimpleCaseFold(int cp);
+
+    /// <summary>Simple lowercase mapping; returns <paramref name="cp"/> when no mapping applies.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_simple_lowercase")]
+    public static partial int UcdCpSimpleLowercase(int cp);
+
+    /// <summary>Simple uppercase mapping; returns <paramref name="cp"/> when no mapping applies.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_simple_uppercase")]
+    public static partial int UcdCpSimpleUppercase(int cp);
+
+    /// <summary>Simple titlecase mapping; returns <paramref name="cp"/> when no mapping applies.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_simple_titlecase")]
+    public static partial int UcdCpSimpleTitlecase(int cp);
+
+    /// <summary>
+    /// Full case fold expansion. Writes the expansion codepoints into
+    /// <paramref name="outBuf"/> and returns the number written (>= 1 on
+    /// success). Returns -1 if <paramref name="outBuf"/> is too small or
+    /// <paramref name="cp"/> is out of range. Worst-case expansion in
+    /// Unicode 17.0 is 4 codepoints; size buffers accordingly.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_full_case_fold")]
+    public static unsafe partial int UcdCpFullCaseFold(int cp, int* outBuf, int outMax);
+
+    /// <summary>
+    /// UCA primary-weight collation rank for <paramref name="cp"/> — the
+    /// rank the substrate's S^3 Super-Fibonacci centroid is ordered by.
+    /// </summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_uca_index")]
+    public static partial int UcdCpUcaIndex(int cp);
+
     /// <summary>
     /// Decompose UTF-8 bytes into the substrate's text DAG. Native walks the
     /// codepoint/grapheme/word/composition DAG and fires <paramref name="emit"/>

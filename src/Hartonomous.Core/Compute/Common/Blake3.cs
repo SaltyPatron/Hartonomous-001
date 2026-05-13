@@ -1,6 +1,8 @@
 using System;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
+using System.Text;
 using Hartonomous.Core.Compute.Internal;
 
 namespace Hartonomous.Core.Compute.Common;
@@ -130,5 +132,73 @@ public static class Blake3
         {
             ArrayPool<byte>.Shared.Return(flat);
         }
+    }
+
+    /// <summary>
+    /// BLAKE3 hash of an <b>atomic identifier</b> string (AP-9). Reserved for
+    /// language codes, POS codes, semantic-relation codes, namespace tags —
+    /// strings whose role is to identify a slot in a bounded reference
+    /// vocabulary. NOT for user-visible text: every text-bearing content
+    /// (codepoint, grapheme, word_form, sentence, paragraph) routes through
+    /// <c>SubstrateTextDecomposer.Emit</c> so cross-source consensus
+    /// accumulates on one content-addressed identity per content. Hashing
+    /// user text directly here fragments the substrate.
+    /// </summary>
+    public static Hash32 ComputeAtomicStringHash(string atomicIdentifier)
+        => Hash32(Encoding.UTF8.GetBytes(atomicIdentifier).AsSpan());
+
+    /// <summary>
+    /// Canonical edge identity: BLAKE3 over the 4-byte big-endian
+    /// <paramref name="edgeTypeId"/> followed by the role-ordered
+    /// 32-byte participant hashes. Matches the substrate-side identity
+    /// computation in <c>substrate.edge</c> so cross-model corroboration on
+    /// the same logical relation collapses to one edge row.
+    /// </summary>
+    public static Hash32 ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<Hash32> participantHashes)
+    {
+        int len = 4 + participantHashes.Length * HashLen;
+        Span<byte> buffer = participantHashes.Length <= 8
+            ? stackalloc byte[len]
+            : new byte[len];
+        BitConverter.TryWriteBytes(buffer, edgeTypeId);
+        for (int i = 0; i < participantHashes.Length; i++)
+        {
+            participantHashes[i].CopyTo(buffer.Slice(4 + i * HashLen, HashLen));
+        }
+        return Hash32(buffer);
+    }
+
+    /// <summary>
+    /// Content hash for a Unicode codepoint atom. 4 big-endian bytes →
+    /// BLAKE3. Shared across every decomposer so the same codepoint from
+    /// ISO 639-3, WordNet, Wiktionary, every safetensors tokenizer, and any
+    /// user prompt deduplicates to the one tier-0 atom in the substrate's
+    /// Merkle DAG.
+    /// </summary>
+    public static Hash32 HashCodepoint(int codepoint)
+    {
+        Span<byte> bytes = stackalloc byte[4];
+        bytes[0] = (byte)(codepoint >> 24);
+        bytes[1] = (byte)(codepoint >> 16);
+        bytes[2] = (byte)(codepoint >> 8);
+        bytes[3] = (byte)codepoint;
+        return Hash32(bytes);
+    }
+
+    /// <summary>
+    /// Split a BLAKE3 hash into two 52-bit BIGINT halves (lo = bits 0..51,
+    /// hi = bits 52..103) for use as ingestion-trajectory vertex X+Z
+    /// coordinates. Mirrors <c>substrate.bb_hash_lo(bytea)</c> /
+    /// <c>substrate.bb_hash_hi(bytea)</c> byte-for-byte so the C# write side
+    /// and the SQL read side produce / consume identical doubles.
+    /// </summary>
+    public static (long Lo, long Hi) HashPrefix104(Hash32 hash)
+    {
+        Span<byte> bytes = stackalloc byte[HashLen];
+        hash.CopyTo(bytes);
+        const ulong Mask52 = 0x000F_FFFF_FFFF_FFFFUL;
+        long lo = (long)(BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(0, 8)) & Mask52);
+        long hi = (long)((BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(6, 8)) >> 4) & Mask52);
+        return (lo, hi);
     }
 }

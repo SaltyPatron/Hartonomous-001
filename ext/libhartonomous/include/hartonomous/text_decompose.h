@@ -78,6 +78,41 @@ HARTONOMOUS_API int hartonomous_ucd_cp_hash(int32_t cp, uint8_t out[32]);
 HARTONOMOUS_API int hartonomous_ucd_cp_hilbert(int32_t cp, uint64_t* out);
 HARTONOMOUS_API int32_t hartonomous_ucd_cp_from_hash(const uint8_t hash32[32]);
 
+/* ── Per-codepoint property accessors ──────────────────────── */
+
+/* UAX-#29 / UAX-#14 break properties. Returns 0 (Other) for any
+ * out-of-range codepoint. Values are stable byte codes matching the
+ * substrate's break_property reference table for the corresponding
+ * category. */
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_gcb(int32_t cp);
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_wb(int32_t cp);
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_sb(int32_t cp);
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_lb(int32_t cp);
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_incb(int32_t cp);
+
+HARTONOMOUS_API int hartonomous_ucd_cp_extended_pictographic(int32_t cp);
+
+/* Simple (single-codepoint) case mappings. Return the codepoint itself if
+ * the table has no entry. */
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_simple_case_fold(int32_t cp);
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_simple_lowercase(int32_t cp);
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_simple_uppercase(int32_t cp);
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_simple_titlecase(int32_t cp);
+
+/* Full (possibly multi-codepoint) case fold. Writes the expansion into
+ * out[0..return-1] in canonical UCD order. Returns the codepoint count on
+ * success (>= 1); returns -1 on null/oversize/out-of-range. Callers should
+ * size the buffer for at least 4 entries to cover the worst case in
+ * Unicode 17.0. */
+HARTONOMOUS_API int hartonomous_ucd_cp_full_case_fold(
+    int32_t cp,
+    int32_t* out,
+    int out_max);
+
+/* UCA primary-weight collation rank (the same UCA index the S^3
+ * Super-Fibonacci projection orders by). */
+HARTONOMOUS_API int32_t hartonomous_ucd_cp_uca_index(int32_t cp);
+
 /* ── Decomposition ─────────────────────────────────────────── */
 
 HARTONOMOUS_API int hartonomous_text_decompose(

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Native;
 using Hartonomous.Core.Text;
 
@@ -80,5 +81,68 @@ public static class PhysicalityEmitter
             points.Add(CodepointS3Position(rune.Value));
         }
         return points;
+    }
+
+    /// <summary>
+    /// Unweighted 4D mean of a child-centroid stream. The recursion engine of
+    /// the substrate's Merkle-DAG geometry: a tier-T composition's POINTZM
+    /// centroid is the mean of its tier-(T-1) children's centroids, which
+    /// are themselves means of the tier below, until the modality's atom
+    /// projection bottoms out.
+    ///
+    /// <para>
+    /// Throws on empty input — a composition with no children has no
+    /// well-defined geometric identity; callers must abstain rather than
+    /// fabricate a coordinate.
+    /// </para>
+    /// </summary>
+    public static Point4D MeanCentroid(ReadOnlySpan<Point4D> children)
+    {
+        if (children.Length == 0)
+        {
+            throw new ArgumentException(
+                "MeanCentroid requires at least one child centroid; a composition with no children has no geometric identity.",
+                nameof(children));
+        }
+        if (!Point4D.TryMean(children, out Point4D mean))
+        {
+            // Defensive: TryMean only fails on empty input, which is guarded
+            // above. If this path is reached the assumption has drifted.
+            throw new InvalidOperationException("MeanCentroid: Point4D.TryMean unexpectedly failed on non-empty input.");
+        }
+        return mean;
+    }
+
+    /// <summary>
+    /// Build the canonical-shape vertex list for an <c>entity_shape</c>
+    /// physicality emission — the ordered children's POINTZM centroids in
+    /// the composition's canonical role order. Returned as the caller's flat
+    /// (X, Y, Z, M) tuple sequence ready for
+    /// <see cref="Hartonomous.Core.Ingestion.IIngestionBatch.AddPhysicalityLineString4d"/>
+    /// (transitional API) or the trajectory-shape emission path.
+    ///
+    /// <para>
+    /// Vertices flow in real metric coordinates — NOT mantissa-packed
+    /// identity bits. Cross-source consensus over canonical shape (Fréchet,
+    /// Hausdorff, R-tree bbox queries) operates on these metric values
+    /// directly; this is what enables shape lookup ("is this thing
+    /// structurally like 'cat'?").
+    /// </para>
+    /// </summary>
+    public static List<(double X, double Y, double Z, double M)> BuildEntityShape(
+        ReadOnlySpan<Point4D> canonicalChildCentroids)
+    {
+        if (canonicalChildCentroids.Length == 0)
+        {
+            throw new ArgumentException(
+                "BuildEntityShape requires at least one child centroid.",
+                nameof(canonicalChildCentroids));
+        }
+        List<(double, double, double, double)> vertices = new(canonicalChildCentroids.Length);
+        foreach (Point4D p in canonicalChildCentroids)
+        {
+            vertices.Add((p.X, p.Y, p.Z, p.M));
+        }
+        return vertices;
     }
 }

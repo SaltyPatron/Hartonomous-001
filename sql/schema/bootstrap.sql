@@ -75,6 +75,7 @@
 -- @include schema/seed/entity_type.sql
 -- @include schema/seed/physicality_type.sql
 -- @include schema/seed/physicality_type_embedding_firefly.sql
+-- @include schema/seed/physicality_type_trajectories.sql
 -- @include schema/seed/edge_role.sql
 -- @include schema/seed/significance_context.sql
 -- @include schema/seed/attestation_type.sql
@@ -117,6 +118,8 @@
 -- @include schema/tables/core/physicality_audio.sql
 -- @include schema/tables/core/physicality_model.sql
 -- @include schema/tables/core/physicality_contour.sql
+-- @include schema/tables/core/physicality_entity_shape.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory.sql
 -- @include schema/tables/core/physicality_default.sql
 -- @include schema/tables/core/entity_significance.sql
 -- @include schema/tables/core/entity_significance_lexical.sql
@@ -233,6 +236,7 @@
 -- @include schema/indexes/idx_substrate_health_code.sql
 -- @include schema/indexes/idx_substrate_health_recent.sql
 -- @include schema/indexes/idx_tensor_role.sql
+-- @include schema/indexes/idx_entity_hash_prefix.sql
 
 -- (Persistent staging deleted post-W2E refactor: substrate.staging_* tables and the
 --  drain_staging_*_chunk / drain_all_staging functions are gone. The
@@ -254,6 +258,20 @@
 -- @include schema/functions/resolve_context_id.sql
 -- @include schema/functions/resolve_attestation_type_id.sql
 -- @include schema/functions/resolve_entity_handles.sql
+-- Mantissa packing helpers — used by trajectory write/read and by the
+-- entity_by_hash_prefix batched composite-btree lookup.
+-- @include schema/functions/bb_hash_lo.sql
+-- @include schema/functions/bb_hash_hi.sql
+-- @include schema/functions/bb_pack_hash_lo.sql
+-- @include schema/functions/bb_pack_hash_hi.sql
+-- @include schema/functions/bb_unpack_hash_lo.sql
+-- @include schema/functions/bb_unpack_hash_hi.sql
+-- @include schema/functions/bb_pack_ordinal_rle.sql
+-- @include schema/functions/bb_unpack_ordinal.sql
+-- @include schema/functions/bb_unpack_rle.sql
+-- @include schema/functions/bb_pack_metadata.sql
+-- @include schema/functions/bb_unpack_metadata.sql
+-- @include schema/functions/entity_by_hash_prefix.sql
 -- Reference-data populators
 -- @include schema/functions/populate_general_categories.sql
 -- @include schema/functions/populate_scripts.sql

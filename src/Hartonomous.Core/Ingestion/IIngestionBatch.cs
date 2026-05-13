@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Geometry;
 
@@ -150,12 +151,119 @@ public interface IIngestionBatch
     /// Append composition child metadata for the parent's physicality-backed
     /// trajectory. Ordinal is 1-based; <paramref name="rleCount"/> compresses
     /// contiguous runs of the same child.
+    ///
+    /// <para>
+    /// Deprecated. The trajectory model replaces composition-child rows with
+    /// <see cref="AddIngestionTrajectory"/> emitting a mantissa-packed
+    /// LINESTRING4D (or <see cref="AddIngestionMultiTrajectory"/> for
+    /// multi-segment / multi-tier compositions). The two-trajectory model
+    /// keeps canonical entity shape (<see cref="AddEntityShape"/>) and
+    /// recorded ingestion content (<see cref="AddIngestionTrajectory"/>) on
+    /// separate <c>physicality_type</c> rows. Scheduled for deletion in S5.
+    /// </para>
     /// </summary>
     void AddCompositionChild(
         EntityHandle parent,
         int ordinal,
         EntityHandle child,
         int rleCount = 1);
+
+    /// <summary>
+    /// Emit the entity's <b>canonical shape</b> physicality — real-coordinate
+    /// LINESTRINGZM through the children's centroids in canonical order.
+    /// Used for shape lookup / fingerprint matching via
+    /// <c>substrate.st_4d_frechet_distance</c>: same entity, same shape,
+    /// regardless of which decomposition encountered it.
+    ///
+    /// <para>
+    /// For atoms (codepoints), call <see cref="AddPhysicalityPoint4d"/> with
+    /// <c>physicalityTypeCode = "entity"</c> instead — atoms have a POINTZM
+    /// shape, not a linestring. For compositions, this emits a row with
+    /// <c>physicality_type = entity_shape</c> and <c>geom = LINESTRINGZM</c>
+    /// in real metric coordinates (NOT bit-banged identity).
+    /// </para>
+    ///
+    /// <para>
+    /// At least one centroid required. Same children sequence on the same
+    /// entity ⇒ same row by content-addressed dedup at the physicality PK.
+    /// </para>
+    /// </summary>
+    void AddEntityShape(
+        EntityHandle entity,
+        ReadOnlySpan<Point4D> canonicalChildCentroids)
+        => throw new NotSupportedException(
+            "AddEntityShape is wired by the pipeline's IIngestionBatch implementation in S3. Test doubles can override.");
+
+    /// <summary>
+    /// Emit the composition's <b>recorded ingestion trajectory</b> as a
+    /// mantissa-packed LINESTRINGZM — one vertex per child in trajectory
+    /// order, X+Z carrying the child's 104-bit hash prefix, Y carrying
+    /// ordinal+RLE, M carrying free-form metadata. Used for bit-perfect
+    /// reconstruction via <c>SubstrateTierWalker.WalkAsync</c>.
+    ///
+    /// <para>
+    /// Emits a row with <c>physicality_type = ingestion_trajectory</c> and
+    /// <c>geom = LINESTRINGZM</c>. Children are recovered via the
+    /// <c>(hash_bits_0_51, hash_bits_52_103)</c> composite btree on
+    /// <c>substrate.entity</c> — one batched lookup per tier walk, no
+    /// GiST reverse-spatial query.
+    /// </para>
+    ///
+    /// <para>
+    /// At least one vertex required. Same vertex sequence on the same
+    /// composition ⇒ same row by content-addressed dedup. Per AP-19, the
+    /// pipeline's diff against existing physicality rows suppresses
+    /// duplicates before COPY.
+    /// </para>
+    /// </summary>
+    void AddIngestionTrajectory(
+        EntityHandle parent,
+        ReadOnlySpan<TrajectoryVertex> vertices)
+        => throw new NotSupportedException(
+            "AddIngestionTrajectory is wired by the pipeline's IIngestionBatch implementation in S3. Test doubles can override.");
+
+    /// <summary>
+    /// Emit the composition's recorded ingestion trajectory as a
+    /// mantissa-packed MULTILINESTRINGZM — one sub-linestring per parallel
+    /// / discontinuous / multi-tier segment, vertices within each segment
+    /// in trajectory order. Used when a composition has multiple parallel
+    /// sub-sequences (audio + transcript, bilingual interlinear), multi-tier
+    /// fingerprint views (word tier + grapheme tier of the same sentence in
+    /// one row), or discontinuous content (footnote main + footnote body
+    /// interleaved).
+    ///
+    /// <para>
+    /// Emits a row with <c>physicality_type = ingestion_trajectory</c> and
+    /// <c>geom = MULTILINESTRINGZM</c>. Application reads
+    /// <c>GeometryType(geom)</c> and dispatches between LINESTRING vs
+    /// MULTILINESTRING.
+    /// </para>
+    /// </summary>
+    void AddIngestionMultiTrajectory(
+        EntityHandle parent,
+        IReadOnlyList<ReadOnlyMemory<TrajectoryVertex>> subTrajectories)
+        => throw new NotSupportedException(
+            "AddIngestionMultiTrajectory is wired by the pipeline's IIngestionBatch implementation in S3. Test doubles can override.");
+
+    /// <summary>
+    /// Emit one per-token firefly POINTZM — a single ingested model's
+    /// projection of <paramref name="parent"/> (typically a <c>word_form</c>
+    /// token entity) into the substrate's shared 4D frame. Replaces the
+    /// firefly emission embedded in <c>EmbeddingLookupTuplePass</c>.
+    ///
+    /// <para>
+    /// Emits a row with <c>physicality_type = firefly</c>, <c>geom = POINTZM</c>,
+    /// and <c>content_hash</c> derived from <paramref name="modelSourceId"/>
+    /// so multiple models' fireflies for the same token coexist on the same
+    /// entity (one row per model). Post-Procrustes alignment per AP-35.
+    /// </para>
+    /// </summary>
+    void AddFireflyPoint(
+        EntityHandle parent,
+        Hash32 modelSourceId,
+        Point4D projection)
+        => throw new NotSupportedException(
+            "AddFireflyPoint is wired by the pipeline's IIngestionBatch implementation in S3. Test doubles can override.");
 
     /// <summary>
     /// Append an entity-significance prime row in the given arena, stratified

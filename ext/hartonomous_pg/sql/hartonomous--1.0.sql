@@ -1701,6 +1701,34 @@ INSERT INTO substrate.physicality_type (code) VALUES
     ('embedding_firefly')
 ON CONFLICT (code) DO NOTHING;
 
+-- ── sql/schema/seed/physicality_type_trajectories.sql ───────────────────────────────────────
+-- Two-trajectory-per-entity additions (the read/write substrate of the
+-- mantissa-packed convergent refactor):
+--
+--   entity_shape          — canonical structural fingerprint, real metric
+--                           coordinates. POINT4D for atoms, LINESTRING4D
+--                           (or MULTILINESTRING4D for multi-segment shapes)
+--                           for compositions. One row per entity,
+--                           content-addressed across decompositions.
+--
+--   ingestion_trajectory  — recorded composition content for bit-perfect
+--                           reconstruction. LINESTRING4D (or
+--                           MULTILINESTRING4D for discontinuous / multi-tier
+--                           compositions) with mantissa-packed vertices —
+--                           X+Z carry the 104-bit child hash prefix, Y carries
+--                           ordinal+RLE, M carries free metadata. One row per
+--                           composition, content-addressed at the composition
+--                           level (same children sequence ⇒ same row ⇒ dedup).
+--
+-- Auto-assigned ids follow the prior seed (1..13 from physicality_type.sql;
+-- 14 from physicality_type_embedding_firefly.sql), so these get 15 and 16.
+-- The partitions in tables/core/physicality_entity_shape.sql and
+-- physicality_ingestion_trajectory.sql FOR VALUES IN (15) / (16) match.
+INSERT INTO substrate.physicality_type (code) VALUES
+    ('entity_shape'),
+    ('ingestion_trajectory')
+ON CONFLICT (code) DO NOTHING;
+
 -- ── sql/schema/seed/edge_role.sql ───────────────────────────────────────
 INSERT INTO substrate.edge_role (code) VALUES
     ('source'), ('target'), ('context'), ('mediator'),
@@ -2225,12 +2253,48 @@ END $$;
 -- No partitioning by type. The entity table is a single index of hashes;
 -- B-tree on the PK gives O(log N) lookup. Per-type query patterns now
 -- JOIN substrate.entity_classification instead of partition-pruning.
+--
+-- hash_bits_0_51 + hash_bits_52_103 expose a 104-bit BLAKE3-derived prefix
+-- as two BIGINT columns, so trajectory-vertex (X, Z) mantissas — the X+Z
+-- 52-bit halves of each ingestion_trajectory LINESTRING4D vertex — can
+-- resolve to full hashes through a single batched composite-btree point
+-- lookup (substrate.entity_by_hash_prefix(BIGINT[], BIGINT[])).
+--
+-- The expressions are inlined here (rather than calling substrate.bb_hash_lo
+-- / bb_hash_hi) because GENERATED ALWAYS AS STORED requires the expression
+-- to be evaluable at CREATE TABLE time, and the bb_* function definitions
+-- live in the Phase 13 functions block. The two encodings are byte-for-byte
+-- equivalent: any change to bb_hash_lo / bb_hash_hi must mirror here.
 CREATE TABLE substrate.entity (
-    hash substrate.hash_value PRIMARY KEY
+    hash substrate.hash_value PRIMARY KEY,
+    hash_bits_0_51 BIGINT GENERATED ALWAYS AS (
+          (get_byte(hash, 0)::BIGINT)
+        | (get_byte(hash, 1)::BIGINT << 8)
+        | (get_byte(hash, 2)::BIGINT << 16)
+        | (get_byte(hash, 3)::BIGINT << 24)
+        | (get_byte(hash, 4)::BIGINT << 32)
+        | (get_byte(hash, 5)::BIGINT << 40)
+        | ((get_byte(hash, 6) & 15)::BIGINT << 48)
+    ) STORED,
+    hash_bits_52_103 BIGINT GENERATED ALWAYS AS (
+          ((get_byte(hash, 6) >> 4) & 15)::BIGINT
+        | (get_byte(hash, 7)::BIGINT << 4)
+        | (get_byte(hash, 8)::BIGINT << 12)
+        | (get_byte(hash, 9)::BIGINT << 20)
+        | (get_byte(hash, 10)::BIGINT << 28)
+        | (get_byte(hash, 11)::BIGINT << 36)
+        | (get_byte(hash, 12)::BIGINT << 44)
+    ) STORED
 );
 
 COMMENT ON TABLE substrate.entity IS
-    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type.';
+    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so trajectory-vertex X+Z mantissas resolve to full hashes via a composite-btree composite index (entity_hash_prefix_idx).';
+
+COMMENT ON COLUMN substrate.entity.hash_bits_0_51 IS
+    'Bits 0..51 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_lo(bytea). Lower half of the 104-bit hash prefix used for trajectory-vertex X mantissa packing and for batched lookup via substrate.entity_by_hash_prefix.';
+
+COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
+    'Bits 52..103 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_hi(bytea). Upper half of the 104-bit hash prefix used for trajectory-vertex Z mantissa packing.';
 
 -- ── sql/schema/tables/core/edge.sql ───────────────────────────────────────
 -- Edge identity = BLAKE3 of (edge_type_id, ordered participant hashes).
@@ -2489,6 +2553,43 @@ CREATE TABLE substrate.physicality_contour
 ALTER TABLE substrate.physicality_contour
     ADD CONSTRAINT physicality_contour_linestring4d
     CHECK (ST_TypeTag4D(geom) = 2);
+
+-- ── sql/schema/tables/core/physicality_entity_shape.sql ───────────────────────────────────────
+-- Physicality type 15: entity_shape. Canonical structural fingerprint in
+-- real metric coordinates. POINT4D for atoms (id 1 partition already serves
+-- the codepoint-atom case; this partition's role is composition shapes),
+-- LINESTRING4D for compositions, MULTILINESTRING4D for shapes that have
+-- multiple parallel canonical forms (e.g. a sentence whose word-tier and
+-- grapheme-tier views ship in one fingerprint row).
+--
+-- ST_TypeTag4D values: 1 = POINT4D, 2 = LINESTRING4D, 4 = MULTILINESTRING4D
+-- (per ext/hartonomous_pg/sql/hartonomous--1.0.sql.in CREATE TYPE
+-- declarations). Any of these three forms is valid here; the CHECK below
+-- excludes geometries that are not part of the substrate's shape vocabulary.
+CREATE TABLE substrate.physicality_entity_shape
+    PARTITION OF substrate.physicality FOR VALUES IN (15);
+ALTER TABLE substrate.physicality_entity_shape
+    ADD CONSTRAINT physicality_entity_shape_geom_tag
+    CHECK (ST_TypeTag4D(geom) IN (1, 2, 4));
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory.sql ───────────────────────────────────────
+-- Physicality type 16: ingestion_trajectory. Recorded composition content —
+-- mantissa-packed LINESTRING4D (single-segment) or MULTILINESTRING4D
+-- (multi-parallel, multi-tier, or discontinuous compositions). Vertices are
+-- NOT metric coordinates; they're a 4-field packed row per
+-- docs/specs/sql/mantissa-exploitation.md, with X+Z = 104-bit child hash
+-- prefix, Y = (ordinal, RLE), M = metadata.
+--
+-- Reconstruction reads vertex (X, Z) and joins against
+-- substrate.entity_by_hash_prefix(BIGINT[], BIGINT[]); one batched btree
+-- point lookup per tier. PostGIS still indexes / dispatches geometric
+-- operators uniformly (frechet_4d_geom, hausdorff_4d_geom, R-tree on bbox),
+-- which makes shape-similarity queries on the packed structure first-class.
+CREATE TABLE substrate.physicality_ingestion_trajectory
+    PARTITION OF substrate.physicality FOR VALUES IN (16);
+ALTER TABLE substrate.physicality_ingestion_trajectory
+    ADD CONSTRAINT physicality_ingestion_trajectory_geom_tag
+    CHECK (ST_TypeTag4D(geom) IN (2, 4));
 
 -- ── sql/schema/tables/core/physicality_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_default
@@ -3244,6 +3345,16 @@ CREATE INDEX idx_substrate_health_recent ON monitor.substrate_health(recorded_at
 -- ── sql/schema/indexes/idx_tensor_role.sql ───────────────────────────────────────
 CREATE INDEX idx_tensor_role ON substrate.tensor_tensor_role(tensor_role_id, entity_hash);
 
+-- ── sql/schema/indexes/idx_entity_hash_prefix.sql ───────────────────────────────────────
+-- Composite btree on (hash_bits_0_51, hash_bits_52_103). The read-side kernel
+-- of SubstrateTierWalker: substrate.entity_by_hash_prefix(BIGINT[], BIGINT[])
+-- resolves trajectory-vertex (X, Z) mantissa slices to full BLAKE3 hashes in
+-- one batched point lookup per tier. Without this index the lookup falls
+-- back to a sequential scan over substrate.entity, defeating the whole
+-- O(D)-tier-walks contract.
+CREATE INDEX IF NOT EXISTS entity_hash_prefix_idx
+    ON substrate.entity USING btree (hash_bits_0_51, hash_bits_52_103);
+
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
 -- (Persistent staging deleted post-W2E refactor: substrate.staging_* tables and the
@@ -3428,6 +3539,250 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
      GROUP BY et.code, e.hash
      ORDER BY et.code, e.hash;
 $f$;
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- Mantissa packing helpers — used by trajectory write/read and by the
+-- entity_by_hash_prefix batched composite-btree lookup.
+
+-- ── sql/schema/functions/bb_hash_lo.sql ───────────────────────────────────────
+-- Mantissa packing helper: extract the lower 52 bits of a BLAKE3 hash as
+-- BIGINT, little-endian byte order.
+--
+-- Layout (matches Hartonomous.Core.Compute.Common.MantissaPacking byte-for-byte):
+--   bits 0..7   from byte 0
+--   bits 8..15  from byte 1
+--   bits 16..23 from byte 2
+--   bits 24..31 from byte 3
+--   bits 32..39 from byte 4
+--   bits 40..47 from byte 5
+--   bits 48..51 from low nibble of byte 6
+-- Total: 52 bits.
+--
+-- Combined with bb_hash_hi this yields a 104-bit hash prefix per entity —
+-- birthday collision at ~2^52 ≈ 5×10^15 entities, vastly safe at any
+-- substrate scale.
+CREATE OR REPLACE FUNCTION substrate.bb_hash_lo(p_hash substrate.hash_value)
+RETURNS BIGINT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT
+          (get_byte(p_hash, 0)::BIGINT)
+        | (get_byte(p_hash, 1)::BIGINT << 8)
+        | (get_byte(p_hash, 2)::BIGINT << 16)
+        | (get_byte(p_hash, 3)::BIGINT << 24)
+        | (get_byte(p_hash, 4)::BIGINT << 32)
+        | (get_byte(p_hash, 5)::BIGINT << 40)
+        | ((get_byte(p_hash, 6) & 15)::BIGINT << 48)
+$$;
+
+COMMENT ON FUNCTION substrate.bb_hash_lo(substrate.hash_value) IS
+    'Extract bits 0..51 of a BLAKE3 hash as BIGINT (LE byte order). Mirrors C# MantissaPacking byte-for-byte. Used to derive the substrate.entity.hash_bits_0_51 generated column and to seed substrate.entity_by_hash_prefix() lookup keys.';
+
+-- ── sql/schema/functions/bb_hash_hi.sql ───────────────────────────────────────
+-- Mantissa packing helper: extract bits 52..103 of a BLAKE3 hash as BIGINT.
+--
+-- Layout (matches Hartonomous.Core.Compute.Common.MantissaPacking byte-for-byte):
+--   bits 0..3  from high nibble of byte 6
+--   bits 4..11 from byte 7
+--   bits 12..19 from byte 8
+--   bits 20..27 from byte 9
+--   bits 28..35 from byte 10
+--   bits 36..43 from byte 11
+--   bits 44..51 from byte 12
+-- Total: 52 bits, packed into BIGINT in LE bit order.
+CREATE OR REPLACE FUNCTION substrate.bb_hash_hi(p_hash substrate.hash_value)
+RETURNS BIGINT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT
+          ((get_byte(p_hash, 6) >> 4) & 15)::BIGINT
+        | (get_byte(p_hash, 7)::BIGINT << 4)
+        | (get_byte(p_hash, 8)::BIGINT << 12)
+        | (get_byte(p_hash, 9)::BIGINT << 20)
+        | (get_byte(p_hash, 10)::BIGINT << 28)
+        | (get_byte(p_hash, 11)::BIGINT << 36)
+        | (get_byte(p_hash, 12)::BIGINT << 44)
+$$;
+
+COMMENT ON FUNCTION substrate.bb_hash_hi(substrate.hash_value) IS
+    'Extract bits 52..103 of a BLAKE3 hash as BIGINT (LE byte order). Combined with bb_hash_lo this is a 104-bit hash prefix; collision-free at substrate scale. Used to derive substrate.entity.hash_bits_52_103 and to seed substrate.entity_by_hash_prefix() lookup keys.';
+
+-- ── sql/schema/functions/bb_pack_hash_lo.sql ───────────────────────────────────────
+-- Pack a 52-bit BIGINT into an IEEE-754 double's mantissa for use as a
+-- LINESTRING4D / MULTILINESTRING4D vertex coordinate in
+-- substrate.physicality 'ingestion_trajectory' rows.
+--
+-- Encoding: double = 2^52 + (value & 0x000FFFFFFFFFFFFF). The result is
+-- exactly representable in IEEE-754 (the integer range [2^52, 2^53) sits
+-- entirely in normal-double precision with no rounding); inversion is
+-- exact via bb_unpack_hash_lo. Mirrors C# MantissaPacking.PackHashLo
+-- byte-for-byte for cross-language determinism (Law #6).
+CREATE OR REPLACE FUNCTION substrate.bb_pack_hash_lo(p_value BIGINT)
+RETURNS double precision
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT 4503599627370496.0::double precision
+         + (p_value & 4503599627370495)::double precision
+$$;
+
+COMMENT ON FUNCTION substrate.bb_pack_hash_lo(BIGINT) IS
+    'Pack 52-bit hash-lo BIGINT into a double mantissa via 2^52 + value. Inverse: bb_unpack_hash_lo. Used for the X dimension of ingestion_trajectory vertices.';
+
+-- ── sql/schema/functions/bb_pack_hash_hi.sql ───────────────────────────────────────
+-- Pack a 52-bit BIGINT into an IEEE-754 double's mantissa, same encoding as
+-- bb_pack_hash_lo. Used for the Z dimension of ingestion_trajectory vertices
+-- (the upper half of the 104-bit child-hash prefix).
+CREATE OR REPLACE FUNCTION substrate.bb_pack_hash_hi(p_value BIGINT)
+RETURNS double precision
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT 4503599627370496.0::double precision
+         + (p_value & 4503599627370495)::double precision
+$$;
+
+COMMENT ON FUNCTION substrate.bb_pack_hash_hi(BIGINT) IS
+    'Pack 52-bit hash-hi BIGINT into a double mantissa via 2^52 + value. Inverse: bb_unpack_hash_hi. Used for the Z dimension of ingestion_trajectory vertices.';
+
+-- ── sql/schema/functions/bb_unpack_hash_lo.sql ───────────────────────────────────────
+-- Inverse of bb_pack_hash_lo. Subtract 2^52, cast to BIGINT — exact for any
+-- value produced by the packer (no rounding because both 2^52 and 2^52 + v
+-- are exactly representable IEEE-754 integers).
+CREATE OR REPLACE FUNCTION substrate.bb_unpack_hash_lo(p_double double precision)
+RETURNS BIGINT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT (p_double - 4503599627370496.0::double precision)::BIGINT
+$$;
+
+COMMENT ON FUNCTION substrate.bb_unpack_hash_lo(double precision) IS
+    'Recover the 52-bit hash-lo BIGINT packed into a double by bb_pack_hash_lo. Used by ingestion_trajectory readers (composition_at, composition_range, recompose_text, etc.) to extract child-hash slices from LINESTRING4D vertex X mantissas.';
+
+-- ── sql/schema/functions/bb_unpack_hash_hi.sql ───────────────────────────────────────
+-- Inverse of bb_pack_hash_hi.
+CREATE OR REPLACE FUNCTION substrate.bb_unpack_hash_hi(p_double double precision)
+RETURNS BIGINT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT (p_double - 4503599627370496.0::double precision)::BIGINT
+$$;
+
+COMMENT ON FUNCTION substrate.bb_unpack_hash_hi(double precision) IS
+    'Recover the 52-bit hash-hi BIGINT packed into a double by bb_pack_hash_hi. Used by ingestion_trajectory readers to extract the upper half of the 104-bit child-hash prefix from LINESTRING4D vertex Z mantissas.';
+
+-- ── sql/schema/functions/bb_pack_ordinal_rle.sql ───────────────────────────────────────
+-- Pack (ordinal: int32, rle: int20) into a 52-bit BIGINT then into a double
+-- mantissa. Bit layout:
+--   bits 0..31  = ordinal (32 bits, 1-based vertex position)
+--   bits 32..51 = rle     (20 bits, run-length encoding count)
+--
+-- Ordinal limit: 2^32 ≈ 4.3 billion vertices per trajectory.
+-- RLE limit: 2^20 ≈ 1 million repeats per run.
+-- Both fit comfortably in any practical substrate workload.
+CREATE OR REPLACE FUNCTION substrate.bb_pack_ordinal_rle(p_ordinal INT, p_rle INT)
+RETURNS double precision
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT 4503599627370496.0::double precision
+         + (
+               (p_ordinal::BIGINT & 4294967295)            -- low 32 bits
+             | ((p_rle::BIGINT & 1048575) << 32)            -- next 20 bits
+           )::double precision
+$$;
+
+COMMENT ON FUNCTION substrate.bb_pack_ordinal_rle(INT, INT) IS
+    'Pack (ordinal, rle) into the Y mantissa of an ingestion_trajectory vertex. Inverse: bb_unpack_ordinal + bb_unpack_rle. Used for vertex ordinal + RLE bookkeeping in LINESTRING4D / MULTILINESTRING4D recorded trajectories.';
+
+-- ── sql/schema/functions/bb_unpack_ordinal.sql ───────────────────────────────────────
+-- Recover the ordinal (low 32 bits) from a packed (ordinal, rle) Y mantissa.
+CREATE OR REPLACE FUNCTION substrate.bb_unpack_ordinal(p_double double precision)
+RETURNS INT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT (
+        ((p_double - 4503599627370496.0::double precision)::BIGINT) & 4294967295
+    )::INT
+$$;
+
+COMMENT ON FUNCTION substrate.bb_unpack_ordinal(double precision) IS
+    'Extract the 32-bit ordinal from an ingestion_trajectory vertex Y mantissa packed by bb_pack_ordinal_rle. Inverse companion: bb_unpack_rle.';
+
+-- ── sql/schema/functions/bb_unpack_rle.sql ───────────────────────────────────────
+-- Recover the RLE run-length (bits 32..51) from a packed (ordinal, rle) Y mantissa.
+CREATE OR REPLACE FUNCTION substrate.bb_unpack_rle(p_double double precision)
+RETURNS INT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT (
+        (((p_double - 4503599627370496.0::double precision)::BIGINT) >> 32) & 1048575
+    )::INT
+$$;
+
+COMMENT ON FUNCTION substrate.bb_unpack_rle(double precision) IS
+    'Extract the 20-bit RLE run-length from an ingestion_trajectory vertex Y mantissa packed by bb_pack_ordinal_rle.';
+
+-- ── sql/schema/functions/bb_pack_metadata.sql ───────────────────────────────────────
+-- Pack a 52-bit metadata BIGINT into a double mantissa. The 52 bits are
+-- free-form per caller: attestation type, role flag, edge type discriminator,
+-- sub-tier flag, etc. Same encoding (2^52 + value) as bb_pack_hash_lo.
+CREATE OR REPLACE FUNCTION substrate.bb_pack_metadata(p_value BIGINT)
+RETURNS double precision
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT 4503599627370496.0::double precision
+         + (p_value & 4503599627370495)::double precision
+$$;
+
+COMMENT ON FUNCTION substrate.bb_pack_metadata(BIGINT) IS
+    'Pack 52 bits of free-form metadata into the M mantissa of an ingestion_trajectory vertex. Inverse: bb_unpack_metadata.';
+
+-- ── sql/schema/functions/bb_unpack_metadata.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.bb_unpack_metadata(p_double double precision)
+RETURNS BIGINT
+LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+AS $$
+    SELECT (p_double - 4503599627370496.0::double precision)::BIGINT
+$$;
+
+COMMENT ON FUNCTION substrate.bb_unpack_metadata(double precision) IS
+    'Recover the 52-bit metadata BIGINT packed by bb_pack_metadata from an ingestion_trajectory vertex M mantissa.';
+
+-- ── sql/schema/functions/entity_by_hash_prefix.sql ───────────────────────────────────────
+-- Batched composite btree lookup: given parallel arrays of 52-bit hash-lo
+-- and 52-bit hash-hi prefixes (one per child to resolve), return matching
+-- (hash_bits_0_51, hash_bits_52_103, hash) tuples from substrate.entity in
+-- a single round trip.
+--
+-- The lookup is the read-side kernel of SubstrateTierWalker: per tier,
+-- unpack each ingestion_trajectory vertex's X + Z mantissas into (lo, hi),
+-- pass the arrays to this function, recover full hashes via the composite
+-- btree on (hash_bits_0_51, hash_bits_52_103). One round trip per tier walk
+-- regardless of fanout. No GiST k-NN, no reverse-spatial lookup.
+--
+-- Result preserves caller order: row[i] corresponds to (p_lo[i], p_hi[i])
+-- when a match exists. Missing pairs are simply absent from the result.
+-- Callers that need a NULL fill for missing pairs should LEFT JOIN this
+-- result back to their input arrays in SQL.
+CREATE OR REPLACE FUNCTION substrate.entity_by_hash_prefix(
+    p_lo BIGINT[],
+    p_hi BIGINT[]
+)
+RETURNS TABLE(
+    hash_bits_0_51 BIGINT,
+    hash_bits_52_103 BIGINT,
+    hash substrate.hash_value
+)
+LANGUAGE SQL STABLE PARALLEL SAFE
+AS $$
+    SELECT e.hash_bits_0_51, e.hash_bits_52_103, e.hash
+    FROM substrate.entity e
+    JOIN unnest(p_lo, p_hi) AS probe(lo, hi)
+      ON e.hash_bits_0_51   = probe.lo
+     AND e.hash_bits_52_103 = probe.hi;
+$$;
+
+COMMENT ON FUNCTION substrate.entity_by_hash_prefix(BIGINT[], BIGINT[]) IS
+    'Batched composite-btree point lookup of substrate.entity rows by 104-bit hash prefix. The read-side kernel of SubstrateTierWalker: one call per tier returns all child hashes in that tier. Backed by the (hash_bits_0_51, hash_bits_52_103) btree composite index.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
