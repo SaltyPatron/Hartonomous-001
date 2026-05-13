@@ -24,8 +24,8 @@ public sealed class TextEmissionCache : ITextEmissionCache
     public bool TryRegisterPhysicality(string physicalityTypeCode, Hash32 entityHash)
         => TryRegister(_physicalities, ref _physicalityCount, ComposeKey(physicalityTypeCode, entityHash));
 
-    public bool TryRegisterCompositionChild(Hash32 parentHash, int ordinal)
-        => TryRegister(_compositionChildren, ref _compositionChildCount, ComposeKey(parentHash, ordinal));
+    public bool TryRegisterCompositionChild(Hash32 parentHash, int ordinal, Hash32 childHash)
+        => TryRegister(_compositionChildren, ref _compositionChildCount, ComposeKey(parentHash, ordinal, childHash));
 
     public bool TryRegisterSignificance(string contextTypeCode, string attestationTypeCode, Hash32 entityHash)
         => TryRegister(_significances, ref _significanceCount, ComposeKey(contextTypeCode, attestationTypeCode, entityHash));
@@ -76,13 +76,14 @@ public sealed class TextEmissionCache : ITextEmissionCache
         return Blake3.Hash32(buf);
     }
 
-    private static Hash32 ComposeKey(Hash32 hash, int ordinal)
+    private static Hash32 ComposeKey(Hash32 parentHash, int ordinal, Hash32 childHash)
     {
-        Span<byte> buf = stackalloc byte[Hash32.Length + 4];
-        hash.CopyTo(buf);
+        Span<byte> buf = stackalloc byte[Hash32.Length + 4 + Hash32.Length];
+        parentHash.CopyTo(buf);
         System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
             buf.Slice(Hash32.Length, 4),
             ordinal);
+        childHash.CopyTo(buf.Slice(Hash32.Length + 4, Hash32.Length));
         return Blake3.Hash32(buf);
     }
 }

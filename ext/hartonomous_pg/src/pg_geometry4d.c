@@ -228,10 +228,10 @@ static void parse_linestring_payload(const char **p, Buf *out)
 {
     int32 n = 0;
     double *pts = parse_point_list(p, &n);
-    if (n < 2)
+    if (n < 1)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-                 errmsg("geometry4d: LINESTRING4D requires at least 2 points")));
+                 errmsg("geometry4d: LINESTRING4D requires at least 1 point")));
     buf_u32(out, (uint32) n);
     buf_append(out, pts, (size_t) n * 4 * sizeof(double));
     pfree(pts);
@@ -783,7 +783,7 @@ walk_payload(uint32 tag, const char *cur, const char *end, bool *bad,
         case G4D_TAG_LINESTRING:
         {
             uint32 n; NEED(sizeof(uint32)); memcpy(&n, cur, sizeof(uint32)); cur += sizeof(uint32);
-            if (n < 2) { *bad = true; return cur; }
+            if (n == 0) { *bad = true; return cur; }
             NEED((size_t) n * 4 * sizeof(double));
             for (uint32 i = 0; i < n; i++)
             {

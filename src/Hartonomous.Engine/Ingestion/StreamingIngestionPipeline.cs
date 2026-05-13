@@ -788,9 +788,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         foreach (var pair in grouped)
         {
             pair.Value.Sort((a, b) => a.Ordinal.CompareTo(b.Ordinal));
-            Hash32[] childHashes = new Hash32[pair.Value.Count];
-            int[] ordinalStarts = new int[pair.Value.Count];
-            int[] rleCounts = new int[pair.Value.Count];
+            List<Hash32> childHashes = new(pair.Value.Count);
+            List<int> ordinalStarts = new(pair.Value.Count);
+            List<int> rleCounts = new(pair.Value.Count);
             int previousEnd = 0;
             for (int i = 0; i < pair.Value.Count; i++)
             {
@@ -800,12 +800,12 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     throw new InvalidOperationException(
                         $"Composition metadata for {pair.Key.ToHexString()} overlaps at ordinal {entry.Ordinal}.");
                 }
-                childHashes[i] = entry.Child.Hash;
-                ordinalStarts[i] = entry.Ordinal;
-                rleCounts[i] = entry.RleCount;
+                childHashes.Add(entry.Child.Hash);
+                ordinalStarts.Add(entry.Ordinal);
+                rleCounts.Add(entry.RleCount);
                 previousEnd = entry.Ordinal + entry.RleCount - 1;
             }
-            metadata.Add(pair.Key, (childHashes, ordinalStarts, rleCounts));
+            metadata.Add(pair.Key, (childHashes.ToArray(), ordinalStarts.ToArray(), rleCounts.ToArray()));
         }
 
         return metadata;

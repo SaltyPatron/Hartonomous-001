@@ -807,9 +807,9 @@ Datum pg_ls4d_from_centroids_geometry(PG_FUNCTION_ARGS)
     bytea* geometry;
     int i;
 
-    if (n < 2) {
+    if (n < 1) {
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                        errmsg("ls4d_from_centroids: at least 2 vertices required (got %d)", n)));
+                        errmsg("ls4d_from_centroids: at least 1 vertex required (got %d)", n)));
     }
 
     /* point4d on-disk layout: 4 × float8, alignment double, plain storage,

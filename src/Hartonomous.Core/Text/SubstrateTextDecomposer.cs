@@ -373,8 +373,8 @@ public sealed class SubstrateTextDecomposer
     private static bool ShouldEmitPhysicality(TextDecomposeOptions options, string physicalityTypeCode, Hash32 entityHash)
         => options.EmissionCache?.TryRegisterPhysicality(physicalityTypeCode, entityHash) ?? true;
 
-    private static bool ShouldEmitSequence(TextDecomposeOptions options, Hash32 parentHash, int ordinal)
-        => options.EmissionCache?.TryRegisterCompositionChild(parentHash, ordinal) ?? true;
+    private static bool ShouldEmitSequence(TextDecomposeOptions options, Hash32 parentHash, int ordinal, Hash32 childHash)
+        => options.EmissionCache?.TryRegisterCompositionChild(parentHash, ordinal, childHash) ?? true;
 
     private static bool ShouldEmitSignificance(
         TextDecomposeOptions options,
@@ -518,7 +518,7 @@ public sealed class SubstrateTextDecomposer
 
         private void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child)
         {
-            if (!ShouldEmitSequence(Options, parent.Hash, ordinal))
+            if (!ShouldEmitSequence(Options, parent.Hash, ordinal, child.Hash))
             {
                 return;
             }
@@ -656,7 +656,7 @@ public sealed class SubstrateTextDecomposer
 
         private void AddCompositionChild(Hash32 parentHash, int ordinal, Hash32 childHash)
         {
-            if (!ShouldEmitSequence(Options, parentHash, ordinal))
+            if (!ShouldEmitSequence(Options, parentHash, ordinal, childHash))
             {
                 return;
             }

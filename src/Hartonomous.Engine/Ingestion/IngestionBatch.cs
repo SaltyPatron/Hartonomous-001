@@ -20,6 +20,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     private readonly List<JunctionEntry> _junctions = [];
     private readonly List<PhysicalityEntry> _physicalities = [];
     private readonly List<CompositionChildEntry> _compositionChildren = [];
+    private readonly HashSet<(Hash32 ParentHash, int Ordinal, Hash32 ChildHash, int RleCount)> _compositionChildKeys = [];
     private readonly List<SignificanceEntry> _significances = [];
     private readonly List<EntityModelSourceEntry> _entityModelSources = [];
 
@@ -163,6 +164,10 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
     {
+        if (!_compositionChildKeys.Add((parent.Hash, ordinal, child.Hash, rleCount)))
+        {
+            return;
+        }
         _compositionChildren.Add(new CompositionChildEntry(parent, ordinal, child, rleCount));
     }
 
