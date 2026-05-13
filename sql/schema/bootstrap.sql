@@ -75,7 +75,6 @@
 -- @include schema/seed/entity_type.sql
 -- @include schema/seed/physicality_type.sql
 -- @include schema/seed/physicality_type_embedding_firefly.sql
--- @include schema/seed/physicality_type_trajectories.sql
 -- @include schema/seed/edge_role.sql
 -- @include schema/seed/significance_context.sql
 -- @include schema/seed/attestation_type.sql
@@ -118,8 +117,6 @@
 -- @include schema/tables/core/physicality_audio.sql
 -- @include schema/tables/core/physicality_model.sql
 -- @include schema/tables/core/physicality_contour.sql
--- @include schema/tables/core/physicality_entity_shape.sql
--- @include schema/tables/core/physicality_ingestion_trajectory.sql
 -- @include schema/tables/core/physicality_default.sql
 -- @include schema/tables/core/entity_significance.sql
 -- @include schema/tables/core/entity_significance_lexical.sql
@@ -272,6 +269,11 @@
 -- @include schema/functions/bb_pack_metadata.sql
 -- @include schema/functions/bb_unpack_metadata.sql
 -- @include schema/functions/entity_by_hash_prefix.sql
+-- Cast bridges from PostGIS-native geometry(GeometryZM) to the internal
+-- native compute ABI types (public.point4d / public.linestring4d). Used
+-- internally by substrate.st_4d_* dispatch; not substrate-level surfaces.
+-- @include schema/functions/point4d_from_geometry.sql
+-- @include schema/functions/linestring4d_from_geometry.sql
 -- Reference-data populators
 -- @include schema/functions/populate_general_categories.sql
 -- @include schema/functions/populate_scripts.sql

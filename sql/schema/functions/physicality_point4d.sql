@@ -1,16 +1,26 @@
+-- Return the (x, y, z, m) coordinates of the first POINTZM physicality
+-- attached to an entity classified as the requested type. Used by the
+-- entity-info / inventory readers that want to extract the entity's atomic
+-- real-coord centroid from its physicality row (for atoms — codepoint
+-- S^3, audio sample, image pixel, etc.).
+--
+-- For composition entities, this function returns no row — their
+-- physicality geom is LINESTRINGZM with ID-encoded vertices, not POINTZM.
+-- Callers wanting a composition's representative POINTZM should use
+-- substrate.entity_centroid_4d(hash) → substrate.entity.centroid_4d.
 CREATE OR REPLACE FUNCTION substrate.physicality_point4d(
     p_entity_hash substrate.hash_value,
     p_entity_type_code TEXT,
     p_physicality_type_code TEXT
 ) RETURNS TABLE (x1 DOUBLE PRECISION, x2 DOUBLE PRECISION, x3 DOUBLE PRECISION, x4 DOUBLE PRECISION)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT coords.v[1], coords.v[2], coords.v[3], coords.v[4]
+    SELECT ST_X(p.geom), ST_Y(p.geom), ST_Z(p.geom), ST_M(p.geom)
       FROM substrate.physicality p
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
-      CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
      WHERE p.entity_hash = p_entity_hash
        AND pt.code = p_physicality_type_code
-       AND ST_TypeTag4D(p.geom) = 1
+       AND GeometryType(p.geom) = 'POINT'
+       AND ST_NDims(p.geom) = 4
        AND EXISTS (
            SELECT 1
              FROM substrate.entity_classification ec
@@ -23,4 +33,4 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 COMMENT ON FUNCTION substrate.physicality_point4d(substrate.hash_value, TEXT, TEXT) IS
-    'Return x/y/z/m coordinates for the first deterministic POINT4D physicality attached to a hash classified as the requested entity type.';
+    'Return x/y/z/m for the first deterministic POINTZM physicality on a hash classified as the requested entity type. For atom physicality only — compositions have ID-encoded LINESTRINGZM.';

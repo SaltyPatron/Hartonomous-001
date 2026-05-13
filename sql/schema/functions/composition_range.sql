@@ -1,7 +1,11 @@
+-- composition_range(parent_hash, start, end) — return all children whose
+-- ordinal positions intersect [p_start, p_end], expanded per-position (RLE
+-- expansions emit one row per logical ordinal).
 DROP FUNCTION IF EXISTS substrate.composition_range(INT, BYTEA, INT, INT);
+DROP FUNCTION IF EXISTS substrate.composition_range(BYTEA, INT, INT);
 CREATE OR REPLACE FUNCTION substrate.composition_range(
-    p_parent_hash BYTEA, p_start INT, p_end INT
-) RETURNS TABLE (child_type_code TEXT, child_hash BYTEA, ordinal INT)
+    p_parent_hash substrate.hash_value, p_start INT, p_end INT
+) RETURNS TABLE (child_type_code TEXT, child_hash substrate.hash_value, ordinal INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT child_cls.code, c.child_hash, expanded.ordinal
       FROM substrate.get_composition_children(p_parent_hash) c
@@ -21,3 +25,6 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
       AND c.ordinal <= p_end
      ORDER BY expanded.ordinal;
 $f$;
+
+COMMENT ON FUNCTION substrate.composition_range(substrate.hash_value, INT, INT) IS
+    'Expand a composition''s children over the ordinal range [p_start, p_end], one row per logical ordinal. RLE-aware; reads the LINESTRINGZM mantissa-packed vertices via substrate.get_composition_children.';

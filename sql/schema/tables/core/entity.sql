@@ -47,14 +47,38 @@ CREATE TABLE substrate.entity (
         | (get_byte(hash, 10)::BIGINT << 28)
         | (get_byte(hash, 11)::BIGINT << 36)
         | (get_byte(hash, 12)::BIGINT << 44)
-    ) STORED
+    ) STORED,
+    -- Universal 4D representative POINTZM for this entity. For atoms, the
+    -- real content-derived centroid (codepoint S^3 Super-Fibonacci by UCA
+    -- rank; audio sample value at (time, freq, mag, phase); image pixel at
+    -- (x, y, intensity, class); etc.). For compositions, the recursive mean
+    -- of children's centroid_4d values — computed at INSERT time by the
+    -- ingestion pipeline.
+    --
+    -- Drives:
+    --   * edge.geom construction (LINESTRINGZM through participants' centroid_4d
+    --     in role order) — substrate.populate_edge_trajectories reads this
+    --   * recursive Merkle centroid math up the composition tier ladder
+    --   * GiST k-NN neighborhood queries (codepoint clusters, embedding
+    --     fireflies, etc.) via the gist_geometry_ops_nd index below
+    --
+    -- Compositions store their child-sequence in physicality.geom as
+    -- ID-encoded LINESTRINGZM (mantissa-packed vertices); this column
+    -- carries the real-coord position for cross-tier and cross-edge math.
+    centroid_4d geometry(POINTZM) NOT NULL
 );
 
+CREATE INDEX entity_centroid_4d_idx
+    ON substrate.entity USING gist (centroid_4d gist_geometry_ops_nd);
+
 COMMENT ON TABLE substrate.entity IS
-    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so trajectory-vertex X+Z mantissas resolve to full hashes via a composite-btree composite index (entity_hash_prefix_idx).';
+    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so trajectory-vertex X+Z mantissas resolve to full hashes via the composite-btree composite index (entity_hash_prefix_idx). centroid_4d is the universal 4D representative POINTZM (real coords) — drives edge.geom population, recursive Merkle centroid math, and GiST k-NN spatial queries.';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_0_51 IS
     'Bits 0..51 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_lo(bytea). Lower half of the 104-bit hash prefix used for trajectory-vertex X mantissa packing and for batched lookup via substrate.entity_by_hash_prefix.';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
     'Bits 52..103 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_hi(bytea). Upper half of the 104-bit hash prefix used for trajectory-vertex Z mantissa packing.';
+
+COMMENT ON COLUMN substrate.entity.centroid_4d IS
+    'Real-coord 4D representative position. Atoms: content-derived centroid (codepoint S^3 by UCA rank, audio frame coords, image pixel coords, etc.). Compositions: recursive mean of children''s centroid_4d. Computed at INSERT time by the ingestion pipeline; drives edge.geom + recursive Merkle math + spatial neighborhood queries.';

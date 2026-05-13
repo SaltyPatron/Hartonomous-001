@@ -1701,34 +1701,6 @@ INSERT INTO substrate.physicality_type (code) VALUES
     ('embedding_firefly')
 ON CONFLICT (code) DO NOTHING;
 
--- ── sql/schema/seed/physicality_type_trajectories.sql ───────────────────────────────────────
--- Two-trajectory-per-entity additions (the read/write substrate of the
--- mantissa-packed convergent refactor):
---
---   entity_shape          — canonical structural fingerprint, real metric
---                           coordinates. POINT4D for atoms, LINESTRING4D
---                           (or MULTILINESTRING4D for multi-segment shapes)
---                           for compositions. One row per entity,
---                           content-addressed across decompositions.
---
---   ingestion_trajectory  — recorded composition content for bit-perfect
---                           reconstruction. LINESTRING4D (or
---                           MULTILINESTRING4D for discontinuous / multi-tier
---                           compositions) with mantissa-packed vertices —
---                           X+Z carry the 104-bit child hash prefix, Y carries
---                           ordinal+RLE, M carries free metadata. One row per
---                           composition, content-addressed at the composition
---                           level (same children sequence ⇒ same row ⇒ dedup).
---
--- Auto-assigned ids follow the prior seed (1..13 from physicality_type.sql;
--- 14 from physicality_type_embedding_firefly.sql), so these get 15 and 16.
--- The partitions in tables/core/physicality_entity_shape.sql and
--- physicality_ingestion_trajectory.sql FOR VALUES IN (15) / (16) match.
-INSERT INTO substrate.physicality_type (code) VALUES
-    ('entity_shape'),
-    ('ingestion_trajectory')
-ON CONFLICT (code) DO NOTHING;
-
 -- ── sql/schema/seed/edge_role.sql ───────────────────────────────────────
 INSERT INTO substrate.edge_role (code) VALUES
     ('source'), ('target'), ('context'), ('mediator'),
@@ -2284,17 +2256,41 @@ CREATE TABLE substrate.entity (
         | (get_byte(hash, 10)::BIGINT << 28)
         | (get_byte(hash, 11)::BIGINT << 36)
         | (get_byte(hash, 12)::BIGINT << 44)
-    ) STORED
+    ) STORED,
+    -- Universal 4D representative POINTZM for this entity. For atoms, the
+    -- real content-derived centroid (codepoint S^3 Super-Fibonacci by UCA
+    -- rank; audio sample value at (time, freq, mag, phase); image pixel at
+    -- (x, y, intensity, class); etc.). For compositions, the recursive mean
+    -- of children's centroid_4d values — computed at INSERT time by the
+    -- ingestion pipeline.
+    --
+    -- Drives:
+    --   * edge.geom construction (LINESTRINGZM through participants' centroid_4d
+    --     in role order) — substrate.populate_edge_trajectories reads this
+    --   * recursive Merkle centroid math up the composition tier ladder
+    --   * GiST k-NN neighborhood queries (codepoint clusters, embedding
+    --     fireflies, etc.) via the gist_geometry_ops_nd index below
+    --
+    -- Compositions store their child-sequence in physicality.geom as
+    -- ID-encoded LINESTRINGZM (mantissa-packed vertices); this column
+    -- carries the real-coord position for cross-tier and cross-edge math.
+    centroid_4d geometry(POINTZM) NOT NULL
 );
 
+CREATE INDEX entity_centroid_4d_idx
+    ON substrate.entity USING gist (centroid_4d gist_geometry_ops_nd);
+
 COMMENT ON TABLE substrate.entity IS
-    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so trajectory-vertex X+Z mantissas resolve to full hashes via a composite-btree composite index (entity_hash_prefix_idx).';
+    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so trajectory-vertex X+Z mantissas resolve to full hashes via the composite-btree composite index (entity_hash_prefix_idx). centroid_4d is the universal 4D representative POINTZM (real coords) — drives edge.geom population, recursive Merkle centroid math, and GiST k-NN spatial queries.';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_0_51 IS
     'Bits 0..51 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_lo(bytea). Lower half of the 104-bit hash prefix used for trajectory-vertex X mantissa packing and for batched lookup via substrate.entity_by_hash_prefix.';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
     'Bits 52..103 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_hi(bytea). Upper half of the 104-bit hash prefix used for trajectory-vertex Z mantissa packing.';
+
+COMMENT ON COLUMN substrate.entity.centroid_4d IS
+    'Real-coord 4D representative position. Atoms: content-derived centroid (codepoint S^3 by UCA rank, audio frame coords, image pixel coords, etc.). Compositions: recursive mean of children''s centroid_4d. Computed at INSERT time by the ingestion pipeline; drives edge.geom + recursive Merkle math + spatial neighborhood queries.';
 
 -- ── sql/schema/tables/core/edge.sql ───────────────────────────────────────
 -- Edge identity = BLAKE3 of (edge_type_id, ordered participant hashes).
@@ -2480,20 +2476,52 @@ CREATE TABLE substrate.edge_member_default
     PARTITION OF substrate.edge_member DEFAULT;
 
 -- ── sql/schema/tables/core/physicality.sql ───────────────────────────────────────
--- 4D geometric realization of an entity. geometry4d is the substrate
--- geometry carrier (POINT4D for atoms, LINESTRING4D for compositions).
--- Per-partition CHECK constraints enforce the dimensionality each
--- physicality_type expects. content_hash distinguishes multiple physicalities
--- of the same type for the same entity (e.g., multiple firefly samples).
+-- ONE physicality row per entity, carrying the entity's substrate-level
+-- geometric expression. PostGIS-native geometry(GeometryZM) is the universal
+-- storage; substrate.st_4d_* operators extend PostGIS to use the M dimension
+-- (raw ST_Distance / ST_Centroid / ST_FrechetDistance drop M and are
+-- forbidden — AP-4). Per-partition CHECK constraints enforce per-type
+-- geometric shape (POINTZM for atoms, LINESTRINGZM / MULTILINESTRINGZM for
+-- compositions).
 --
--- Hash-only entity reference (Phase C of unification refactor):
--- substrate.entity has a hash-only PK, so physicality references entities
--- by hash alone. No entity_type_id column.
+-- Two geometric expressions across the substrate:
+--   * Atom physicality (codepoint_atom S3 position, audio sample,
+--     image pixel, etc.): geom = POINTZM at the atom's real centroid in its
+--     modality's content-derived metric space.
+--   * Composition physicality (word_form, sentence, paragraph, document,
+--     model_architecture, audio chunk, etc.): geom = LINESTRINGZM whose
+--     vertices encode the children's identities — per the mantissa packing
+--     contract, X = child hash bits 0..51, Y = ordinal + RLE bit-banged,
+--     Z = child hash bits 52..103, M = bit-banged metadata. The geometry IS
+--     the relational structure: reading the trajectory's vertices recovers
+--     the children + their order in one row; ST_Frechet over two compositions
+--     compares sequence-of-IDs directly. PostGIS R-tree + GiST handle
+--     "find every parent that references this child" via bbox prefilter on
+--     the encoded coordinate value; `substrate.entity_by_hash_prefix` resolves
+--     the encoded vertex back to a full hash via the composite btree on
+--     (hash_bits_0_51, hash_bits_52_103).
+--
+-- content_hash distinguishes multiple physicalities of the same
+-- (physicality_type, entity) — e.g., multiple firefly samples per token from
+-- different models.
+--
+-- Hash-only entity reference: substrate.entity has a hash-only PK; physicality
+-- references entities by hash alone. FK to substrate.entity(hash) is
+-- application-enforced (pipeline batch ordering writes entities before
+-- physicalities; PG18.3 partitionwise-FK SEGV pattern conservatively avoided).
 CREATE TABLE substrate.physicality (
     physicality_type_id INT  NOT NULL REFERENCES substrate.physicality_type(id),
     entity_hash         substrate.hash_value NOT NULL,
     content_hash        substrate.hash_value NOT NULL,
-    geom                geometry4d NOT NULL,
+    geom                geometry(GeometryZM) NOT NULL,
+    -- TRANSITIONAL — child_hashes / ordinal_starts / rle_counts arrays held
+    -- in place this delta while consumers (ingestion pipeline drain SQL,
+    -- C# PhysicalityRecord, populate_codepoint_property_range_from_ext) are
+    -- migrated to read composition children from the LINESTRINGZM geom's
+    -- mantissa-packed vertices via substrate.get_composition_children. Once
+    -- every consumer reads from geom, these columns are dropped in the
+    -- follow-up atomic chunk (no array columns in substrate.* tables;
+    -- 1NF / FK / btree-indexability discipline).
     child_hashes        substrate.hash_value[] NULL,
     ordinal_starts      INT[] NULL,
     rle_counts          INT[] NULL,
@@ -2508,20 +2536,22 @@ CREATE TABLE substrate.physicality (
         )
     ),
     PRIMARY KEY (physicality_type_id, entity_hash, content_hash)
-    -- FK to substrate.entity(hash) application-enforced — pipeline batch
-    -- ordering writes entities before physicalities. (PG18.3 partitionwise-FK
-    -- SEGV pattern conservatively avoided.)
 ) PARTITION BY LIST (physicality_type_id);
 
 COMMENT ON TABLE substrate.physicality IS
-    'Geometric realizations of entities. Native geometry4d. Hash-only entity reference (no type_id). Composition child identity, ordinal, and RLE metadata live on the physicality row.';
+    'ONE substrate-level geometric expression per entity. PostGIS geometry(GeometryZM); substrate.st_4d_* operators extend PostGIS to honor the M dimension. Atom geom = POINTZM real centroid; composition geom = LINESTRINGZM with ID-encoded vertices (mantissa packing — vertex IS the relational structure). content_hash distinguishes co-typed multi-source samples per entity. Array columns are transitional pending consumer migration; final state has only the geom column.';
 
 -- ── sql/schema/tables/core/physicality_s3.sql ───────────────────────────────────────
+-- Physicality type 1: s3_position. POINTZM at the entity's real centroid in
+-- its modality's S^3 representation. For codepoint atoms: Super-Fibonacci
+-- ordered by UCA collation rank (so case/accent pairs cluster on the
+-- sphere); pre-baked at codegen time in the UCD atoms blob. For other atom
+-- modalities: the modality's content-derived representative position.
 CREATE TABLE substrate.physicality_s3
     PARTITION OF substrate.physicality FOR VALUES IN (1);
 ALTER TABLE substrate.physicality_s3
-    ADD CONSTRAINT physicality_s3_point4d
-    CHECK (ST_TypeTag4D(geom) = 1);
+    ADD CONSTRAINT physicality_s3_pointzm
+    CHECK (GeometryType(geom) = 'POINT' AND ST_NDims(geom) = 4);
 
 -- ── sql/schema/tables/core/physicality_hilbert.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_hilbert
@@ -2546,50 +2576,26 @@ CREATE TABLE substrate.physicality_model
     PARTITION OF substrate.physicality FOR VALUES IN (11, 12);
 
 -- ── sql/schema/tables/core/physicality_contour.sql ───────────────────────────────────────
--- Physicality type 13: contour. LINESTRING4D trajectories through codepoint
--- S3 positions. The dominant text-side physicality.
+-- Physicality type 13: contour. LINESTRINGZM with mantissa-packed vertices
+-- encoding children's identities — the substrate's universal carrier for
+-- COMPOSITION entities (word_form, sentence, paragraph, document,
+-- model_architecture, audio chunk, image region, video shot, etc.). Per the
+-- mantissa packing contract: vertex X = child hash bits 0..51 packed via
+-- bb_pack_hash_lo, Y = ordinal + RLE bit-banged via bb_pack_ordinal_rle,
+-- Z = child hash bits 52..103 via bb_pack_hash_hi, M = metadata via
+-- bb_pack_metadata. The geometry IS the relational structure — ST_PointN
+-- recovers vertex i; bb_unpack_* extracts identity / ordinal / RLE / metadata;
+-- substrate.entity_by_hash_prefix resolves to full child hash via composite
+-- btree. ST_Frechet over two contour geoms = sequence-of-IDs match (same
+-- children in same order). Multi-segment compositions (multi-tier views,
+-- discontinuous content, parallel sub-sequences) use MULTILINESTRINGZM via
+-- the same packing scheme.
 CREATE TABLE substrate.physicality_contour
     PARTITION OF substrate.physicality FOR VALUES IN (13);
 ALTER TABLE substrate.physicality_contour
-    ADD CONSTRAINT physicality_contour_linestring4d
-    CHECK (ST_TypeTag4D(geom) = 2);
-
--- ── sql/schema/tables/core/physicality_entity_shape.sql ───────────────────────────────────────
--- Physicality type 15: entity_shape. Canonical structural fingerprint in
--- real metric coordinates. POINT4D for atoms (id 1 partition already serves
--- the codepoint-atom case; this partition's role is composition shapes),
--- LINESTRING4D for compositions, MULTILINESTRING4D for shapes that have
--- multiple parallel canonical forms (e.g. a sentence whose word-tier and
--- grapheme-tier views ship in one fingerprint row).
---
--- ST_TypeTag4D values: 1 = POINT4D, 2 = LINESTRING4D, 4 = MULTILINESTRING4D
--- (per ext/hartonomous_pg/sql/hartonomous--1.0.sql.in CREATE TYPE
--- declarations). Any of these three forms is valid here; the CHECK below
--- excludes geometries that are not part of the substrate's shape vocabulary.
-CREATE TABLE substrate.physicality_entity_shape
-    PARTITION OF substrate.physicality FOR VALUES IN (15);
-ALTER TABLE substrate.physicality_entity_shape
-    ADD CONSTRAINT physicality_entity_shape_geom_tag
-    CHECK (ST_TypeTag4D(geom) IN (1, 2, 4));
-
--- ── sql/schema/tables/core/physicality_ingestion_trajectory.sql ───────────────────────────────────────
--- Physicality type 16: ingestion_trajectory. Recorded composition content —
--- mantissa-packed LINESTRING4D (single-segment) or MULTILINESTRING4D
--- (multi-parallel, multi-tier, or discontinuous compositions). Vertices are
--- NOT metric coordinates; they're a 4-field packed row per
--- docs/specs/sql/mantissa-exploitation.md, with X+Z = 104-bit child hash
--- prefix, Y = (ordinal, RLE), M = metadata.
---
--- Reconstruction reads vertex (X, Z) and joins against
--- substrate.entity_by_hash_prefix(BIGINT[], BIGINT[]); one batched btree
--- point lookup per tier. PostGIS still indexes / dispatches geometric
--- operators uniformly (frechet_4d_geom, hausdorff_4d_geom, R-tree on bbox),
--- which makes shape-similarity queries on the packed structure first-class.
-CREATE TABLE substrate.physicality_ingestion_trajectory
-    PARTITION OF substrate.physicality FOR VALUES IN (16);
-ALTER TABLE substrate.physicality_ingestion_trajectory
-    ADD CONSTRAINT physicality_ingestion_trajectory_geom_tag
-    CHECK (ST_TypeTag4D(geom) IN (2, 4));
+    ADD CONSTRAINT physicality_contour_linestringzm
+    CHECK (GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING')
+           AND ST_NDims(geom) = 4);
 
 -- ── sql/schema/tables/core/physicality_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_default
@@ -3786,6 +3792,67 @@ COMMENT ON FUNCTION substrate.entity_by_hash_prefix(BIGINT[], BIGINT[]) IS
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
+-- Cast bridges from PostGIS-native geometry(GeometryZM) to the internal
+-- native compute ABI types (public.point4d / public.linestring4d). Used
+-- internally by substrate.st_4d_* dispatch; not substrate-level surfaces.
+
+-- ── sql/schema/functions/point4d_from_geometry.sql ───────────────────────────────────────
+-- Bridge from PostGIS-native POINTZM geometry to the internal native compute
+-- ABI type public.point4d (zero-marshalling flat (x,y,z,m) for libhartonomous
+-- C kernels). Used internally by substrate.st_4d_* operator dispatch — every
+-- substrate-level function takes geometry (the storage type) and converts at
+-- the kernel boundary via this cast. public.point4d is NOT a substrate-level
+-- user-visible type (per .claude/rules/25-physicality-4d.md); it's the
+-- internal flat-array I/O ABI for the native kernels.
+CREATE OR REPLACE FUNCTION public.point4d_from_geometry(g geometry)
+RETURNS public.point4d
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT public.point4d(ST_X(g), ST_Y(g), ST_Z(g), ST_M(g))
+$$;
+
+COMMENT ON FUNCTION public.point4d_from_geometry(geometry) IS
+    'Extract (X, Y, Z, M) from a POINTZM and construct the internal native point4d. Used by substrate.st_4d_* operator dispatch to bridge PostGIS storage to libhartonomous kernel I/O.';
+
+CREATE CAST (geometry AS public.point4d)
+    WITH FUNCTION public.point4d_from_geometry(geometry)
+    AS ASSIGNMENT;
+
+-- ── sql/schema/functions/linestring4d_from_geometry.sql ───────────────────────────────────────
+-- Bridge from PostGIS-native LINESTRINGZM geometry to the internal native
+-- compute ABI type public.linestring4d. Used internally by substrate.st_4d_*
+-- operator dispatch — every substrate-level function takes geometry (the
+-- storage type) and converts at the kernel boundary via this cast.
+-- public.linestring4d is NOT a substrate-level user-visible type (per
+-- .claude/rules/25-physicality-4d.md); it's the internal flat-array I/O ABI
+-- for the native kernels.
+CREATE OR REPLACE FUNCTION public.linestring4d_from_geometry(g geometry)
+RETURNS public.linestring4d
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT public.array_to_linestring4d(
+        ARRAY(
+            SELECT coord
+              FROM generate_series(1, ST_NumPoints(g)) AS idx(i)
+              CROSS JOIN LATERAL (
+                  SELECT ST_PointN(g, idx.i) AS p
+              ) pt
+              CROSS JOIN LATERAL (
+                  SELECT unnest(ARRAY[ST_X(pt.p), ST_Y(pt.p), ST_Z(pt.p), ST_M(pt.p)])
+              ) AS axes(coord)
+        )
+    )
+$$;
+
+COMMENT ON FUNCTION public.linestring4d_from_geometry(geometry) IS
+    'Walk a LINESTRINGZM''s vertices via ST_PointN, build a flat (x,y,z,m,x,y,z,m,...) array, and construct the internal native linestring4d. Used by substrate.st_4d_* operator dispatch to bridge PostGIS storage to libhartonomous kernel I/O.';
+
+CREATE CAST (geometry AS public.linestring4d)
+    WITH FUNCTION public.linestring4d_from_geometry(geometry)
+    AS ASSIGNMENT;
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
 -- Reference-data populators
 
 -- ── sql/schema/functions/populate_general_categories.sql ───────────────────────────────────────
@@ -4164,81 +4231,95 @@ COMMENT ON FUNCTION substrate.hausdorff_4d_geom(geometry4d, geometry4d) IS
     'Symmetric Hausdorff over native LINESTRING4D geometry4d trajectories.';
 
 -- ── sql/schema/functions/geometry4d_centroid.sql ───────────────────────────────────────
-CREATE OR REPLACE FUNCTION substrate.geometry4d_centroid(g geometry4d)
-RETURNS point4d
+-- Centroid over a real-coord PostGIS GeometryZM. For POINTZM returns the
+-- point itself; for LINESTRINGZM returns the mean of vertex coordinates.
+--
+-- NOT INTENDED for ID-encoded composition LINESTRINGZM geometries — those
+-- have mantissa-packed identity vertices, not metric coordinates, so a
+-- coordinate mean is meaningless. For an entity's representative 4D
+-- centroid, callers should read substrate.entity.centroid_4d directly
+-- (populated by the ingestion pipeline as content-derived real centroid for
+-- atoms / recursive mean of children's centroid_4d for compositions).
+CREATE OR REPLACE FUNCTION substrate.geometry4d_centroid(g geometry)
+RETURNS public.point4d
 LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
 AS $$
 DECLARE
-    tag INT := ST_TypeTag4D(g);
-    ls linestring4d;
+    t TEXT := GeometryType(g);
     n INT;
     sx DOUBLE PRECISION := 0.0;
     sy DOUBLE PRECISION := 0.0;
     sz DOUBLE PRECISION := 0.0;
     sm DOUBLE PRECISION := 0.0;
 BEGIN
-    IF tag = 1 THEN
-        RETURN g::point4d;
+    IF ST_NDims(g) <> 4 THEN
+        RAISE EXCEPTION 'geometry4d_centroid: requires 4D geometry (got ndims=%)', ST_NDims(g);
     END IF;
 
-    IF tag <> 2 THEN
-        RAISE EXCEPTION 'geometry4d_centroid: unsupported geometry4d tag %', tag;
+    IF t = 'POINT' THEN
+        RETURN g::public.point4d;
     END IF;
 
-    ls := g::linestring4d;
-    n := npoints(ls);
+    IF t <> 'LINESTRING' THEN
+        RAISE EXCEPTION 'geometry4d_centroid: unsupported GeometryType %', t;
+    END IF;
+
+    n := ST_NumPoints(g);
     IF n <= 0 THEN
-        RAISE EXCEPTION 'geometry4d_centroid: empty LINESTRING4D';
+        RAISE EXCEPTION 'geometry4d_centroid: empty LINESTRINGZM';
     END IF;
 
-    SELECT sum(coords[1]), sum(coords[2]), sum(coords[3]), sum(coords[4])
+    SELECT sum(ST_X(p)), sum(ST_Y(p)), sum(ST_Z(p)), sum(ST_M(p))
       INTO sx, sy, sz, sm
       FROM generate_series(1, n) AS vertex(i)
-      CROSS JOIN LATERAL point4d_to_array(point_n(ls, vertex.i)) AS coords;
+      CROSS JOIN LATERAL (SELECT ST_PointN(g, vertex.i) AS p) pt;
 
-    RETURN array_to_point4d(ARRAY[
+    RETURN public.point4d(
         sx / n::DOUBLE PRECISION,
         sy / n::DOUBLE PRECISION,
         sz / n::DOUBLE PRECISION,
         sm / n::DOUBLE PRECISION
-    ]);
+    );
 END;
 $$;
 
+COMMENT ON FUNCTION substrate.geometry4d_centroid(geometry) IS
+    'Vertex-mean centroid of a real-coord 4D GeometryZM. NOT for ID-encoded composition LINESTRINGZM (those carry identity bits, not metric coords) — use substrate.entity.centroid_4d for an entity''s representative position.';
+
 -- ── sql/schema/functions/entity_centroid_4d.sql ───────────────────────────────────────
+-- Return an entity's universal 4D representative POINTZM. Reads the
+-- entity.centroid_4d column directly — the ingestion pipeline populates it
+-- with the entity's real-coord position (atoms: content-derived; compositions:
+-- recursive mean of children's centroid_4d). Previous version walked
+-- substrate.physicality which broke under the corrected model where
+-- composition physicality.geom is ID-encoded LINESTRINGZM (not real coords).
 DROP FUNCTION IF EXISTS substrate.entity_centroid_4d(INT, BYTEA);
+DROP FUNCTION IF EXISTS substrate.entity_centroid_4d(BYTEA);
 CREATE OR REPLACE FUNCTION substrate.entity_centroid_4d(
-    p_entity_hash BYTEA
-) RETURNS point4d
+    p_entity_hash substrate.hash_value
+) RETURNS public.point4d
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT substrate.geometry4d_centroid(geom)
-     FROM substrate.physicality
-     WHERE entity_hash = p_entity_hash
-     ORDER BY physicality_type_id LIMIT 1;
+    SELECT centroid_4d::public.point4d
+      FROM substrate.entity
+     WHERE hash = p_entity_hash;
 $f$;
 
+COMMENT ON FUNCTION substrate.entity_centroid_4d(substrate.hash_value) IS
+    'Universal 4D representative POINTZM for an entity. Reads substrate.entity.centroid_4d (real-coord) directly. NOT computed from physicality.geom because composition physicality is ID-encoded.';
+
 -- ── sql/schema/functions/populate_edge_trajectories.sql ───────────────────────────────────────
--- Populate edge trajectories from participant centroids.
+-- Populate edge trajectories from participant centroids — PostGIS-native
+-- LINESTRINGZM built via ST_MakeLine over each participant's
+-- substrate.entity.centroid_4d POINTZM in role order. Participants whose
+-- centroid_4d isn't yet populated (entity row not in place when this runs)
+-- cause the edge to be skipped; subsequent calls re-attempt.
 --
--- Performance + correctness rewrite (was: per-row UDF dispatch + ordered-set
--- aggregate over the full join, which crashed PostGIS aggregate state when
--- the tuplestore spilled to temp files at >800k edges).
---
--- Three changes vs prior:
---   1. LIMIT is pushed onto the edge-selection CTE first. Only the chosen
---      edges' members are joined against physicality, instead of joining
---      ALL members on every call and discarding all but `p_limit` at the
---      end. Cuts the per-call work from O(total_edges × avg_members) to
---      O(p_limit × avg_members).
---   2. `substrate.entity_centroid_4d(entity_hash)` UDF call is replaced
---      with a LATERAL JOIN onto substrate.physicality. plpgsql + PG cannot
---      amortize STABLE-function calls across rows; an explicit JOIN can.
---   3. Native geometry4d LINESTRING construction uses a pre-sorted array
---      feeding `ST_MakeLine4D(point4d[])` over the
---      array form. PostGIS's ordered-set aggregate path spills to temp
---      files under memory pressure and was the SIGSEGV site (NULL deref at
---      offset 0x17 in tuplestore recovery). The array form materializes in
---      a single pass without spill state.
+-- Performance: edge selection CTE pushes LIMIT FIRST so only the chosen
+-- edges' members are joined. STABLE-function calls are amortized via an
+-- explicit JOIN onto substrate.entity rather than a per-row UDF dispatch.
+-- ST_MakeLine over an ordered array materializes in one pass without the
+-- ordered-set-aggregate tuplestore-spill pattern that previously SIGSEGV'd
+-- at >800k edges.
 CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT DEFAULT NULL)
 RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
@@ -4260,18 +4341,13 @@ BEGIN
                em.edge_role_id,
                em.role_position,
                em.entity_hash,
-               substrate.geometry4d_centroid(p.geom) AS cgeom
+               e.centroid_4d AS cgeom
           FROM null_edges ne
           JOIN substrate.edge_member em
             ON em.edge_type_id = ne.edge_type_id
            AND em.edge_hash    = ne.edge_hash
-          LEFT JOIN LATERAL (
-              SELECT geom
-                FROM substrate.physicality ph
-               WHERE ph.entity_hash = em.entity_hash
-               ORDER BY ph.physicality_type_id
-               LIMIT 1
-          ) p ON true
+          LEFT JOIN substrate.entity e
+            ON e.hash = em.entity_hash
     ),
     candidates AS (
         SELECT edge_type_id, edge_hash
@@ -4294,7 +4370,7 @@ BEGIN
     aggregated AS (
         SELECT edge_type_id,
                edge_hash,
-               ST_MakeLine4D(array_agg(cgeom ORDER BY rn)) AS line_geom,
+               ST_MakeLine(array_agg(cgeom ORDER BY rn)) AS line_geom,
                count(*) AS member_count
           FROM sorted_pts
          GROUP BY edge_type_id, edge_hash
@@ -4307,14 +4383,14 @@ BEGIN
        AND e.geom IS NULL
        AND a.member_count >= 2
        AND a.line_geom IS NOT NULL
-       AND ST_NumPoints4D(a.line_geom) >= 2;
+       AND ST_NumPoints(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with native LINESTRING4D geometry through participant centroids in role order. Edges with missing participant physicality are left NULL.';
+    'Populate substrate.edge.geom with PostGIS-native LINESTRINGZM through participants'' substrate.entity.centroid_4d in role order. Edges with missing participant centroids are left NULL and retried on subsequent calls.';
 
 -- ── sql/schema/functions/count_missing_edge_trajectories.sql ───────────────────────────────────────
 -- Count edges whose relation trajectory failed to populate.
@@ -4366,6 +4442,12 @@ COMMENT ON FUNCTION substrate.count_missing_edge_trajectories() IS
     'Count substrate edges with NULL geom whose members ALL have physicality (i.e. trajectory was computable but missing). Edges whose members lack physicality (metadata edges over tensor / architecture entities) are excluded — those legitimately carry NULL geom by construction.';
 
 -- ── sql/schema/functions/physicality_linestring4d.sql ───────────────────────────────────────
+-- Return a flat (x1, x2, x3, x4, x1, x2, x3, x4, ...) coordinate array for
+-- the first deterministic LINESTRINGZM physicality on an entity. For
+-- composition physicality this returns the mantissa-packed vertex
+-- coordinates — callers iterating this should unpack via bb_unpack_*
+-- helpers (X = child hash bits 0..51, Y = ordinal+RLE, Z = child hash bits
+-- 52..103, M = metadata) rather than treating the values as metric coords.
 CREATE OR REPLACE FUNCTION substrate.physicality_linestring4d(
     p_entity_hash substrate.hash_value,
     p_entity_type_code TEXT,
@@ -4373,15 +4455,17 @@ CREATE OR REPLACE FUNCTION substrate.physicality_linestring4d(
 ) RETURNS DOUBLE PRECISION[]
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT ARRAY(
-        SELECT unnest(point4d_to_array(point_n(p.geom::linestring4d, i)))
-          FROM generate_series(1, npoints(p.geom::linestring4d)) AS i
-         ORDER BY i
+        SELECT unnest(ARRAY[ST_X(v), ST_Y(v), ST_Z(v), ST_M(v)])
+          FROM generate_series(1, ST_NumPoints(p.geom)) AS idx(i)
+          CROSS JOIN LATERAL (SELECT ST_PointN(p.geom, idx.i) AS v) pt
+         ORDER BY idx.i
     )
       FROM substrate.physicality p
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
      WHERE p.entity_hash = p_entity_hash
        AND pt.code = p_physicality_type_code
-       AND ST_TypeTag4D(p.geom) = 2
+       AND GeometryType(p.geom) = 'LINESTRING'
+       AND ST_NDims(p.geom) = 4
        AND EXISTS (
            SELECT 1
              FROM substrate.entity_classification ec
@@ -4394,22 +4478,32 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 COMMENT ON FUNCTION substrate.physicality_linestring4d(substrate.hash_value, TEXT, TEXT) IS
-    'Return a flat x/y/z/m coordinate array for the first deterministic LINESTRING4D physicality attached to a hash classified as the requested entity type.';
+    'Flat coordinate array for the first deterministic LINESTRINGZM physicality. For composition physicality this returns mantissa-packed vertices — callers unpack via bb_unpack_* (X = hash_lo, Y = ordinal+RLE, Z = hash_hi, M = metadata).';
 
 -- ── sql/schema/functions/physicality_point4d.sql ───────────────────────────────────────
+-- Return the (x, y, z, m) coordinates of the first POINTZM physicality
+-- attached to an entity classified as the requested type. Used by the
+-- entity-info / inventory readers that want to extract the entity's atomic
+-- real-coord centroid from its physicality row (for atoms — codepoint
+-- S^3, audio sample, image pixel, etc.).
+--
+-- For composition entities, this function returns no row — their
+-- physicality geom is LINESTRINGZM with ID-encoded vertices, not POINTZM.
+-- Callers wanting a composition's representative POINTZM should use
+-- substrate.entity_centroid_4d(hash) → substrate.entity.centroid_4d.
 CREATE OR REPLACE FUNCTION substrate.physicality_point4d(
     p_entity_hash substrate.hash_value,
     p_entity_type_code TEXT,
     p_physicality_type_code TEXT
 ) RETURNS TABLE (x1 DOUBLE PRECISION, x2 DOUBLE PRECISION, x3 DOUBLE PRECISION, x4 DOUBLE PRECISION)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT coords.v[1], coords.v[2], coords.v[3], coords.v[4]
+    SELECT ST_X(p.geom), ST_Y(p.geom), ST_Z(p.geom), ST_M(p.geom)
       FROM substrate.physicality p
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
-      CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
      WHERE p.entity_hash = p_entity_hash
        AND pt.code = p_physicality_type_code
-       AND ST_TypeTag4D(p.geom) = 1
+       AND GeometryType(p.geom) = 'POINT'
+       AND ST_NDims(p.geom) = 4
        AND EXISTS (
            SELECT 1
              FROM substrate.entity_classification ec
@@ -4422,13 +4516,14 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 COMMENT ON FUNCTION substrate.physicality_point4d(substrate.hash_value, TEXT, TEXT) IS
-    'Return x/y/z/m coordinates for the first deterministic POINT4D physicality attached to a hash classified as the requested entity type.';
+    'Return x/y/z/m for the first deterministic POINTZM physicality on a hash classified as the requested entity type. For atom physicality only — compositions have ID-encoded LINESTRINGZM.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
 -- Read helpers
 
 -- ── sql/schema/functions/health_summary.sql ───────────────────────────────────────
+-- Substrate health summary — row counts on the four content surfaces.
 DROP FUNCTION IF EXISTS substrate.health_summary();
 CREATE OR REPLACE FUNCTION substrate.health_summary()
 RETURNS TABLE (metric TEXT, value BIGINT)
@@ -4436,13 +4531,22 @@ LANGUAGE plpgsql STABLE AS $f$
 BEGIN
     RETURN QUERY
         SELECT 'entities'::TEXT, count(*)::BIGINT FROM substrate.entity
-      UNION ALL SELECT 'edges',           count(*) FROM substrate.edge
-      UNION ALL SELECT 'composition_metadata',
-                       count(*) FROM substrate.physicality WHERE child_hashes IS NOT NULL
-      UNION ALL SELECT 'physicalities',   count(*) FROM substrate.physicality
-      UNION ALL SELECT 'classifications', count(*) FROM substrate.entity_classification;
+      UNION ALL SELECT 'edges',
+                       count(*) FROM substrate.edge
+      UNION ALL SELECT 'compositions',
+                       count(*) FROM substrate.physicality p
+                                JOIN substrate.physicality_type pt
+                                  ON pt.id = p.physicality_type_id
+                                WHERE pt.code = 'contour'
+      UNION ALL SELECT 'physicalities',
+                       count(*) FROM substrate.physicality
+      UNION ALL SELECT 'classifications',
+                       count(*) FROM substrate.entity_classification;
 END
 $f$;
+
+COMMENT ON FUNCTION substrate.health_summary() IS
+    'Substrate row-count summary across entity / edge / physicality (with composition_contour subcount) / classification surfaces. Used by the health check + monitoring views.';
 
 -- ── sql/schema/functions/entity_outbound_edges.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.entity_outbound_edges(INT, BYTEA, TEXT);
@@ -4636,28 +4740,57 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 -- ── sql/schema/functions/get_composition_children.sql ───────────────────────────────────────
+-- Walk a composition entity's children in canonical order.
+--
+-- The composition's physicality.geom (physicality_type = 'contour') is a
+-- LINESTRINGZM (or MULTILINESTRINGZM) whose vertices encode the children's
+-- identities via the mantissa packing contract:
+--   X mantissa = child hash bits 0..51 (bb_pack_hash_lo)
+--   Y mantissa = ordinal + RLE bit-banged (bb_pack_ordinal_rle)
+--   Z mantissa = child hash bits 52..103 (bb_pack_hash_hi)
+--   M mantissa = metadata (bb_pack_metadata; currently unused, reserved)
+-- Reading the trajectory's vertices in order, unpacking via bb_unpack_*,
+-- and joining against substrate.entity's composite btree on
+-- (hash_bits_0_51, hash_bits_52_103) recovers the full child hash sequence
+-- in one round trip — no junction table required.
 DROP FUNCTION IF EXISTS substrate.get_composition_children(INT, BYTEA);
 CREATE OR REPLACE FUNCTION substrate.get_composition_children(
-    p_parent_hash BYTEA
-) RETURNS TABLE (ordinal INT, child_hash BYTEA, rle_count INT)
+    p_parent_hash substrate.hash_value
+) RETURNS TABLE (ordinal INT, child_hash substrate.hash_value, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    WITH selected_physicality AS (
-        SELECT p.child_hashes, p.ordinal_starts, p.rle_counts
+    WITH composition_geom AS (
+        SELECT p.geom
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
          WHERE p.entity_hash = p_parent_hash
            AND pt.code = 'contour'
-           AND p.child_hashes IS NOT NULL
          ORDER BY p.content_hash
          LIMIT 1
+    ),
+    vertices AS (
+        SELECT idx.i AS vertex_idx,
+               ST_PointN(g.geom, idx.i) AS v
+          FROM composition_geom g
+          CROSS JOIN LATERAL generate_series(1, ST_NumPoints(g.geom)) AS idx(i)
+    ),
+    unpacked AS (
+        SELECT substrate.bb_unpack_ordinal(ST_Y(v.v)) AS ordinal,
+               substrate.bb_unpack_rle(ST_Y(v.v))     AS rle_count,
+               substrate.bb_unpack_hash_lo(ST_X(v.v)) AS hash_lo,
+               substrate.bb_unpack_hash_hi(ST_Z(v.v)) AS hash_hi,
+               v.vertex_idx
+          FROM vertices v
     )
-    SELECT selected_physicality.ordinal_starts[i],
-           selected_physicality.child_hashes[i],
-           selected_physicality.rle_counts[i]
-      FROM selected_physicality
-      CROSS JOIN LATERAL generate_subscripts(selected_physicality.child_hashes, 1) AS i
-     ORDER BY selected_physicality.ordinal_starts[i];
+    SELECT u.ordinal, e.hash, u.rle_count
+      FROM unpacked u
+      JOIN substrate.entity e
+        ON e.hash_bits_0_51   = u.hash_lo
+       AND e.hash_bits_52_103 = u.hash_hi
+     ORDER BY u.ordinal, u.vertex_idx;
 $f$;
+
+COMMENT ON FUNCTION substrate.get_composition_children(substrate.hash_value) IS
+    'Walk a composition entity''s children in canonical order by reading the LINESTRINGZM mantissa-packed vertices in physicality.geom, unpacking child hash slices via bb_unpack_hash_lo/hi, and joining against substrate.entity''s composite btree on (hash_bits_0_51, hash_bits_52_103). No junction table — the geometry IS the relational structure.';
 
 -- ── sql/schema/functions/api_entity_classifications.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.api_entity_classifications(
@@ -4852,12 +4985,14 @@ $f$;
 -- Composition helpers
 
 -- ── sql/schema/functions/composition_at.sql ───────────────────────────────────────
--- composition_at(parent_hash, ordinal) - hash-only.
+-- composition_at(parent_hash, ordinal) — return the child at the requested
+-- ordinal position within the parent composition's trajectory (RLE-aware).
 DROP FUNCTION IF EXISTS substrate.composition_at(INT, BYTEA, INT);
+DROP FUNCTION IF EXISTS substrate.composition_at(BYTEA, INT);
 CREATE OR REPLACE FUNCTION substrate.composition_at(
-    p_parent_hash BYTEA,
+    p_parent_hash substrate.hash_value,
     p_ordinal     INT
-) RETURNS TABLE (child_hash BYTEA, rle_count INT)
+) RETURNS TABLE (child_hash substrate.hash_value, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT c.child_hash, c.rle_count
       FROM substrate.get_composition_children(p_parent_hash) c
@@ -4865,6 +5000,9 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
        AND p_ordinal <  c.ordinal + c.rle_count
      LIMIT 1;
 $f$;
+
+COMMENT ON FUNCTION substrate.composition_at(substrate.hash_value, INT) IS
+    'Return the child at ordinal p_ordinal within the parent composition (RLE-aware). Reads the LINESTRINGZM mantissa-packed vertices via substrate.get_composition_children.';
 
 -- ── sql/schema/functions/composition_before.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.composition_before(INT, BYTEA, INT, INT);
@@ -4885,10 +5023,14 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 -- ── sql/schema/functions/composition_range.sql ───────────────────────────────────────
+-- composition_range(parent_hash, start, end) — return all children whose
+-- ordinal positions intersect [p_start, p_end], expanded per-position (RLE
+-- expansions emit one row per logical ordinal).
 DROP FUNCTION IF EXISTS substrate.composition_range(INT, BYTEA, INT, INT);
+DROP FUNCTION IF EXISTS substrate.composition_range(BYTEA, INT, INT);
 CREATE OR REPLACE FUNCTION substrate.composition_range(
-    p_parent_hash BYTEA, p_start INT, p_end INT
-) RETURNS TABLE (child_type_code TEXT, child_hash BYTEA, ordinal INT)
+    p_parent_hash substrate.hash_value, p_start INT, p_end INT
+) RETURNS TABLE (child_type_code TEXT, child_hash substrate.hash_value, ordinal INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT child_cls.code, c.child_hash, expanded.ordinal
       FROM substrate.get_composition_children(p_parent_hash) c
@@ -4909,35 +5051,84 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
      ORDER BY expanded.ordinal;
 $f$;
 
+COMMENT ON FUNCTION substrate.composition_range(substrate.hash_value, INT, INT) IS
+    'Expand a composition''s children over the ordinal range [p_start, p_end], one row per logical ordinal. RLE-aware; reads the LINESTRINGZM mantissa-packed vertices via substrate.get_composition_children.';
+
 -- ── sql/schema/functions/composition_subtrajectory.sql ───────────────────────────────────────
+-- composition_subtrajectory(parent_hash, start, end) — return (ordinal,
+-- child_hash) pairs for ordinals in [p_start, p_end], ordered, RLE-expanded.
 DROP FUNCTION IF EXISTS substrate.composition_subtrajectory(INT, BYTEA, INT, INT);
+DROP FUNCTION IF EXISTS substrate.composition_subtrajectory(BYTEA, INT, INT);
 CREATE OR REPLACE FUNCTION substrate.composition_subtrajectory(
-    p_parent_hash BYTEA, p_start INT, p_end INT
-) RETURNS TABLE (ordinal INT, child_hash BYTEA)
+    p_parent_hash substrate.hash_value, p_start INT, p_end INT
+) RETURNS TABLE (ordinal INT, child_hash substrate.hash_value)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT g.n AS ordinal, c.child_hash
       FROM substrate.get_composition_children(p_parent_hash) c
       CROSS JOIN LATERAL generate_series(c.ordinal, c.ordinal + c.rle_count - 1) AS g(n)
-     WHERE TRUE
-       AND g.n BETWEEN p_start AND p_end
+     WHERE g.n BETWEEN p_start AND p_end
      ORDER BY g.n;
 $f$;
 
+COMMENT ON FUNCTION substrate.composition_subtrajectory(substrate.hash_value, INT, INT) IS
+    'Sub-trajectory of a composition over ordinal range [p_start, p_end], one row per logical ordinal with the child at that position.';
+
 -- ── sql/schema/functions/composition_parents.sql ───────────────────────────────────────
+-- composition_parents(child_hash) — reverse lookup: find every composition
+-- whose trajectory contains p_child_hash as a child at some position.
+--
+-- Implementation: extract the child's 104-bit hash prefix (hash_bits_0_51,
+-- hash_bits_52_103), then for every composition physicality (type 'contour')
+-- iterate its LINESTRINGZM vertices via ST_PointN, unpacking vertex X and Z
+-- mantissas via bb_unpack_hash_lo / bb_unpack_hash_hi; report parent rows
+-- where any vertex's (lo, hi) matches the child's (lo, hi).
+--
+-- NOTE: this implementation walks every composition's geometry sequentially
+-- for the linear-scan version of S3.D. The follow-up native fast path
+-- (libhartonomous lh_trajectory_unpack + pg_trajectory_walk SRFs) replaces
+-- this with a C-kernel-driven extraction + spatial index. Until then this
+-- correctly answers reverse-parent queries but does not scale to huge
+-- physicality tables; use sparingly until the native fast path lands.
 DROP FUNCTION IF EXISTS substrate.composition_parents(INT, BYTEA);
+DROP FUNCTION IF EXISTS substrate.composition_parents(BYTEA);
 CREATE OR REPLACE FUNCTION substrate.composition_parents(
-    p_child_hash BYTEA
-) RETURNS TABLE (parent_hash BYTEA, ordinal INT, rle_count INT)
+    p_child_hash substrate.hash_value
+) RETURNS TABLE (parent_hash substrate.hash_value, ordinal INT, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT p.entity_hash, p.ordinal_starts[i], p.rle_counts[i]
-      FROM substrate.physicality p
-      JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
-      CROSS JOIN LATERAL generate_subscripts(p.child_hashes, 1) AS i
-     WHERE pt.code = 'contour'
-       AND p.child_hashes IS NOT NULL
-       AND p.child_hashes[i] = p_child_hash
-     ORDER BY p.entity_hash, p.ordinal_starts[i];
+    WITH child_prefix AS (
+        SELECT substrate.bb_hash_lo(p_child_hash) AS lo,
+               substrate.bb_hash_hi(p_child_hash) AS hi
+    ),
+    composition_geoms AS (
+        SELECT p.entity_hash, p.geom
+          FROM substrate.physicality p
+          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
+         WHERE pt.code = 'contour'
+    ),
+    vertices AS (
+        SELECT g.entity_hash,
+               ST_PointN(g.geom, idx.i) AS v
+          FROM composition_geoms g
+          CROSS JOIN LATERAL generate_series(1, ST_NumPoints(g.geom)) AS idx(i)
+    ),
+    unpacked AS (
+        SELECT v.entity_hash AS parent_hash,
+               substrate.bb_unpack_ordinal(ST_Y(v.v))  AS ordinal,
+               substrate.bb_unpack_rle(ST_Y(v.v))      AS rle_count,
+               substrate.bb_unpack_hash_lo(ST_X(v.v))  AS hash_lo,
+               substrate.bb_unpack_hash_hi(ST_Z(v.v))  AS hash_hi
+          FROM vertices v
+    )
+    SELECT u.parent_hash, u.ordinal, u.rle_count
+      FROM unpacked u
+      CROSS JOIN child_prefix cp
+     WHERE u.hash_lo = cp.lo
+       AND u.hash_hi = cp.hi
+     ORDER BY u.parent_hash, u.ordinal;
 $f$;
+
+COMMENT ON FUNCTION substrate.composition_parents(substrate.hash_value) IS
+    'Reverse lookup: every composition whose LINESTRINGZM trajectory contains p_child_hash as a child. Sequential scan version (linear-scan); native fast-path SRF replaces this in the follow-up S3 work.';
 
 -- ── sql/schema/functions/recompose_text.sql ───────────────────────────────────────
 -- Byte-for-byte text reconstruction by recursive composition walk.
@@ -8585,15 +8776,15 @@ COMMENT ON FUNCTION substrate.embedding_firefly_token_hashes(INT) IS
 -- ── sql/schema/functions/apply_firefly_rotation.sql ───────────────────────────────────────
 -- substrate.apply_firefly_rotation(p_model_source_id, R 3x3)
 --
--- Rotate every embedding_firefly POINT4D physicality of a given
+-- Rotate every embedding_firefly POINTZM physicality of a given
 -- model_source by a 3×3 orthogonal matrix R, leaving the M coordinate
 -- (L2 magnitude) untouched. Run after EmbeddingFireflyPass for non-anchor
 -- models. R must be orthogonal (det = +1); the caller is responsible —
 -- Procrustes (Kabsch) returns such an R.
 --
--- Hash-as-PK: substrate.physicality and substrate.entity_model_source
--- both reference entities by entity_hash (no surrogate id column).
-
+-- PostGIS-native geom: builds the rotated point via ST_MakePoint(x, y, z, m)
+-- — returns geometry(POINTZM). The original (X, Y, Z) extracted via
+-- ST_X / ST_Y / ST_Z; M passed through unchanged.
 CREATE OR REPLACE FUNCTION substrate.apply_firefly_rotation(
     p_model_source_id INT,
     p_r00 FLOAT8, p_r01 FLOAT8, p_r02 FLOAT8,
@@ -8605,17 +8796,18 @@ VOLATILE
 AS $$
     WITH updated AS (
         UPDATE substrate.physicality p
-           SET geom = ST_MakePoint4D(
-                  p_r00 * (point4d_to_array(p.geom::point4d))[1]
-                      + p_r01 * (point4d_to_array(p.geom::point4d))[2]
-                      + p_r02 * (point4d_to_array(p.geom::point4d))[3],
-                  p_r10 * (point4d_to_array(p.geom::point4d))[1]
-                      + p_r11 * (point4d_to_array(p.geom::point4d))[2]
-                      + p_r12 * (point4d_to_array(p.geom::point4d))[3],
-                  p_r20 * (point4d_to_array(p.geom::point4d))[1]
-                      + p_r21 * (point4d_to_array(p.geom::point4d))[2]
-                      + p_r22 * (point4d_to_array(p.geom::point4d))[3],
-                  (point4d_to_array(p.geom::point4d))[4])
+           SET geom = ST_MakePoint(
+                  p_r00 * ST_X(p.geom)
+                      + p_r01 * ST_Y(p.geom)
+                      + p_r02 * ST_Z(p.geom),
+                  p_r10 * ST_X(p.geom)
+                      + p_r11 * ST_Y(p.geom)
+                      + p_r12 * ST_Z(p.geom),
+                  p_r20 * ST_X(p.geom)
+                      + p_r21 * ST_Y(p.geom)
+                      + p_r22 * ST_Z(p.geom),
+                  ST_M(p.geom)
+              )
           FROM substrate.entity_model_source ems,
               substrate.physicality_type pt
          WHERE p.entity_hash         = ems.entity_hash
@@ -8628,20 +8820,20 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.apply_firefly_rotation(INT, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8) IS
-    'Rotate every embedding_firefly POINT4D physicality of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
+    'Rotate every embedding_firefly POINTZM of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
 
 -- ── sql/schema/functions/get_firefly_coords.sql ───────────────────────────────────────
 -- substrate.get_firefly_coords(p_bpe_token_entity_hashes BYTEA[], p_model_source_id INT)
 --
--- Return per-entity firefly POINT4D coordinates for a vocab intersection
+-- Return per-entity firefly POINTZM (X, Y, Z) for a vocab intersection
 -- set, scoped to one model_source. Used by EmbeddingAlignmentPass to pull
 -- the (anchor, this-model) coordinate pairs into managed memory for
 -- Procrustes/Kabsch fitting.
 --
--- Hash-as-PK: input is an array of entity_hash BYTEAs, not surrogate ids.
--- Output rows are ordered by entity_hash ASC so two calls (anchor model,
--- this model) for the same hash set yield aligned column orderings.
-
+-- PostGIS-native: physicality.geom is geometry(POINTZM); ST_X / ST_Y / ST_Z
+-- extract coordinates directly without going through point4d_to_array.
+-- M (L2 magnitude) intentionally omitted — Kabsch rotation operates on
+-- the 3D direction and M is preserved separately.
 CREATE OR REPLACE FUNCTION substrate.get_firefly_coords(
     p_bpe_token_entity_hashes BYTEA[],
     p_model_source_id         INT
@@ -8655,15 +8847,14 @@ LANGUAGE SQL
 STABLE
 AS $$
     SELECT p.entity_hash,
-           coords.v[1] AS x,
-           coords.v[2] AS y,
-           coords.v[3] AS z
+           ST_X(p.geom) AS x,
+           ST_Y(p.geom) AS y,
+           ST_Z(p.geom) AS z
       FROM substrate.physicality p
       JOIN substrate.entity_model_source ems
         ON ems.entity_hash = p.entity_hash
       JOIN substrate.physicality_type pt
         ON pt.id = p.physicality_type_id
-      CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
      WHERE p.entity_hash = ANY(p_bpe_token_entity_hashes)
        AND ems.model_source_id = p_model_source_id
        AND pt.code = 'embedding_firefly'
@@ -8671,7 +8862,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.get_firefly_coords(BYTEA[], INT) IS
-    'Per-entity firefly XYZ coords for a vocab intersection set, scoped to one model_source. Ordered by entity_hash ASC so cross-model calls return aligned arrays. Used by EmbeddingAlignmentPass for Procrustes input.';
+    'Per-entity firefly XYZ for a vocab intersection set, scoped to one model_source. Ordered by entity_hash ASC so cross-model calls return aligned arrays. Used by EmbeddingAlignmentPass for Procrustes input.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -8845,21 +9036,11 @@ COMMENT ON FUNCTION substrate.model_vocab_recovered(bytea) IS
 --
 -- Voronoi-tessellation centroid + dispersion + agreement score over a
 -- token entity's firefly cloud. Each model that has ingested this token
--- contributed one POINT4D physicality of type embedding_firefly.
+-- contributed one POINTZM physicality of type embedding_firefly.
 --
--- All numerical work runs in compiled C from the hartonomous extension:
---   public.point4d(x,y,z,m)      — native point4d
---   public.centroid_4d(point4d)  — single-pass centroid aggregate (C)
---   public.distance_4d(p,q)      — 4D Euclidean distance (C)
---
--- The SQL function is one flat SELECT — no CTE, no plpgsql loop. Two
--- scans of the cloud are necessary (centroid first, then dispersion
--- against centroid). For typical fireflies-per-token (<= models ingested,
--- usually <100) the cost is dominated by index probe, not the scans.
---
--- Future work: a native firefly_consensus(token_hash bytea) C function
--- in ext/hartonomous_pg/src/ would do centroid + dispersion in one
--- pass over the SPI cursor — single-pass, all C, no SQL composition.
+-- PostGIS-native: physicality.geom is geometry(POINTZM); cast to
+-- public.point4d via the geometry->point4d bridge for libhartonomous
+-- kernel calls (centroid_4d aggregate, distance_4d).
 DROP FUNCTION IF EXISTS substrate.cross_model_consensus(bytea);
 CREATE OR REPLACE FUNCTION substrate.cross_model_consensus(p_token_hash bytea)
 RETURNS TABLE (
@@ -8878,8 +9059,8 @@ AS $$
              ELSE 1.0 / (1.0 + COALESCE(d.max_dist, 0.0))
         END
       FROM (
-          SELECT public.centroid_4d(p.geom::point4d)                     AS centroid,
-                 count(*)::int                                            AS n
+          SELECT public.centroid_4d(p.geom::public.point4d) AS centroid,
+                 count(*)::int                              AS n
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
@@ -8887,7 +9068,7 @@ AS $$
            WHERE p.entity_hash = p_token_hash
       ) c
       CROSS JOIN LATERAL (
-          SELECT max(public.distance_4d(p.geom::point4d, c.centroid))       AS max_dist
+          SELECT max(public.distance_4d(p.geom::public.point4d, c.centroid)) AS max_dist
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
@@ -8897,14 +9078,17 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.cross_model_consensus(bytea) IS
-    'Centroid + dispersion + agreement over a token''s firefly cloud. All math via native hartonomous primitives (point4d, centroid_4d aggregate, distance_4d). One SQL function, no CTE, no plpgsql.';
+    'Centroid + dispersion + agreement over a token''s firefly cloud. PostGIS POINTZM cast to public.point4d via the geometry->point4d bridge; aggregates via the libhartonomous centroid_4d + distance_4d native kernels.';
 
 -- ── sql/schema/functions/cross_model_divergence.sql ───────────────────────────────────────
 -- substrate.cross_model_divergence(p_token_hash bytea, p_model_a_arch_hash bytea, p_model_b_arch_hash bytea)
 --
--- Pairwise 4D Hausdorff distance between two models' fireflies for the
+-- Pairwise 4D Euclidean distance between two models' fireflies for the
 -- same token entity. Returns NULL when either model has no firefly for
 -- the token. Drives D-cross-model-divergence-nonzero gate.
+--
+-- PostGIS-native: extracts (X, Y, Z, M) via ST_X / ST_Y / ST_Z / ST_M from
+-- POINTZM geometry directly.
 DROP FUNCTION IF EXISTS substrate.cross_model_divergence(bytea, bytea, bytea);
 CREATE OR REPLACE FUNCTION substrate.cross_model_divergence(
     p_token_hash         bytea,
@@ -8915,13 +9099,12 @@ RETURNS DOUBLE PRECISION
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $$
     WITH a AS (
-        SELECT coords.v[1] AS x,
-               coords.v[2] AS y,
-               coords.v[3] AS z,
-               coords.v[4] AS m
+        SELECT ST_X(p.geom) AS x,
+               ST_Y(p.geom) AS y,
+               ST_Z(p.geom) AS z,
+               ST_M(p.geom) AS m
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
-          CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_a
             ON ems_a.model_source_id = ems_t.model_source_id
@@ -8929,13 +9112,12 @@ AS $$
          WHERE p.entity_hash = p_token_hash
     ),
     b AS (
-        SELECT coords.v[1] AS x,
-               coords.v[2] AS y,
-               coords.v[3] AS z,
-               coords.v[4] AS m
+        SELECT ST_X(p.geom) AS x,
+               ST_Y(p.geom) AS y,
+               ST_Z(p.geom) AS z,
+               ST_M(p.geom) AS m
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
-          CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_b
             ON ems_b.model_source_id = ems_t.model_source_id
@@ -8947,7 +9129,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.cross_model_divergence(bytea, bytea, bytea) IS
-    'Pairwise 4D distance between model A''s and model B''s fireflies for a shared token entity. Used by `hartonomous compare-models` and D-cross-model-divergence-nonzero gate.';
+    'Pairwise 4D distance between model A''s and model B''s fireflies for a shared token. Reads PostGIS POINTZM coords directly via ST_X / ST_Y / ST_Z / ST_M.';
 
 -- ── sql/schema/functions/codepoint_property_rows.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.codepoint_property_rows(p_codepoints INT[] DEFAULT NULL)

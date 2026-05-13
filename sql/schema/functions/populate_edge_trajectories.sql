@@ -1,24 +1,15 @@
--- Populate edge trajectories from participant centroids.
+-- Populate edge trajectories from participant centroids — PostGIS-native
+-- LINESTRINGZM built via ST_MakeLine over each participant's
+-- substrate.entity.centroid_4d POINTZM in role order. Participants whose
+-- centroid_4d isn't yet populated (entity row not in place when this runs)
+-- cause the edge to be skipped; subsequent calls re-attempt.
 --
--- Performance + correctness rewrite (was: per-row UDF dispatch + ordered-set
--- aggregate over the full join, which crashed PostGIS aggregate state when
--- the tuplestore spilled to temp files at >800k edges).
---
--- Three changes vs prior:
---   1. LIMIT is pushed onto the edge-selection CTE first. Only the chosen
---      edges' members are joined against physicality, instead of joining
---      ALL members on every call and discarding all but `p_limit` at the
---      end. Cuts the per-call work from O(total_edges × avg_members) to
---      O(p_limit × avg_members).
---   2. `substrate.entity_centroid_4d(entity_hash)` UDF call is replaced
---      with a LATERAL JOIN onto substrate.physicality. plpgsql + PG cannot
---      amortize STABLE-function calls across rows; an explicit JOIN can.
---   3. Native geometry4d LINESTRING construction uses a pre-sorted array
---      feeding `ST_MakeLine4D(point4d[])` over the
---      array form. PostGIS's ordered-set aggregate path spills to temp
---      files under memory pressure and was the SIGSEGV site (NULL deref at
---      offset 0x17 in tuplestore recovery). The array form materializes in
---      a single pass without spill state.
+-- Performance: edge selection CTE pushes LIMIT FIRST so only the chosen
+-- edges' members are joined. STABLE-function calls are amortized via an
+-- explicit JOIN onto substrate.entity rather than a per-row UDF dispatch.
+-- ST_MakeLine over an ordered array materializes in one pass without the
+-- ordered-set-aggregate tuplestore-spill pattern that previously SIGSEGV'd
+-- at >800k edges.
 CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT DEFAULT NULL)
 RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
@@ -40,18 +31,13 @@ BEGIN
                em.edge_role_id,
                em.role_position,
                em.entity_hash,
-               substrate.geometry4d_centroid(p.geom) AS cgeom
+               e.centroid_4d AS cgeom
           FROM null_edges ne
           JOIN substrate.edge_member em
             ON em.edge_type_id = ne.edge_type_id
            AND em.edge_hash    = ne.edge_hash
-          LEFT JOIN LATERAL (
-              SELECT geom
-                FROM substrate.physicality ph
-               WHERE ph.entity_hash = em.entity_hash
-               ORDER BY ph.physicality_type_id
-               LIMIT 1
-          ) p ON true
+          LEFT JOIN substrate.entity e
+            ON e.hash = em.entity_hash
     ),
     candidates AS (
         SELECT edge_type_id, edge_hash
@@ -74,7 +60,7 @@ BEGIN
     aggregated AS (
         SELECT edge_type_id,
                edge_hash,
-               ST_MakeLine4D(array_agg(cgeom ORDER BY rn)) AS line_geom,
+               ST_MakeLine(array_agg(cgeom ORDER BY rn)) AS line_geom,
                count(*) AS member_count
           FROM sorted_pts
          GROUP BY edge_type_id, edge_hash
@@ -87,11 +73,11 @@ BEGIN
        AND e.geom IS NULL
        AND a.member_count >= 2
        AND a.line_geom IS NOT NULL
-       AND ST_NumPoints4D(a.line_geom) >= 2;
+       AND ST_NumPoints(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with native LINESTRING4D geometry through participant centroids in role order. Edges with missing participant physicality are left NULL.';
+    'Populate substrate.edge.geom with PostGIS-native LINESTRINGZM through participants'' substrate.entity.centroid_4d in role order. Edges with missing participant centroids are left NULL and retried on subsequent calls.';
