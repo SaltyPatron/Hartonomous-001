@@ -33,7 +33,7 @@ internal sealed class RecordingBatch : IIngestionBatch
     public List<(EntityHandle Entity, string PhysType, byte[] Wkb)> Physicalities { get; } = [];
     public List<(EntityHandle Entity, string PhysType, double X, double Y, double Z, double M)> PhysPoints { get; } = [];
     public List<(EntityHandle Entity, string PhysType, (double X, double Y, double Z, double M)[] Vertices)> PhysLines { get; } = [];
-    public List<(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount)> Sequences { get; } = [];
+    public List<(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount)> CompositionChildren { get; } = [];
     public List<(EntityHandle Entity, string Arena, double Mu, string AttestationType)> Significances { get; } = [];
     public List<(EntityHandle Entity, long ModelSourceId)> ModelSources { get; } = [];
 
@@ -105,9 +105,9 @@ internal sealed class RecordingBatch : IIngestionBatch
         PhysLines.Add((entity, physicalityTypeCode, copy));
     }
 
-    public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
+    public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
     {
-        Sequences.Add((parent, ordinal, child, rleCount));
+        CompositionChildren.Add((parent, ordinal, child, rleCount));
     }
 
     public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu, string attestationTypeCode = "provenance_authority_corroboration")

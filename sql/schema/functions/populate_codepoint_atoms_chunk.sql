@@ -74,7 +74,7 @@ BEGIN
     SELECT v_s3_phys_type,
            a.hash,
            a.hash,
-           ST_MakePoint(a.x, a.y, a.z, a.m)
+           ST_MakePoint4D(a.x, a.y, a.z, a.m)
       FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
     ON CONFLICT DO NOTHING;
 

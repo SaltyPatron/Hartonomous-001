@@ -50,6 +50,7 @@ PG_FUNCTION_INFO_V1(pg_geometry4d_num_geoms);
 PG_FUNCTION_INFO_V1(pg_geometry4d_num_points);
 PG_FUNCTION_INFO_V1(pg_geometry4d_eq);
 PG_FUNCTION_INFO_V1(pg_geometry4d_ne);
+PG_FUNCTION_INFO_V1(pg_bytea_to_geometry4d);
 PG_FUNCTION_INFO_V1(pg_geometry4d_from_point4d);
 PG_FUNCTION_INFO_V1(pg_geometry4d_to_point4d);
 PG_FUNCTION_INFO_V1(pg_geometry4d_from_linestring4d);
@@ -137,9 +138,12 @@ static double *parse_point_list(const char **p, int32 *n_out)
 /* Match a prefix word case-insensitively; returns 1 on match and advances. */
 static bool match_word(const char **p, const char *word)
 {
+    const char *s;
+    size_t i;
+
     skip_ws(p);
-    const char *s = *p;
-    size_t i = 0;
+    s = *p;
+    i = 0;
     while (word[i])
     {
         if (!s[i] || toupper((unsigned char) s[i]) != toupper((unsigned char) word[i]))
@@ -154,13 +158,15 @@ static bool match_word(const char **p, const char *word)
 /* Optional "SRID=0;" prefix — accepted but must be 0. */
 static void consume_optional_srid(const char **p)
 {
+    const char *s;
+    char *endptr;
+    long v;
+
     skip_ws(p);
-    const char *s = *p;
+    s = *p;
     if ((s[0] == 'S' || s[0] == 's') && (s[1] == 'R' || s[1] == 'r') && (s[2] == 'I' || s[2] == 'i') &&
         (s[3] == 'D' || s[3] == 'd') && s[4] == '=')
     {
-        char *endptr;
-        long v;
         s += 5;
         v = strtol(s, &endptr, 10);
         if (endptr == s || v != 0)
@@ -234,10 +240,13 @@ static void parse_linestring_payload(const char **p, Buf *out)
 /* POLYGON : ((ring1), (ring2), ...)  each ring: (p,p,p,p_close) */
 static void parse_polygon_payload(const char **p, Buf *out)
 {
+    size_t nrings_pos;
+    uint32 nrings;
+
     expect_char(p, '(', "POLYGON4D rings");
-    size_t nrings_pos = out->len;
+    nrings_pos = out->len;
     buf_u32(out, 0);
-    uint32 nrings = 0;
+    nrings = 0;
     for (;;)
     {
         int32 n = 0;
@@ -247,12 +256,15 @@ static void parse_polygon_payload(const char **p, Buf *out)
                     (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                      errmsg("geometry4d: POLYGON4D ring needs >= 4 points (closed)")));
         /* closedness: first == last. */
-        for (int j = 0; j < 4; j++)
         {
-            if (pts[j] != pts[(n - 1) * 4 + j])
-                ereport(ERROR,
-                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-                         errmsg("geometry4d: POLYGON4D ring must be closed")));
+            int j;
+            for (j = 0; j < 4; j++)
+            {
+                if (pts[j] != pts[(n - 1) * 4 + j])
+                    ereport(ERROR,
+                            (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                             errmsg("geometry4d: POLYGON4D ring must be closed")));
+            }
         }
         buf_u32(out, (uint32) n);
         buf_append(out, pts, (size_t) n * 4 * sizeof(double));
@@ -270,10 +282,13 @@ static void parse_polygon_payload(const char **p, Buf *out)
 
 static void parse_multipoint_payload(const char **p, Buf *out)
 {
+    size_t cnt_pos;
+    uint32 n;
+
     expect_char(p, '(', "MULTIPOINT4D");
-    size_t cnt_pos = out->len;
+    cnt_pos = out->len;
     buf_u32(out, 0);
-    uint32 n = 0;
+    n = 0;
     for (;;)
     {
         int32 np = 0;
@@ -297,10 +312,13 @@ static void parse_multipoint_payload(const char **p, Buf *out)
 
 static void parse_multilinestring_payload(const char **p, Buf *out)
 {
+    size_t cnt_pos;
+    uint32 n;
+
     expect_char(p, '(', "MULTILINESTRING4D");
-    size_t cnt_pos = out->len;
+    cnt_pos = out->len;
     buf_u32(out, 0);
-    uint32 n = 0;
+    n = 0;
     for (;;)
     {
         parse_linestring_payload(p, out);
@@ -317,10 +335,13 @@ static void parse_multilinestring_payload(const char **p, Buf *out)
 
 static void parse_multipolygon_payload(const char **p, Buf *out)
 {
+    size_t cnt_pos;
+    uint32 n;
+
     expect_char(p, '(', "MULTIPOLYGON4D");
-    size_t cnt_pos = out->len;
+    cnt_pos = out->len;
     buf_u32(out, 0);
-    uint32 n = 0;
+    n = 0;
     for (;;)
     {
         parse_polygon_payload(p, out);
@@ -338,18 +359,26 @@ static void parse_multipolygon_payload(const char **p, Buf *out)
 /* TRIANGLE : single closed ring of exactly 4 points (3 distinct + close). */
 static void parse_triangle_payload(const char **p, Buf *out)
 {
+    int32 n;
+    double *pts;
+
     expect_char(p, '(', "TRIANGLE4D");
-    int32 n = 0;
-    double *pts = parse_point_list(p, &n);
+    n = 0;
+    pts = parse_point_list(p, &n);
     if (n != 4)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                  errmsg("geometry4d: TRIANGLE4D ring must have exactly 4 points")));
-    for (int j = 0; j < 4; j++)
-        if (pts[j] != pts[3 * 4 + j])
-            ereport(ERROR,
-                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-                     errmsg("geometry4d: TRIANGLE4D ring must be closed")));
+    {
+        int j;
+        for (j = 0; j < 4; j++)
+        {
+            if (pts[j] != pts[3 * 4 + j])
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("geometry4d: TRIANGLE4D ring must be closed")));
+        }
+    }
     buf_u32(out, 1u);       /* nrings */
     buf_u32(out, 4u);       /* npoints */
     buf_append(out, pts, 4 * 4 * sizeof(double));
@@ -359,10 +388,13 @@ static void parse_triangle_payload(const char **p, Buf *out)
 
 static void parse_tin_payload(const char **p, Buf *out)
 {
+    size_t cnt_pos;
+    uint32 n;
+
     expect_char(p, '(', "TIN4D");
-    size_t cnt_pos = out->len;
+    cnt_pos = out->len;
     buf_u32(out, 0);
-    uint32 n = 0;
+    n = 0;
     for (;;)
     {
         parse_triangle_payload(p, out);
@@ -379,10 +411,13 @@ static void parse_tin_payload(const char **p, Buf *out)
 
 static void parse_polyhedralsurface_payload(const char **p, Buf *out)
 {
+    size_t cnt_pos;
+    uint32 n;
+
     expect_char(p, '(', "POLYHEDRALSURFACE4D");
-    size_t cnt_pos = out->len;
+    cnt_pos = out->len;
     buf_u32(out, 0);
-    uint32 n = 0;
+    n = 0;
     for (;;)
     {
         parse_polygon_payload(p, out);
@@ -433,10 +468,13 @@ parse_payload(const char **p, uint32 tag, Buf *out)
         case G4D_TAG_POLYHEDRALSURFACE:   parse_polyhedralsurface_payload(p, out); break;
         case G4D_TAG_GEOMETRYCOLLECTION:
         {
+            size_t cnt_pos;
+            uint32 n;
+
             expect_char(p, '(', "GEOMETRYCOLLECTION4D");
-            size_t cnt_pos = out->len;
+            cnt_pos = out->len;
             buf_u32(out, 0);
-            uint32 n = 0;
+            n = 0;
             for (;;)
             {
                 parse_tagged_item(p, out);
@@ -838,13 +876,18 @@ walk_payload(uint32 tag, const char *cur, const char *end, bool *bad,
 bool
 g4d_validate(const Geometry4D *g)
 {
+    bool bad;
+    const char *p;
+    const char *end;
+    const char *after;
+
     if (g->endian != 1) return false;
     if (g->srid != 0) return false;
     if (g->tag < 1 || g->tag > 10) return false;
-    bool bad = false;
-    const char *p = G4D_PAYLOAD(g);
-    const char *end = p + G4D_PAYLOAD_SIZE(g);
-    const char *after = walk_payload(g->tag, p, end, &bad, NULL, NULL);
+    bad = false;
+    p = G4D_PAYLOAD(g);
+    end = p + G4D_PAYLOAD_SIZE(g);
+    after = walk_payload(g->tag, p, end, &bad, NULL, NULL);
     if (bad) return false;
     if (after != end) return false;
     return true;
@@ -853,11 +896,15 @@ g4d_validate(const Geometry4D *g)
 void
 g4d_compute_bbox(const Geometry4D *g, Box4D *out)
 {
+    bool bad;
+    const char *p;
+    const char *end;
+
     out->min[0] = out->min[1] = out->min[2] = out->min[3] =  DBL_MAX;
     out->max[0] = out->max[1] = out->max[2] = out->max[3] = -DBL_MAX;
-    bool bad = false;
-    const char *p = G4D_PAYLOAD(g);
-    const char *end = p + G4D_PAYLOAD_SIZE(g);
+    bad = false;
+    p = G4D_PAYLOAD(g);
+    end = p + G4D_PAYLOAD_SIZE(g);
     walk_payload(g->tag, p, end, &bad, out->min, out->max);
     if (bad)
         ereport(ERROR, (errmsg("geometry4d: corrupt payload during bbox walk")));
@@ -865,7 +912,8 @@ g4d_compute_bbox(const Geometry4D *g, Box4D *out)
      * minimum-count checks, but defend the public invariant). */
     if (out->min[0] == DBL_MAX)
     {
-        for (int i = 0; i < 4; i++) { out->min[i] = 0.0; out->max[i] = 0.0; }
+        int i;
+        for (i = 0; i < 4; i++) { out->min[i] = 0.0; out->max[i] = 0.0; }
     }
 }
 
@@ -1040,6 +1088,70 @@ pg_geometry4d_ne(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(memcmp(a, b, VARSIZE_ANY(a)) != 0);
 }
 
+Datum
+pg_bytea_to_geometry4d(PG_FUNCTION_ARGS)
+{
+    bytea *raw = PG_GETARG_BYTEA_PP(0);
+    const char *src = VARDATA_ANY(raw);
+    int len = VARSIZE_ANY_EXHDR(raw);
+    uint8 tag;
+    Geometry4D *g;
+
+    if (len < 1)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                 errmsg("bytea_to_geometry4d: empty payload")));
+
+    tag = (uint8) src[0];
+    switch (tag)
+    {
+        case G4D_TAG_POINT:
+            if (len != 1 + 4 * (int) sizeof(double))
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                         errmsg("bytea_to_geometry4d: POINT4D payload length %d is invalid", len)));
+            g = g4d_new(G4D_TAG_POINT, 4 * sizeof(double));
+            memcpy(G4D_PAYLOAD(g), src + 1, 4 * sizeof(double));
+            break;
+
+        case G4D_TAG_LINESTRING:
+        {
+            uint32 n;
+            size_t expected;
+
+            if (len < 1 + (int) sizeof(uint32))
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                         errmsg("bytea_to_geometry4d: LINESTRING4D header is truncated")));
+            memcpy(&n, src + 1, sizeof(uint32));
+            if (n == 0)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                         errmsg("bytea_to_geometry4d: LINESTRING4D needs at least one point")));
+            expected = 1 + sizeof(uint32) + (size_t) n * 4 * sizeof(double);
+            if ((size_t) len != expected)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                         errmsg("bytea_to_geometry4d: LINESTRING4D payload length %d is invalid for %u points", len, n)));
+            g = g4d_new(G4D_TAG_LINESTRING, expected - 1);
+            memcpy(G4D_PAYLOAD(g), src + 1, expected - 1);
+            break;
+        }
+
+        default:
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                     errmsg("bytea_to_geometry4d: unsupported tag %u", tag)));
+    }
+
+    if (!g4d_validate(g))
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                 errmsg("bytea_to_geometry4d: invalid geometry4d payload")));
+
+    PG_RETURN_GEOMETRY4D_P(g);
+}
+
 /* ── Casts ───────────────────────────────────────────────────────── */
 
 Datum
@@ -1145,10 +1257,10 @@ pg_geometry4d_makeline(PG_FUNCTION_ARGS)
     get_typlenbyvalalign(elemtype, &typlen, &typbyval, &typalign);
     deconstruct_array(arr, elemtype, typlen, typbyval, typalign,
                       &elems, &nulls, (int *) &npts);
-    if (npts < 2)
+    if (npts < 1)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("geometry4d_makeline: need >= 2 points")));
+                 errmsg("geometry4d_makeline: need >= 1 point")));
     for (int i = 0; i < npts; i++)
         if (nulls[i])
             ereport(ERROR,

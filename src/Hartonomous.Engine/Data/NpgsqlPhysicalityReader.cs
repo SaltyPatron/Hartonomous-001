@@ -8,7 +8,7 @@ namespace Hartonomous.Engine.Data;
 
 /// <summary>
 /// Hash-as-PK implementation of <see cref="IPhysicalityReader"/>. Reads the
-/// substrate.physicality.geom column (PostGIS POINTZM / LINESTRINGZM) and
+/// substrate.physicality.geom column (native POINT4D / LINESTRING4D) and
 /// decodes the four spatial coordinates per point. The substrate's 4D
 /// physicality lives entirely on PostGIS-native geometry; the M coordinate
 /// is a real spatial axis treated as such by the substrate.st_4d_*

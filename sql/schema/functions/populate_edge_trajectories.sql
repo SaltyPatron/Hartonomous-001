@@ -13,8 +13,8 @@
 --   2. `substrate.entity_centroid_4d(entity_hash)` UDF call is replaced
 --      with a LATERAL JOIN onto substrate.physicality. plpgsql + PG cannot
 --      amortize STABLE-function calls across rows; an explicit JOIN can.
---   3. `ST_MakeLine(... ORDER BY ...)` ordered-set aggregate is replaced by
---      a pre-sorted subquery feeding a plain `ST_MakeLine(arr)` over the
+--   3. Native geometry4d LINESTRING construction uses a pre-sorted array
+--      feeding `ST_MakeLine4D(point4d[])` over the
 --      array form. PostGIS's ordered-set aggregate path spills to temp
 --      files under memory pressure and was the SIGSEGV site (NULL deref at
 --      offset 0x17 in tuplestore recovery). The array form materializes in
@@ -40,7 +40,7 @@ BEGIN
                em.edge_role_id,
                em.role_position,
                em.entity_hash,
-               substrate.geom_to_pointzm(p.geom) AS cgeom
+               substrate.geometry4d_centroid(p.geom) AS cgeom
           FROM null_edges ne
           JOIN substrate.edge_member em
             ON em.edge_type_id = ne.edge_type_id
@@ -74,7 +74,7 @@ BEGIN
     aggregated AS (
         SELECT edge_type_id,
                edge_hash,
-               ST_MakeLine(array_agg(cgeom ORDER BY rn)) AS line_geom,
+               ST_MakeLine4D(array_agg(cgeom ORDER BY rn)) AS line_geom,
                count(*) AS member_count
           FROM sorted_pts
          GROUP BY edge_type_id, edge_hash
@@ -87,11 +87,11 @@ BEGIN
        AND e.geom IS NULL
        AND a.member_count >= 2
        AND a.line_geom IS NOT NULL
-       AND ST_NumPoints(a.line_geom) >= 2;
+       AND ST_NumPoints4D(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. LATERAL JOIN onto substrate.physicality (no per-row UDF), pre-sorted array_agg feeding ST_MakeLine (no ordered-set aggregate spill). Edges with missing participant centroids are left NULL.';
+    'Populate substrate.edge.geom with native LINESTRING4D geometry through participant centroids in role order. Edges with missing participant physicality are left NULL.';

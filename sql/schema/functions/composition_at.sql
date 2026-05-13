@@ -5,10 +5,9 @@ CREATE OR REPLACE FUNCTION substrate.composition_at(
     p_ordinal     INT
 ) RETURNS TABLE (child_hash BYTEA, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT s.child_hash, s.rle_count
-      FROM substrate.sequence s
-     WHERE s.parent_hash = p_parent_hash
-       AND p_ordinal >= s.ordinal
-       AND p_ordinal <  s.ordinal + s.rle_count
+    SELECT c.child_hash, c.rle_count
+      FROM substrate.get_composition_children(p_parent_hash) c
+     WHERE p_ordinal >= c.ordinal
+       AND p_ordinal <  c.ordinal + c.rle_count
      LIMIT 1;
 $f$;

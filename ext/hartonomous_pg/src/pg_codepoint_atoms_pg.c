@@ -74,8 +74,9 @@ Datum pg_cp_hash(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     const uint8_t* h = huc_cp_hash_at(cp);
+    bytea* b;
     if (!h) PG_RETURN_NULL();
-    bytea* b = (bytea*) palloc(VARHDRSZ + CP_HASH_LEN);
+    b = (bytea*) palloc(VARHDRSZ + CP_HASH_LEN);
     SET_VARSIZE(b, VARHDRSZ + CP_HASH_LEN);
     memcpy(VARDATA(b), h, CP_HASH_LEN);
     PG_RETURN_BYTEA_P(b);
@@ -87,8 +88,9 @@ Datum pg_cp_centroid(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     const double* c = huc_cp_centroid_at(cp);
+    Point4D* p;
     if (!c) PG_RETURN_NULL();
-    Point4D* p = (Point4D*) palloc(sizeof(Point4D));
+    p = (Point4D*) palloc(sizeof(Point4D));
     p->x[0] = c[0]; p->x[1] = c[1]; p->x[2] = c[2]; p->x[3] = c[3];
     PG_RETURN_POINT4D_P(p);
 }
@@ -137,11 +139,12 @@ PG_FUNCTION_INFO_V1(pg_cp_from_hash);
 Datum pg_cp_from_hash(PG_FUNCTION_ARGS)
 {
     bytea* h_arg = PG_GETARG_BYTEA_PP(0);
+    int32_t cp;
     if (VARSIZE_ANY_EXHDR(h_arg) != CP_HASH_LEN) {
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("cp_from_hash: hash must be %d bytes", CP_HASH_LEN)));
     }
-    int32_t cp = uc_cp_from_hash((const uint8_t*) VARDATA_ANY(h_arg));
+    cp = uc_cp_from_hash((const uint8_t*) VARDATA_ANY(h_arg));
     if (cp < 0) PG_RETURN_NULL();
     PG_RETURN_INT32(cp);
 }
@@ -207,6 +210,12 @@ static ArrayType* slice_int_array(int32_t cp, const char* table_name,
                                   const int32_t* data, uint32_t data_len,
                                   uint32_t off, uint16_t len)
 {
+    Datum* elems;
+    int dims[1];
+    int lbs[1];
+    ArrayType* a;
+    uint16_t i;
+
     if (len == 0) {
         return construct_empty_array(INT4OID);
     }
@@ -216,14 +225,14 @@ static ArrayType* slice_int_array(int32_t cp, const char* table_name,
                                table_name, cp, off, (unsigned int) len, data_len)));
     }
 
-    Datum* elems = (Datum*) palloc(sizeof(Datum) * len);
-    for (uint16_t i = 0; i < len; ++i) {
+    elems = (Datum*) palloc(sizeof(Datum) * len);
+    for (i = 0; i < len; ++i) {
         elems[i] = Int32GetDatum(data[off + i]);
     }
-    int dims[1] = { len };
-    int lbs[1]  = { 1 };
-    ArrayType* a = construct_md_array(elems, NULL, 1, dims, lbs,
-                                      INT4OID, sizeof(int32), true, TYPALIGN_INT);
+    dims[0] = len;
+    lbs[0] = 1;
+    a = construct_md_array(elems, NULL, 1, dims, lbs,
+                           INT4OID, sizeof(int32), true, TYPALIGN_INT);
     pfree(elems);
     return a;
 }
@@ -270,14 +279,16 @@ Datum pg_cp_name(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     uint16_t len = uc_name_len[cp];
+    uint32_t off;
+    text* t;
     if (len == 0) PG_RETURN_NULL();
-    uint32_t off = uc_name_off[cp];
+    off = uc_name_off[cp];
     if (off > UC_NAME_BLOB_LEN || (uint32_t) len > UC_NAME_BLOB_LEN - off) {
         ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
                         errmsg("generated UCD name slice out of range: cp=U+%06X off=%u len=%u blob_len=%u",
                                cp, off, (unsigned int) len, (unsigned int) UC_NAME_BLOB_LEN)));
     }
-    text* t = (text*) palloc(VARHDRSZ + len);
+    t = (text*) palloc(VARHDRSZ + len);
     SET_VARSIZE(t, VARHDRSZ + len);
     memcpy(VARDATA(t), uc_name_blob + off, len);
     PG_RETURN_TEXT_P(t);
@@ -302,15 +313,19 @@ typedef struct UcdSimpleSrfState { uint32_t cur; uint32_t total; } UcdSimpleSrfS
 static UcdSimpleSrfState*
 ucd_simple_srf_init(PG_FUNCTION_ARGS, uint32_t total)
 {
-    FuncCallContext* funcctx = SRF_FIRSTCALL_INIT();
-    MemoryContext oldctx = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+    FuncCallContext* funcctx;
+    MemoryContext oldctx;
     TupleDesc tupdesc;
+    UcdSimpleSrfState* st;
+
+    funcctx = SRF_FIRSTCALL_INIT();
+    oldctx = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
         ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                         errmsg("function returning record requires column definition")));
     }
     funcctx->tuple_desc = BlessTupleDesc(tupdesc);
-    UcdSimpleSrfState* st = (UcdSimpleSrfState*) palloc(sizeof(UcdSimpleSrfState));
+    st = (UcdSimpleSrfState*) palloc(sizeof(UcdSimpleSrfState));
     st->cur = 0; st->total = total;
     funcctx->user_fctx = st;
     MemoryContextSwitchTo(oldctx);
@@ -320,19 +335,24 @@ ucd_simple_srf_init(PG_FUNCTION_ARGS, uint32_t total)
 PG_FUNCTION_INFO_V1(pg_ucd_general_categories);
 Datum pg_ucd_general_categories(PG_FUNCTION_ARGS)
 {
-    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_GC_COUNT);
-    FuncCallContext* funcctx = SRF_PERCALL_SETUP();
-    UcdSimpleSrfState* st = (UcdSimpleSrfState*) funcctx->user_fctx;
-    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
-
+    FuncCallContext* funcctx;
+    UcdSimpleSrfState* st;
     Datum values[4];
     bool  nulls[4] = { false, false, false, false };
-    const GCEntry* e = &uc_inv_gc[st->cur];
+    const GCEntry* e;
+    HeapTuple tuple;
+
+    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_GC_COUNT);
+    funcctx = SRF_PERCALL_SETUP();
+    st = (UcdSimpleSrfState*) funcctx->user_fctx;
+    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
+
+    e = &uc_inv_gc[st->cur];
     values[0] = Int32GetDatum((int32) st->cur);
     values[1] = CStringGetTextDatum(e->code);
     values[2] = CStringGetTextDatum(e->description);
     values[3] = CStringGetTextDatum(e->group);
-    HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+    tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     st->cur += 1;
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
 }
@@ -340,16 +360,20 @@ Datum pg_ucd_general_categories(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(pg_ucd_scripts);
 Datum pg_ucd_scripts(PG_FUNCTION_ARGS)
 {
-    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_SCRIPT_COUNT);
-    FuncCallContext* funcctx = SRF_PERCALL_SETUP();
-    UcdSimpleSrfState* st = (UcdSimpleSrfState*) funcctx->user_fctx;
-    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
-
+    FuncCallContext* funcctx;
+    UcdSimpleSrfState* st;
     Datum values[2];
     bool  nulls[2] = { false, false };
+    HeapTuple tuple;
+
+    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_SCRIPT_COUNT);
+    funcctx = SRF_PERCALL_SETUP();
+    st = (UcdSimpleSrfState*) funcctx->user_fctx;
+    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
+
     values[0] = Int32GetDatum((int32) st->cur);
     values[1] = CStringGetTextDatum(uc_inv_scripts[st->cur].code);
-    HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+    tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     st->cur += 1;
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
 }
@@ -357,19 +381,24 @@ Datum pg_ucd_scripts(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(pg_ucd_blocks);
 Datum pg_ucd_blocks(PG_FUNCTION_ARGS)
 {
-    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_BLOCK_COUNT);
-    FuncCallContext* funcctx = SRF_PERCALL_SETUP();
-    UcdSimpleSrfState* st = (UcdSimpleSrfState*) funcctx->user_fctx;
-    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
-
+    FuncCallContext* funcctx;
+    UcdSimpleSrfState* st;
     Datum values[4];
     bool  nulls[4] = { false, false, false, false };
-    const BlockEntry* b = &uc_inv_blocks[st->cur];
+    const BlockEntry* b;
+    HeapTuple tuple;
+
+    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_BLOCK_COUNT);
+    funcctx = SRF_PERCALL_SETUP();
+    st = (UcdSimpleSrfState*) funcctx->user_fctx;
+    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
+
+    b = &uc_inv_blocks[st->cur];
     values[0] = Int32GetDatum((int32) st->cur);
     values[1] = CStringGetTextDatum(b->code);
     values[2] = Int32GetDatum(b->range_start);
     values[3] = Int32GetDatum(b->range_end);
-    HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+    tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     st->cur += 1;
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
 }
@@ -377,19 +406,24 @@ Datum pg_ucd_blocks(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(pg_ucd_break_properties);
 Datum pg_ucd_break_properties(PG_FUNCTION_ARGS)
 {
-    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_BREAK_COUNT);
-    FuncCallContext* funcctx = SRF_PERCALL_SETUP();
-    UcdSimpleSrfState* st = (UcdSimpleSrfState*) funcctx->user_fctx;
-    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
-
+    FuncCallContext* funcctx;
+    UcdSimpleSrfState* st;
     Datum values[4];
     bool  nulls[4] = { false, false, false, false };
-    const BreakPropEntry* bp = &uc_inv_break_props[st->cur];
+    const BreakPropEntry* bp;
+    HeapTuple tuple;
+
+    if (SRF_IS_FIRSTCALL()) ucd_simple_srf_init(fcinfo, UC_BREAK_COUNT);
+    funcctx = SRF_PERCALL_SETUP();
+    st = (UcdSimpleSrfState*) funcctx->user_fctx;
+    if (st->cur >= st->total) SRF_RETURN_DONE(funcctx);
+
+    bp = &uc_inv_break_props[st->cur];
     values[0] = Int32GetDatum((int32) st->cur);
     values[1] = CStringGetTextDatum(bp->category);
     values[2] = CStringGetTextDatum(bp->code);
     values[3] = Int32GetDatum((int32) bp->enum_id);
-    HeapTuple tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+    tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
     st->cur += 1;
     SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
 }
@@ -411,30 +445,37 @@ build_atom_values(int32_t cp, Datum* values, bool* nulls)
 {
     const uint8_t* hash_src = huc_cp_hash_at(cp);
     const double*  cent_src = huc_cp_centroid_at(cp);
-    bytea* hash_b = (bytea*) palloc(VARHDRSZ + CP_HASH_LEN);
+    bytea* hash_b;
+    bool ext_pict;
+    Datum name_datum;
+    bool  name_null;
+    int i;
+
+    hash_b = (bytea*) palloc(VARHDRSZ + CP_HASH_LEN);
     SET_VARSIZE(hash_b, VARHDRSZ + CP_HASH_LEN);
     if (hash_src) memcpy(VARDATA(hash_b), hash_src, CP_HASH_LEN);
     else          memset(VARDATA(hash_b), 0, CP_HASH_LEN);
 
     /* extended_pictographic — inline function over the bitmap */
-    bool ext_pict = uc_extended_pictographic(cp) != 0;
+    ext_pict = uc_extended_pictographic(cp) != 0;
 
     /* name — NULL when len==0. Guard: uc_name_off[cp] + len must stay
      * within uc_name_blob (UC_NAME_BLOB_LEN) or memcpy reads past the
      * generated table and feeds garbage into the emitted tuple. */
-    Datum name_datum;
-    bool  name_null;
     {
         uint16_t len = uc_name_len[cp];
+        uint32_t off;
+        text* t;
+
         if (len == 0) { name_datum = (Datum) 0; name_null = true; }
         else {
-            uint32_t off = uc_name_off[cp];
+            off = uc_name_off[cp];
             if (off > UC_NAME_BLOB_LEN || (uint32_t) len > UC_NAME_BLOB_LEN - off) {
                 ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
                                 errmsg("generated UCD name slice out of range: cp=U+%06X off=%u len=%u blob_len=%u",
                                        cp, off, (unsigned int) len, (unsigned int) UC_NAME_BLOB_LEN)));
             }
-            text* t = (text*) palloc(VARHDRSZ + len);
+            t = (text*) palloc(VARHDRSZ + len);
             SET_VARSIZE(t, VARHDRSZ + len);
             memcpy(VARDATA(t), uc_name_blob + off, len);
             name_datum = PointerGetDatum(t);
@@ -442,7 +483,7 @@ build_atom_values(int32_t cp, Datum* values, bool* nulls)
         }
     }
 
-    int i = 0;
+    i = 0;
     values[i] = Int32GetDatum(cp);                                      nulls[i++] = false;
     values[i] = PointerGetDatum(hash_b);                                nulls[i++] = false;
     values[i] = Float8GetDatum(cent_src ? cent_src[0] : 0.0);             nulls[i++] = (cent_src == NULL);
@@ -490,16 +531,18 @@ Datum pg_cp_atom(PG_FUNCTION_ARGS)
 {
     int32_t cp = arg_cp(PG_GETARG_INT32(0));
     TupleDesc tupdesc;
+    Datum values[ATOM_COL_COUNT];
+    bool  nulls[ATOM_COL_COUNT];
+    HeapTuple t;
+
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
         ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                         errmsg("cp_atom: composite tuple desc unavailable")));
     }
     tupdesc = BlessTupleDesc(tupdesc);
 
-    Datum values[ATOM_COL_COUNT];
-    bool  nulls[ATOM_COL_COUNT];
     build_atom_values(cp, values, nulls);
-    HeapTuple t = heap_form_tuple(tupdesc, values, nulls);
+    t = heap_form_tuple(tupdesc, values, nulls);
     PG_RETURN_DATUM(HeapTupleGetDatum(t));
 }
 
@@ -564,6 +607,10 @@ ucd_atom_setof(PG_FUNCTION_ARGS, UcdSrfKind kind, int32_t start, int32_t end, in
     while (st->cur < st->end) {
         int32_t cp = st->cur++;
         bool match;
+        Datum values[ATOM_COL_COUNT];
+        bool  nulls[ATOM_COL_COUNT];
+        HeapTuple t;
+
         switch (st->kind) {
             case UCD_SRF_RANGE:       match = true; break;
             case UCD_SRF_PRED_BLOCK:  match = (uc_block[cp]  == st->pred); break;
@@ -574,10 +621,8 @@ ucd_atom_setof(PG_FUNCTION_ARGS, UcdSrfKind kind, int32_t start, int32_t end, in
         if (!match) continue;
         if (huc_cp_hash_at(cp) == NULL) continue;
 
-        Datum values[ATOM_COL_COUNT];
-        bool  nulls[ATOM_COL_COUNT];
         build_atom_values(cp, values, nulls);
-        HeapTuple t = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+        t = heap_form_tuple(funcctx->tuple_desc, values, nulls);
         SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(t));
     }
 
@@ -589,9 +634,11 @@ Datum pg_ucd_codepoints(PG_FUNCTION_ARGS)
 {
     int32_t start = PG_ARGISNULL(0) ? 0                     : PG_GETARG_INT32(0);
     int32_t count = PG_ARGISNULL(1) ? UNICODE_CODEPOINT_MAX : PG_GETARG_INT32(1);
+    int64_t end64;
+
     if (start < 0) start = 0;
     if (start > UNICODE_CODEPOINT_MAX) start = UNICODE_CODEPOINT_MAX;
-    int64_t end64 = (int64_t) start + (int64_t) count;
+    end64 = (int64_t) start + (int64_t) count;
     if (end64 > UNICODE_CODEPOINT_MAX) end64 = UNICODE_CODEPOINT_MAX;
     return ucd_atom_setof(fcinfo, UCD_SRF_RANGE, start, (int32_t) end64, 0);
 }
@@ -622,30 +669,42 @@ PG_FUNCTION_INFO_V1(pg_cp_hashes);
 Datum pg_cp_hashes(PG_FUNCTION_ARGS)
 {
     ArrayType* arr = PG_GETARG_ARRAYTYPE_P(0);
+    int n;
+    int32* in;
+    Datum* out;
+    bool*  nls;
+    int dims[1];
+    int lbs[1];
+    ArrayType* result;
+    int i;
+
     if (ARR_NDIM(arr) > 1) {
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("cp_hashes: input must be 1-D int[]")));
     }
-    int n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
-    int32* in = (int32*) ARR_DATA_PTR(arr);
+    n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+    in = (int32*) ARR_DATA_PTR(arr);
 
-    Datum* out = (Datum*) palloc(sizeof(Datum) * (n == 0 ? 1 : n));
-    bool*  nls = (bool*)  palloc(sizeof(bool)  * (n == 0 ? 1 : n));
-    for (int i = 0; i < n; ++i) {
+    out = (Datum*) palloc(sizeof(Datum) * (n == 0 ? 1 : n));
+    nls = (bool*)  palloc(sizeof(bool)  * (n == 0 ? 1 : n));
+    for (i = 0; i < n; ++i) {
         int32_t cp = in[i];
+        const uint8_t* hsrc;
+        bytea* b;
+
         if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) { out[i] = (Datum) 0; nls[i] = true; continue; }
-        const uint8_t* hsrc = huc_cp_hash_at(cp);
+        hsrc = huc_cp_hash_at(cp);
         if (!hsrc)                                  { out[i] = (Datum) 0; nls[i] = true; continue; }
-        bytea* b = (bytea*) palloc(VARHDRSZ + CP_HASH_LEN);
+        b = (bytea*) palloc(VARHDRSZ + CP_HASH_LEN);
         SET_VARSIZE(b, VARHDRSZ + CP_HASH_LEN);
         memcpy(VARDATA(b), hsrc, CP_HASH_LEN);
         out[i] = PointerGetDatum(b);
         nls[i] = false;
     }
-    int dims[1] = { n };
-    int lbs[1]  = { 1 };
-    ArrayType* result = construct_md_array(out, nls, 1, dims, lbs,
-                                           BYTEAOID, -1, false, TYPALIGN_INT);
+    dims[0] = n;
+    lbs[0] = 1;
+    result = construct_md_array(out, nls, 1, dims, lbs,
+                                BYTEAOID, -1, false, TYPALIGN_INT);
     pfree(out); pfree(nls);
     PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -654,35 +713,45 @@ PG_FUNCTION_INFO_V1(pg_cp_from_hashes);
 Datum pg_cp_from_hashes(PG_FUNCTION_ARGS)
 {
     ArrayType* arr = PG_GETARG_ARRAYTYPE_P(0);
+    int n;
+    Datum* out;
+    bool*  nls;
+    Datum* elems;
+    bool*  in_nulls;
+    int    nelems;
+    int dims[1];
+    int lbs[1];
+    ArrayType* result;
+    int i;
+
     if (ARR_NDIM(arr) > 1) {
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("cp_from_hashes: input must be 1-D bytea[]")));
     }
-    int n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+    n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
 
-    Datum* out = (Datum*) palloc(sizeof(Datum) * (n == 0 ? 1 : n));
-    bool*  nls = (bool*)  palloc(sizeof(bool)  * (n == 0 ? 1 : n));
-
-    Datum* elems;
-    bool*  in_nulls;
-    int    nelems;
+    out = (Datum*) palloc(sizeof(Datum) * (n == 0 ? 1 : n));
+    nls = (bool*)  palloc(sizeof(bool)  * (n == 0 ? 1 : n));
     deconstruct_array(arr, BYTEAOID, -1, false, TYPALIGN_INT,
                       &elems, &in_nulls, &nelems);
 
-    for (int i = 0; i < n; ++i) {
+    for (i = 0; i < n; ++i) {
+        bytea* h;
+        int32_t cp;
+
         if (in_nulls[i]) { out[i] = (Datum) 0; nls[i] = true; continue; }
-        bytea* h = DatumGetByteaPP(elems[i]);
+        h = DatumGetByteaPP(elems[i]);
         if (VARSIZE_ANY_EXHDR(h) != CP_HASH_LEN) {
             out[i] = (Datum) 0; nls[i] = true; continue;
         }
-        int32_t cp = uc_cp_from_hash((const uint8_t*) VARDATA_ANY(h));
+        cp = uc_cp_from_hash((const uint8_t*) VARDATA_ANY(h));
         if (cp < 0) { out[i] = (Datum) 0; nls[i] = true; }
         else        { out[i] = Int32GetDatum(cp); nls[i] = false; }
     }
-    int dims[1] = { n };
-    int lbs[1]  = { 1 };
-    ArrayType* result = construct_md_array(out, nls, 1, dims, lbs,
-                                           INT4OID, sizeof(int32), true, TYPALIGN_INT);
+    dims[0] = n;
+    lbs[0] = 1;
+    result = construct_md_array(out, nls, 1, dims, lbs,
+                                INT4OID, sizeof(int32), true, TYPALIGN_INT);
     pfree(out); pfree(nls);
     PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -695,8 +764,10 @@ Datum pg_cp_from_hashes(PG_FUNCTION_ARGS)
  * the codepoint and advances *pos. Defensive: U+FFFD on bad sequence. */
 static int32_t utf8_advance(const uint8_t* s, int len, int* pos)
 {
+    uint8_t b0;
+
     if (*pos >= len) return -1;
-    uint8_t b0 = s[*pos];
+    b0 = s[*pos];
     if (b0 < 0x80)             { *pos += 1; return b0; }
     if ((b0 & 0xE0) == 0xC0 && *pos + 1 < len) {
         int32_t cp = ((b0 & 0x1F) << 6) | (s[*pos + 1] & 0x3F); *pos += 2; return cp;
@@ -719,27 +790,35 @@ Datum pg_uca_sort_key(PG_FUNCTION_ARGS)
     text* in = PG_GETARG_TEXT_PP(0);
     const uint8_t* s = (const uint8_t*) VARDATA_ANY(in);
     int len = (int) VARSIZE_ANY_EXHDR(in);
+    int total;
+    int pos;
+    bytea* out;
+    uint8_t* w;
 
     /* Two-pass: count total uint32 weights (3 per UCA tuple), then materialize.
      * The blob is 4 bytes per uint32 weight, big-endian for binary-collation
      * ORDER BY suitability. */
-    int total = 0;
-    int pos = 0;
+    total = 0;
+    pos = 0;
     while (pos < len) {
         int32_t cp = utf8_advance(s, len, &pos);
         if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) continue;
         total += (int) uc_uca_len[cp] * 3;
     }
-    bytea* out = (bytea*) palloc(VARHDRSZ + (size_t) total * 4);
+    out = (bytea*) palloc(VARHDRSZ + (size_t) total * 4);
     SET_VARSIZE(out, VARHDRSZ + (size_t) total * 4);
-    uint8_t* w = (uint8_t*) VARDATA(out);
+    w = (uint8_t*) VARDATA(out);
     pos = 0;
     while (pos < len) {
         int32_t cp = utf8_advance(s, len, &pos);
+        uint32_t off;
+        uint16_t n;
+        uint16_t i;
+
         if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) continue;
-        uint32_t off = uc_uca_off[cp] * 3;
-        uint16_t n   = (uint16_t) (uc_uca_len[cp] * 3);
-        for (uint16_t i = 0; i < n; ++i) {
+        off = uc_uca_off[cp] * 3;
+        n = (uint16_t) (uc_uca_len[cp] * 3);
+        for (i = 0; i < n; ++i) {
             uint32_t v = uc_uca_data[off + i];
             *w++ = (uint8_t) (v >> 24);
             *w++ = (uint8_t) (v >> 16);
@@ -782,26 +861,35 @@ Datum pg_case_fold_text(PG_FUNCTION_ARGS)
     text* in = PG_GETARG_TEXT_PP(0);
     const uint8_t* s = (const uint8_t*) VARDATA_ANY(in);
     int len = (int) VARSIZE_ANY_EXHDR(in);
+    size_t cap;
+    text*  out;
+    uint8_t* w;
+    uint8_t* w_end;
+    int pos;
 
     /* Worst case: each codepoint expands to up to 3 codepoints × 4 UTF-8
      * bytes = 12 bytes per input codepoint. Bound by 12 × len. */
-    size_t cap = (size_t) len * 12 + 16;
-    text*  out = (text*) palloc(VARHDRSZ + cap);
-    uint8_t* w = (uint8_t*) VARDATA(out);
-    uint8_t* w_end = w + cap;
+    cap = (size_t) len * 12 + 16;
+    out = (text*) palloc(VARHDRSZ + cap);
+    w = (uint8_t*) VARDATA(out);
+    w_end = w + cap;
 
-    int pos = 0;
+    pos = 0;
     while (pos < len) {
         int32_t cp = utf8_advance(s, len, &pos);
+        uint16_t fl;
+
         if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
             if (w + 3 > w_end) break;
             *w++ = 0xEF; *w++ = 0xBF; *w++ = 0xBD;
             continue;
         }
-        uint16_t fl = uc_fcf_len[cp];
+        fl = uc_fcf_len[cp];
         if (fl > 0) {
-            uint32_t off = uc_fcf_off[cp];
-            for (uint16_t i = 0; i < fl; ++i) {
+            uint32_t off;
+            uint16_t i;
+            off = uc_fcf_off[cp];
+            for (i = 0; i < fl; ++i) {
                 int32_t f = uc_fcf_data[off + i];
                 if (w + 4 > w_end) break;
                 w += utf8_encode_cp(f, w);

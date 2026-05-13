@@ -8,7 +8,7 @@ public interface ITextEmissionCache
 
     bool TryRegisterPhysicality(string physicalityTypeCode, Hash32 entityHash);
 
-    bool TryRegisterSequence(Hash32 parentHash, int ordinal);
+    bool TryRegisterCompositionChild(Hash32 parentHash, int ordinal);
 
     bool TryRegisterSignificance(string contextTypeCode, string attestationTypeCode, Hash32 entityHash);
 }

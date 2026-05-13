@@ -11,11 +11,11 @@ public sealed class TextEmissionCache : ITextEmissionCache
 
     private readonly ConcurrentDictionary<Hash32, byte> _entities = new();
     private readonly ConcurrentDictionary<Hash32, byte> _physicalities = new();
-    private readonly ConcurrentDictionary<Hash32, byte> _sequences = new();
+    private readonly ConcurrentDictionary<Hash32, byte> _compositionChildren = new();
     private readonly ConcurrentDictionary<Hash32, byte> _significances = new();
     private long _entityCount;
     private long _physicalityCount;
-    private long _sequenceCount;
+    private long _compositionChildCount;
     private long _significanceCount;
 
     public bool TryRegisterEntity(string entityTypeCode, Hash32 hash, string provenanceCode)
@@ -24,8 +24,8 @@ public sealed class TextEmissionCache : ITextEmissionCache
     public bool TryRegisterPhysicality(string physicalityTypeCode, Hash32 entityHash)
         => TryRegister(_physicalities, ref _physicalityCount, ComposeKey(physicalityTypeCode, entityHash));
 
-    public bool TryRegisterSequence(Hash32 parentHash, int ordinal)
-        => TryRegister(_sequences, ref _sequenceCount, ComposeKey(parentHash, ordinal));
+    public bool TryRegisterCompositionChild(Hash32 parentHash, int ordinal)
+        => TryRegister(_compositionChildren, ref _compositionChildCount, ComposeKey(parentHash, ordinal));
 
     public bool TryRegisterSignificance(string contextTypeCode, string attestationTypeCode, Hash32 entityHash)
         => TryRegister(_significances, ref _significanceCount, ComposeKey(contextTypeCode, attestationTypeCode, entityHash));

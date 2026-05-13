@@ -15,16 +15,16 @@ namespace Hartonomous.Core.Ingestion;
 /// chunk (within-session) or a prior chunk (cross-session, ON CONFLICT
 /// handled).
 ///
-/// <see cref="GeomWkb"/> carries an optional pre-built LINESTRINGZM EWKB
+/// <see cref="Geometry"/> carries an optional pre-built LINESTRING4D payload
 /// for the edge's trajectory (participant centroids in role order). When
-/// non-null, the drain INSERT lifts it via ST_GeomFromWKB straight into
-/// substrate.edge.geom — no post-pass populate. When null, the row goes in
+/// non-null, the drain INSERT writes it straight into substrate.edge.geom.
+/// When null, the row goes in
 /// with geom = NULL and an end-of-phase
 /// substrate.populate_edge_trajectories populates from
-/// substrate.edge_member ⋈ substrate.physicality (s3_position).
+/// substrate.edge_member joined to substrate.physicality.
 /// </summary>
 public sealed record EdgeRecord(
     string EdgeTypeCode,
     Hash32 EdgeHash,
     string ProvenanceCode,
-    byte[]? GeomWkb = null) : IngestionRecord;
+    byte[]? Geometry = null) : IngestionRecord;

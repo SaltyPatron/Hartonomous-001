@@ -14,7 +14,7 @@
 --   * Honest abstention threshold: when no top-K row exceeds a confidence
 --     floor, the engine abstains rather than fabricating.
 --
--- Hash-only signature throughout. recompose_text walks substrate.sequence
+-- Hash-only signature throughout. recompose_text walks physicality metadata
 -- to codepoint leaves; each row is a real recomposition of substrate
 -- content, not a sampled string.
 DROP FUNCTION IF EXISTS substrate.infer_topk(BYTEA, INT, INT, INT);
@@ -37,23 +37,22 @@ DECLARE
 BEGIN
     SELECT id INTO v_word_form_id FROM substrate.entity_type WHERE code = 'word_form';
 
-    -- Seeds: prompt's word_form-classified sequence children + their
+    -- Seeds: prompt's word_form-classified composition children + their
     -- lemma/synset parent compositions. Same seed activation as substrate.infer.
     CREATE TEMP TABLE IF NOT EXISTS _topk_seeds (seed_hash bytea PRIMARY KEY) ON COMMIT DROP;
     TRUNCATE _topk_seeds;
     INSERT INTO _topk_seeds (seed_hash)
     WITH direct_seeds AS (
         SELECT DISTINCT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_doc_hash) s
         JOIN substrate.entity_classification c
           ON c.entity_hash = s.child_hash
          AND c.entity_type_id = v_word_form_id
-        WHERE s.parent_hash = p_doc_hash
     ),
     indirect_seeds AS (
         SELECT DISTINCT s.parent_hash AS h
         FROM direct_seeds d
-        JOIN substrate.sequence s ON s.child_hash = d.h
+        JOIN substrate.composition_parents(d.h) s ON TRUE
         JOIN substrate.entity_classification c ON c.entity_hash = s.parent_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         WHERE et.code IN ('lemma', 'synset')

@@ -19,7 +19,7 @@ namespace Hartonomous.Core.Tests.Text;
 ///   <item>G2 — cross-caller equality: same content under different
 ///     <c>ProvenanceCode</c> / <c>TopEntityType</c> produces the same root hash</item>
 ///   <item>G3 — substructure completeness: every layer (codepoint / grapheme /
-///     word_form / composition) is emitted with entities, sequence rows,
+///     word_form / composition) is emitted with entities, composition metadata,
 ///     physicality rows, and significance rows</item>
 /// </list>
 /// </summary>
@@ -58,7 +58,7 @@ public sealed class CanonicalTextDecomposerTests
 
         Assert.Equal(r1.RootHash, r2.RootHash);
         Assert.Equal(r1.EntitiesEmitted, r2.EntitiesEmitted);
-        Assert.Equal(r1.SequenceRowsEmitted, r2.SequenceRowsEmitted);
+        Assert.Equal(r1.CompositionChildrenEmitted, r2.CompositionChildrenEmitted);
         Assert.Equal(r1.PhysicalityRowsEmitted, r2.PhysicalityRowsEmitted);
         Assert.Equal(r1.SignificanceRowsEmitted, r2.SignificanceRowsEmitted);
         Assert.True(batch1.Equals(batch2),
@@ -102,21 +102,21 @@ public sealed class CanonicalTextDecomposerTests
         // codepoints, grapheme clusters, word-form layer, and top composition.
         Assert.Equal(8, batch.EntitiesAdded);
 
-        // Sequence rows: grapheme→codepoint at every layer (3 graphemes, each
-        // with 1 codepoint child = 3 rows), word_form→grapheme (3 children of
-        // 1 word = 3 rows for unique), composition→word_form (1 row).
+        // Composition child metadata: grapheme→codepoint at every layer (3
+        // graphemes, each with 1 codepoint child = 3 rows),
+        // word_form→grapheme (3 children of 1 word = 3 rows for unique),
+        // composition→word_form (1 row).
         // RLE may collapse runs; for "dog" no run repeats, so:
         //   3 (graphemes' single codepoints) + 3 (word's three graphemes) + 1 (composition's one word)
-        //   = 7 sequence rows
-        Assert.Equal(7, batch.SequenceRowsAdded);
+        //   = 7 child metadata entries
+        Assert.Equal(7, batch.CompositionChildrenAdded);
 
         // Physicality rows:
-        //   - codepoint POINTZM × 3 unique (d, o, g)
-        //   - single-cp graphemes get POINTZM × 3 so their entity hashes have persisted centroids
-        //   - word_form "dog" has 3 graphemes → emits a contour LINESTRINGZM (1 row)
-        //   - composition has only 1 child (the word_form) → POINTZM at that centroid
-        Assert.Equal(7, batch.PhysicalityPoint4dAdded);
-        Assert.Equal(1, batch.PhysicalityLineString4dAdded);
+        //   - codepoint POINT4D × 3 unique (d, o, g)
+        //   - grapheme, word_form, and composition levels emit contour
+        //     LINESTRING4D rows carrying child metadata, even for one child.
+        Assert.Equal(3, batch.PhysicalityPoint4dAdded);
+        Assert.Equal(5, batch.PhysicalityLineString4dAdded);
 
         // Significance: every distinct hash gets one source_authority row.
         // codepoints (3) + graphemes (3) + word_form (1) + composition (1) = 8
@@ -126,17 +126,17 @@ public sealed class CanonicalTextDecomposerTests
     [Fact]
     public void G3_repeated_letters_apply_RLE()
     {
-        // "aaa" -> one grapheme/codepoint entity repeated 3x. Sequence stores
-        // the consecutive occurrences as one run starting at ordinal 1.
+        // "aaa" -> one grapheme/codepoint entity repeated 3x. Composition
+        // metadata stores the consecutive occurrences as one run at ordinal 1.
         FakeCodepointProperties props = AsciiLetterProps();
         TextDecomposeOptions opts = new("tatoeba", "text_composition", 1200.0);
 
         RecordingBatch batch = new();
         CanonicalTextDecomposer.Emit(batch, "aaa"u8, props, opts);
 
-        Assert.Contains(batch.Sequences, s => s.Ordinal == 1 && s.RleCount == 3);
-        Assert.DoesNotContain(batch.Sequences, s => s.Ordinal == 2);
-        Assert.DoesNotContain(batch.Sequences, s => s.Ordinal == 3);
+        Assert.Contains(batch.CompositionChildren, s => s.Ordinal == 1 && s.RleCount == 3);
+        Assert.DoesNotContain(batch.CompositionChildren, s => s.Ordinal == 2);
+        Assert.DoesNotContain(batch.CompositionChildren, s => s.Ordinal == 3);
     }
 
     [Fact]
@@ -176,26 +176,26 @@ public sealed class CanonicalTextDecomposerTests
     public void Whitespace_keeping_emits_raw_span_children_for_recompose_fidelity()
     {
         // Regression: WordBoundaries.EnumerateWords used to skip Other ranges
-        // (whitespace/punctuation), which meant the composition's sequence
+        // (whitespace/punctuation), which meant the composition metadata
         // walked only word_forms. recompose_text dropped all spaces. The
         // fix keeps Other ranges; the canonical decomposer emits them as
         // text_composition children alongside word_forms; recompose_text
-        // walks the full sequence and reproduces input byte-for-byte.
+        // walks the full composition and reproduces input byte-for-byte.
         FakeCodepointProperties props = AsciiLetterProps();
         TextDecomposeOptions opts = new("tatoeba", "text_composition", 1200.0);
 
         RecordingBatch batch = new();
         CanonicalTextDecomposer.Emit(batch, "a b"u8, props, opts);
 
-        // Composition's sequence must include exactly 3 children:
+        // Composition metadata must include exactly 3 children:
         // word_form 'a', raw_span ' ', word_form 'b'. Without the fix,
         // only 2 children (word_forms) appeared.
         Hartonomous.Core.Ingestion.EntityHandle compositionRoot =
             new(batch.Entities[^1].Hash, batch.Entities[^1].Type);
         int compositionChildren = 0;
-        foreach (var seq in batch.Sequences)
+        foreach (var child in batch.CompositionChildren)
         {
-            if (seq.Parent.Hash.Equals(compositionRoot.Hash))
+            if (child.Parent.Hash.Equals(compositionRoot.Hash))
             {
                 compositionChildren++;
             }
@@ -211,13 +211,13 @@ public sealed class CanonicalTextDecomposerTests
     {
         public string ProvenanceCode { get; init; } = "test";
         public List<(Hash32 Hash, string Type)> Entities { get; } = new();
-        public List<(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount)> Sequences { get; } = new();
+        public List<(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount)> CompositionChildren { get; } = new();
         public List<(EntityHandle Entity, string Type, double X, double Y, double Z, double M)> Points4d { get; } = new();
         public List<(EntityHandle Entity, string Type, int VertexCount)> LineStrings4d { get; } = new();
         public List<(EntityHandle Entity, string Context, double Mu)> Significances { get; } = new();
 
         public int EntitiesAdded => Entities.Count;
-        public int SequenceRowsAdded => Sequences.Count;
+        public int CompositionChildrenAdded => CompositionChildren.Count;
         public int PhysicalityPoint4dAdded => Points4d.Count;
         public int PhysicalityLineString4dAdded => LineStrings4d.Count;
         public int SignificanceRowsAdded => Significances.Count;
@@ -230,8 +230,8 @@ public sealed class CanonicalTextDecomposerTests
             Entities.Add((hash, entityTypeCode));
             return new EntityHandle(hash, entityTypeCode);
         }
-        public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
-            => Sequences.Add((parent, ordinal, child, rleCount));
+        public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
+            => CompositionChildren.Add((parent, ordinal, child, rleCount));
         public void AddPhysicalityPoint4d(EntityHandle e, string t, double x, double y, double z, double m)
             => Points4d.Add((e, t, x, y, z, m));
         public void AddPhysicalityLineString4d(EntityHandle e, string t,
@@ -246,27 +246,25 @@ public sealed class CanonicalTextDecomposerTests
             => throw new NotSupportedException("Canonical text decomposer should not emit junctions.");
         public void AddPhysicality(EntityHandle e, string t, byte[] g)
         {
-            if (g.Length < 5 || g[0] != 0x01)
+            if (g.Length < 1)
             {
-                throw new InvalidOperationException("Expected little-endian GeometryZM WKB.");
+                throw new InvalidOperationException("Expected native geometry4d payload.");
             }
 
-            uint typeWord = BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(1, 4));
-            uint baseType = typeWord & ~(0x20000000u | 0x80000000u | 0x40000000u);
-            if (baseType == 1u)
+            if (g[0] == 1)
             {
                 Points4d.Add((e, t, 0, 0, 0, 0));
                 return;
             }
 
-            if (baseType == 2u)
+            if (g[0] == 2)
             {
-                int vertexCount = (int) BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(5, 4));
+                int vertexCount = (int) BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(1, 4));
                 LineStrings4d.Add((e, t, vertexCount));
                 return;
             }
 
-            throw new InvalidOperationException($"Unexpected GeometryZM WKB base type {baseType}.");
+            throw new InvalidOperationException($"Unexpected geometry4d tag {g[0]}.");
         }
         public void AddEntityModelSource(EntityHandle e, long m)
             => throw new NotSupportedException();
@@ -275,7 +273,7 @@ public sealed class CanonicalTextDecomposerTests
         {
             if (other is null) { return false; }
             if (Entities.Count != other.Entities.Count) { return false; }
-            if (Sequences.Count != other.Sequences.Count) { return false; }
+            if (CompositionChildren.Count != other.CompositionChildren.Count) { return false; }
             if (Points4d.Count != other.Points4d.Count) { return false; }
             if (LineStrings4d.Count != other.LineStrings4d.Count) { return false; }
             if (Significances.Count != other.Significances.Count) { return false; }
@@ -284,9 +282,9 @@ public sealed class CanonicalTextDecomposerTests
                 if (!Entities[i].Hash.Equals(other.Entities[i].Hash)) { return false; }
                 if (Entities[i].Type != other.Entities[i].Type) { return false; }
             }
-            for (int i = 0; i < Sequences.Count; i++)
+            for (int i = 0; i < CompositionChildren.Count; i++)
             {
-                var a = Sequences[i]; var b = other.Sequences[i];
+                var a = CompositionChildren[i]; var b = other.CompositionChildren[i];
                 if (a.Ordinal != b.Ordinal || a.RleCount != b.RleCount) { return false; }
                 if (!a.Parent.Hash.Equals(b.Parent.Hash)) { return false; }
                 if (!a.Child.Hash.Equals(b.Child.Hash)) { return false; }
@@ -294,7 +292,7 @@ public sealed class CanonicalTextDecomposerTests
             return true;
         }
         public override bool Equals(object? obj) => obj is RecordingBatch rb && Equals(rb);
-        public override int GetHashCode() => Entities.Count ^ Sequences.Count ^ Points4d.Count;
+        public override int GetHashCode() => Entities.Count ^ CompositionChildren.Count ^ Points4d.Count;
 
         public override string ToString()
         {
@@ -302,8 +300,8 @@ public sealed class CanonicalTextDecomposerTests
             StringBuilder sb = new();
             sb.AppendLine(ic, $"Entities ({Entities.Count}):");
             foreach (var e in Entities) { sb.AppendLine(ic, $"  {e.Type} {e.Hash.ToHexString()[..16]}"); }
-            sb.AppendLine(ic, $"Sequences ({Sequences.Count}):");
-            foreach (var s in Sequences) { sb.AppendLine(ic, $"  ord={s.Ordinal} rle={s.RleCount}"); }
+            sb.AppendLine(ic, $"Composition children ({CompositionChildren.Count}):");
+            foreach (var s in CompositionChildren) { sb.AppendLine(ic, $"  ord={s.Ordinal} rle={s.RleCount}"); }
             return sb.ToString();
         }
     }

@@ -578,31 +578,26 @@ static void td_mean_centroid(const double* in, int32_t k, double* out)
 }
 
 /* ─────────────────────────────────────────────────────────────────────
- * (6) EWKB encoders for POINTZM and LINESTRINGZM
- * Type word: 0xC0000001 (POINT|Z|M), 0xC0000002 (LINESTRING|Z|M).
+ * (6) geometry4d payload encoders for POINT4D and LINESTRING4D.
  * ───────────────────────────────────────────────────────────────────── */
-static void td_pointzm_wkb(double x, double y, double z, double m, uint8_t out[37])
+static void td_point4d_geometry(double x, double y, double z, double m, uint8_t out[33])
 {
-    out[0] = 0x01;
-    uint32_t type = 0xC0000001u;
-    memcpy(out + 1,  &type, 4);
-    memcpy(out + 5,  &x, 8);
-    memcpy(out + 13, &y, 8);
-    memcpy(out + 21, &z, 8);
-    memcpy(out + 29, &m, 8);
+    out[0] = 1;
+    memcpy(out + 1,  &x, 8);
+    memcpy(out + 9,  &y, 8);
+    memcpy(out + 17, &z, 8);
+    memcpy(out + 25, &m, 8);
 }
 
-static uint8_t* td_linestringzm_wkb(const double* verts, int k, size_t* out_len)
+static uint8_t* td_linestring4d_geometry(const double* verts, int k, size_t* out_len)
 {
-    size_t sz = 1 + 4 + 4 + (size_t) k * 32;
+    size_t sz = 1 + 4 + (size_t) k * 32;
     uint8_t* buf = (uint8_t*) malloc(sz);
     if (!buf) { *out_len = 0; return NULL; }
-    buf[0] = 0x01;
-    uint32_t type = 0xC0000002u;
-    memcpy(buf + 1, &type, 4);
+    buf[0] = 2;
     uint32_t n = (uint32_t) k;
-    memcpy(buf + 5, &n, 4);
-    uint8_t* vp = buf + 9;
+    memcpy(buf + 1, &n, 4);
+    uint8_t* vp = buf + 5;
     for (int i = 0; i < k; i++) {
         memcpy(vp + 0,  &verts[i*4+0], 8);
         memcpy(vp + 8,  &verts[i*4+1], 8);
@@ -735,12 +730,12 @@ int hartonomous_text_decompose(
             .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = HARTONOMOUS_KIND_CODEPOINT,
             .hash_a = h
         }));
-        uint8_t pt[37];
-        td_pointzm_wkb(cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3], pt);
+        uint8_t pt[33];
+        td_point4d_geometry(cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3], pt);
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
             .hash_a = h, .hash_b = h,
-            .wkb = pt, .wkb_len = 37,
+            .geometry = pt, .geometry_len = 33,
             .centroid = { cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3] }
         }));
         EMIT(((hartonomous_text_record_t){
@@ -767,24 +762,15 @@ int hartonomous_text_decompose(
             .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
             .hash_a = gh, .double_param = trust_mu
         }));
-        if (cpCount == 1) {
-            uint8_t pt[37];
-            td_pointzm_wkb(gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3], pt);
-            EMIT(((hartonomous_text_record_t){
-                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
-                .hash_a = gh, .hash_b = gh,
-                .wkb = pt, .wkb_len = 37,
-                .centroid = { gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3] }
-            }));
-        } else if (cpCount > 1) {
+        if (cpCount > 0) {
             size_t ls_len;
             xfree(ls_buf);
-            ls_buf = td_linestringzm_wkb(cp_c + firstCp * 4, cpCount, &ls_len);
+            ls_buf = td_linestring4d_geometry(cp_c + firstCp * 4, cpCount, &ls_len);
             if (!ls_buf) { rc_final = -9; goto out_cleanup; }
             EMIT(((hartonomous_text_record_t){
                 .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
                 .hash_a = gh, .hash_b = gh,
-                .wkb = ls_buf, .wkb_len = ls_len,
+                .geometry = ls_buf, .geometry_len = ls_len,
                 .centroid = { gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3] }
             }));
         }
@@ -825,24 +811,15 @@ int hartonomous_text_decompose(
             .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
             .hash_a = wh, .double_param = trust_mu
         }));
-        if (gcCount == 1) {
-            uint8_t pt[37];
-            td_pointzm_wkb(w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3], pt);
-            EMIT(((hartonomous_text_record_t){
-                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
-                .hash_a = wh, .hash_b = wh,
-                .wkb = pt, .wkb_len = 37,
-                .centroid = { w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3] }
-            }));
-        } else if (gcCount > 1) {
+        if (gcCount > 0) {
             size_t ls_len;
             xfree(ls_buf);
-            ls_buf = td_linestringzm_wkb(gc_c + firstGc * 4, gcCount, &ls_len);
+            ls_buf = td_linestring4d_geometry(gc_c + firstGc * 4, gcCount, &ls_len);
             if (!ls_buf) { rc_final = -9; goto out_cleanup; }
             EMIT(((hartonomous_text_record_t){
                 .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
                 .hash_a = wh, .hash_b = wh,
-                .wkb = ls_buf, .wkb_len = ls_len,
+                .geometry = ls_buf, .geometry_len = ls_len,
                 .centroid = { w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3] }
             }));
         }
@@ -869,24 +846,15 @@ int hartonomous_text_decompose(
         .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
         .hash_a = comp_h, .double_param = trust_mu
     }));
-    if (wN == 1) {
-        uint8_t pt[37];
-        td_pointzm_wkb(comp_c[0], comp_c[1], comp_c[2], comp_c[3], pt);
-        EMIT(((hartonomous_text_record_t){
-            .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
-            .hash_a = comp_h, .hash_b = comp_h,
-            .wkb = pt, .wkb_len = 37,
-            .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }
-        }));
-    } else if (wN > 1) {
+    if (wN > 0) {
         size_t ls_len;
         xfree(ls_buf);
-        ls_buf = td_linestringzm_wkb(w_c, wN, &ls_len);
+        ls_buf = td_linestring4d_geometry(w_c, wN, &ls_len);
         if (!ls_buf) { rc_final = -9; goto out_cleanup; }
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
             .hash_a = comp_h, .hash_b = comp_h,
-            .wkb = ls_buf, .wkb_len = ls_len,
+            .geometry = ls_buf, .geometry_len = ls_len,
             .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }
         }));
     }

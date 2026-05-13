@@ -110,25 +110,22 @@ public interface IIngestionBatch
         string attestationTypeCode = "lexical_curated_relation");
 
     /// <summary>
-    /// Append a physicality row with raw PostGIS WKB. Used for GeometryZM
-    /// subtypes whose vertex layout should be passed through directly
-    /// (POINTZM, LINESTRINGZM, MULTILINESTRINGZM, POLYGONZM, etc.). The
-    /// pipeline routes the WKB into the geom column via ST_GeomFromWKB.
+    /// Append a physicality row with a native geometry4d payload.
     /// </summary>
     void AddPhysicality(
         EntityHandle entity,
         string physicalityTypeCode,
-        byte[] geomWkb);
+        byte[] geometryPayload);
 
     void AddPhysicality(
         EntityHandle entity,
         string physicalityTypeCode,
-        byte[] geomWkb,
+        byte[] geometryPayload,
         Point4D centroid)
-        => AddPhysicality(entity, physicalityTypeCode, geomWkb);
+        => AddPhysicality(entity, physicalityTypeCode, geometryPayload);
 
     /// <summary>
-    /// Append a 4D POINTZM physicality row (s3_position, hilbert_value,
+    /// Append a POINT4D physicality row (s3_position, hilbert_value,
     /// weight_distribution single-point variants, etc.).
     /// </summary>
     void AddPhysicalityPoint4d(
@@ -140,7 +137,7 @@ public interface IIngestionBatch
         double x4);
 
     /// <summary>
-    /// Append a 4D LINESTRINGZM physicality row (contour, weight_distribution
+    /// Append a LINESTRING4D physicality row (contour, weight_distribution
     /// trajectory variants, etc.). Vertices in trajectory order; at least one
     /// vertex required.
     /// </summary>
@@ -150,19 +147,11 @@ public interface IIngestionBatch
         ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices);
 
     /// <summary>
-    /// Append a sequence row recording that <paramref name="parent"/> contains
-    /// <paramref name="child"/> at <paramref name="ordinal"/> (1-based).
-    /// <paramref name="rleCount"/> compresses contiguous runs of the same
-    /// child — a refrain of three identical sentences in a row collapses to
-    /// one sequence row with rleCount=3, lookup at any ordinal in the run
-    /// still hits the row via <c>ordinal &lt;= N AND ordinal + rle_count &gt; N</c>.
-    ///
-    /// This is THE record of "where does X sit inside Y?". The parent's
-    /// LINESTRINGZM physicality remains the geometric truth for similarity
-    /// queries; substrate.sequence is the indexed identity-and-ordinal record
-    /// that powers microsecond random access by position.
+    /// Append composition child metadata for the parent's physicality-backed
+    /// trajectory. Ordinal is 1-based; <paramref name="rleCount"/> compresses
+    /// contiguous runs of the same child.
     /// </summary>
-    void AddSequence(
+    void AddCompositionChild(
         EntityHandle parent,
         int ordinal,
         EntityHandle child,

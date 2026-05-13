@@ -1,6 +1,9 @@
-INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+INSERT INTO substrate.physicality (
+    physicality_type_id, entity_hash, content_hash, geom,
+    child_hashes, ordinal_starts, rle_counts)
 SELECT DISTINCT ON (physicality_type_id, entity_hash, content_hash)
-       physicality_type_id, entity_hash, content_hash, ST_GeomFromWKB(wkb, 0)
+       physicality_type_id, entity_hash, content_hash, bytea_to_geometry4d(geometry_payload),
+       child_hashes, ordinal_starts, rle_counts
   FROM pg_temp.physicality_inflight
- ORDER BY physicality_type_id, entity_hash, content_hash, wkb
+ ORDER BY physicality_type_id, entity_hash, content_hash, geometry_payload
 ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING

@@ -14,7 +14,7 @@ public sealed class DrainSqlOrderingTests
     {
         yield return Requirement("entity", "order by hash", "on conflict (hash) do nothing");
         yield return Requirement("entity_classification", "order by entity_hash, entity_type_id, provenance_id", "on conflict (entity_hash, entity_type_id, provenance_id) do nothing");
-        yield return Requirement("edge", "order by edge_type_id, hash, (geom_wkb is null), provenance_id, geom_wkb", "on conflict (edge_type_id, hash) do nothing");
+        yield return Requirement("edge", "order by edge_type_id, hash, (geometry_payload is null), provenance_id, geometry_payload", "on conflict (edge_type_id, hash) do nothing");
         yield return Requirement("edge_member", "order by edge_type_id, edge_hash, entity_hash, edge_role_id, role_position", "on conflict (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position) do nothing");
         yield return Requirement("junction", "order by entity_hash, pos_id, attestation_type_id, mu desc", "on conflict (entity_hash, pos_id, attestation_type_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, lexname_id", "on conflict (entity_hash, lexname_id) do nothing");
@@ -23,8 +23,7 @@ public sealed class DrainSqlOrderingTests
         yield return Requirement("junction", "order by entity_hash, architecture_class_id", "on conflict (entity_hash, architecture_class_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, tensor_role_id", "on conflict (entity_hash, tensor_role_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, deprel_id, attestation_type_id, mu desc", "on conflict (entity_hash, deprel_id, attestation_type_id) do nothing");
-        yield return Requirement("physicality", "order by physicality_type_id, entity_hash, content_hash, wkb", "on conflict (physicality_type_id, entity_hash, content_hash) do nothing");
-        yield return Requirement("sequence", "order by parent_hash, ordinal, child_hash, rle_count", "on conflict (parent_hash, ordinal) do nothing");
+        yield return Requirement("physicality", "order by physicality_type_id, entity_hash, content_hash, geometry_payload", "on conflict (physicality_type_id, entity_hash, content_hash) do nothing");
         yield return Requirement("entity_significance", "order by context_type_id, entity_hash, attestation_type_id, mu desc", "on conflict (context_type_id, entity_hash, attestation_type_id) do nothing");
         yield return Requirement("edge_significance", "order by context_type_id, edge_type_id, edge_hash, attestation_type_id, mu desc", "on conflict (context_type_id, edge_type_id, edge_hash, attestation_type_id) do nothing");
         yield return Requirement("entity_model_source", "order by entity_hash, model_source_id", "on conflict (entity_hash, model_source_id) do nothing");
@@ -62,7 +61,6 @@ public sealed class DrainSqlOrderingTests
         "edge_member",
         "junction",
         "physicality",
-        "sequence",
         "entity_significance",
         "edge_significance",
         "entity_model_source",

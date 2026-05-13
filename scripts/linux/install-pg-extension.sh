@@ -63,7 +63,8 @@ extensiondir="$sharedir/extension"
 [[ -d "$pkglibdir" ]] || die "pg_config --pkglibdir does not exist: $pkglibdir"
 [[ -d "$extensiondir" ]] || die "PostgreSQL extension directory does not exist: $extensiondir"
 
-native_lib="$(realpath "$NATIVE_BUILD_DIR/bin/libhartonomous.so")"
+native_lib_dir="$NATIVE_BUILD_DIR/bin"
+native_lib="$native_lib_dir/libhartonomous.so"
 [[ -s "$native_lib" ]] || die "native library missing: $native_lib"
 
 extension_so="$(realpath ext/hartonomous_pg/hartonomous.so 2>/dev/null || true)"
@@ -112,7 +113,10 @@ install_artifact() {
 }
 
 info "Installing libhartonomous.so into $pkglibdir ($mode)"
-install_artifact "$native_lib" "$pkglibdir/libhartonomous.so" 755
+for artifact in "$native_lib_dir"/libhartonomous.so*; do
+    [[ -e "$artifact" ]] || continue
+    install_artifact "$(realpath "$artifact")" "$pkglibdir/$(basename "$artifact")" 755
+done
 
 if [[ "$native_only" == true ]]; then
     exit 0

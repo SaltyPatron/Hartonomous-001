@@ -6,7 +6,7 @@
 -- Steps 1-4 of docs/specs/engine/inference.md, executed inside one PG
 -- function:
 --   1. Seed activation: collect the prompt's word_form children from
---      substrate.sequence + cross-classification matches via
+--      composition physicality metadata + cross-classification matches via
 --      substrate.entity_classification (a hash classified as "lemma" by
 --      WordNet AND as "word_form" by Tatoeba is the SAME hash; A* gets
 --      both classifications' edge sets implicitly).
@@ -40,26 +40,25 @@ DECLARE
 BEGIN
     SELECT id INTO v_word_form_id FROM substrate.entity_type WHERE code = 'word_form';
 
-    -- Materialize seeds: prompt's word_form-classified sequence children
+    -- Materialize seeds: prompt's word_form-classified composition children
     -- + the prompt itself + parent compositions of those word_forms.
     CREATE TEMP TABLE IF NOT EXISTS _infer_seeds (seed_hash bytea PRIMARY KEY) ON COMMIT DROP;
     TRUNCATE _infer_seeds;
     INSERT INTO _infer_seeds (seed_hash)
     WITH direct_seeds AS (
         SELECT DISTINCT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_doc_hash) s
         JOIN substrate.entity_classification c
           ON c.entity_hash = s.child_hash
          AND c.entity_type_id = v_word_form_id
-        WHERE s.parent_hash = p_doc_hash
     ),
-    -- Inverse-sequence: lemma / synset compositions that contain the
+    -- Inverse-composition: lemma / synset compositions that contain the
     -- prompt's word_form hashes as children. These are the substrate's
     -- "where else does this word appear" bridges into the rich graph.
     indirect_seeds AS (
         SELECT DISTINCT s.parent_hash AS h
         FROM direct_seeds d
-        JOIN substrate.sequence s ON s.child_hash = d.h
+        JOIN substrate.composition_parents(d.h) s ON TRUE
         JOIN substrate.entity_classification c ON c.entity_hash = s.parent_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         WHERE et.code IN ('lemma', 'synset')

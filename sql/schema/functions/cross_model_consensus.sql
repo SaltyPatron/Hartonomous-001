@@ -2,10 +2,10 @@
 --
 -- Voronoi-tessellation centroid + dispersion + agreement score over a
 -- token entity's firefly cloud. Each model that has ingested this token
--- contributed one POINTZM physicality of type embedding_firefly.
+-- contributed one POINT4D physicality of type embedding_firefly.
 --
 -- All numerical work runs in compiled C from the hartonomous extension:
---   public.point4d(x,y,z,m)      — POINTZM vertex → native point4d
+--   public.point4d(x,y,z,m)      — native point4d
 --   public.centroid_4d(point4d)  — single-pass centroid aggregate (C)
 --   public.distance_4d(p,q)      — 4D Euclidean distance (C)
 --
@@ -35,12 +35,7 @@ AS $$
              ELSE 1.0 / (1.0 + COALESCE(d.max_dist, 0.0))
         END
       FROM (
-          SELECT public.centroid_4d(
-                     public.point4d(
-                         ST_X(p.geom)::double precision,
-                         ST_Y(p.geom)::double precision,
-                         COALESCE(ST_Z(p.geom), 0)::double precision,
-                         COALESCE(ST_M(p.geom), 0)::double precision))   AS centroid,
+          SELECT public.centroid_4d(p.geom::point4d)                     AS centroid,
                  count(*)::int                                            AS n
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
@@ -49,13 +44,7 @@ AS $$
            WHERE p.entity_hash = p_token_hash
       ) c
       CROSS JOIN LATERAL (
-          SELECT max(public.distance_4d(
-                     public.point4d(
-                         ST_X(p.geom)::double precision,
-                         ST_Y(p.geom)::double precision,
-                         COALESCE(ST_Z(p.geom), 0)::double precision,
-                         COALESCE(ST_M(p.geom), 0)::double precision),
-                     c.centroid))                                          AS max_dist
+          SELECT max(public.distance_4d(p.geom::point4d, c.centroid))       AS max_dist
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id

@@ -9,9 +9,9 @@
 -- hands the candidate query to the C kernel.
 --
 -- Distance kinds:
---   '4d'      → substrate.dist_4d (POINTZM short-circuits to native
+--   '4d'      → substrate.dist_4d (POINT4D short-circuits to native
 --               distance_4d; multi-vertex geometries fall through to native
---               frechet_4d via ST_DumpPoints).
+--               frechet_4d over native trajectory vertices).
 --   'frechet' → substrate.frechet_4d_geom (always Fréchet over depth-first
 --               vertex sequence, even for two POINTs — costs more, but
 --               useful when comparing trajectory shapes).
@@ -94,4 +94,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.embed_lookup(BYTEA, TEXT, INT, TEXT, DOUBLE PRECISION) IS
-    'Top-k entities by 4D distance from the seed entity''s stored physicality, filtered to a target entity_type via substrate.entity_classification. Uses the pg_similarity_topk C SRF for the inner scan and heap. Distance kinds: 4d (default; POINTZM fast path) | frechet (always vertex-stream Fréchet) | s3 (reserved, not yet wired).';
+    'Top-k entities by 4D distance from the seed entity''s stored physicality, filtered to a target entity_type via substrate.entity_classification. Uses the pg_similarity_topk C SRF for the inner scan and heap. Distance kinds: 4d (default; POINT4D fast path) | frechet (vertex-stream Frechet) | s3.';

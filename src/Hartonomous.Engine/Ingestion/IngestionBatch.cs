@@ -19,7 +19,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     private readonly List<EdgeEntry> _edges = [];
     private readonly List<JunctionEntry> _junctions = [];
     private readonly List<PhysicalityEntry> _physicalities = [];
-    private readonly List<SequenceEntry> _sequences = [];
+    private readonly List<CompositionChildEntry> _compositionChildren = [];
     private readonly List<SignificanceEntry> _significances = [];
     private readonly List<EntityModelSourceEntry> _entityModelSources = [];
 
@@ -37,7 +37,7 @@ internal sealed class IngestionBatch : IIngestionBatch
     public IReadOnlyList<EdgeEntry> Edges => _edges;
     public IReadOnlyList<JunctionEntry> Junctions => _junctions;
     public IReadOnlyList<PhysicalityEntry> Physicalities => _physicalities;
-    public IReadOnlyList<SequenceEntry> Sequences => _sequences;
+    public IReadOnlyList<CompositionChildEntry> CompositionChildren => _compositionChildren;
     public IReadOnlyList<SignificanceEntry> Significances => _significances;
     public IReadOnlyList<EntityModelSourceEntry> EntityModelSources => _entityModelSources;
 
@@ -90,31 +90,27 @@ internal sealed class IngestionBatch : IIngestionBatch
         _junctions.Add(new JunctionEntry(junctionTable, entity, referenceId, mu, attestationTypeCode));
     }
 
-    public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
+    public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geometryPayload)
     {
-        // Generic-WKB path: extract centroid from the buffer. The typed
-        // helpers below are preferred because they already know the centroid
-        // and skip the parse.
-        if (!Hartonomous.Core.Geometry.PostGisWkbReader.TryExtractCentroid(geomWkb, out Point4D centroid))
+        if (!Geometry4dPayloadBuilder.TryExtractCentroid(geometryPayload, out Point4D centroid))
         {
             throw new ArgumentException(
-                $"AddPhysicality: could not extract a 4D centroid from the supplied WKB " +
+                $"AddPhysicality: could not extract a 4D centroid from the supplied geometry4d payload " +
                 $"(entity {entity.Hash.ToHexString()}, type {physicalityTypeCode}, " +
-                $"{geomWkb.Length} bytes). Either the WKB subtype is unsupported by " +
-                $"PostGisWkbReader or the buffer is malformed. Use AddPhysicalityPoint4d " +
+                $"{geometryPayload.Length} bytes). Use AddPhysicalityPoint4d " +
                 $"or AddPhysicalityLineString4d when the centroid is already known.",
-                nameof(geomWkb));
+                nameof(geometryPayload));
         }
-        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb, centroid));
+        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geometryPayload, centroid));
     }
 
     public void AddPhysicality(
         EntityHandle entity,
         string physicalityTypeCode,
-        byte[] geomWkb,
+        byte[] geometryPayload,
         Point4D centroid)
     {
-        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geomWkb, centroid));
+        _physicalities.Add(new PhysicalityEntry(entity, physicalityTypeCode, geometryPayload, centroid));
     }
 
     public void AddPhysicalityPoint4d(
@@ -126,7 +122,7 @@ internal sealed class IngestionBatch : IIngestionBatch
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
-            PostGisWkbBuilder.PointZM(pt),
+            Geometry4dPayloadBuilder.Point(pt),
             pt));
     }
 
@@ -138,7 +134,7 @@ internal sealed class IngestionBatch : IIngestionBatch
         if (vertices.Length < 1)
         {
             throw new ArgumentException(
-                "LINESTRINGZM requires at least one vertex.", nameof(vertices));
+                "LINESTRING4D requires at least one vertex.", nameof(vertices));
         }
         // Promote the tuple-based decomposer surface to Point4D once; from
         // here down everything is Point4D.
@@ -161,13 +157,13 @@ internal sealed class IngestionBatch : IIngestionBatch
         _physicalities.Add(new PhysicalityEntry(
             entity,
             physicalityTypeCode,
-            PostGisWkbBuilder.LineStringZM((ReadOnlySpan<Point4D>)typed),
+            Geometry4dPayloadBuilder.LineString((ReadOnlySpan<Point4D>)typed),
             centroid));
     }
 
-    public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
+    public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
     {
-        _sequences.Add(new SequenceEntry(parent, ordinal, child, rleCount));
+        _compositionChildren.Add(new CompositionChildEntry(parent, ordinal, child, rleCount));
     }
 
     public void AddSignificance(

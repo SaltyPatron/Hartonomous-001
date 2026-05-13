@@ -105,7 +105,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
 
                 // language_name identity = native text root hash over the same text DAG.
                 // The shared text decomposer creates codepoint + grapheme_cluster +
-                // language_name entities and sequence rows in one pass; same content from
+                // language_name entities and composition metadata in one pass; same content from
                 // any decomposer yields the same entity row with language_name classification.
                 (EntityHandle nameEntity, Hash32 nameHash, _) =
                     EmitText(batch, rec.RefName, _codepointProperties, "language_name", TrustPriorMu);

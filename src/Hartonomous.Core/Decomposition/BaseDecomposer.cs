@@ -230,48 +230,47 @@ public abstract partial class BaseDecomposer : IDecomposer
             junctionTable, entity.Hash, referenceId, attestationTypeCode, mu), ct);
 
     /// <summary>
-    /// Emit one physicality row. The Wkb bytes are the binary WKB encoding
-    /// of the geometry (POINTZM, LINESTRINGZM, MULTILINESTRINGZM, etc.) —
-    /// see PostGisWkbBuilder. ContentHash is BLAKE3 of the WKB so identical
+    /// Emit one physicality row. The geometry bytes are the native geometry4d
+    /// payload. ContentHash is BLAKE3 of the payload so identical
     /// geometries deduplicate at the substrate level.
     /// <para>
     /// Caller must supply the entity's representative Point4D centroid. For
-    /// POINTZM physicality this is the point itself; for LINESTRINGZM and
+    /// POINT4D physicality this is the point itself; for LINESTRING4D and
     /// other composite shapes it is the unweighted 4D mean of the vertex
     /// stream. The pipeline uses this value to construct inline edge
-    /// LINESTRINGZM trajectories without re-parsing the WKB.
+    /// LINESTRING4D trajectories.
     /// </para>
     /// </summary>
     protected static ValueTask EmitPhysicalityAsync(
         IRecordSink sink,
         string physicalityTypeCode,
         EntityHandle entity,
-        byte[] wkb,
+        byte[] geometry,
         Hartonomous.Core.Geometry.Point4D centroid,
         CancellationToken ct)
     {
-        Hash32 contentHash = Blake3.Hash32(wkb.AsSpan());
+        Hash32 contentHash = Blake3.Hash32(geometry.AsSpan());
         return sink.EmitAsync(new PhysicalityRecord(
             physicalityTypeCode,
             entity.Hash,
             contentHash,
-            wkb,
+            geometry,
             centroid), ct);
     }
 
     /// <summary>
-    /// Emit one sequence row. Composition ordering — parent contains child at
-    /// ordinal position N for RleCount consecutive positions (RLE preserves
-    /// refrains: "the the the" stores once with rle_count=3, not 3 rows).
+    /// Emit one composition-child metadata record. Composition ordering —
+    /// parent contains child at ordinal position N for RleCount consecutive
+    /// positions.
     /// </summary>
-    protected static ValueTask EmitSequenceAsync(
+    protected static ValueTask EmitCompositionChildAsync(
         IRecordSink sink,
         EntityHandle parent,
         int ordinal,
         EntityHandle child,
         int rleCount,
         CancellationToken ct)
-        => sink.EmitAsync(new SequenceRecord(
+        => sink.EmitAsync(new CompositionChildRecord(
             parent.Hash,
             ordinal,
             child.Hash,
@@ -357,23 +356,17 @@ public abstract partial class BaseDecomposer : IDecomposer
     // and the BaseDecomposer.EmitText helper. See docs/specs/text-decomposer-unification.md.
 
     /// <summary>
-    /// Emit substrate.sequence rows recording the ordered children of
-    /// <paramref name="parent"/> as supplied in <paramref name="children"/>,
-    /// 1-based ordinals. This convenience helper preserves one row per child;
-    /// native/core text decomposers coalesce contiguous repeated children with
-    /// <see cref="IIngestionBatch.AddSequence"/> and rleCount &gt; 1.
-    /// Repeated entities at distinct ordinals (the "green eggs and ham × 3"
-    /// case) are preserved exactly because the sequence row PK is
-    /// (parent_type, parent_hash, ordinal) — repeats don't collide.
+    /// Record the ordered children of <paramref name="parent"/> as composition
+    /// metadata carried by the parent's physicality row.
     /// </summary>
-    public static void EmitSequence(
+    public static void EmitCompositionChildren(
         IIngestionBatch batch,
         EntityHandle parent,
         ReadOnlySpan<EntityHandle> children)
     {
         for (int i = 0; i < children.Length; i++)
         {
-            batch.AddSequence(parent, ordinal: i + 1, child: children[i], rleCount: 1);
+            batch.AddCompositionChild(parent, ordinal: i + 1, child: children[i], rleCount: 1);
         }
     }
 

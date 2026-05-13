@@ -64,6 +64,9 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         Option<string?> sourceOpt = new(
             aliases: ["--source", "-s"],
             description: "Root directory containing all source data. Omit to use Hartonomous:DataRoot from appsettings/env.");
+        Option<string?> modelSourceOpt = new(
+            aliases: ["--model-source"],
+            description: "Override the model hub root used by ModelDecomp (Decomposers.Safetensors.HubPath). Absolute paths bypass --source/DataRoot. Omit to use config.");
         Option<bool> skipDepsOpt = new(
             aliases: ["--skip-deps"],
             getDefaultValue: () => false,
@@ -78,6 +81,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         run.AddOption(dryRunOpt);
         run.AddOption(connOpt);
         run.AddOption(sourceOpt);
+        run.AddOption(modelSourceOpt);
         run.AddOption(skipDepsOpt);
         run.AddOption(forceOpt);
         run.SetHandler(async (InvocationContext ic) =>
@@ -86,6 +90,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
             bool dryRun = ic.ParseResult.GetValueForOption(dryRunOpt);
             string conn = ic.ParseResult.GetValueForOption(connOpt)!;
             string? source = ic.ParseResult.GetValueForOption(sourceOpt);
+            string? modelSource = ic.ParseResult.GetValueForOption(modelSourceOpt);
             bool skipDeps = ic.ParseResult.GetValueForOption(skipDepsOpt);
             bool force = ic.ParseResult.GetValueForOption(forceOpt);
 
@@ -95,7 +100,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
                 return;
             }
 
-            ic.ExitCode = await RunPhasesAsync(phaseStr, conn, source, skipDeps, force, CancellationToken.None);
+            ic.ExitCode = await RunPhasesAsync(phaseStr, conn, source, modelSource, skipDeps, force, CancellationToken.None);
         });
 
         Option<string> statusConnOpt = new(
@@ -137,7 +142,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
     }
 
     private async Task<int> RunPhasesAsync(
-        string? phaseStr, string conn, string? sourceRoot,
+        string? phaseStr, string conn, string? sourceRoot, string? modelSourceRoot,
         bool skipDeps, bool force, CancellationToken ct)
     {
         int exitCode = 0;
@@ -172,6 +177,12 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         if (!string.IsNullOrWhiteSpace(sourceRoot))
         {
             opts.DataRoot = sourceRoot;
+        }
+        // CLI --model-source (when supplied non-empty) overrides Decomposers.Safetensors.HubPath.
+        // Absolute paths bypass DataRoot via CliPathResolver.
+        if (!string.IsNullOrWhiteSpace(modelSourceRoot))
+        {
+            opts.Decomposers.Safetensors.HubPath = modelSourceRoot;
         }
         string dataRoot = opts.DataRoot;
 
@@ -344,7 +355,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         await pipeline.FlushAsync(ct);
 
         StreamingPipelineStats sStats = pipeline.Stats;
-        Console.WriteLine($"\nStreaming pipeline emitted: {sStats.EntitiesEmitted:N0} entities, {sStats.EdgesEmitted:N0} edges, {sStats.EdgeMembersEmitted:N0} edge_members, {sStats.JunctionsEmitted:N0} junctions, {sStats.PhysicalitiesEmitted:N0} physicalities, {sStats.SequencesEmitted:N0} sequences, {sStats.EntitySignificancesEmitted:N0} entity_sigs, {sStats.EdgeSignificancesEmitted:N0} edge_sigs ({sStats.CopyCommits:N0} drain commits, {sStats.CopyErrors:N0} errors)");
+        Console.WriteLine($"\nStreaming pipeline emitted: {sStats.EntitiesEmitted:N0} entities, {sStats.EdgesEmitted:N0} edges, {sStats.EdgeMembersEmitted:N0} edge_members, {sStats.JunctionsEmitted:N0} junctions, {sStats.PhysicalitiesEmitted:N0} physicalities, {sStats.EntitySignificancesEmitted:N0} entity_sigs, {sStats.EdgeSignificancesEmitted:N0} edge_sigs ({sStats.CopyCommits:N0} drain commits, {sStats.CopyErrors:N0} errors)");
         if (sStats.CopyErrors > 0)
         {
             Console.Error.WriteLine();

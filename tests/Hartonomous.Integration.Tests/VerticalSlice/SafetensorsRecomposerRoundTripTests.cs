@@ -71,7 +71,7 @@ public sealed class SafetensorsRecomposerRoundTripTests
     }
 
     [Fact]
-    public async Task RecomposeAsync_ScattersSequenceRowContoursIntoTensorBytes()
+    public async Task RecomposeAsync_ScattersCompositionContoursIntoTensorBytes()
     {
         EntityHandle architecture = Handle(1, "model_architecture");
         EntityHandle tensor = Handle(2, "tensor");
@@ -86,8 +86,8 @@ public sealed class SafetensorsRecomposerRoundTripTests
         entityReader.AddOutbound(tensor, "has_tensor_name", nameDoc);
         entityReader.AddOutbound(tensor, "has_dtype", dtypeDoc);
         entityReader.AddOutbound(tensor, "has_shape", shapeDoc);
-        entityReader.AddSequence(tensor, rowOne, 1);
-        entityReader.AddSequence(tensor, rowTwo, 2);
+        entityReader.AddCompositionChild(tensor, rowOne, 1);
+        entityReader.AddCompositionChild(tensor, rowTwo, 2);
 
         FakeTextReader textReader = new();
         textReader.Add(nameDoc, "layers.0.mlp.up_proj.weight");
@@ -132,7 +132,7 @@ public sealed class SafetensorsRecomposerRoundTripTests
     private sealed class FakeEntityReader : IEntityReader
     {
         private readonly Dictionary<(EntityHandle Source, string EdgeType), List<EntityHandle>> _outbound = [];
-        private readonly Dictionary<EntityHandle, List<(EntityHandle Child, int Position)>> _sequence = [];
+        private readonly Dictionary<EntityHandle, List<(EntityHandle Child, int Position)>> _compositionChildren = [];
 
         public void AddOutbound(EntityHandle source, string edgeTypeCode, EntityHandle target)
         {
@@ -146,12 +146,12 @@ public sealed class SafetensorsRecomposerRoundTripTests
             targets.Add(target);
         }
 
-        public void AddSequence(EntityHandle parent, EntityHandle child, int position)
+        public void AddCompositionChild(EntityHandle parent, EntityHandle child, int position)
         {
-            if (!_sequence.TryGetValue(parent, out List<(EntityHandle Child, int Position)>? children))
+            if (!_compositionChildren.TryGetValue(parent, out List<(EntityHandle Child, int Position)>? children))
             {
                 children = [];
-                _sequence[parent] = children;
+                _compositionChildren[parent] = children;
             }
 
             children.Add((child, position));
@@ -169,7 +169,7 @@ public sealed class SafetensorsRecomposerRoundTripTests
         public Task<IReadOnlyList<(EntityHandle Child, int Position)>> GetCompositionChildrenAsync(
             EntityHandle parent, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<(EntityHandle, int)>>(
-                _sequence.TryGetValue(parent, out List<(EntityHandle Child, int Position)>? children)
+                _compositionChildren.TryGetValue(parent, out List<(EntityHandle Child, int Position)>? children)
                     ? children
                     : []);
 

@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "postgres.h"
 #include "fmgr.h"
 #include "funcapi.h"
@@ -11,8 +15,7 @@
 #include <string.h>
 
 #ifndef _WIN32
-  #define _GNU_SOURCE
-  #include <execinfo.h>
+#include <execinfo.h>
   #include <unistd.h>
   #include <ucontext.h>
   #include <sys/ucontext.h>
@@ -59,23 +62,26 @@ static _Unwind_Reason_Code
 hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
 {
     HtnsUnwindCtx *uc = (HtnsUnwindCtx *) arg;
-    if (uc->depth >= uc->max_depth) { return _URC_END_OF_STACK; }
-
     uintptr_t ip = _Unwind_GetIP(ctx);
-
-    /* Walk /proc/self/maps to find which library this ip falls in. We do
-     * this per-frame, scanning the file linearly. The maps file is small
-     * enough that this is async-signal-safe and fast in absolute terms. */
     char libname[256];
     uintptr_t lib_base = 0;
     bool found_lib = false;
     int mfd = open("/proc/self/maps", O_RDONLY);
+    char fbuf[512];
+    int flen;
+
+    if (uc->depth >= uc->max_depth) { return _URC_END_OF_STACK; }
+
+    /* Walk /proc/self/maps to find which library this ip falls in. We do
+     * this per-frame, scanning the file linearly. The maps file is small
+     * enough that this is async-signal-safe and fast in absolute terms. */
     if (mfd >= 0)
     {
         char mbuf[8192];
         ssize_t n;
         char accum[16384];
         size_t alen = 0;
+        size_t i;
         while ((n = read(mfd, mbuf, sizeof(mbuf))) > 0 &&
                alen + (size_t) n < sizeof(accum))
         {
@@ -86,16 +92,21 @@ hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
 
         /* Linear scan of accum for a line whose [start,end) range contains ip.
          * Format: "STARTHEX-ENDHEX PERMS OFFSET DEV INODE  PATH\n". */
-        size_t i = 0;
+        i = 0;
         while (i < alen)
         {
             size_t line_start = i;
+            size_t line_end;
+            uintptr_t lo = 0;
+            uintptr_t hi = 0;
+            size_t p;
+            int spaces;
+            size_t path_len;
             while (i < alen && accum[i] != '\n') { i++; }
-            size_t line_end = i;
+            line_end = i;
             if (i < alen) { i++; }
 
-            uintptr_t lo = 0, hi = 0;
-            size_t p = line_start;
+            p = line_start;
             while (p < line_end && accum[p] != '-')
             {
                 char c = accum[p];
@@ -122,7 +133,7 @@ hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
             if (ip < lo || ip >= hi) { continue; }
 
             /* Find the path: 5 space-separated fields after the start, then a path. */
-            int spaces = 0;
+            spaces = 0;
             while (p < line_end && spaces < 4)
             {
                 if (accum[p] == ' ') { spaces++; while (p < line_end && accum[p] == ' ') p++; }
@@ -131,7 +142,7 @@ hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
             /* Skip leading spaces of the path. */
             while (p < line_end && accum[p] == ' ') p++;
 
-            size_t path_len = (line_end > p) ? (line_end - p) : 0;
+            path_len = (line_end > p) ? (line_end - p) : 0;
             if (path_len == 0)
             {
                 /* anonymous mapping (heap, stack, anon mmap). Note it. */
@@ -154,8 +165,6 @@ hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
         lib_base = 0;
     }
 
-    char fbuf[512];
-    int flen;
     if (lib_base != 0)
     {
         flen = snprintf(fbuf, sizeof(fbuf),
@@ -181,16 +190,18 @@ hartonomous_unwind_callback(struct _Unwind_Context *ctx, void *arg)
 static void
 hartonomous_unwind_backtrace(void *fault_rip)
 {
-    (void) fault_rip;  /* already printed in the crash header */
     HtnsUnwindCtx uc;
+    char tail[128];
+    int tlen;
+
+    (void) fault_rip;  /* already printed in the crash header */
     uc.depth = 0;
     uc.max_depth = 32;
     _Unwind_Backtrace(hartonomous_unwind_callback, &uc);
 
-    char tail[128];
-    int tlen = snprintf(tail, sizeof(tail),
-                        "=== End hartonomous stack unwind (%d frames) ===\n",
-                        uc.depth);
+    tlen = snprintf(tail, sizeof(tail),
+                    "=== End hartonomous stack unwind (%d frames) ===\n",
+                    uc.depth);
     if (tlen > 0) { (void) write(STDERR_FILENO, tail, (size_t) tlen); }
 }
 
@@ -287,21 +298,27 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
         if (rsp != NULL)
         {
             char sbuf[256];
+            uintptr_t saved_ret_at_rsp;
             int slen = snprintf(sbuf, sizeof(sbuf), "===   stack at rsp:");
             if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
-            for (int k = 0; k < 8; k++)
             {
-                uintptr_t *slot = (uintptr_t *) ((char *) rsp + k * 8);
-                slen = snprintf(sbuf, sizeof(sbuf), " %p", (void *) *slot);
-                if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+                int k;
+                for (k = 0; k < 8; k++)
+                {
+                    uintptr_t *slot = (uintptr_t *) ((char *) rsp + k * 8);
+                    slen = snprintf(sbuf, sizeof(sbuf), " %p", (void *) *slot);
+                    if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+                }
             }
             (void) write(STDERR_FILENO, "\n", 1);
 
-            uintptr_t saved_ret_at_rsp = *((uintptr_t *) rsp);
-            slen = snprintf(sbuf, sizeof(sbuf),
-                            "===   *(rsp) = caller return PC = %p\n",
-                            (void *) saved_ret_at_rsp);
-            if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+            saved_ret_at_rsp = *((uintptr_t *) rsp);
+            {
+                slen = snprintf(sbuf, sizeof(sbuf),
+                                "===   *(rsp) = caller return PC = %p\n",
+                                (void *) saved_ret_at_rsp);
+                if (slen > 0) { (void) write(STDERR_FILENO, sbuf, (size_t) slen); }
+            }
         }
 
         hartonomous_unwind_backtrace(rip);
@@ -319,31 +336,36 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
         if (rbp != NULL)
         {
             const char *rhdr = "=== hartonomous: rbp-chain fallback (DWARF unwind didn't reach caller) ===\n";
+            uintptr_t cur_rbp = (uintptr_t) rbp;
+            const char *rtail = "=== End rbp-chain fallback ===\n";
+            int level;
             (void) write(STDERR_FILENO, rhdr, strlen(rhdr));
 
-            uintptr_t cur_rbp = (uintptr_t) rbp;
-            for (int level = 0; level < 16; level++)
+            for (level = 0; level < 16; level++)
             {
+                uintptr_t saved_rbp;
+                uintptr_t saved_pc;
+                char rbuf[160];
+                int rlen;
+
                 if (cur_rbp == 0) break;
                 /* Stack-bounds heuristic: typical x86-64 user stack pointers
                  * have the top byte 0x7f. If we walk off into another region
                  * the chain is corrupted and dereferencing further is unsafe. */
                 if ((cur_rbp >> 56) != 0x7f) break;
 
-                uintptr_t saved_rbp = *((uintptr_t *) cur_rbp);
-                uintptr_t saved_pc  = *((uintptr_t *) (cur_rbp + 8));
+                saved_rbp = *((uintptr_t *) cur_rbp);
+                saved_pc  = *((uintptr_t *) (cur_rbp + 8));
 
-                char rbuf[160];
-                int rlen = snprintf(rbuf, sizeof(rbuf),
-                                    "===   rbp[%2d] frame_rbp=%p saved_rbp=%p ret_pc=%p\n",
-                                    level, (void *) cur_rbp, (void *) saved_rbp, (void *) saved_pc);
+                rlen = snprintf(rbuf, sizeof(rbuf),
+                                "===   rbp[%2d] frame_rbp=%p saved_rbp=%p ret_pc=%p\n",
+                                level, (void *) cur_rbp, (void *) saved_rbp, (void *) saved_pc);
                 if (rlen > 0) { (void) write(STDERR_FILENO, rbuf, (size_t) rlen); }
 
                 /* saved_rbp must monotonically increase up the stack. */
                 if (saved_rbp <= cur_rbp) break;
                 cur_rbp = saved_rbp;
             }
-            const char *rtail = "=== End rbp-chain fallback ===\n";
             (void) write(STDERR_FILENO, rtail, strlen(rtail));
         }
     }
@@ -354,8 +376,9 @@ hartonomous_crash_backtrace_handler(int signo, siginfo_t *info, void *ucontext)
      */
     {
         const char *maps_header = "=== /proc/self/maps (resolve frame caller_rip to library:offset) ===\n";
+        int fd;
         ssize_t w = write(STDERR_FILENO, maps_header, strlen(maps_header));
-        int fd = open("/proc/self/maps", O_RDONLY);
+        fd = open("/proc/self/maps", O_RDONLY);
         if (fd >= 0)
         {
             char buf[4096];
@@ -467,6 +490,8 @@ static void hartonomous_install_crash_handlers(void) { }
 void
 _PG_init(void)
 {
+    (void) hartonomous_resolved_cbwr_branch; /* retained for lazy MKL branch resolution */
+
     DefineCustomIntVariable(
         "hartonomous.max_traversal_results",
         "Maximum number of rows returned by traversal functions.",

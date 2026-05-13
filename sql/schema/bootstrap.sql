@@ -38,8 +38,6 @@
 -- @include schema/domains/significance_mu.sql
 -- @include schema/domains/significance_sigma.sql
 -- @include schema/domains/significance_volatility.sql
--- @include schema/domains/ordinal_position.sql
--- @include schema/domains/rle_count.sql
 -- @include schema/domains/code_value.sql
 -- @include schema/domains/tier_number.sql
 -- @include schema/domains/modality_code.sql
@@ -120,7 +118,6 @@
 -- @include schema/tables/core/physicality_model.sql
 -- @include schema/tables/core/physicality_contour.sql
 -- @include schema/tables/core/physicality_default.sql
--- @include schema/tables/core/sequence.sql
 -- @include schema/tables/core/entity_significance.sql
 -- @include schema/tables/core/entity_significance_lexical.sql
 -- @include schema/tables/core/entity_significance_syntactic.sql
@@ -219,6 +216,9 @@
 -- @include schema/indexes/idx_ingestion_progress_recent.sql
 -- @include schema/indexes/idx_language_scope.sql
 -- @include schema/indexes/idx_language_type.sql
+-- @include schema/indexes/idx_language_part1.sql
+-- @include schema/indexes/idx_language_part2b.sql
+-- @include schema/indexes/idx_language_part2t.sql
 -- @include schema/indexes/idx_model_arch_class.sql
 -- @include schema/indexes/idx_model_pass_checkpoint_source.sql
 -- @include schema/indexes/idx_model_source_model.sql
@@ -228,7 +228,6 @@
 -- @include schema/indexes/idx_safetensor_observation_edge.sql
 -- @include schema/indexes/idx_safetensor_observation_source.sql
 -- @include schema/indexes/idx_safetensor_observation_tensor.sql
--- @include schema/indexes/idx_sequence_child.sql
 -- @include schema/indexes/idx_session_started.sql
 -- @include schema/indexes/idx_significance_snapshot_target.sql
 -- @include schema/indexes/idx_substrate_health_code.sql
@@ -273,14 +272,11 @@
 -- @include schema/functions/upsert_model_pass_checkpoint.sql
 -- @include schema/functions/get_completed_model_passes.sql
 -- Geometry / 4D operators
--- @include schema/functions/geom_to_linestring4d.sql
--- @include schema/functions/polygon_exterior_linestring4d.sql
 -- @include schema/functions/dist_4d.sql
 -- @include schema/functions/frechet_4d_geom.sql
 -- @include schema/functions/hausdorff_4d_geom.sql
+-- @include schema/functions/geometry4d_centroid.sql
 -- @include schema/functions/entity_centroid_4d.sql
--- @include schema/functions/geom_to_pointzm.sql
--- @include schema/functions/populate_sequence_physicality.sql
 -- @include schema/functions/populate_edge_trajectories.sql
 -- @include schema/functions/count_missing_edge_trajectories.sql
 -- @include schema/functions/physicality_linestring4d.sql
@@ -302,7 +298,7 @@
 -- @include schema/functions/api_edge_by_hash.sql
 -- @include schema/functions/api_entity_significance.sql
 -- @include schema/functions/api_entity_neighbors.sql
--- Composition / sequence
+-- Composition helpers
 -- @include schema/functions/composition_at.sql
 -- @include schema/functions/composition_before.sql
 -- @include schema/functions/composition_after.sql

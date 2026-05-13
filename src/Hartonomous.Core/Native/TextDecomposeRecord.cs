@@ -16,8 +16,8 @@ public struct TextDecomposeRecord
     public IntPtr HashB;
     public int IntParam;
     public double DoubleParam;
-    public IntPtr Wkb;
-    public nuint WkbLen;
+    public IntPtr Geometry;
+    public nuint GeometryLen;
     public double CentroidX;
     public double CentroidY;
     public double CentroidZ;

@@ -17,8 +17,6 @@ internal static class IngestionSql
     public static string GetExistingEdges { get; } = Read("get_existing_edges.sql");
     public static string GetExistingEdgeMembers { get; } = Read("get_existing_edge_members.sql");
     public static string GetExistingPhysicalities { get; } = Read("get_existing_physicalities.sql");
-    public static string GetExistingSequenceRows { get; } = Read("get_existing_sequence_rows.sql");
-    public static string GetExistingIngressKeys { get; } = Read("get_existing_ingress_keys.sql");
     public static string InsertSafetensorObservations { get; } = Read("safetensor_observation.insert.sql");
 
     public static DrainSqlSpec Entity { get; } = Drain("entity");
@@ -27,7 +25,6 @@ internal static class IngestionSql
     public static DrainSqlSpec EdgeMember { get; } = Drain("edge_member");
     public static DrainSqlSpec Junction { get; } = Drain("junction");
     public static DrainSqlSpec Physicality { get; } = Drain("physicality");
-    public static DrainSqlSpec Sequence { get; } = Drain("sequence");
     public static DrainSqlSpec EntitySignificance { get; } = Drain("entity_significance");
     public static DrainSqlSpec EdgeSignificance { get; } = Drain("edge_significance");
     public static DrainSqlSpec EntityModelSource { get; } = Drain("entity_model_source");

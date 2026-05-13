@@ -224,9 +224,10 @@ DECLARE
                                 '99990000aaaabbbbccccddddeeeeffff', 'hex');
     h_orphan_parent BYTEA := decode('a200000000000000000000000000000000000000000000000000000000000001', 'hex');
     h_orphan_child  BYTEA := decode('a200000000000000000000000000000000000000000000000000000000000002', 'hex');
+    phys_contour INT;
     result TEXT;
 BEGIN
-    -- Nonexistent root → empty/NULL string (no rows in sequence walk)
+    -- Nonexistent root → empty/NULL string (no composition metadata)
     result := substrate.recompose_text(nonexistent, 100);
     IF result IS NOT NULL AND length(result) > 0 THEN
         RAISE EXCEPTION 'recompose_text nonexistent returned %', result;
@@ -244,12 +245,28 @@ BEGIN
         RAISE EXCEPTION 'recompose_text depth=-5 returned %', result;
     END IF;
 
-    -- Sequence row pointing to a child without codepoint_property —
+    SELECT id INTO phys_contour FROM substrate.physicality_type WHERE code = 'contour';
+
+    -- Composition metadata pointing to a child without codepoint_property —
     -- recompose cannot decode it; should produce empty/partial, NOT crash.
     INSERT INTO substrate.entity (hash) VALUES (h_orphan_parent), (h_orphan_child)
     ON CONFLICT DO NOTHING;
-    INSERT INTO substrate.sequence (parent_hash, ordinal, child_hash, rle_count)
-    VALUES (h_orphan_parent, 1, h_orphan_child, 1)
+    INSERT INTO substrate.physicality (
+        physicality_type_id,
+        entity_hash,
+        content_hash,
+        geom,
+        child_hashes,
+        ordinal_starts,
+        rle_counts)
+    VALUES (
+        phys_contour,
+        h_orphan_parent,
+        public.blake3_hash(h_orphan_parent || decode('01', 'hex')),
+        public.array_to_linestring4d(ARRAY[0.0, 0.0, 0.0, 0.0]),
+        ARRAY[h_orphan_child]::substrate.hash_value[],
+        ARRAY[1],
+        ARRAY[1])
     ON CONFLICT DO NOTHING;
     -- Don't insert codepoint_property for h_orphan_child — recompose has
     -- no codepoint_value to emit.
@@ -338,6 +355,7 @@ DECLARE
     poly_a  geometry := 'POLYGON ZM ((0 0 0 0, 1 0 0 0, 1 1 0 0, 0 1 0 0, 0 0 0 0))'::geometry;
     poly_b  geometry := 'POLYGON ZM ((0 0 0 0, 1 0 0 0, 1 1 0 0, 0 1 0 0, 0 0 0 0))'::geometry;
     coll_a  geometry := 'GEOMETRYCOLLECTION ZM (POINT ZM (0 0 0 0), LINESTRING ZM (1 1 1 1, 2 2 2 2))'::geometry;
+    axis_probe geometry := 'LINESTRING ZM (4 3 2 1, 8 7 6 5)'::geometry;
     d DOUBLE PRECISION;
 BEGIN
     -- POINTZM: short-circuits to native distance_4d
@@ -369,6 +387,16 @@ BEGIN
     d := substrate.frechet_4d_geom(coll_a, coll_a);
     IF abs(d) > 1e-9 THEN RAISE EXCEPTION 'frechet_4d_geom COLLECTION self: %', d; END IF;
 
+    -- GeometryZM → linestring4d bridge must preserve X/Y/Z/M axis order.
+    -- Sorting by coordinate value corrupts sequence trajectories and any
+    -- native 4D operator that consumes them.
+    IF public.point_n(substrate.geom_to_linestring4d(axis_probe), 1) <> public.point4d(4, 3, 2, 1) THEN
+        RAISE EXCEPTION 'geom_to_linestring4d corrupted first vertex axis order';
+    END IF;
+    IF public.point_n(substrate.geom_to_linestring4d(axis_probe), 2) <> public.point4d(8, 7, 6, 5) THEN
+        RAISE EXCEPTION 'geom_to_linestring4d corrupted second vertex axis order';
+    END IF;
+
     -- hausdorff_4d_geom: symmetry over LINESTRINGZM
     IF abs(substrate.hausdorff_4d_geom(line_a, line_c) -
            substrate.hausdorff_4d_geom(line_c, line_a)) > 1e-9 THEN
@@ -384,7 +412,7 @@ BEGIN
         RAISE EXCEPTION 'dist_4d NULL g1 returned non-NULL';
     END IF;
 
-    RAISE NOTICE 'GeometryZM bridge: 10 subtype + symmetry + NULL assertions passed';
+    RAISE NOTICE 'GeometryZM bridge: 12 subtype + axis-order + symmetry + NULL assertions passed';
 END $$;
 
 ROLLBACK;

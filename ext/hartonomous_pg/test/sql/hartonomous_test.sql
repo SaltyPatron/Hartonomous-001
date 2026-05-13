@@ -17,7 +17,7 @@ SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
 
 -- UAX #29/Merkle text identity for "hello": deterministic root, raw hash is
 -- not the text composition hash, and the repeated "l" is stored as RLE
--- occurrence counts in substrate.sequence.
+-- occurrence counts in physicality-backed composition metadata.
 CREATE TEMP TABLE hello_text_roots AS
 SELECT
     (substrate.text_decompose(convert_to('hello', 'UTF8'), 'text_composition', 95000.0, 'unicode_consortium')).root_hash AS root_a,
@@ -28,17 +28,17 @@ SELECT
 WITH root_children AS (
     SELECT s.ordinal, s.child_hash, s.rle_count
     FROM hello_text_roots r
-    JOIN substrate.sequence s ON s.parent_hash = r.root_a
+    CROSS JOIN LATERAL substrate.get_composition_children(r.root_a) s
 ),
 word_graphemes AS (
     SELECT s.ordinal, s.child_hash, s.rle_count
     FROM root_children rc
-    JOIN substrate.sequence s ON s.parent_hash = rc.child_hash
+    CROSS JOIN LATERAL substrate.get_composition_children(rc.child_hash) s
 ),
 grapheme_codepoints AS (
     SELECT s.ordinal, s.child_hash, wg.rle_count * s.rle_count AS rle_count
     FROM word_graphemes wg
-    JOIN substrate.sequence s ON s.parent_hash = wg.child_hash
+    CROSS JOIN LATERAL substrate.get_composition_children(wg.child_hash) s
 )
 SELECT
     length(root.root_a) AS root_len,

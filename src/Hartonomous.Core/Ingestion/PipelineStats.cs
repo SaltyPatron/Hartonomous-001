@@ -8,7 +8,6 @@ public sealed record PipelineStats
     public long EdgesSubmitted { get; init; }
     public long JunctionsSubmitted { get; init; }
     public long PhysicalitiesSubmitted { get; init; }
-    public long SequencesSubmitted { get; init; }
     public long SignificanceInitialized { get; init; }
     public long EntityModelSourcesLinked { get; init; }
     public long BatchesCommitted { get; init; }

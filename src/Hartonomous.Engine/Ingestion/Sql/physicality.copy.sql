@@ -1,1 +1,1 @@
-COPY pg_temp.physicality_inflight (physicality_type_id, entity_hash, content_hash, wkb) FROM STDIN (FORMAT binary)
+COPY pg_temp.physicality_inflight (physicality_type_id, entity_hash, content_hash, geometry_payload, child_hashes, ordinal_starts, rle_counts) FROM STDIN (FORMAT binary)

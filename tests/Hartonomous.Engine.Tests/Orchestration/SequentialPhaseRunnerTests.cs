@@ -220,29 +220,6 @@ public sealed class SequentialPhaseRunnerTests
 
         Assert.Equal(PhaseStatus.Completed, result.Status);
         Assert.Equal(1, pipeline.DrainPendingCalls);
-        Assert.Equal(0, pipeline.PopulateSequencePhysicalityCalls);
-        Assert.Equal(0, pipeline.PopulateEdgeTrajectoriesCalls);
-        Assert.Equal(0, pipeline.PrimeAllSignificanceCalls);
-    }
-
-    [Fact]
-    public async Task RunPhase_SubmittedSequences_RunsSequencePostPassOnly()
-    {
-        FakePipeline pipeline = new()
-        {
-            StatsOverride = new PipelineStats { SequencesSubmitted = 1 },
-        };
-        FakeDecomposer decomposer = new();
-        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
-        {
-            [Phase.CoreAlgebra] = [decomposer],
-        };
-        SequentialPhaseRunner runner = CreateRunner(map, pipeline);
-
-        PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
-
-        Assert.Equal(PhaseStatus.Completed, result.Status);
-        Assert.Equal(1, pipeline.PopulateSequencePhysicalityCalls);
         Assert.Equal(0, pipeline.PopulateEdgeTrajectoriesCalls);
         Assert.Equal(0, pipeline.PrimeAllSignificanceCalls);
     }
@@ -264,7 +241,6 @@ public sealed class SequentialPhaseRunnerTests
         PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
 
         Assert.Equal(PhaseStatus.Completed, result.Status);
-        Assert.Equal(0, pipeline.PopulateSequencePhysicalityCalls);
         Assert.Equal(1, pipeline.PopulateEdgeTrajectoriesCalls);
         Assert.Equal(1, pipeline.PrimeAllSignificanceCalls);
     }
@@ -358,7 +334,6 @@ public sealed class SequentialPhaseRunnerTests
     {
         public PipelineStats StatsOverride { get; init; } = new();
         public int DrainPendingCalls { get; private set; }
-        public int PopulateSequencePhysicalityCalls { get; private set; }
         public int PopulateEdgeTrajectoriesCalls { get; private set; }
         public int PrimeAllSignificanceCalls { get; private set; }
         public PipelineStats Stats => StatsOverride;
@@ -368,11 +343,6 @@ public sealed class SequentialPhaseRunnerTests
         public Task DrainPendingAsync(CancellationToken ct)
         {
             DrainPendingCalls++;
-            return Task.CompletedTask;
-        }
-        public Task PopulateSequencePhysicalityAsync(CancellationToken ct)
-        {
-            PopulateSequencePhysicalityCalls++;
             return Task.CompletedTask;
         }
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
@@ -390,7 +360,6 @@ public sealed class SequentialPhaseRunnerTests
         public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());
         public Task<HashSet<EdgeMemberKey>> GetExistingEdgeMembersAsync(IReadOnlyCollection<EdgeMemberKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeMemberKey>());
         public Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<PhysicalityKey>());
-        public Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<SequenceKey>());
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -405,7 +374,7 @@ public sealed class SequentialPhaseRunnerTests
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }
         public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4) { }
         public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices) { }
-        public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1) { }
+        public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1) { }
         public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu, string attestationTypeCode = "provenance_authority_corroboration") { }
         public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }
     }

@@ -86,31 +86,29 @@ AS $$
 
     UNION ALL
 
-    -- 3. Sequence parents: compositions containing this entity.
+    -- 3. Composition parents: compositions containing this entity.
     SELECT
-        'sequence_parent'::TEXT,
+        'composition_parent'::TEXT,
         s.parent_hash,
         NULL::TEXT,
         NULL::TEXT,
         NULL::DOUBLE PRECISION,
         NULL::DOUBLE PRECISION,
         s.ordinal
-    FROM substrate.sequence s
-    WHERE s.child_hash = p_entity_hash
+    FROM substrate.composition_parents(p_entity_hash) s
 
     UNION ALL
 
-    -- 4. Sequence children: entities this composition contains (if any).
+    -- 4. Composition children: entities this composition contains (if any).
     SELECT
-        'sequence_child'::TEXT,
+        'composition_child'::TEXT,
         s.child_hash,
         NULL::TEXT,
         NULL::TEXT,
         NULL::DOUBLE PRECISION,
         NULL::DOUBLE PRECISION,
         s.ordinal
-    FROM substrate.sequence s
-    WHERE s.parent_hash = p_entity_hash
+    FROM substrate.get_composition_children(p_entity_hash) s
 
     UNION ALL
 

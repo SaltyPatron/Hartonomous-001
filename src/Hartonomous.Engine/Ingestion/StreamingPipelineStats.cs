@@ -15,7 +15,6 @@ public sealed record StreamingPipelineStats
     public long EdgeMembersEmitted { get; init; }
     public long JunctionsEmitted { get; init; }
     public long PhysicalitiesEmitted { get; init; }
-    public long SequencesEmitted { get; init; }
     public long EntitySignificancesEmitted { get; init; }
     public long EdgeSignificancesEmitted { get; init; }
     public long EntityModelSourcesEmitted { get; init; }

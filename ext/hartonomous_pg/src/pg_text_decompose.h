@@ -18,7 +18,7 @@
  *        per-composition via mean_4d aggregate of constituents
  *     7. SPI bulk INSERTs directly into substrate.entity,
  *        substrate.entity_classification, substrate.physicality,
- *        substrate.sequence, and substrate.entity_significance with
+ *        substrate.physicality composition metadata and substrate.entity_significance with
  *        ON CONFLICT DO NOTHING. No staging surface and no round-trip back to .NET.
  *
  *   Returns a summary record (counts) so the caller can report progress.
@@ -103,7 +103,7 @@ typedef struct {
     int64_t edge_count;
     int64_t edge_member_count;
     int64_t physicality_count;
-    int64_t sequence_count;
+    int64_t composition_child_count;
     int64_t significance_count;
     int64_t classification_count;
 } TextDecomposeSummary;

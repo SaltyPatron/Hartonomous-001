@@ -161,19 +161,13 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             // priming can correctly compute costs over the edge graph.
             //   0. Wait until all phase emissions are durable in substrate;
             //      the post-passes read database state, not channel state.
-            //   1. Populate missing sequence-derived entity physicality so
-            //      every sequence-backed participant has a memoized centroid.
-            //   2. Populate substrate.edge.geom for edges whose producer did
+            //   1. Populate substrate.edge.geom for edges whose producer did
             //      not attach inline LINESTRINGZM (cross-batch participants,
-            //      LINESTRINGZM-physicality compositions, etc.).
-            //   3. Prime substrate.edge_significance for every arena in
+            //      LINESTRING4D-physicality compositions, etc.).
+            //   2. Prime substrate.edge_significance for every arena in
             //      substrate.significance_context (AP-1: cross-product, no filter).
             await _pipeline.DrainPendingAsync(ct);
             PipelineStats stats = _pipeline.Stats;
-            if (stats.SequencesSubmitted > 0)
-            {
-                await _pipeline.PopulateSequencePhysicalityAsync(ct);
-            }
             if (stats.EdgesSubmitted > 0)
             {
                 await _pipeline.PopulateEdgeTrajectoriesAsync(ct);

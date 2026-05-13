@@ -31,14 +31,6 @@ public interface IIngestionPipeline : IAsyncDisposable
     Task DrainPendingAsync(CancellationToken ct);
 
     /// <summary>
-    /// Populate missing entity physicality for sequence-backed compositions.
-    /// Call once at the end of a decomposition phase after emissions are
-    /// durable and before edge trajectory population reads participant
-    /// centroids.
-    /// </summary>
-    Task PopulateSequencePhysicalityAsync(CancellationToken ct);
-
-    /// <summary>
     /// Populate edge trajectory geometry for all edges whose trajectories are
     /// not yet set. Call once at the end of a decomposition phase rather than
     /// per-batch.
@@ -102,10 +94,4 @@ public interface IIngestionPipeline : IAsyncDisposable
     Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(
         IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct);
 
-    /// <summary>
-    /// Of the supplied (parent_hash, ordinal) tuples, return the subset that
-    /// already exist in <c>substrate.sequence</c>.
-    /// </summary>
-    Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(
-        IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct);
 }

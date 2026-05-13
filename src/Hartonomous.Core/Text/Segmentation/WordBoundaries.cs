@@ -44,7 +44,7 @@ public static class WordBoundaries
             // text decomposer emits these as raw_span text_compositions so
             // recompose_text reconstructs the surface text byte-for-byte.
             // Skipping Other here was the cause of recompose dropping all
-            // inter-word spaces — sequence walks reached only word_forms.
+            // inter-word spaces — composition walks reached only word_forms.
             if (byteLen > 0)
             {
                 words.Add(new WordRange(byteStart, byteLen, kind));

@@ -23,7 +23,7 @@ namespace Hartonomous.Decomposers;
 /// Post-W3B: <see cref="IngestText"/> hands UTF-8 bytes to the
 /// C-implemented <c>substrate.text_decompose</c> extension function via
 /// <see cref="SubstrateTextDecomposer"/>. The codepoint/grapheme/word_form/
-/// composition entities + their physicalities + sequence rows + significance
+/// composition entities + their physicalities + composition metadata + significance
 /// rows are emitted DIRECTLY by the extension to substrate core tables —
 /// they never flow through the C# pipeline channels. Only the root entity
 /// is registered on the batch so downstream edges can FK to it.

@@ -1,1 +1,0 @@
-COPY pg_temp.sequence_inflight (parent_hash, ordinal, child_hash, rle_count) FROM STDIN (FORMAT binary)

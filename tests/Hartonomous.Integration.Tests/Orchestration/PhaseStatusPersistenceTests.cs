@@ -227,7 +227,6 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
         public Task DrainPendingAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task PopulateSequencePhysicalityAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
         public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<Hash32> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
@@ -235,7 +234,6 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());
         public Task<HashSet<EdgeMemberKey>> GetExistingEdgeMembersAsync(IReadOnlyCollection<EdgeMemberKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeMemberKey>());
         public Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<PhysicalityKey>());
-        public Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<SequenceKey>());
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -250,7 +248,7 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb) { }
         public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4) { }
         public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices) { }
-        public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1) { }
+        public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1) { }
         public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu, string attestationTypeCode = "provenance_authority_corroboration") { }
         public void AddEntityModelSource(EntityHandle entity, long modelSourceId) { }
     }

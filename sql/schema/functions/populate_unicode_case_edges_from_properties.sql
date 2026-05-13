@@ -51,7 +51,10 @@ BEGIN
             provenance.initial_sigma AS provenance_initial_sigma,
             provenance.derivation_decay,
             et.semantic_weight,
-            ST_MakeLine(source_physicality.geom, target_physicality.geom)::geometry(GeometryZM) AS geom
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(source_physicality.geom),
+                substrate.geometry4d_centroid(target_physicality.geom)
+            ]) AS geom
         FROM edge_specs
         JOIN substrate.edge_type et ON et.code = edge_specs.edge_code
         JOIN substrate.provenance provenance ON provenance.code = 'unicode_consortium'

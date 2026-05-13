@@ -80,17 +80,17 @@ public sealed class SeedPhaseSmokeTests
             WITH root_children AS (
                 SELECT s.ordinal, s.child_hash, s.rle_count
                 FROM hello_text_roots r
-                JOIN substrate.sequence s ON s.parent_hash = r.root_a
+                CROSS JOIN LATERAL substrate.get_composition_children(r.root_a) s
             ),
             word_graphemes AS (
                 SELECT s.ordinal, s.child_hash, s.rle_count
                 FROM root_children rc
-                JOIN substrate.sequence s ON s.parent_hash = rc.child_hash
+                CROSS JOIN LATERAL substrate.get_composition_children(rc.child_hash) s
             ),
             grapheme_codepoints AS (
                 SELECT s.ordinal, s.child_hash, wg.rle_count * s.rle_count AS rle_count
                 FROM word_graphemes wg
-                JOIN substrate.sequence s ON s.parent_hash = wg.child_hash
+                CROSS JOIN LATERAL substrate.get_composition_children(wg.child_hash) s
             )
             SELECT
                 length(root.root_a),

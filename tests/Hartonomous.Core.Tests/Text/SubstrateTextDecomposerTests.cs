@@ -11,7 +11,7 @@ namespace Hartonomous.Core.Tests.Text;
 public sealed class SubstrateTextDecomposerTests
 {
     [Fact]
-    public void EmitStatic_SingleWordTopEntity_EmitsRootPointAndCentroid()
+    public void EmitStatic_SingleWordTopEntity_EmitsRootContourAndCentroid()
     {
         if (!TryUseNativeTextDecomposer())
         {
@@ -26,7 +26,7 @@ public sealed class SubstrateTextDecomposerTests
         Assert.Equal(8, result.PhysicalityRowsEmitted);
         Assert.NotEqual((0d, 0d, 0d, 0d), result.RootCentroid);
         Assert.Contains(batch.Physicalities, row =>
-            row.Type == "s3_position"
+            row.Type == "contour"
             && row.Entity.Hash.Equals(result.RootHash));
     }
 
@@ -76,7 +76,7 @@ public sealed class SubstrateTextDecomposerTests
         {
         }
 
-        public void AddSequence(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
+        public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
         {
         }
 

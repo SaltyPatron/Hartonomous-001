@@ -82,7 +82,7 @@ public sealed class InterfaceShapeTests
         Assert.Equal(typeof(IIngestionBatch), Method(t, "CreateBatch", Type.EmptyTypes).ReturnType);
         Assert.Equal(typeof(Task), Method(t, "SubmitBatchAsync").ReturnType);
         Assert.Equal(typeof(Task), Method(t, "DrainPendingAsync").ReturnType);
-        Assert.Equal(typeof(Task), Method(t, "PopulateSequencePhysicalityAsync").ReturnType);
+        Assert.Null(t.GetMethod("PopulateSequencePhysicalityAsync"));
         Assert.Equal(typeof(Task), Method(t, "PopulateEdgeTrajectoriesAsync").ReturnType);
         Assert.Equal(typeof(Task), Method(t, "PrimeAllSignificanceAsync").ReturnType);
         Assert.Equal(typeof(Task<HashSet<EdgeMemberKey>>), Method(t, "GetExistingEdgeMembersAsync").ReturnType);
@@ -99,6 +99,7 @@ public sealed class InterfaceShapeTests
         Assert.Equal(typeof(void), Method(t, "AddJunction").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicality", typeof(EntityHandle), typeof(string), typeof(byte[])).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicality", typeof(EntityHandle), typeof(string), typeof(byte[]), typeof(Point4D)).ReturnType);
+        Assert.Equal(typeof(void), Method(t, "AddCompositionChild").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicalityPoint4d").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddPhysicalityLineString4d").ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddSignificance").ReturnType);

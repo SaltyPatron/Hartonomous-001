@@ -10,8 +10,8 @@ namespace Hartonomous.Core.Geometry;
 /// Substrate's 4D representative point — the C# mirror of the
 /// <c>public.point4d</c> PostgreSQL type registered by the hartonomous
 /// extension. Same memory layout (4 × float8 = 32 bytes, in X/Y/Z/M order)
-/// so the same buffer can serve PostGIS WKB encoding (little-endian) and
-/// PostgreSQL binary protocol encoding (big-endian) without per-axis
+/// so the same buffer can serve native geometry payload encoding and
+/// PostgreSQL binary protocol encoding without per-axis
 /// shuffling.
 ///
 /// <para>
@@ -32,8 +32,7 @@ public readonly struct Point4D : IEquatable<Point4D>, IComparable<Point4D>
     public readonly double Z;
     public readonly double M;
 
-    /// <summary>Number of bytes one Point4D occupies in either WKB
-    /// (little-endian) or PG binary (big-endian) form.</summary>
+    /// <summary>Number of bytes one Point4D occupies in payload or PG binary form.</summary>
     public const int SizeBytes = 32;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -103,7 +102,7 @@ public readonly struct Point4D : IEquatable<Point4D>, IComparable<Point4D>
         new(a.X / s, a.Y / s, a.Z / s, a.M / s);
 
     /// <summary>Unweighted 4D mean of a vertex stream. Same value
-    /// substrate.geom_to_pointzm computes for non-Point geometries.
+    /// substrate.geometry4d_centroid computes for non-Point geometries.
     /// Returns false on empty input.</summary>
     public static bool TryMean(ReadOnlySpan<Point4D> points, out Point4D mean)
     {
@@ -137,8 +136,7 @@ public readonly struct Point4D : IEquatable<Point4D>, IComparable<Point4D>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Distance(Point4D a, Point4D b) => Math.Sqrt(DistanceSquared(a, b));
 
-    /// <summary>Read 4 little-endian float8s into a Point4D. Used by the WKB
-    /// path, which is little-endian by convention.</summary>
+    /// <summary>Read 4 little-endian float8s into a Point4D.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Point4D FromLittleEndian(ReadOnlySpan<byte> source)
     {
@@ -156,7 +154,7 @@ public readonly struct Point4D : IEquatable<Point4D>, IComparable<Point4D>
     }
 
     /// <summary>Write the four axes little-endian into the destination span.
-    /// Used by the WKB build path.</summary>
+    /// Used by the native payload build path.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteLittleEndian(Span<byte> destination)
     {

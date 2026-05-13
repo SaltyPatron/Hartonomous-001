@@ -3,14 +3,11 @@
 # Shell scripts must always have LF endings even when checked out on Windows.
 *.sh        text eol=lf
 *.bash      text eol=lf
-
 # Dockerfiles likewise (some parsers care).
 Dockerfile  text eol=lf
 *.Dockerfile text eol=lf
-
 # SQL scripts run inside Linux containers.
 *.sql       text eol=lf
-
 # Binaries
 *.so        binary
 *.dll       binary
@@ -20,3 +17,6 @@ Dockerfile  text eol=lf
 *.exe       binary
 *.png       binary
 *.jpg       binary
+ext/hartonomous_pg/src/generated/hartonomous-ucd-17.0.0.bundle.tar.zst filter=lfs diff=lfs merge=lfs -text
+ext/hartonomous_pg/src/generated/hartonomous-ucd-17.0.0.reverse.bin filter=lfs diff=lfs merge=lfs -text
+ext/hartonomous_pg/src/generated/blocks/**/*.bin filter=lfs diff=lfs merge=lfs -text

@@ -140,17 +140,16 @@ def assemble() -> str:
 
     parts, _ = expand_file(BOOTSTRAP_FILE)
 
-    # Find the index of the first functions/* segment so we can insert the
-    # hand-written .sql.in C-binding declarations RIGHT BEFORE them.
+    # Native types are column types in core tables, so the C-binding
+    # declarations must be available before the first table include.
     insert_index = None
     for i, (src, content) in enumerate(parts):
         srcstr = str(src).replace("\\", "/")
-        if "/sql/schema/functions/" in srcstr:
+        if "/sql/schema/tables/" in srcstr:
             insert_index = i
             break
     if insert_index is None:
-        # No functions includes — append .sql.in at the end as a fallback.
-        insert_index = len(parts)
+        raise RuntimeError("bootstrap.sql has no table includes; cannot place native type declarations")
 
     template_text = EXT_TEMPLATE.read_text(encoding="utf-8")
     template_block = (

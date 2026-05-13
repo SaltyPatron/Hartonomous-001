@@ -1,6 +1,6 @@
 /*
- * pg_recompose_walk.c — iterative depth-first traversal of substrate.sequence
- *                       starting from a root entity hash.
+ * pg_recompose_walk.c — iterative depth-first traversal of physicality-backed
+ *                       composition metadata starting from a root entity hash.
  *
  * Substrate contract:
  *   substrate.recompose_walk(
@@ -12,17 +12,16 @@
  * left-to-right depth-first order. Ordinal is the position of THIS node
  * within its parent's children (root reported as 0).
  *
- * Schema notes (verified against sql/schema/tables/core/{entity,sequence}.sql):
+ * Schema notes:
  *   - substrate.entity has a SINGLE column: hash substrate.hash_value PRIMARY KEY.
  *     There is NO content_label / label / content_text column in the entity
  *     table — content labels live elsewhere (junction tables / classification).
  *     This SRF therefore returns content_label = NULL and the C# layer joins
  *     content (e.g. via substrate.entity_classification or codepoint_value)
  *     out-of-band.
- *   - substrate.sequence columns are (parent_hash, ordinal, child_hash, rle_count).
- *     The ordering column is `ordinal` (NOT `ordinal_position`); the SRF
- *     return type still uses `ordinal_position` per the published contract,
- *     which is purely a column alias on the result tuple.
+ *   - substrate.get_composition_children(parent_hash) exposes
+ *     physicality-backed child identity, ordinal, and RLE metadata. The SRF
+ *     return type uses `ordinal_position` as a column alias on the result tuple.
  *   - rle_count compresses contiguous runs of the same child. We expand each
  *     RLE row into rle_count emitted tuples at consecutive ordinals so the
  *     walk reflects every textual position, not just the deduplicated entry.
@@ -143,15 +142,14 @@ pg_recompose_walk(PG_FUNCTION_ARGS)
         argtypes[0] = BYTEAOID;
         child_plan = SPI_prepare(
             "SELECT child_hash, ordinal, rle_count "
-            "FROM substrate.sequence "
-            "WHERE parent_hash = $1 "
+            "FROM substrate.get_composition_children($1) "
             "ORDER BY ordinal DESC",
             1, argtypes
         );
         if (child_plan == NULL)
             ereport(ERROR,
                     (errcode(ERRCODE_INTERNAL_ERROR),
-                     errmsg("SPI_prepare failed for substrate.sequence child query")));
+                     errmsg("SPI_prepare failed for composition child query")));
 
         while (stack_top > 0)
         {

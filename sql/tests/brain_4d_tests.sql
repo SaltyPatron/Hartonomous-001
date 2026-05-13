@@ -152,7 +152,7 @@ DECLARE
     -- Static fixture hashes. A = this, B = that — content irrelevant for
     -- the test contract; what matters is consistency: every substrate row
     -- referencing 'A' uses h_cp_a, every row referencing 'B' uses h_cp_b,
-    -- and recall must produce 'AB' from the gloss sequence walk because
+    -- and recall must produce 'AB' from the gloss composition walk because
     -- codepoint_property maps these hashes to ASCII 65/66.
     h_cp_a BYTEA := decode('a000000000000000000000000000000000000000000000000000000000000041', 'hex');  -- 'A' (codepoint 65)
     h_cp_b BYTEA := decode('a000000000000000000000000000000000000000000000000000000000000042', 'hex');  -- 'B' (codepoint 66)
@@ -173,6 +173,7 @@ DECLARE
     role_target INT;
     prov_test INT;
     arena_lex INT;
+    phys_contour INT;
     -- Stub IDs for codepoint_property NOT NULL FKs. We insert minimal
     -- reference rows for the test, ROLLBACK reverses them.
     gc_stub_id INT;
@@ -193,6 +194,7 @@ BEGIN
     SELECT id INTO role_target FROM substrate.edge_role WHERE code = 'target';
     SELECT id INTO prov_test   FROM substrate.provenance WHERE code = 'system_computed';
     SELECT id INTO arena_lex   FROM substrate.significance_context WHERE code = 'lexical_disambiguation';
+    SELECT id INTO phys_contour FROM substrate.physicality_type WHERE code = 'contour';
 
     -- Stubs for codepoint_property NOT NULL FKs. Insert only if missing.
     INSERT INTO substrate.general_category (code, group_code, description)
@@ -230,12 +232,40 @@ BEGIN
         (h_cp_b, 66, gc_stub_id, script_stub_id, block_stub_id)
     ON CONFLICT (entity_hash) DO NOTHING;
 
-    -- Sequence: prompt → word_form, word_form → cp_a, gloss → "AB"
-    INSERT INTO substrate.sequence (parent_hash, ordinal, child_hash, rle_count) VALUES
-        (h_prompt,     1, h_word_form, 1),
-        (h_word_form,  1, h_cp_a,      1),
-        (h_gloss_text, 1, h_cp_a,      1),
-        (h_gloss_text, 2, h_cp_b,      1)
+    -- Composition metadata: prompt → word_form, word_form → cp_a, gloss → "AB"
+    INSERT INTO substrate.physicality (
+        physicality_type_id,
+        entity_hash,
+        content_hash,
+        geom,
+        child_hashes,
+        ordinal_starts,
+        rle_counts)
+    VALUES
+        (
+            phys_contour,
+            h_prompt,
+            public.blake3_hash(h_prompt || decode('01', 'hex')),
+            public.array_to_linestring4d(ARRAY[0.0, 0.0, 0.0, 0.0]),
+            ARRAY[h_word_form]::substrate.hash_value[],
+            ARRAY[1],
+            ARRAY[1]),
+        (
+            phys_contour,
+            h_word_form,
+            public.blake3_hash(h_word_form || decode('01', 'hex')),
+            public.array_to_linestring4d(ARRAY[1.0, 0.0, 0.0, 0.0]),
+            ARRAY[h_cp_a]::substrate.hash_value[],
+            ARRAY[1],
+            ARRAY[1]),
+        (
+            phys_contour,
+            h_gloss_text,
+            public.blake3_hash(h_gloss_text || decode('01', 'hex')),
+            public.array_to_linestring4d(ARRAY[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0]),
+            ARRAY[h_cp_a, h_cp_b]::substrate.hash_value[],
+            ARRAY[1, 2],
+            ARRAY[1, 1])
     ON CONFLICT DO NOTHING;
 
     -- Edges: word_form has_sense synset; synset has_gloss gloss_text

@@ -1,75 +1,41 @@
--- Subtype-dispatching 4D distance over GeometryZM.
-CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry, g2 geometry)
+-- Subtype-dispatching 4D distance over geometry4d.
+CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry4d, g2 geometry4d)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
 DECLARE
-    t1 TEXT := ST_GeometryType(g1);
-    t2 TEXT := ST_GeometryType(g2);
+    t1 INT := ST_TypeTag4D(g1);
+    t2 INT := ST_TypeTag4D(g2);
+    p1 point4d;
+    p2 point4d;
 BEGIN
-    IF t1 = 'ST_Point' AND t2 = 'ST_Point' THEN
-        RETURN public.distance_4d(
-            public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
-            public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0)));
+    IF t1 = 1 AND t2 = 1 THEN
+        RETURN public.distance_4d(g1::point4d, g2::point4d);
     END IF;
 
-    IF t1 = 'ST_LineString' AND t2 = 'ST_LineString' THEN
-        RETURN public.frechet_4d(
-            substrate.geom_to_linestring4d(g1),
-            substrate.geom_to_linestring4d(g2));
+    IF t1 = 2 AND t2 = 2 THEN
+        RETURN public.frechet_4d(g1::linestring4d, g2::linestring4d);
     END IF;
 
-    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
-        RETURN public.frechet_4d(
-            substrate.polygon_exterior_linestring4d(g1),
-            substrate.polygon_exterior_linestring4d(g2));
-    END IF;
-
-    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
+    IF t1 = 1 AND t2 = 2 THEN
+        p1 := g1::point4d;
         RETURN (
-            SELECT MIN(public.frechet_4d(
-                       substrate.geom_to_linestring4d(c1.geom),
-                       substrate.geom_to_linestring4d(c2.geom)))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+            SELECT MIN(public.distance_4d(p1, point_n(g2::linestring4d, i)))
+              FROM generate_series(1, npoints(g2::linestring4d)) AS i
         );
     END IF;
 
-    IF t1 = 'ST_MultiPoint' AND t2 = 'ST_MultiPoint' THEN
-        RETURN public.hausdorff_4d(
-            substrate.geom_to_linestring4d(g1),
-            substrate.geom_to_linestring4d(g2));
-    END IF;
-
-    IF t1 = 'ST_Point' THEN
+    IF t1 = 2 AND t2 = 1 THEN
+        p2 := g2::point4d;
         RETURN (
-            SELECT MIN(public.distance_4d(
-                       public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
-                       public.point4d(ST_X(d.geom), ST_Y(d.geom), COALESCE(ST_Z(d.geom), 0), COALESCE(ST_M(d.geom), 0))))
-              FROM ST_DumpPoints(g2) d
+            SELECT MIN(public.distance_4d(point_n(g1::linestring4d, i), p2))
+              FROM generate_series(1, npoints(g1::linestring4d)) AS i
         );
     END IF;
 
-    IF t2 = 'ST_Point' THEN
-        RETURN (
-            SELECT MIN(public.distance_4d(
-                       public.point4d(ST_X(d.geom), ST_Y(d.geom), COALESCE(ST_Z(d.geom), 0), COALESCE(ST_M(d.geom), 0)),
-                       public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0))))
-              FROM ST_DumpPoints(g1) d
-        );
-    END IF;
-
-    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
-        RETURN (
-            SELECT MIN(substrate.dist_4d(c1.geom, c2.geom))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
-        );
-    END IF;
-
-    RETURN public.frechet_4d(
-        substrate.geom_to_linestring4d(g1),
-        substrate.geom_to_linestring4d(g2));
+    RAISE EXCEPTION 'dist_4d: unsupported geometry4d tag pair %, %', t1, t2;
 END;
 $$;
 
-COMMENT ON FUNCTION substrate.dist_4d(geometry, geometry) IS
-    'Subtype-dispatching 4D distance over GeometryZM. POINT/LINESTRING/POLYGON/MULTI*/COLLECTION pairs route to the structurally appropriate native primitive.';
+COMMENT ON FUNCTION substrate.dist_4d(geometry4d, geometry4d) IS
+    'Subtype-dispatching 4D distance over native geometry4d. POINT4D/LINESTRING4D pairs route to native 4D primitives.';

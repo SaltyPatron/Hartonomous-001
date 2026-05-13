@@ -46,7 +46,6 @@ public static class SubstrateFunctionNames
     public const string ModelVocabRecovered = "substrate.model_vocab_recovered";
     public const string PhysicalityLineString4d = "substrate.physicality_linestring4d";
     public const string PhysicalityPoint4d = "substrate.physicality_point4d";
-    public const string PopulateSequencePhysicality = "substrate.populate_sequence_physicality";
     public const string PopulateEdgeTrajectories = "substrate.populate_edge_trajectories";
     public const string PopulateBlocks = "substrate.populate_blocks";
     public const string PopulateBreakProperties = "substrate.populate_break_properties";
@@ -139,7 +138,6 @@ public static class SubstrateFunctionNames
         ModelVocabRecovered,
         PhysicalityLineString4d,
         PhysicalityPoint4d,
-        PopulateSequencePhysicality,
         PopulateEdgeTrajectories,
         PopulateBlocks,
         PopulateBreakProperties,

@@ -10,15 +10,22 @@ CREATE OR REPLACE FUNCTION substrate.populate_languages(
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    INSERT INTO substrate.language (code, name, scope, type)
+    INSERT INTO substrate.language (code, name, scope, type, part1, part2b, part2t)
     SELECT
         code,
         name,
         scope,
-        type
-    FROM unnest(p_codes, p_names, p_scopes, p_types) AS t(code, name, scope, type)
+        type,
+        NULLIF(part1,  ''),
+        NULLIF(part2b, ''),
+        NULLIF(part2t, '')
+    FROM unnest(p_codes, p_names, p_scopes, p_types, p_part1s, p_part2bs, p_part2ts)
+        AS t(code, name, scope, type, part1, part2b, part2t)
     ON CONFLICT (code) DO UPDATE
-        SET name  = EXCLUDED.name,
-            scope = EXCLUDED.scope,
-            type  = EXCLUDED.type;
+        SET name   = EXCLUDED.name,
+            scope  = EXCLUDED.scope,
+            type   = EXCLUDED.type,
+            part1  = EXCLUDED.part1,
+            part2b = EXCLUDED.part2b,
+            part2t = EXCLUDED.part2t;
 END $$;

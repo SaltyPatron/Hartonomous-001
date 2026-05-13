@@ -56,7 +56,7 @@ AS $$
                JOIN substrate.edge_role r_t ON r_t.id = em_t.edge_role_id AND r_t.code = 'target'
               WHERE em_s.entity_hash = h.entity_hash
                 AND et2.code = 'has_gloss'
-                AND EXISTS (SELECT 1 FROM substrate.sequence sq WHERE sq.parent_hash = em_t.entity_hash LIMIT 1)
+                AND EXISTS (SELECT 1 FROM substrate.get_composition_children(em_t.entity_hash) LIMIT 1)
               LIMIT 1
             ) AS gloss_hash
         FROM high_mu_synsets h

@@ -1,0 +1,710 @@
+diff -U3 /home/ahart/Projects/Hartonomous-001/ext/hartonomous_pg/test/expected/hartonomous_test.out /home/ahart/Projects/Hartonomous-001/ext/hartonomous_pg/results/hartonomous_test.out
+--- /home/ahart/Projects/Hartonomous-001/ext/hartonomous_pg/test/expected/hartonomous_test.out	2026-05-13 20:41:15.905575766 +0000
++++ /home/ahart/Projects/Hartonomous-001/ext/hartonomous_pg/results/hartonomous_test.out	2026-05-13 20:59:33.263094787 +0000
+@@ -5,27 +5,26 @@
+ CREATE EXTENSION IF NOT EXISTS btree_gist;
+ CREATE EXTENSION IF NOT EXISTS pg_trgm;
+ CREATE EXTENSION IF NOT EXISTS hartonomous;
++ERROR:  extension "hartonomous" is not available
++HINT:  The extension must first be installed on the system where PostgreSQL is running.
+ -- Version
+ SELECT length(hartonomous_version()) > 0 AS has_version;
+- has_version 
+--------------
+- t
+-(1 row)
+-
++ERROR:  function hartonomous_version() does not exist
++LINE 1: SELECT length(hartonomous_version()) > 0 AS has_version;
++                      ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- BLAKE3 byte/text primitives. Raw text identity is produced by UAX #29
+ -- text decomposition/Merkle composition, not by hashing a multi-character string.
+ SELECT length(blake3_hash('\x48656c6c6f'::bytea)) AS blake3_len;
+- blake3_len 
+-------------
+-         32
+-(1 row)
+-
++ERROR:  function blake3_hash(bytea) does not exist
++LINE 1: SELECT length(blake3_hash('\x48656c6c6f'::bytea)) AS blake3_...
++                      ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
+- blake3_text_len 
+------------------
+-              32
+-(1 row)
+-
++ERROR:  function blake3_hash_text(unknown) does not exist
++LINE 1: SELECT length(blake3_hash_text('hello')) AS blake3_text_len;
++                      ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- UAX #29/Merkle text identity for "hello": deterministic root, raw hash is
+ -- not the text composition hash, and the repeated "l" is stored as RLE
+ -- occurrence counts in physicality-backed composition metadata.
+@@ -35,6 +34,9 @@
+     (substrate.text_decompose(convert_to('hello', 'UTF8'), 'text_composition', 95000.0, 'unicode_consortium')).root_hash AS root_b,
+     blake3_hash(convert_to('hello', 'UTF8')) AS raw_hash,
+     blake3_hash_text('hello') AS raw_text_hash;
++ERROR:  schema "substrate" does not exist
++LINE 3:     (substrate.text_decompose(convert_to('hello', 'UTF8'), '...
++             ^
+ WITH root_children AS (
+     SELECT s.ordinal, s.child_hash, s.rle_count
+     FROM hello_text_roots r
+@@ -62,133 +64,111 @@
+     (SELECT count(*) FROM grapheme_codepoints) AS codepoint_rows,
+     (SELECT COALESCE(sum(rle_count), 0) FROM grapheme_codepoints) AS codepoint_occurrences
+ FROM hello_text_roots root;
+- root_len | deterministic | not_raw_byte_hash | not_raw_text_hash | root_rows | root_occurrences | grapheme_rows | grapheme_occurrences | codepoint_rows | codepoint_occurrences 
+-----------+---------------+-------------------+-------------------+-----------+------------------+---------------+----------------------+----------------+-----------------------
+-       32 | t             | t                 | t                 |         1 |                1 |             4 |                    5 |              4 |                     5
+-(1 row)
+-
++ERROR:  relation "hello_text_roots" does not exist
++LINE 3:     FROM hello_text_roots r
++                 ^
+ -- point4d round-trip via text I/O.
+ SELECT '(1, 2, 3, 4)'::point4d AS p_in;
+-     p_in     
+---------------
+- (1, 2, 3, 4)
+-(1 row)
+-
++ERROR:  type "point4d" does not exist
++LINE 1: SELECT '(1, 2, 3, 4)'::point4d AS p_in;
++                               ^
+ SELECT point4d(1.0, 2.0, 3.0, 4.0) AS p_ctor;
+-    p_ctor    
+---------------
+- (1, 2, 3, 4)
+-(1 row)
+-
++ERROR:  function point4d(numeric, numeric, numeric, numeric) does not exist
++LINE 1: SELECT point4d(1.0, 2.0, 3.0, 4.0) AS p_ctor;
++               ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- distance_4d on basis vectors: ||(1,0,0,0) - (0,1,0,0)|| = sqrt(2).
+ SELECT round(distance_4d(point4d(1, 0, 0, 0), point4d(0, 1, 0, 0))::numeric, 6) AS d_4d_basis;
+- d_4d_basis 
+-------------
+-   1.414214
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(distance_4d(point4d(1, 0, 0, 0), point4d(0, 1, ...
++                                 ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- distance_s3: identical → 0, antipodal → π, orthogonal → π/2.
+ SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(1, 0, 0, 0))::numeric, 6) AS d_s3_self;
+- d_s3_self 
+------------
+-  0.000000
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(1, 0, ...
++                                 ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(-1, 0, 0, 0))::numeric, 4) AS d_s3_antipode;
+- d_s3_antipode 
+----------------
+-        3.1416
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(-1, 0,...
++                                 ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(0, 1, 0, 0))::numeric, 4) AS d_s3_orthogonal;
+- d_s3_orthogonal 
+------------------
+-          1.5708
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(distance_s3(point4d(1, 0, 0, 0), point4d(0, 1, ...
++                                 ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Operators bind correctly.
+ SELECT round((point4d(1, 0, 0, 0) <-> point4d(0, 1, 0, 0))::numeric, 6) AS op_dist_4d;
+- op_dist_4d 
+-------------
+-   1.414214
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round((point4d(1, 0, 0, 0) <-> point4d(0, 1, 0, 0))::...
++                      ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round((point4d(1, 0, 0, 0) <=> point4d(0, 1, 0, 0))::numeric, 4) AS op_dist_s3;
+- op_dist_s3 
+-------------
+-     1.5708
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round((point4d(1, 0, 0, 0) <=> point4d(0, 1, 0, 0))::...
++                      ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT point4d(1, 2, 3, 4) = point4d(1, 2, 3, 4) AS op_eq_self;
+- op_eq_self 
+-------------
+- t
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT point4d(1, 2, 3, 4) = point4d(1, 2, 3, 4) AS op_eq_se...
++               ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT point4d(1, 2, 3, 4) <> point4d(1, 2, 3, 5) AS op_ne_diff;
+- op_ne_diff 
+-------------
+- t
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT point4d(1, 2, 3, 4) <> point4d(1, 2, 3, 5) AS op_ne_d...
++               ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- dot, norm, normalize.
+ SELECT round(dot_4d(point4d(1, 2, 3, 4), point4d(1, 1, 1, 1))::numeric, 6) AS dot_one;
+-  dot_one  
+------------
+- 10.000000
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(dot_4d(point4d(1, 2, 3, 4), point4d(1, 1, 1, 1)...
++                            ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round(norm_4d(point4d(1, 1, 1, 1))::numeric, 6) AS norm_ones;
+- norm_ones 
+------------
+-  2.000000
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(norm_4d(point4d(1, 1, 1, 1))::numeric, 6) AS no...
++                             ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round(norm_4d(normalize_4d(point4d(1, 2, 3, 4)))::numeric, 6) AS norm_after_normalize;
+- norm_after_normalize 
+-----------------------
+-             1.000000
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT round(norm_4d(normalize_4d(point4d(1, 2, 3, 4)))::num...
++                                          ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- antipode.
+ SELECT antipode(point4d(1, 0, 0, 0)) AS antipode_basis;
+-  antipode_basis  
+-------------------
+- (-1, -0, -0, -0)
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT antipode(point4d(1, 0, 0, 0)) AS antipode_basis;
++                        ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Super-Fibonacci is deterministic and unit-norm.
+ SELECT super_fibonacci_4d(0, 1024) = super_fibonacci_4d(0, 1024) AS sf_deterministic;
+- sf_deterministic 
+-------------------
+- t
+-(1 row)
+-
++ERROR:  function super_fibonacci_4d(integer, integer) does not exist
++LINE 1: SELECT super_fibonacci_4d(0, 1024) = super_fibonacci_4d(0, 1...
++               ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round(norm_4d(super_fibonacci_4d(0, 1024))::numeric, 6) AS sf_unit_norm;
+- sf_unit_norm 
+---------------
+-     1.000000
+-(1 row)
+-
++ERROR:  function super_fibonacci_4d(integer, integer) does not exist
++LINE 1: SELECT round(norm_4d(super_fibonacci_4d(0, 1024))::numeric, ...
++                             ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT round(norm_4d(super_fibonacci_4d(42, 1024))::numeric, 6) AS sf_unit_norm_42;
+- sf_unit_norm_42 
+------------------
+-        1.000000
+-(1 row)
+-
++ERROR:  function super_fibonacci_4d(integer, integer) does not exist
++LINE 1: SELECT round(norm_4d(super_fibonacci_4d(42, 1024))::numeric,...
++                             ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Hilbert round-trip at order 8 within quantization tolerance.
+ SELECT hilbert_4d(point4d(0, 0, 0, 0), 8) AS hilbert_origin;
+- hilbert_origin 
+-----------------
+-              0
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT hilbert_4d(point4d(0, 0, 0, 0), 8) AS hilbert_origin;
++                          ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 4) <> hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 8) AS hilbert_order_matters;
+- hilbert_order_matters 
+------------------------
+- t
+-(1 row)
+-
++ERROR:  function point4d(numeric, numeric, numeric, numeric) does not exist
++LINE 1: SELECT hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 4) <> hilbert...
++                          ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Hilbert order out of range → error.
+ DO $$
+ BEGIN
+@@ -197,7 +177,12 @@
+ EXCEPTION WHEN numeric_value_out_of_range THEN
+     RAISE NOTICE 'hilbert_4d correctly rejects order > 16';
+ END $$;
+-NOTICE:  hilbert_4d correctly rejects order > 16
++ERROR:  function point4d(numeric, numeric, numeric, numeric) does not exist
++LINE 1: SELECT hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 20)
++                          ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
++QUERY:  SELECT hilbert_4d(point4d(0.5, 0.5, 0.5, 0.5), 20)
++CONTEXT:  PL/pgSQL function inline_code_block line 3 at PERFORM
+ -- Super-Fibonacci index out of range → error.
+ DO $$
+ BEGIN
+@@ -206,47 +191,43 @@
+ EXCEPTION WHEN numeric_value_out_of_range THEN
+     RAISE NOTICE 'super_fibonacci_4d correctly rejects i >= n';
+ END $$;
+-NOTICE:  super_fibonacci_4d correctly rejects i >= n
++ERROR:  function super_fibonacci_4d(integer, integer) does not exist
++LINE 1: SELECT super_fibonacci_4d(1024, 1024)
++               ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
++QUERY:  SELECT super_fibonacci_4d(1024, 1024)
++CONTEXT:  PL/pgSQL function inline_code_block line 3 at PERFORM
+ -- box4d round-trip and predicates.
+ SELECT '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d AS b_in;
+-             b_in             
+-------------------------------
+- ((0, 0, 0, 0), (1, 1, 1, 1))
+-(1 row)
+-
++ERROR:  type "box4d" does not exist
++LINE 1: SELECT '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d AS b_in;
++                                               ^
+ SELECT bbox(point4d(1, 2, 3, 4)) AS degenerate_box;
+-        degenerate_box        
+-------------------------------
+- ((1, 2, 3, 4), (1, 2, 3, 4))
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT bbox(point4d(1, 2, 3, 4)) AS degenerate_box;
++                    ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT box4d_overlaps(
+     '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
+     '((0.5, 0.5, 0.5, 0.5), (2, 2, 2, 2))'::box4d
+ ) AS boxes_overlap;
+- boxes_overlap 
+----------------
+- t
+-(1 row)
+-
++ERROR:  type "box4d" does not exist
++LINE 2:     '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
++                                            ^
+ SELECT box4d_contains_point(
+     '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
+     point4d(0.5, 0.5, 0.5, 0.5)
+ ) AS box_contains_inside;
+- box_contains_inside 
+----------------------
+- t
+-(1 row)
+-
++ERROR:  type "box4d" does not exist
++LINE 2:     '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
++                                            ^
+ SELECT box4d_contains_point(
+     '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
+     point4d(2, 2, 2, 2)
+ ) AS box_contains_outside;
+- box_contains_outside 
+-----------------------
+- f
+-(1 row)
+-
++ERROR:  type "box4d" does not exist
++LINE 2:     '((0, 0, 0, 0), (1, 1, 1, 1))'::box4d,
++                                            ^
+ -- centroid_4d aggregate over a tetrahedron's vertices = (0.25, 0.25, 0.25, 0.25).
+ WITH pts(p) AS (
+     VALUES (point4d(1, 0, 0, 0)),
+@@ -255,11 +236,10 @@
+            (point4d(0, 0, 0, 1))
+ )
+ SELECT centroid_4d(p) AS tet_centroid FROM pts;
+-       tet_centroid       
+---------------------------
+- (0.25, 0.25, 0.25, 0.25)
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 2:     VALUES (point4d(1, 0, 0, 0)),
++                    ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- centroid_s3 over the same set: renormalized centroid is unit-norm.
+ WITH pts(p) AS (
+     VALUES (point4d(1, 0, 0, 0)),
+@@ -268,11 +248,10 @@
+            (point4d(0, 0, 0, 1))
+ )
+ SELECT round(norm_4d(centroid_s3(p))::numeric, 6) AS s3_centroid_unit FROM pts;
+- s3_centroid_unit 
+-------------------
+-         1.000000
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 2:     VALUES (point4d(1, 0, 0, 0)),
++                    ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- bbox_4d aggregate over the same set yields the unit corners box.
+ WITH pts(p) AS (
+     VALUES (point4d(1, 0, 0, 0)),
+@@ -281,11 +260,10 @@
+            (point4d(0, 0, 0, 1))
+ )
+ SELECT bbox_4d(p) AS tet_box FROM pts;
+-           tet_box            
+-------------------------------
+- ((0, 0, 0, 0), (1, 1, 1, 1))
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 2:     VALUES (point4d(1, 0, 0, 0)),
++                    ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Done
+ SELECT 'all tests passed' AS result;
+       result      
+@@ -298,61 +276,45 @@
+ -- ═══════════════════════════════════════════════════════════════════════
+ -- linestring4d round-trip via text I/O.
+ SELECT '((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d AS ls_in;
+-              ls_in              
+----------------------------------
+- ((0,0,0,0),(1,1,1,1),(2,2,2,2))
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 1: SELECT '((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d AS ls...
++                                                  ^
+ SELECT npoints('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d) AS ls_n;
+- ls_n 
+-------
+-    3
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 1: SELECT npoints('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring...
++                                                          ^
+ SELECT point_n('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d, 2) AS ls_p2;
+-    ls_p2     
+---------------
+- (1, 1, 1, 1)
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 1: SELECT point_n('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring...
++                                                          ^
+ SELECT bbox('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d) AS ls_bbox;
+-           ls_bbox            
+-------------------------------
+- ((0, 0, 0, 0), (2, 2, 2, 2))
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 1: SELECT bbox('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d)...
++                                                       ^
+ SELECT round(length_4d('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring4d)::numeric, 6) AS ls_len;
+-  ls_len  
+-----------
+- 4.000000
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 1: ...ound(length_4d('((0,0,0,0),(1,1,1,1),(2,2,2,2))'::linestring...
++                                                             ^
+ -- frechet_4d identity = 0, hausdorff_4d identity = 0.
+ SELECT round(frechet_4d(
+     '((0,0,0,0),(1,0,0,0))'::linestring4d,
+     '((0,0,0,0),(1,0,0,0))'::linestring4d)::numeric, 6) AS frechet_self;
+- frechet_self 
+---------------
+-     0.000000
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 2:     '((0,0,0,0),(1,0,0,0))'::linestring4d,
++                                     ^
+ SELECT round(hausdorff_4d(
+     '((0,0,0,0),(1,0,0,0))'::linestring4d,
+     '((0,0,0,0),(1,0,0,0))'::linestring4d)::numeric, 6) AS hausdorff_self;
+- hausdorff_self 
+-----------------
+-       0.000000
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 2:     '((0,0,0,0),(1,0,0,0))'::linestring4d,
++                                     ^
+ -- frechet_4d shifted polylines: parallel offset = constant.
+ SELECT round(frechet_4d(
+     '((0,0,0,0),(1,0,0,0),(2,0,0,0))'::linestring4d,
+     '((0,1,0,0),(1,1,0,0),(2,1,0,0))'::linestring4d)::numeric, 6) AS frechet_offset;
+- frechet_offset 
+-----------------
+-       1.000000
+-(1 row)
+-
++ERROR:  type "linestring4d" does not exist
++LINE 2:     '((0,0,0,0),(1,0,0,0),(2,0,0,0))'::linestring4d,
++                                               ^
+ -- Glicko-2 bulk: 1 player vs equal-strength opponent, score 0.5 ⇒ mu unchanged.
+ SELECT g.new_mu[1]::numeric(8,2) AS mu_after,
+        (g.new_sigma[1] < 350.0) AS sigma_decreased
+@@ -360,31 +322,25 @@
+     ARRAY[1500.0]::float8[], ARRAY[350.0]::float8[], ARRAY[0.06]::float8[],
+     ARRAY[1500.0]::float8[], ARRAY[350.0]::float8[], ARRAY[0.5]::float8[]
+ ) g;
+- mu_after | sigma_decreased 
+-----------+-----------------
+-  1500.00 | t
+-(1 row)
+-
++ERROR:  function glicko2_bulk_update(double precision[], double precision[], double precision[], double precision[], double precision[], double precision[]) does not exist
++LINE 3: FROM glicko2_bulk_update(
++             ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Cast point4d ↔ float8[].
+ SELECT (point4d(1, 2, 3, 4)::double precision[]) AS p_to_arr;
+- p_to_arr  
+------------
+- {1,2,3,4}
+-(1 row)
+-
++ERROR:  function point4d(integer, integer, integer, integer) does not exist
++LINE 1: SELECT (point4d(1, 2, 3, 4)::double precision[]) AS p_to_arr...
++                ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ SELECT (ARRAY[1.0, 2.0, 3.0, 4.0]::double precision[])::point4d AS arr_to_p;
+-   arr_to_p   
+---------------
+- (1, 2, 3, 4)
+-(1 row)
+-
++ERROR:  type "point4d" does not exist
++LINE 1: ... (ARRAY[1.0, 2.0, 3.0, 4.0]::double precision[])::point4d AS...
++                                                             ^
+ -- Domain: unit_quaternion accepts unit-norm, rejects otherwise.
+ SELECT (point4d(1, 0, 0, 0)::unit_quaternion) AS uq_ok;
+-    uq_ok     
+---------------
+- (1, 0, 0, 0)
+-(1 row)
+-
++ERROR:  type "unit_quaternion" does not exist
++LINE 1: SELECT (point4d(1, 0, 0, 0)::unit_quaternion) AS uq_ok;
++                                     ^
+ DO $$
+ BEGIN
+     PERFORM (point4d(1, 1, 1, 1)::unit_quaternion);
+@@ -392,7 +348,11 @@
+ EXCEPTION WHEN check_violation THEN
+     RAISE NOTICE 'unit_quaternion correctly rejects non-unit input';
+ END $$;
+-NOTICE:  unit_quaternion correctly rejects non-unit input
++ERROR:  type "unit_quaternion" does not exist
++LINE 1: SELECT (point4d(1, 1, 1, 1)::unit_quaternion)
++                                     ^
++QUERY:  SELECT (point4d(1, 1, 1, 1)::unit_quaternion)
++CONTEXT:  PL/pgSQL function inline_code_block line 3 at PERFORM
+ -- Domain: glicko_mu rejects out-of-range.
+ DO $$
+ BEGIN
+@@ -401,13 +361,25 @@
+ EXCEPTION WHEN check_violation THEN
+     RAISE NOTICE 'glicko_mu correctly rejects negative input';
+ END $$;
+-NOTICE:  glicko_mu correctly rejects negative input
++ERROR:  type "glicko_mu" does not exist
++LINE 1: SELECT ((-1.0)::glicko_mu)
++                        ^
++QUERY:  SELECT ((-1.0)::glicko_mu)
++CONTEXT:  PL/pgSQL function inline_code_block line 3 at PERFORM
+ -- GiST index: build, query <-> kNN against seq scan reference.
+ CREATE TEMP TABLE g_pts (id serial PRIMARY KEY, p point4d);
++ERROR:  type "point4d" does not exist
++LINE 1: CREATE TEMP TABLE g_pts (id serial PRIMARY KEY, p point4d);
++                                                          ^
+ INSERT INTO g_pts (p)
+ SELECT super_fibonacci_4d(i, 1000) FROM generate_series(0, 999) i;
++ERROR:  relation "g_pts" does not exist
++LINE 1: INSERT INTO g_pts (p)
++                    ^
+ CREATE INDEX g_pts_gist ON g_pts USING gist (p);
++ERROR:  relation "g_pts" does not exist
+ ANALYZE g_pts;
++ERROR:  relation "g_pts" does not exist
+ WITH q AS (SELECT super_fibonacci_4d(123, 1000) AS qp),
+ gist_top AS (
+     SELECT id FROM g_pts, q ORDER BY p <-> q.qp LIMIT 5
+@@ -417,26 +389,31 @@
+ )
+ SELECT (SELECT array_agg(id ORDER BY id) FROM gist_top)
+      = (SELECT array_agg(id ORDER BY id) FROM seq_top) AS gist_knn_matches_seq;
+- gist_knn_matches_seq 
+-----------------------
+- t
+-(1 row)
+-
++ERROR:  function super_fibonacci_4d(integer, integer) does not exist
++LINE 1: WITH q AS (SELECT super_fibonacci_4d(123, 1000) AS qp),
++                          ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- GiST containment.
+ SELECT count(*) > 0 AS gist_containment_works
+ FROM g_pts
+ WHERE p <@ '((-1,-1,-1,-1),(1,1,1,1))'::box4d;
+- gist_containment_works 
+-------------------------
+- t
+-(1 row)
+-
++ERROR:  relation "g_pts" does not exist
++LINE 2: FROM g_pts
++             ^
+ -- SP-GiST index: build, query <@ containment matches seq scan.
+ CREATE TEMP TABLE s_pts (id serial PRIMARY KEY, p point4d);
++ERROR:  type "point4d" does not exist
++LINE 1: CREATE TEMP TABLE s_pts (id serial PRIMARY KEY, p point4d);
++                                                          ^
+ INSERT INTO s_pts (p)
+ SELECT super_fibonacci_4d(i, 500) FROM generate_series(0, 499) i;
++ERROR:  relation "s_pts" does not exist
++LINE 1: INSERT INTO s_pts (p)
++                    ^
+ CREATE INDEX s_pts_spgist ON s_pts USING spgist (p);
++ERROR:  relation "s_pts" does not exist
+ ANALYZE s_pts;
++ERROR:  relation "s_pts" does not exist
+ WITH spgist_in AS (
+     SELECT id FROM s_pts
+     WHERE p <@ '((-0.5,-0.5,-0.5,-0.5),(0.5,0.5,0.5,0.5))'::box4d
+@@ -447,20 +424,16 @@
+ )
+ SELECT (SELECT array_agg(id ORDER BY id) FROM spgist_in)
+      = (SELECT array_agg(id ORDER BY id) FROM seq_in) AS spgist_filter_matches_seq;
+- spgist_filter_matches_seq 
+----------------------------
+- 
+-(1 row)
+-
++ERROR:  relation "s_pts" does not exist
++LINE 2:     SELECT id FROM s_pts
++                           ^
+ -- Diagnostic view returns rows.
+ SELECT count(*) >= 2 AS view_sees_indexes
+ FROM point4d_index_stats
+ WHERE table_name IN ('g_pts', 's_pts');
+- view_sees_indexes 
+--------------------
+- t
+-(1 row)
+-
++ERROR:  relation "point4d_index_stats" does not exist
++LINE 2: FROM point4d_index_stats
++             ^
+ -- Done (P1a.3 extension)
+ SELECT 'P1a.3 tests passed' AS result;
+        result       
+@@ -473,48 +446,44 @@
+ -- ═══════════════════════════════════════════════════════════════════════
+ -- Strict determinism is requested at extension load (default GUC = on).
+ SELECT strict_determinism FROM hartonomous_runtime_info();
+- strict_determinism 
+---------------------
+- t
+-(1 row)
+-
++ERROR:  function hartonomous_runtime_info() does not exist
++LINE 1: SELECT strict_determinism FROM hartonomous_runtime_info();
++                                       ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- CBWR branch is resolved (>= 0 means MKL accepted the AUTO|STRICT request).
+ SELECT cbwr_branch >= 0 AS cbwr_active FROM hartonomous_runtime_info();
+- cbwr_active 
+--------------
+- t
+-(1 row)
+-
++ERROR:  function hartonomous_runtime_info() does not exist
++LINE 1: SELECT cbwr_branch >= 0 AS cbwr_active FROM hartonomous_runt...
++                                                    ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- MKL version string is populated (non-empty).
+ SELECT length(mkl_version) > 0 AS mkl_version_present FROM hartonomous_runtime_info();
+- mkl_version_present 
+----------------------
+- t
+-(1 row)
+-
++ERROR:  function hartonomous_runtime_info() does not exist
++LINE 1: ...ngth(mkl_version) > 0 AS mkl_version_present FROM hartonomou...
++                                                             ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Golden determinism fixture: super_fibonacci index 0 / N=1024 is byte-stable.
+ -- Two calls with identical args must produce identical output. The cast to
+ -- text via point4d_out uses %.17g so repeated runs produce character-identical
+ -- representations.
+ SELECT super_fibonacci_4d(0, 1024)::text = super_fibonacci_4d(0, 1024)::text
+     AS sf_byte_stable;
+- sf_byte_stable 
+-----------------
+- t
+-(1 row)
+-
++ERROR:  function super_fibonacci_4d(integer, integer) does not exist
++LINE 1: SELECT super_fibonacci_4d(0, 1024)::text = super_fibonacci_4...
++               ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Golden determinism fixture: a known-good Hilbert index for a fixed point.
+ -- This is a regression anchor — if the underlying algorithm or its bit
+ -- packing ever changes, this row breaks and pg_regress reports a diff.
+ SELECT hilbert_4d(point4d(0.25, 0.5, 0.75, 0.125), 8) AS hilbert_anchor;
+- hilbert_anchor 
+-----------------
+-     1099161053
+-(1 row)
+-
++ERROR:  function point4d(numeric, numeric, numeric, numeric) does not exist
++LINE 1: SELECT hilbert_4d(point4d(0.25, 0.5, 0.75, 0.125), 8) AS hil...
++                          ^
++HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ -- Done (P1a.5 extension)
+ SELECT 'P1a.5 tests passed' AS result;
+        result       
+ --------------------
+  P1a.5 tests passed
+ (1 row)
++

@@ -174,7 +174,7 @@ public sealed class GodelEngine
         trace.AppendLine(Inv, $"DECIDE[{sq.Index}]: prompt ingested (entities={batch.EntityCount}).");
         byte[] rootHash = ingest.RootHash.ToByteArray();
 
-        // Drain barrier — wait until prompt root + sequence rows land in substrate.
+        // Drain barrier — wait until prompt root + composition metadata lands in substrate.
         bool drained = await WaitForDocumentAsync(rootHash, ct).ConfigureAwait(false);
         if (!drained)
         {

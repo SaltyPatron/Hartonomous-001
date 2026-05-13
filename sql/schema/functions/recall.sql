@@ -46,21 +46,20 @@ DECLARE
 BEGIN
     SELECT id INTO v_word_form_id FROM substrate.entity_type WHERE code = 'word_form';
 
-    -- Seed activation: prompt's word_form sequence children + their
+    -- Seed activation: prompt's word_form composition children + their
     -- lemma/synset parent compositions.
     SELECT array_agg(DISTINCT h)
     INTO v_seeds
     FROM (
         SELECT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_prompt_hash) s
         JOIN substrate.entity_classification c
           ON c.entity_hash = s.child_hash
          AND c.entity_type_id = v_word_form_id
-        WHERE s.parent_hash = p_prompt_hash
         UNION
         SELECT s.parent_hash AS h
-        FROM substrate.sequence s
-        JOIN substrate.sequence sd ON sd.parent_hash = p_prompt_hash AND sd.child_hash = s.child_hash
+        FROM substrate.get_composition_children(p_prompt_hash) sd
+        JOIN substrate.composition_parents(sd.child_hash) s ON TRUE
         JOIN substrate.entity_classification c ON c.entity_hash = s.parent_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         WHERE et.code IN ('lemma', 'synset')
@@ -118,7 +117,7 @@ BEGIN
         WHERE em_s.entity_hash = v_best_hash
           AND et.code IN ('has_gloss', 'has_example', 'has_text', 'has_etymology', 'has_pronunciation')
           AND et_t.code = 'text_composition'
-          AND EXISTS (SELECT 1 FROM substrate.sequence sq WHERE sq.parent_hash = em_t.entity_hash LIMIT 1)
+          AND EXISTS (SELECT 1 FROM substrate.get_composition_children(em_t.entity_hash) LIMIT 1)
         ORDER BY
             CASE et.code
                 WHEN 'has_gloss'     THEN 0

@@ -247,8 +247,8 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
             // The token IS the word_form. UD's per-token analysis (POS,
             // morph features, syntactic role via dependency edges, sentence
-            // membership via sequence row) is metadata on edges/junctions/
-            // sequence — never a separate entity type. Content-addressing
+            // membership via composition metadata) is metadata on edges/
+            // junctions — never a separate entity type. Content-addressing
             // means the same surface form across UD/WordNet/Tatoeba/user
             // prompt collapses to ONE entity.
             tokenHandles[ti] = wfHandle;
@@ -310,7 +310,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         // Token order is encoded by the sentence's LINESTRINGZM physicality
         // (sentVertices below) — vertex index = token position. The
         // sentence's Merkle hash also encodes order via the ordered list of
-        // child token hashes. No substrate.sequence row needed.
+        // child token hashes. No composition child metadata needed here.
 
         if (sentVertices.Count >= 2)
         {

@@ -165,7 +165,7 @@ public sealed class SubstrateTextDecomposer
             return new TextDecomposeResult(
                 RootHandle: new EntityHandle(emptyHash, options.TopEntityType),
                 RootHash: emptyHash,
-                EntitiesEmitted: 0, SequenceRowsEmitted: 0,
+                EntitiesEmitted: 0, CompositionChildrenEmitted: 0,
                 PhysicalityRowsEmitted: 0, SignificanceRowsEmitted: 0,
                 RootCentroid: (0, 0, 0, 0));
         }
@@ -210,13 +210,13 @@ public sealed class SubstrateTextDecomposer
         Hash32 rootHash = new(rootHashBuf);
         EntityHandle rootHandle = new(rootHash, options.TopEntityType);
         AddTopEntityClassificationIfNeeded(batch, options, rootHash);
-        context.FlushSequences();
+        context.FlushCompositionChildren();
 
         return new TextDecomposeResult(
             RootHandle: rootHandle,
             RootHash: rootHash,
             EntitiesEmitted: context.EntityCount,
-            SequenceRowsEmitted: context.SequenceCount,
+            CompositionChildrenEmitted: context.CompositionChildCount,
             PhysicalityRowsEmitted: context.PhysicalityCount,
             SignificanceRowsEmitted: context.SignificanceCount,
             RootCentroid: (rootCentroidBuf[0], rootCentroidBuf[1], rootCentroidBuf[2], rootCentroidBuf[3]));
@@ -290,7 +290,7 @@ public sealed class SubstrateTextDecomposer
             EntityHandle empty = new(emptyHash, options.TopEntityType);
             return new TextDecomposeResult(
                 RootHandle: empty, RootHash: emptyHash,
-                EntitiesEmitted: 0, SequenceRowsEmitted: 0,
+                EntitiesEmitted: 0, CompositionChildrenEmitted: 0,
                 PhysicalityRowsEmitted: 0, SignificanceRowsEmitted: 0,
                 RootCentroid: (0, 0, 0, 0));
         }
@@ -344,7 +344,7 @@ public sealed class SubstrateTextDecomposer
             RootHandle: rootHandle,
             RootHash: rootHash,
             EntitiesEmitted: context.EntityCount,
-            SequenceRowsEmitted: context.SequenceCount,
+            CompositionChildrenEmitted: context.CompositionChildCount,
             PhysicalityRowsEmitted: context.PhysicalityCount,
             SignificanceRowsEmitted: context.SignificanceCount,
             RootCentroid: (rootCentroidBuf[0], rootCentroidBuf[1], rootCentroidBuf[2], rootCentroidBuf[3]));
@@ -374,7 +374,7 @@ public sealed class SubstrateTextDecomposer
         => options.EmissionCache?.TryRegisterPhysicality(physicalityTypeCode, entityHash) ?? true;
 
     private static bool ShouldEmitSequence(TextDecomposeOptions options, Hash32 parentHash, int ordinal)
-        => options.EmissionCache?.TryRegisterSequence(parentHash, ordinal) ?? true;
+        => options.EmissionCache?.TryRegisterCompositionChild(parentHash, ordinal) ?? true;
 
     private static bool ShouldEmitSignificance(
         TextDecomposeOptions options,
@@ -417,9 +417,9 @@ public sealed class SubstrateTextDecomposer
         public IIngestionBatch Batch { get; }
         public TextDecomposeOptions Options { get; }
         public Dictionary<Hash32, string> KindByHash { get; } = new();
-        private readonly List<PendingSequence> _sequences = [];
+        private readonly List<PendingCompositionChild> _compositionChildren = [];
         public long EntityCount;
-        public long SequenceCount;
+        public long CompositionChildCount;
         public long PhysicalityCount;
         public long SignificanceCount;
 
@@ -463,8 +463,8 @@ public sealed class SubstrateTextDecomposer
                     {
                         break;
                     }
-                    byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
-                    Batch.AddPhysicality(eh, physCode, wkb, new Hartonomous.Core.Geometry.Point4D(
+                    byte[] geometry = ReadBytes(record.Geometry, (int) record.GeometryLen);
+                    Batch.AddPhysicality(eh, physCode, geometry, new Hartonomous.Core.Geometry.Point4D(
                         record.CentroidX,
                         record.CentroidY,
                         record.CentroidZ,
@@ -482,7 +482,7 @@ public sealed class SubstrateTextDecomposer
                         ? cc : "text_composition";
                     EntityHandle parent = new(parentHash, parentCode);
                     EntityHandle child  = new(childHash,  childCode);
-                    AddSequence(parent, record.IntParam, child);
+                    AddCompositionChild(parent, record.IntParam, child);
                     break;
                 }
                 case TextDecomposeNative.RecSignificance:
@@ -508,35 +508,35 @@ public sealed class SubstrateTextDecomposer
             return 0;
         }
 
-        public void FlushSequences()
+        public void FlushCompositionChildren()
         {
-            foreach (PendingSequence sequence in _sequences)
+            foreach (PendingCompositionChild child in _compositionChildren)
             {
-                Batch.AddSequence(sequence.Parent, sequence.Ordinal, sequence.Child, sequence.RleCount);
+                Batch.AddCompositionChild(child.Parent, child.Ordinal, child.Child, child.RleCount);
             }
         }
 
-        private void AddSequence(EntityHandle parent, int ordinal, EntityHandle child)
+        private void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child)
         {
             if (!ShouldEmitSequence(Options, parent.Hash, ordinal))
             {
                 return;
             }
 
-            if (_sequences.Count > 0)
+            if (_compositionChildren.Count > 0)
             {
-                PendingSequence tail = _sequences[^1];
+                PendingCompositionChild tail = _compositionChildren[^1];
                 if (tail.Ordinal + tail.RleCount == ordinal &&
                     tail.Parent.Hash == parent.Hash &&
                     tail.Child.Hash == child.Hash)
                 {
-                    _sequences[^1] = tail with { RleCount = tail.RleCount + 1 };
+                    _compositionChildren[^1] = tail with { RleCount = tail.RleCount + 1 };
                     return;
                 }
             }
 
-            _sequences.Add(new PendingSequence(parent, ordinal, child, 1));
-            SequenceCount++;
+            _compositionChildren.Add(new PendingCompositionChild(parent, ordinal, child, 1));
+            CompositionChildCount++;
         }
 
         private static Hash32 ReadHash(IntPtr ptr)
@@ -559,7 +559,7 @@ public sealed class SubstrateTextDecomposer
             return dst;
         }
 
-        private sealed record PendingSequence(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount);
+        private sealed record PendingCompositionChild(EntityHandle Parent, int Ordinal, EntityHandle Child, int RleCount);
     }
 
     private sealed class BufferedEmitContext
@@ -568,7 +568,7 @@ public sealed class SubstrateTextDecomposer
         public Dictionary<Hash32, string> KindByHash { get; } = new();
         public List<IngestionRecord> Records { get; } = [];
         public long EntityCount;
-        public long SequenceCount;
+        public long CompositionChildCount;
         public long PhysicalityCount;
         public long SignificanceCount;
 
@@ -608,7 +608,7 @@ public sealed class SubstrateTextDecomposer
                     {
                         break;
                     }
-                    byte[] wkb = ReadBytes(record.Wkb, (int) record.WkbLen);
+                    byte[] geometry = ReadBytes(record.Geometry, (int) record.GeometryLen);
                     Hartonomous.Core.Geometry.Point4D centroid = new(
                         record.CentroidX,
                         record.CentroidY,
@@ -617,8 +617,8 @@ public sealed class SubstrateTextDecomposer
                     Records.Add(new PhysicalityRecord(
                         physCode,
                         entHash,
-                        Blake3.Hash32(wkb.AsSpan()),
-                        wkb,
+                        Blake3.Hash32(geometry.AsSpan()),
+                        geometry,
                         centroid));
                     PhysicalityCount++;
                     break;
@@ -627,7 +627,7 @@ public sealed class SubstrateTextDecomposer
                 {
                     Hash32 parentHash = ReadHash(record.HashA);
                     Hash32 childHash = ReadHash(record.HashB);
-                    AddSequence(parentHash, record.IntParam, childHash);
+                    AddCompositionChild(parentHash, record.IntParam, childHash);
                     break;
                 }
                 case TextDecomposeNative.RecSignificance:
@@ -654,7 +654,7 @@ public sealed class SubstrateTextDecomposer
             return 0;
         }
 
-        private void AddSequence(Hash32 parentHash, int ordinal, Hash32 childHash)
+        private void AddCompositionChild(Hash32 parentHash, int ordinal, Hash32 childHash)
         {
             if (!ShouldEmitSequence(Options, parentHash, ordinal))
             {
@@ -662,7 +662,7 @@ public sealed class SubstrateTextDecomposer
             }
 
             if (Records.Count > 0 &&
-                Records[^1] is SequenceRecord tail &&
+                Records[^1] is CompositionChildRecord tail &&
                 tail.Ordinal + tail.RleCount == ordinal &&
                 tail.ParentEntityHash == parentHash &&
                 tail.ChildEntityHash == childHash)
@@ -671,8 +671,8 @@ public sealed class SubstrateTextDecomposer
                 return;
             }
 
-            Records.Add(new SequenceRecord(parentHash, ordinal, childHash, 1));
-            SequenceCount++;
+            Records.Add(new CompositionChildRecord(parentHash, ordinal, childHash, 1));
+            CompositionChildCount++;
         }
 
         private static Hash32 ReadHash(IntPtr ptr)

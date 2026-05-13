@@ -13,12 +13,13 @@ RETURNS DOUBLE PRECISION
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $$
     WITH a AS (
-        SELECT ST_X(ST_PointN(p.geom, 1)) AS x,
-               ST_Y(ST_PointN(p.geom, 1)) AS y,
-               ST_Z(ST_PointN(p.geom, 1)) AS z,
-               ST_M(ST_PointN(p.geom, 1)) AS m
+        SELECT coords.v[1] AS x,
+               coords.v[2] AS y,
+               coords.v[3] AS z,
+               coords.v[4] AS m
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_a
             ON ems_a.model_source_id = ems_t.model_source_id
@@ -26,12 +27,13 @@ AS $$
          WHERE p.entity_hash = p_token_hash
     ),
     b AS (
-        SELECT ST_X(ST_PointN(p.geom, 1)) AS x,
-               ST_Y(ST_PointN(p.geom, 1)) AS y,
-               ST_Z(ST_PointN(p.geom, 1)) AS z,
-               ST_M(ST_PointN(p.geom, 1)) AS m
+        SELECT coords.v[1] AS x,
+               coords.v[2] AS y,
+               coords.v[3] AS z,
+               coords.v[4] AS m
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_b
             ON ems_b.model_source_id = ems_t.model_source_id

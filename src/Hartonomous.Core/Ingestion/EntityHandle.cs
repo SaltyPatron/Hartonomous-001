@@ -5,15 +5,15 @@ namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
 /// A reference to a substrate entity by its content-addressed identity:
-/// the BLAKE3 hash of its content plus the entity_type_code that selects
-/// which partition of substrate.entity it belongs to.
+/// the BLAKE3 hash of its content plus the asserted entity_type_code for
+/// producer-side routing and classification.
 ///
 /// In the hash-as-PK substrate this struct IS the foreign key. There is
 /// no surrogate id, no per-batch BatchIndex, no remap step. The decomposer
 /// computes the hash once (via Blake3.Hash) and the same handle flows
 /// through every downstream write — edge_member, junction, physicality,
-/// sequence, significance, entity_model_source — without ever touching a
-/// BIGINT.
+/// composition metadata, significance, entity_model_source — without ever
+/// touching a BIGINT.
 ///
 /// Equality is value-based on (EntityTypeCode, Hash content). Two handles
 /// produced from the same input bytes are equal even if they came from

@@ -63,7 +63,7 @@ internal static class CompleteCommand
 
             // Step 0: ingest prompt as substrate content via the canonical text
             // decomposer. The root text_composition becomes the seed hash for
-            // substrate.complete; its child_hash rows in substrate.sequence are
+            // substrate.complete; its child metadata on physicality is
             // the word_form / bpe_token candidates the SQL function activates.
             IIngestionBatch batch = pipeline.CreateBatch();
             byte[] utf8 = Encoding.UTF8.GetBytes(prompt);

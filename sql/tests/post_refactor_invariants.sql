@@ -188,16 +188,14 @@ DECLARE
     v_edge          BIGINT;
     v_edge_member   BIGINT;
     v_physicality   BIGINT;
-    v_sequence      BIGINT;
 BEGIN
     SELECT count(*) INTO v_entity      FROM substrate.entity;
     SELECT count(*) INTO v_edge        FROM substrate.edge;
     SELECT count(*) INTO v_edge_member FROM substrate.edge_member;
     SELECT count(*) INTO v_physicality FROM substrate.physicality;
-    SELECT count(*) INTO v_sequence    FROM substrate.sequence;
 
-    RAISE NOTICE 'I8 cardinality: entity=% edge=% edge_member=% physicality=% sequence=%',
-        v_entity, v_edge, v_edge_member, v_physicality, v_sequence;
+    RAISE NOTICE 'I8 cardinality: entity=% edge=% edge_member=% physicality=%',
+        v_entity, v_edge, v_edge_member, v_physicality;
 
     IF v_entity = 0 THEN
         RAISE WARNING 'I8 WARN: substrate.entity is empty — run a seed pipeline first.';

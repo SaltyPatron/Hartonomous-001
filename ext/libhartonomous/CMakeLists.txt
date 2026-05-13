@@ -288,3 +288,7 @@ if(HARTONOMOUS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# Codegen utilities (developer-only, opt-in via -DHARTONOMOUS_BUILD_CODEGEN=ON).
+# The generated lh_*.{h,c} files live under src/generated/ and are committed.
+add_subdirectory(codegen)

@@ -58,14 +58,13 @@ BEGIN
     -- language via entity_language.
     WITH seeds AS (
         SELECT DISTINCT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_seed_hash) s
         JOIN substrate.entity_classification c ON c.entity_hash = s.child_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         LEFT JOIN substrate.entity_language el
                ON el.entity_hash = s.child_hash
               AND (v_lang_id IS NULL OR el.language_id = v_lang_id)
-        WHERE s.parent_hash = p_seed_hash
-          AND et.code IN ('bpe_token', 'word_form')
+        WHERE et.code IN ('bpe_token', 'word_form')
           AND (v_lang_id IS NULL OR el.language_id = v_lang_id)
     ),
     seed_count AS (SELECT count(*) AS n FROM seeds)
@@ -91,7 +90,7 @@ BEGIN
                                              row_number() OVER (
                                                      ORDER BY sum(COALESCE(es.mu, 1500.0)) DESC, em_t.entity_hash ASC
                                              ) AS rn
-                                    FROM substrate.sequence sq
+                                    FROM substrate.get_composition_children(p_seed_hash) sq
                                     JOIN substrate.edge_member em_s
                                         ON em_s.entity_hash = sq.child_hash
                                     JOIN substrate.edge e
@@ -110,8 +109,7 @@ BEGIN
                                         ON es.edge_type_id = e.edge_type_id
                                      AND es.edge_hash = e.hash
                                      AND es.context_type_id = v_arena_id
-                                 WHERE sq.parent_hash = p_seed_hash
-                                     AND em_t.entity_hash <> p_seed_hash
+                                 WHERE em_t.entity_hash <> p_seed_hash
                                  GROUP BY em_t.entity_hash
                         ) ranked
                      WHERE ranked.rn <= GREATEST(COALESCE(p_max_results, 25), 0)

@@ -1,4 +1,4 @@
--- Byte-for-byte text reconstruction by recursive sequence walk.
+-- Byte-for-byte text reconstruction by recursive composition walk.
 CREATE OR REPLACE FUNCTION substrate.recompose_text(
     p_entity_hash BYTEA,
     p_max_depth   INT DEFAULT 100000
@@ -14,8 +14,7 @@ AS $$
             walk.ord_path || gs.n,
             walk.depth + 1
           FROM walk
-          JOIN substrate.sequence s
-            ON s.parent_hash = walk.entity_hash
+          JOIN LATERAL substrate.get_composition_children(walk.entity_hash) s ON TRUE
           CROSS JOIN LATERAL generate_series(
               s.ordinal, s.ordinal + s.rle_count - 1
           ) AS gs(n)
@@ -39,4 +38,4 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
-    'Byte-for-byte text reconstruction via substrate.sequence walk. RLE-expanded. Hash-only signature.';
+    'Byte-for-byte text reconstruction via composition metadata on substrate.physicality. RLE-expanded. Hash-only signature.';

@@ -38,6 +38,8 @@
  * consulted). Kept as a tombstone. */
 uint32_t uc_cp_reverse_count = 0;
 
+int32_t huc_cp_from_hash(const uint8_t* hash32);
+
 /* ── Public C ABI: backwards-compatible wrappers ──────────────────────── */
 
 int huc_load_atoms_blob(const char* dir)

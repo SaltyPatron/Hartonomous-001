@@ -5,16 +5,15 @@ CREATE OR REPLACE FUNCTION substrate.physicality_linestring4d(
 ) RETURNS DOUBLE PRECISION[]
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT ARRAY(
-        SELECT unnest(ARRAY[ST_X(d.geom), ST_Y(d.geom), ST_Z(d.geom), ST_M(d.geom)])
-          FROM ST_DumpPoints(p.geom) AS d
-         ORDER BY (d.path)[1]
+        SELECT unnest(point4d_to_array(point_n(p.geom::linestring4d, i)))
+          FROM generate_series(1, npoints(p.geom::linestring4d)) AS i
+         ORDER BY i
     )
       FROM substrate.physicality p
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
      WHERE p.entity_hash = p_entity_hash
        AND pt.code = p_physicality_type_code
-       AND ST_GeometryType(p.geom) = 'ST_LineString'
-       AND ST_NDims(p.geom) = 4
+       AND ST_TypeTag4D(p.geom) = 2
        AND EXISTS (
            SELECT 1
              FROM substrate.entity_classification ec
@@ -27,4 +26,4 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 COMMENT ON FUNCTION substrate.physicality_linestring4d(substrate.hash_value, TEXT, TEXT) IS
-    'Return a flat x/y/z/m coordinate array for the first deterministic LINESTRINGZM physicality attached to a hash classified as the requested entity type.';
+    'Return a flat x/y/z/m coordinate array for the first deterministic LINESTRING4D physicality attached to a hash classified as the requested entity type.';

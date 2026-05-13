@@ -39,36 +39,41 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+static void pg_text_decompose_keep_future_symbols(void);
+
 /* ═════════════════════════════════════════════════════════════════════
  * (1) UTF-8 decode
  * ═════════════════════════════════════════════════════════════════════ */
 size_t utf8_decode_one(const uint8_t* p, size_t len, int32_t* out)
 {
+    uint8_t b0;
+    int32_t cp;
+
     if (len == 0 || p == NULL || out == NULL) return 0;
-    uint8_t b0 = p[0];
+    b0 = p[0];
 
     if (b0 < 0x80) { *out = (int32_t)b0; return 1; }
     if ((b0 & 0xE0) == 0xC0) {
         if (len < 2 || (p[1] & 0xC0) != 0x80) return 0;
-        int32_t cp = ((int32_t)(b0 & 0x1F) << 6) | (int32_t)(p[1] & 0x3F);
+        cp = ((int32_t)(b0 & 0x1F) << 6) | (int32_t)(p[1] & 0x3F);
         if (cp < 0x80) return 0;
         *out = cp; return 2;
     }
     if ((b0 & 0xF0) == 0xE0) {
         if (len < 3 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80) return 0;
-        int32_t cp = ((int32_t)(b0 & 0x0F) << 12)
-                   | ((int32_t)(p[1] & 0x3F) << 6)
-                   |  (int32_t)(p[2] & 0x3F);
+        cp = ((int32_t)(b0 & 0x0F) << 12)
+           | ((int32_t)(p[1] & 0x3F) << 6)
+           |  (int32_t)(p[2] & 0x3F);
         if (cp < 0x800) return 0;
         if (cp >= 0xD800 && cp <= 0xDFFF) return 0;
         *out = cp; return 3;
     }
     if ((b0 & 0xF8) == 0xF0) {
         if (len < 4 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80) return 0;
-        int32_t cp = ((int32_t)(b0 & 0x07) << 18)
-                   | ((int32_t)(p[1] & 0x3F) << 12)
-                   | ((int32_t)(p[2] & 0x3F) << 6)
-                   |  (int32_t)(p[3] & 0x3F);
+        cp = ((int32_t)(b0 & 0x07) << 18)
+           | ((int32_t)(p[1] & 0x3F) << 12)
+           | ((int32_t)(p[2] & 0x3F) << 6)
+           |  (int32_t)(p[3] & 0x3F);
         if (cp < 0x10000 || cp > 0x10FFFF) return 0;
         *out = cp; return 4;
     }
@@ -85,7 +90,7 @@ size_t utf8_decode_one(const uint8_t* p, size_t len, int32_t* out)
  * with extension version pinning UCD version.
  * ═════════════════════════════════════════════════════════════════════ */
 
-void pg_text_decompose_cache_load(void)  { /* no-op — embedded */ }
+void pg_text_decompose_cache_load(void)  { pg_text_decompose_keep_future_symbols(); }
 void pg_text_decompose_cache_clear(void) { /* no-op — embedded */ }
 
 GraphemeBreak gcb_for(int32_t cp)
@@ -125,15 +130,17 @@ static DecodedCodepoints decode_utf8_buf(const uint8_t* utf8, size_t utf8_len)
 {
     DecodedCodepoints d;
     int32_t cap = (int32_t)(utf8_len + 1);
+    size_t pos;
     d.codepoints   = (int32_t*) palloc(sizeof(int32_t) * cap);
     d.byte_offsets = (int32_t*) palloc(sizeof(int32_t) * cap);
     d.byte_widths  = (int32_t*) palloc(sizeof(int32_t) * cap);
     d.count        = 0;
 
-    size_t pos = 0;
+    pos = 0;
     while (pos < utf8_len) {
         int32_t cp;
-        size_t consumed = utf8_decode_one(utf8 + pos, utf8_len - pos, &cp);
+        size_t consumed;
+        consumed = utf8_decode_one(utf8 + pos, utf8_len - pos, &cp);
         if (consumed == 0) { pos++; continue; }
         d.codepoints[d.count]   = cp;
         d.byte_offsets[d.count] = (int32_t) pos;
@@ -160,6 +167,13 @@ typedef struct {
 static BoundaryArray grapheme_boundaries(const DecodedCodepoints* d)
 {
     BoundaryArray b;
+    int riRun;
+    int chainPict;
+    int chainZwjAfterPict;
+    int incbConsonantSeen;
+    int incbLinkerSeen;
+    int32_t i;
+
     b.indices = (int32_t*) palloc(sizeof(int32_t) * (d->count + 1));
     b.count = 0;
 
@@ -169,14 +183,14 @@ static BoundaryArray grapheme_boundaries(const DecodedCodepoints* d)
     b.indices[b.count++] = 0;
 
     /* State for cross-cluster rules: */
-    int riRun = 0;                        /* GB12/13 — trailing RI run length */
-    int chainPict = 0;                    /* GB11 — saw Extended_Pictographic */
-    int chainZwjAfterPict = 0;            /* GB11 — saw ZWJ after Pict (with optional Extends) */
+    riRun = 0;                        /* GB12/13 — trailing RI run length */
+    chainPict = 0;                    /* GB11 — saw Extended_Pictographic */
+    chainZwjAfterPict = 0;            /* GB11 — saw ZWJ after Pict (with optional Extends) */
     /* GB9c InCB state: tracks "Consonant (Linker|Extend)*" with at least one Linker */
-    int incbConsonantSeen = 0;
-    int incbLinkerSeen    = 0;
+    incbConsonantSeen = 0;
+    incbLinkerSeen = 0;
 
-    for (int32_t i = 1; i < d->count; i++) {
+    for (i = 1; i < d->count; i++) {
         int32_t prev_cp = d->codepoints[i - 1];
         int32_t curr_cp = d->codepoints[i];
         GraphemeBreak prev = gcb_for(prev_cp);
@@ -330,6 +344,13 @@ static WordKind word_kind_for(WordBreak wb, int isPict)
 static WordArray word_boundaries(const DecodedCodepoints* d)
 {
     WordArray w;
+    WordBreak prev_literal;
+    WordBreak prevSig;
+    WordBreak prev2Sig;
+    int prevSigPict;
+    int riRun;
+    int32_t i;
+
     w.indices = (int32_t*) palloc(sizeof(int32_t) * (d->count + 1));
     w.kinds   = (WordKind*) palloc(sizeof(WordKind) * (d->count + 1));
     w.count = 0;
@@ -354,16 +375,15 @@ static WordArray word_boundaries(const DecodedCodepoints* d)
      *   - WB3a/WB3b/WB3c/WB3d apply to LITERAL adjacent codepoints.
      *   - The very first codepoint is always considered significant.
      */
-    WordBreak prev_literal = wb_for(d->codepoints[0]);
-    WordBreak prevSig      = wb_for(d->codepoints[0]);
-    WordBreak prev2Sig     = WB_Other;
-    int       prevSigPict  = is_extended_pictographic(d->codepoints[0]);
-    int       riRun        = (prevSig == WB_RegionalIndicator) ? 1 : 0;
+    prev_literal = wb_for(d->codepoints[0]);
+    prevSig = wb_for(d->codepoints[0]);
+    prev2Sig = WB_Other;
+    prevSigPict = is_extended_pictographic(d->codepoints[0]);
+    riRun = (prevSig == WB_RegionalIndicator) ? 1 : 0;
 
-    for (int32_t i = 1; i < d->count; i++) {
-        int32_t prev_cp = d->codepoints[i - 1];
+    for (i = 1; i < d->count; i++) {
         int32_t curr_cp = d->codepoints[i];
-        WordBreak prev_lit = wb_for(prev_cp);
+        WordBreak prev_lit = prev_literal;
         WordBreak curr     = wb_for(curr_cp);
         int currPict       = is_extended_pictographic(curr_cp);
 
@@ -404,12 +424,13 @@ static WordArray word_boundaries(const DecodedCodepoints* d)
                   curr == WB_SingleQuote)) {
             /* Look ahead past Extend/Format/ZWJ for an AHLetter. */
             int32_t k = i + 1;
+            int aheadIsLetter;
             while (k < d->count) {
                 WordBreak wbk = wb_for(d->codepoints[k]);
                 if (wbk == WB_Extend || wbk == WB_Format || wbk == WB_ZWJ) { k++; continue; }
                 break;
             }
-            int aheadIsLetter = (k < d->count) &&
+            aheadIsLetter = (k < d->count) &&
                 (wb_for(d->codepoints[k]) == WB_ALetter ||
                  wb_for(d->codepoints[k]) == WB_HebrewLetter);
             shouldBreak = aheadIsLetter ? 0 : 1;
@@ -428,12 +449,13 @@ static WordArray word_boundaries(const DecodedCodepoints* d)
         /* WB7b: Hebrew_Letter × Double_Quote Hebrew_Letter */
         else if (prevSig == WB_HebrewLetter && curr == WB_DoubleQuote) {
             int32_t k = i + 1;
+            int aheadHeb;
             while (k < d->count) {
                 WordBreak wbk = wb_for(d->codepoints[k]);
                 if (wbk == WB_Extend || wbk == WB_Format || wbk == WB_ZWJ) { k++; continue; }
                 break;
             }
-            int aheadHeb = (k < d->count) && wb_for(d->codepoints[k]) == WB_HebrewLetter;
+            aheadHeb = (k < d->count) && wb_for(d->codepoints[k]) == WB_HebrewLetter;
             shouldBreak = aheadHeb ? 0 : 1;
         }
         /* WB7c: Hebrew_Letter Double_Quote × Hebrew_Letter */
@@ -463,12 +485,13 @@ static WordArray word_boundaries(const DecodedCodepoints* d)
         else if (prevSig == WB_Numeric &&
                  (curr == WB_MidNum || curr == WB_MidNumLet || curr == WB_SingleQuote)) {
             int32_t k = i + 1;
+            int aheadNum;
             while (k < d->count) {
                 WordBreak wbk = wb_for(d->codepoints[k]);
                 if (wbk == WB_Extend || wbk == WB_Format || wbk == WB_ZWJ) { k++; continue; }
                 break;
             }
-            int aheadNum = (k < d->count) && wb_for(d->codepoints[k]) == WB_Numeric;
+            aheadNum = (k < d->count) && wb_for(d->codepoints[k]) == WB_Numeric;
             shouldBreak = aheadNum ? 0 : 1;
         }
         /* WB13: Katakana × Katakana */
@@ -521,6 +544,7 @@ static WordArray word_boundaries(const DecodedCodepoints* d)
         }
     }
 
+    (void) prevSigPict;
     return w;
 }
 
@@ -569,12 +593,22 @@ static void compute_codepoint_centroids(const DecodedCodepoints* d, double* out)
 
 static void mean_centroid(const double* in, int32_t k, double* out)
 {
+    double sx;
+    double sy;
+    double sz;
+    double sm;
+    double inv;
+    int32_t i;
+
     if (k <= 0) { out[0]=out[1]=out[2]=out[3]=0.0; return; }
-    double sx=0, sy=0, sz=0, sm=0;
-    for (int32_t i=0; i<k; i++) {
+    sx = 0;
+    sy = 0;
+    sz = 0;
+    sm = 0;
+    for (i = 0; i < k; i++) {
         sx += in[i*4+0]; sy += in[i*4+1]; sz += in[i*4+2]; sm += in[i*4+3];
     }
-    double inv = 1.0 / (double)k;
+    inv = 1.0 / (double)k;
     out[0] = sx*inv; out[1] = sy*inv; out[2] = sz*inv; out[3] = sm*inv;
 }
 
@@ -598,12 +632,13 @@ static int spi_lookup_id(const char* sql, const char* code)
 {
     Oid argtype[1] = { TEXTOID };
     Datum args[1] = { CStringGetTextDatum(code) };
+    bool isnull;
+    Datum d;
     int rc = SPI_execute_with_args(sql, 1, argtype, args, NULL, true, 1);
     if (rc != SPI_OK_SELECT || SPI_processed != 1) {
         return 0;
     }
-    bool isnull;
-    Datum d = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
+    d = SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull);
     return isnull ? 0 : DatumGetInt32(d);
 }
 
@@ -653,7 +688,7 @@ typedef struct {
     int*     phys_type_ids;
     bytea**  entity_hashes;
     bytea**  content_hashes;
-    bytea**  wkbs;
+    bytea**  geometries;
     int      count;
     int      cap;
 } PhysList;
@@ -687,39 +722,62 @@ static bytea* hash_to_bytea(const uint8_t* h32)
     return b;
 }
 
-/* Encode a POINTZM as PostGIS WKB (little-endian, EWKB with M flag set). */
-static bytea* point4d_to_wkb(double x, double y, double z, double m)
+static bytea* point4d_to_geometry(double x, double y, double z, double m)
 {
-    /* EWKB POINTZM: byte order(1) + type(4 with Z|M flags) + x(8) + y(8) + z(8) + m(8) = 37 bytes */
-    bytea* b = (bytea*) palloc(VARHDRSZ + 37);
-    SET_VARSIZE(b, VARHDRSZ + 37);
-    uint8_t* p = (uint8_t*) VARDATA(b);
-    p[0] = 0x01;  /* little-endian */
-    /* Type: 1 (Point) | 0x80000000 (Z) | 0x40000000 (M) = 0xC0000001 */
-    uint32_t type = 0xC0000001;
-    memcpy(p + 1, &type, 4);
-    memcpy(p + 5,  &x, 8);
-    memcpy(p + 13, &y, 8);
-    memcpy(p + 21, &z, 8);
-    memcpy(p + 29, &m, 8);
+    bytea* b = (bytea*) palloc(VARHDRSZ + 33);
+    uint8_t* p;
+    SET_VARSIZE(b, VARHDRSZ + 33);
+    p = (uint8_t*) VARDATA(b);
+    p[0] = 1;
+    memcpy(p + 1,  &x, 8);
+    memcpy(p + 9,  &y, 8);
+    memcpy(p + 17, &z, 8);
+    memcpy(p + 25, &m, 8);
     return b;
 }
 
-/* Encode a LINESTRINGZM with k vertices. */
-static bytea* linestring4d_to_wkb(const double* verts /* k * 4 */, int k)
+static void pg_text_decompose_keep_future_symbols(void)
 {
-    /* EWKB LineString ZM: byte order(1) + type(4) + numpoints(4) + k * 32 */
-    size_t sz = 1 + 4 + 4 + (size_t)k * 32;
+    if (false)
+    {
+        const uint8_t empty[1] = { 0 };
+        DecodedCodepoints d;
+        BoundaryArray g;
+        WordArray w;
+        uint8_t hashbuf[HASH_LEN];
+        double cents[4];
+        bytea* point_geometry;
+
+        d = decode_utf8_buf(empty, 0);
+        g = grapheme_boundaries(&d);
+        w = word_boundaries(&d);
+        hash_codepoints(&d, hashbuf);
+        merkle_chain(hashbuf, 0, hashbuf);
+        compute_codepoint_centroids(&d, cents);
+        mean_centroid(cents, 0, cents);
+        point_geometry = point4d_to_geometry(0.0, 0.0, 0.0, 0.0);
+        (void) g;
+        (void) w;
+        (void) point_geometry;
+    }
+}
+
+static bytea* linestring4d_to_geometry(const double* verts /* k * 4 */, int k)
+{
+    size_t sz = 1 + 4 + (size_t)k * 32;
     bytea* b = (bytea*) palloc(VARHDRSZ + sz);
+    uint8_t* p;
+    uint32_t n;
+    uint8_t* vp;
+    int i;
+
     SET_VARSIZE(b, VARHDRSZ + sz);
-    uint8_t* p = (uint8_t*) VARDATA(b);
-    p[0] = 0x01;
-    uint32_t type = 0xC0000002;  /* LineString | Z | M */
-    memcpy(p + 1, &type, 4);
-    uint32_t n = (uint32_t) k;
-    memcpy(p + 5, &n, 4);
-    uint8_t* vp = p + 9;
-    for (int i = 0; i < k; i++) {
+    p = (uint8_t*) VARDATA(b);
+    p[0] = 2;
+    n = (uint32_t) k;
+    memcpy(p + 1, &n, 4);
+    vp = p + 5;
+    for (i = 0; i < k; i++) {
         memcpy(vp + 0,  &verts[i*4+0], 8);
         memcpy(vp + 8,  &verts[i*4+1], 8);
         memcpy(vp + 16, &verts[i*4+2], 8);
@@ -730,23 +788,25 @@ static bytea* linestring4d_to_wkb(const double* verts /* k * 4 */, int k)
 }
 
 /* ═════════════════════════════════════════════════════════════════════
- * (8b) Public WKB constructor — substrate.ls4d_from_centroids
- *
- * Lifts the in-process LINESTRINGZM EWKB writer to a SQL-callable
- * function. Producers building edges from participant centroids can call
- * this once per edge; recompose / inference paths use it when only
- * hashes are known and centroids must be joined from substrate.physicality.
- *
- * Returns bytea (EWKB). The SQL declaration wraps with
- * ST_GeomFromWKB(..., 0)::geometry(LINESTRINGZM) so callers receive a
- * proper PostGIS geometry without re-encoding.
+ * (8b) Public native constructor — substrate.ls4d_from_centroids
  * ═════════════════════════════════════════════════════════════════════ */
-PG_FUNCTION_INFO_V1(pg_ls4d_from_centroids_wkb);
+PG_FUNCTION_INFO_V1(pg_ls4d_from_centroids_geometry);
 
-Datum pg_ls4d_from_centroids_wkb(PG_FUNCTION_ARGS)
+Datum pg_ls4d_from_centroids_geometry(PG_FUNCTION_ARGS)
 {
     ArrayType* arr = PG_GETARG_ARRAYTYPE_P(0);
     int n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+    Oid elem_type;
+    int16 typlen;
+    bool  typbyval;
+    char  typalign;
+    Datum* elems;
+    bool*  nulls;
+    int    nelems;
+    double* verts;
+    bytea* geometry;
+    int i;
+
     if (n < 2) {
         ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("ls4d_from_centroids: at least 2 vertices required (got %d)", n)));
@@ -757,34 +817,29 @@ Datum pg_ls4d_from_centroids_wkb(PG_FUNCTION_ARGS)
      * deconstruct_array with -1 typlen and pass-by-reference because point4d
      * is a fixed-size composite stored as a varlena-like blob with alignment
      * 'd'. Per pg_point4d.c, INTERNALLENGTH = 32 and ALIGNMENT = double. */
-    Oid elem_type = ARR_ELEMTYPE(arr);
-    int16 typlen;
-    bool  typbyval;
-    char  typalign;
+    elem_type = ARR_ELEMTYPE(arr);
     get_typlenbyvalalign(elem_type, &typlen, &typbyval, &typalign);
 
-    Datum* elems;
-    bool*  nulls;
-    int    nelems;
     deconstruct_array(arr, elem_type, typlen, typbyval, typalign, &elems, &nulls, &nelems);
 
-    double* verts = (double*) palloc(sizeof(double) * 4 * nelems);
-    for (int i = 0; i < nelems; i++) {
+    verts = (double*) palloc(sizeof(double) * 4 * nelems);
+    for (i = 0; i < nelems; i++) {
+        const double* p;
         if (nulls[i]) {
             ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
                             errmsg("ls4d_from_centroids: NULL element at index %d", i)));
         }
         /* point4d is INTERNALLENGTH=32, no varlena header — Datum points
          * directly at the 4 × double payload. */
-        const double* p = (const double*) DatumGetPointer(elems[i]);
+        p = (const double*) DatumGetPointer(elems[i]);
         verts[i*4+0] = p[0];
         verts[i*4+1] = p[1];
         verts[i*4+2] = p[2];
         verts[i*4+3] = p[3];
     }
 
-    bytea* wkb = linestring4d_to_wkb(verts, nelems);
-    PG_RETURN_BYTEA_P(wkb);
+    geometry = linestring4d_to_geometry(verts, nelems);
+    PG_RETURN_BYTEA_P(geometry);
 }
 
 /* ═════════════════════════════════════════════════════════════════════
@@ -803,36 +858,48 @@ Datum pg_ls4d_from_centroids_wkb(PG_FUNCTION_ARGS)
 static ArrayType* build_bytea_array(bytea** items, int n)
 {
     Datum* datums = (Datum*) palloc(sizeof(Datum) * n);
-    for (int i = 0; i < n; i++) datums[i] = PointerGetDatum(items[i]);
-    int dims[1] = { n };
-    int lbs[1] = { 1 };
+    int dims[1];
+    int lbs[1];
+    int i;
+    for (i = 0; i < n; i++) datums[i] = PointerGetDatum(items[i]);
+    dims[0] = n;
+    lbs[0] = 1;
     return construct_md_array(datums, NULL, 1, dims, lbs, BYTEAOID, -1, false, TYPALIGN_INT);
 }
 
 static ArrayType* build_int4_array(int* items, int n)
 {
     Datum* datums = (Datum*) palloc(sizeof(Datum) * n);
-    for (int i = 0; i < n; i++) datums[i] = Int32GetDatum(items[i]);
-    int dims[1] = { n };
-    int lbs[1] = { 1 };
+    int dims[1];
+    int lbs[1];
+    int i;
+    for (i = 0; i < n; i++) datums[i] = Int32GetDatum(items[i]);
+    dims[0] = n;
+    lbs[0] = 1;
     return construct_md_array(datums, NULL, 1, dims, lbs, INT4OID, sizeof(int32), true, TYPALIGN_INT);
 }
 
 static ArrayType* build_float8_array(double* items, int n)
 {
     Datum* datums = (Datum*) palloc(sizeof(Datum) * n);
-    for (int i = 0; i < n; i++) datums[i] = Float8GetDatum(items[i]);
-    int dims[1] = { n };
-    int lbs[1] = { 1 };
+    int dims[1];
+    int lbs[1];
+    int i;
+    for (i = 0; i < n; i++) datums[i] = Float8GetDatum(items[i]);
+    dims[0] = n;
+    lbs[0] = 1;
     return construct_md_array(datums, NULL, 1, dims, lbs, FLOAT8OID, sizeof(float8), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE);
 }
 
 static void flush_entities(HashList* L)
 {
+    Oid types[1];
+    Datum vals[1];
+    int rc;
     if (L->count == 0) return;
-    Oid types[1] = { BYTEAARRAYOID };
-    Datum vals[1] = { PointerGetDatum(build_bytea_array(L->hashes, L->count)) };
-    int rc = SPI_execute_with_args(
+    types[0] = BYTEAARRAYOID;
+    vals[0] = PointerGetDatum(build_bytea_array(L->hashes, L->count));
+    rc = SPI_execute_with_args(
         "INSERT INTO substrate.entity (hash) "
         "SELECT DISTINCT h FROM unnest($1::bytea[]) AS h "
         "ON CONFLICT (hash) DO NOTHING",
@@ -842,14 +909,17 @@ static void flush_entities(HashList* L)
 
 static void flush_classifications(ClassList* L, int provenance_id)
 {
+    Oid types[3];
+    Datum vals[3];
+    int rc;
     if (L->count == 0) return;
-    Oid types[3] = { BYTEAARRAYOID, INT4ARRAYOID, INT4OID };
-    Datum vals[3] = {
-        PointerGetDatum(build_bytea_array(L->entity_hashes, L->count)),
-        PointerGetDatum(build_int4_array(L->entity_type_ids, L->count)),
-        Int32GetDatum(provenance_id)
-    };
-    int rc = SPI_execute_with_args(
+    types[0] = BYTEAARRAYOID;
+    types[1] = INT4ARRAYOID;
+    types[2] = INT4OID;
+    vals[0] = PointerGetDatum(build_bytea_array(L->entity_hashes, L->count));
+    vals[1] = PointerGetDatum(build_int4_array(L->entity_type_ids, L->count));
+    vals[2] = Int32GetDatum(provenance_id);
+    rc = SPI_execute_with_args(
         "INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id) "
         "SELECT DISTINCT h, t, $3 FROM unnest($1::bytea[], $2::int[]) AS u(h, t) "
         "ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING",
@@ -857,42 +927,54 @@ static void flush_classifications(ClassList* L, int provenance_id)
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_classifications: SPI_execute (%d)", rc);
 }
 
-static void flush_physicalities(PhysList* L)
+static void flush_physicalities(PhysList* L, SeqList* S)
 {
+    Oid types[8];
+    Datum vals[8];
+    int rc;
     if (L->count == 0) return;
-    Oid types[4] = { INT4ARRAYOID, BYTEAARRAYOID, BYTEAARRAYOID, BYTEAARRAYOID };
-    Datum vals[4] = {
-        PointerGetDatum(build_int4_array(L->phys_type_ids, L->count)),
-        PointerGetDatum(build_bytea_array(L->entity_hashes, L->count)),
-        PointerGetDatum(build_bytea_array(L->content_hashes, L->count)),
-        PointerGetDatum(build_bytea_array(L->wkbs, L->count))
-    };
-    int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom) "
-        "SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, ST_GeomFromWKB(wkb, 0) "
-        "  FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, wkb) "
+    types[0] = INT4ARRAYOID;
+    types[1] = BYTEAARRAYOID;
+    types[2] = BYTEAARRAYOID;
+    types[3] = BYTEAARRAYOID;
+    types[4] = BYTEAARRAYOID;
+    types[5] = INT4ARRAYOID;
+    types[6] = BYTEAARRAYOID;
+    types[7] = INT4ARRAYOID;
+    vals[0] = PointerGetDatum(build_int4_array(L->phys_type_ids, L->count));
+    vals[1] = PointerGetDatum(build_bytea_array(L->entity_hashes, L->count));
+    vals[2] = PointerGetDatum(build_bytea_array(L->content_hashes, L->count));
+    vals[3] = PointerGetDatum(build_bytea_array(L->geometries, L->count));
+    vals[4] = PointerGetDatum(build_bytea_array(S->parent_hashes, S->count));
+    vals[5] = PointerGetDatum(build_int4_array(S->ordinals, S->count));
+    vals[6] = PointerGetDatum(build_bytea_array(S->child_hashes, S->count));
+    vals[7] = PointerGetDatum(build_int4_array(S->rle_counts, S->count));
+    rc = SPI_execute_with_args(
+        "WITH phys AS ("
+        "    SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, geometry_payload "
+        "      FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, geometry_payload) "
+        "     ORDER BY pt, eh, ch, geometry_payload"
+        "), child_rows AS ("
+        "    SELECT parent_hash, ordinal, child_hash, rle_count "
+        "      FROM unnest($5::bytea[], $6::int[], $7::bytea[], $8::int[]) AS u(parent_hash, ordinal, child_hash, rle_count)"
+        "), child_meta AS ("
+        "    SELECT parent_hash, "
+        "           array_agg(child_hash ORDER BY ordinal)::substrate.hash_value[] AS child_hashes, "
+        "           array_agg(ordinal ORDER BY ordinal)::int[] AS ordinal_starts, "
+        "           array_agg(rle_count ORDER BY ordinal)::int[] AS rle_counts "
+        "      FROM child_rows "
+        "     GROUP BY parent_hash"
+        ") "
+        "INSERT INTO substrate.physicality ("
+        "    physicality_type_id, entity_hash, content_hash, geom, "
+        "    child_hashes, ordinal_starts, rle_counts) "
+        "SELECT phys.pt, phys.eh, phys.ch, bytea_to_geometry4d(phys.geometry_payload), "
+        "       child_meta.child_hashes, child_meta.ordinal_starts, child_meta.rle_counts "
+        "  FROM phys "
+        "  LEFT JOIN child_meta ON child_meta.parent_hash = phys.eh "
         "ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING",
-        4, types, vals, NULL, false, 0);
+        8, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_physicalities: SPI_execute (%d)", rc);
-}
-
-static void flush_sequences(SeqList* L)
-{
-    if (L->count == 0) return;
-    Oid types[4] = { BYTEAARRAYOID, INT4ARRAYOID, BYTEAARRAYOID, INT4ARRAYOID };
-    Datum vals[4] = {
-        PointerGetDatum(build_bytea_array(L->parent_hashes, L->count)),
-        PointerGetDatum(build_int4_array(L->ordinals, L->count)),
-        PointerGetDatum(build_bytea_array(L->child_hashes, L->count)),
-        PointerGetDatum(build_int4_array(L->rle_counts, L->count))
-    };
-    int rc = SPI_execute_with_args(
-        "INSERT INTO substrate.sequence (parent_hash, ordinal, child_hash, rle_count) "
-        "SELECT DISTINCT ON (p, o) p, o, c, r "
-        "  FROM unnest($1::bytea[], $2::int[], $3::bytea[], $4::int[]) AS u(p, o, c, r) "
-        "ON CONFLICT (parent_hash, ordinal) DO NOTHING",
-        4, types, vals, NULL, false, 0);
-    if (rc != SPI_OK_INSERT) elog(ERROR, "flush_sequences: SPI_execute (%d)", rc);
 }
 
 static bool hash_bytea_equals(bytea* left, const uint8_t* right)
@@ -905,12 +987,13 @@ static bool hash_bytea_equals(bytea* left, const uint8_t* right)
 
 static bool sequence_tail_extends_run(SeqList* L, const hartonomous_text_record_t* rec)
 {
+    int tail;
     if (L->count == 0 || rec->hash_a == NULL || rec->hash_b == NULL)
     {
         return false;
     }
 
-    int tail = L->count - 1;
+    tail = L->count - 1;
     return L->ordinals[tail] + L->rle_counts[tail] == rec->int_param &&
            hash_bytea_equals(L->parent_hashes[tail], rec->hash_a) &&
            hash_bytea_equals(L->child_hashes[tail], rec->hash_b);
@@ -918,17 +1001,20 @@ static bool sequence_tail_extends_run(SeqList* L, const hartonomous_text_record_
 
 static void flush_significance(SigList* L)
 {
+    Oid types[3];
+    Datum vals[3];
+    int rc;
     if (L->count == 0) return;
-    Oid types[3] = { INT4ARRAYOID, BYTEAARRAYOID, FLOAT8ARRAYOID };
-    Datum vals[3] = {
-        PointerGetDatum(build_int4_array(L->context_type_ids, L->count)),
-        PointerGetDatum(build_bytea_array(L->entity_hashes, L->count)),
-        PointerGetDatum(build_float8_array(L->mus, L->count))
-    };
+    types[0] = INT4ARRAYOID;
+    types[1] = BYTEAARRAYOID;
+    types[2] = FLOAT8ARRAYOID;
+    vals[0] = PointerGetDatum(build_int4_array(L->context_type_ids, L->count));
+    vals[1] = PointerGetDatum(build_bytea_array(L->entity_hashes, L->count));
+    vals[2] = PointerGetDatum(build_float8_array(L->mus, L->count));
     /* Native text_decompose ships ingestion-time priors. attestation_type
      * 'provenance_authority_corroboration' is resolved once via subquery —
      * it's the canonical kind-of-evidence for source-authority priming. */
-    int rc = SPI_execute_with_args(
+    rc = SPI_execute_with_args(
         "INSERT INTO substrate.entity_significance (context_type_id, entity_hash, attestation_type_id, mu) "
         "SELECT DISTINCT ON (c, h, a) c, h, a, m "
         "  FROM unnest($1::int[], $2::bytea[], $3::float8[]) AS u(c, h, m), "
@@ -977,7 +1063,7 @@ static void ensure_phys_capacity(PhysList* L)
     L->phys_type_ids = (int*) repalloc(L->phys_type_ids, sizeof(int) * L->cap);
     L->entity_hashes = (bytea**) repalloc(L->entity_hashes, sizeof(bytea*) * L->cap);
     L->content_hashes = (bytea**) repalloc(L->content_hashes, sizeof(bytea*) * L->cap);
-    L->wkbs = (bytea**) repalloc(L->wkbs, sizeof(bytea*) * L->cap);
+    L->geometries = (bytea**) repalloc(L->geometries, sizeof(bytea*) * L->cap);
 }
 
 static void ensure_seq_capacity(SeqList* L)
@@ -1070,7 +1156,7 @@ static void init_emit_context(PgTextEmitContext* ctx, const RefIds* ids)
     ctx->phys.phys_type_ids = (int*) palloc(sizeof(int) * ctx->phys.cap);
     ctx->phys.entity_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
     ctx->phys.content_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
-    ctx->phys.wkbs = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
+    ctx->phys.geometries = (bytea**) palloc(sizeof(bytea*) * ctx->phys.cap);
 
     LIST_INIT(ctx->seq, 64);
     ctx->seq.parent_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->seq.cap);
@@ -1111,12 +1197,12 @@ static int pg_text_emit_callback(void* callback_ctx, const hartonomous_text_reco
             return 0;
 
         case HARTONOMOUS_REC_PHYSICALITY:
-            if (rec->hash_b == NULL || rec->wkb == NULL || rec->wkb_len == 0) return 1;
+            if (rec->hash_b == NULL || rec->geometry == NULL || rec->geometry_len == 0) return 1;
             ensure_phys_capacity(&ctx->phys);
             ctx->phys.phys_type_ids[ctx->phys.count] = native_physicality_type_id_for(ctx->ids, rec->subkind);
             ctx->phys.entity_hashes[ctx->phys.count] = hash_to_bytea(rec->hash_a);
             ctx->phys.content_hashes[ctx->phys.count] = hash_to_bytea(rec->hash_b);
-            ctx->phys.wkbs[ctx->phys.count] = bytes_to_bytea(rec->wkb, rec->wkb_len);
+            ctx->phys.geometries[ctx->phys.count] = bytes_to_bytea(rec->geometry, rec->geometry_len);
             ctx->phys.count++;
             return 0;
 
@@ -1149,10 +1235,12 @@ static int pg_text_emit_callback(void* callback_ctx, const hartonomous_text_reco
 
 static int ensure_libhartonomous_ucd_loaded(void)
 {
+    char dir[1024];
+    const char* env;
+
     if (hartonomous_ucd_loaded_state() == 1) return 0;
 
-    char dir[1024];
-    const char* env = getenv("HARTONOMOUS_UCD_BLOB_DIR");
+    env = getenv("HARTONOMOUS_UCD_BLOB_DIR");
     if (env && *env) {
         snprintf(dir, sizeof(dir), "%s", env);
     } else {
@@ -1170,19 +1258,21 @@ static Datum make_text_decompose_summary(
     int root_entity_type_id)
 {
     TupleDesc tupdesc;
+    Datum values[9];
+    bool  nulls[9] = { false, false, false, false, false, false, false, false, false };
+    HeapTuple tup;
+
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
         ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                         errmsg("pg_text_decompose: composite type expected")));
     }
     BlessTupleDesc(tupdesc);
 
-    Datum values[9];
-    bool  nulls[9] = { false, false, false, false, false, false, false, false, false };
     values[0] = Int64GetDatum(summary->entity_count);
     values[1] = Int64GetDatum(summary->edge_count);
     values[2] = Int64GetDatum(summary->edge_member_count);
     values[3] = Int64GetDatum(summary->physicality_count);
-    values[4] = Int64GetDatum(summary->sequence_count);
+    values[4] = Int64GetDatum(summary->composition_child_count);
     values[5] = Int64GetDatum(summary->significance_count);
     values[6] = Int64GetDatum(summary->classification_count);
 
@@ -1196,7 +1286,7 @@ static Datum make_text_decompose_summary(
         nulls[8] = true;
     }
 
-    HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
+    tup = heap_form_tuple(tupdesc, values, nulls);
     return HeapTupleGetDatum(tup);
 }
 
@@ -1207,32 +1297,51 @@ PG_FUNCTION_INFO_V1(pg_text_decompose);
 
 Datum pg_text_decompose(PG_FUNCTION_ARGS)
 {
-    bytea* utf8_arg            = PG_GETARG_BYTEA_PP(0);
-    text*  top_entity_type_arg = PG_GETARG_TEXT_PP(1);
-    double trust_mu            = PG_GETARG_FLOAT8(2);
-    text*  provenance_arg      = PG_GETARG_TEXT_PP(3);
+    bytea* utf8_arg;
+    text*  top_entity_type_arg;
+    double trust_mu;
+    text*  provenance_arg;
+    bool   has_model_source;
+    int    model_source_id;
+    const uint8_t* utf8;
+    size_t utf8_len;
+    char* top_entity_type;
+    char* provenance_code;
+    int spi_owned;
+    RefIds ids;
+    int top_entity_type_id;
+    int native_top_kind;
+    int native_root_entity_type_id;
+    TextDecomposeSummary summary;
+    PgTextEmitContext emit_ctx;
+    uint8_t root_hash[HASH_LEN];
+    int rc;
+    bytea* root_hash_out;
+
+    utf8_arg = PG_GETARG_BYTEA_PP(0);
+    top_entity_type_arg = PG_GETARG_TEXT_PP(1);
+    trust_mu = PG_GETARG_FLOAT8(2);
+    provenance_arg = PG_GETARG_TEXT_PP(3);
     /* p_model_source_id (5th param) is OPTIONAL with default NULL; when
      * non-NULL we emit substrate.entity_model_source linking the root
      * composition entity to that model_source row. Per AP-9 the model
      * source is placement metadata — never enters the entity hash. */
-    bool   has_model_source    = !PG_ARGISNULL(4);
-    int    model_source_id     = has_model_source ? PG_GETARG_INT32(4) : 0;
+    has_model_source = !PG_ARGISNULL(4);
+    model_source_id = has_model_source ? PG_GETARG_INT32(4) : 0;
 
-    const uint8_t* utf8 = (const uint8_t*) VARDATA_ANY(utf8_arg);
-    size_t utf8_len     = VARSIZE_ANY_EXHDR(utf8_arg);
-    char* top_entity_type = text_to_cstring(top_entity_type_arg);
-    char* provenance_code = text_to_cstring(provenance_arg);
+    utf8 = (const uint8_t*) VARDATA_ANY(utf8_arg);
+    utf8_len = VARSIZE_ANY_EXHDR(utf8_arg);
+    top_entity_type = text_to_cstring(top_entity_type_arg);
+    provenance_code = text_to_cstring(provenance_arg);
 
-    int spi_owned = (SPI_connect() == SPI_OK_CONNECT);
+    spi_owned = (SPI_connect() == SPI_OK_CONNECT);
 
-    RefIds ids;
     memset(&ids, 0, sizeof(ids));
     resolve_ref_ids(&ids, provenance_code);
-    int top_entity_type_id = top_entity_type_id_for(&ids, top_entity_type);
-    int native_top_kind = native_top_kind_for(top_entity_type);
-    int native_root_entity_type_id = native_entity_type_id_for(&ids, native_top_kind);
+    top_entity_type_id = top_entity_type_id_for(&ids, top_entity_type);
+    native_top_kind = native_top_kind_for(top_entity_type);
+    native_root_entity_type_id = native_entity_type_id_for(&ids, native_top_kind);
 
-    TextDecomposeSummary summary;
     memset(&summary, 0, sizeof(summary));
 
     if (utf8_len == 0) {
@@ -1247,11 +1356,9 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
                  errhint("Install hartonomous-ucd beside the extension or set HARTONOMOUS_UCD_BLOB_DIR.")));
     }
 
-    PgTextEmitContext emit_ctx;
     init_emit_context(&emit_ctx, &ids);
 
-    uint8_t root_hash[HASH_LEN];
-    int rc = hartonomous_text_decompose(
+    rc = hartonomous_text_decompose(
         utf8,
         utf8_len,
         native_top_kind,
@@ -1272,7 +1379,7 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
                  errmsg("pg_text_decompose: hartonomous_text_decompose returned %d", rc)));
     }
 
-    bytea* root_hash_out = hash_to_bytea(root_hash);
+    root_hash_out = hash_to_bytea(root_hash);
     if (top_entity_type_id != native_root_entity_type_id) {
         ensure_class_capacity(&emit_ctx.cls);
         emit_ctx.cls.entity_hashes[emit_ctx.cls.count] = root_hash_out;
@@ -1283,8 +1390,7 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
     /* ── Bulk flush directly into substrate core tables ─────────── */
     flush_entities(&emit_ctx.ent);
     flush_classifications(&emit_ctx.cls, ids.provenance_id);
-    flush_physicalities(&emit_ctx.phys);
-    flush_sequences(&emit_ctx.seq);
+    flush_physicalities(&emit_ctx.phys, &emit_ctx.seq);
     flush_significance(&emit_ctx.sig);
     /* Optional model_source linkage for the root composition (e.g.,
      * Safetensors config.json text artifacts get linked to their model). */
@@ -1295,7 +1401,7 @@ Datum pg_text_decompose(PG_FUNCTION_ARGS)
     summary.entity_count        = emit_ctx.ent.count;
     summary.classification_count = emit_ctx.cls.count;
     summary.physicality_count    = emit_ctx.phys.count;
-    summary.sequence_count       = emit_ctx.seq.count;
+    summary.composition_child_count = emit_ctx.seq.count;
     summary.significance_count   = emit_ctx.sig.count;
     summary.edge_count           = 0;
     summary.edge_member_count    = 0;
@@ -1318,17 +1424,42 @@ PG_FUNCTION_INFO_V1(pg_text_decompose_batch);
 
 Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
 {
-    ArrayType* utf8s_arr = PG_GETARG_ARRAYTYPE_P(0);
-    ArrayType* types_arr = PG_GETARG_ARRAYTYPE_P(1);
-    ArrayType* mus_arr   = PG_GETARG_ARRAYTYPE_P(2);
-    ArrayType* provs_arr = PG_GETARG_ARRAYTYPE_P(3);
+    ArrayType* utf8s_arr;
+    ArrayType* types_arr;
+    ArrayType* mus_arr;
+    ArrayType* provs_arr;
+    bool       has_model_sources;
+    ArrayType* msrc_arr;
+    int n;
+    Datum* utf8_d;
+    bool* utf8_n;
+    Datum* type_d;
+    bool* type_n;
+    Datum* mu_d;
+    bool* mu_n;
+    Datum* prov_d;
+    bool* prov_n;
+    Datum* msrc_d;
+    bool* msrc_n;
+    int dummy;
+    TextDecomposeSummary total;
+    int i;
+    TupleDesc tupdesc;
+    Datum values[9];
+    bool  nulls[9] = { false,false,false,false,false,false,false,true,true };
+    HeapTuple tup;
+
+    utf8s_arr = PG_GETARG_ARRAYTYPE_P(0);
+    types_arr = PG_GETARG_ARRAYTYPE_P(1);
+    mus_arr = PG_GETARG_ARRAYTYPE_P(2);
+    provs_arr = PG_GETARG_ARRAYTYPE_P(3);
     /* p_model_source_ids (5th param, OPTIONAL int[]). NULL or omitted →
      * no model-source linkage. Per-row NULL elements skip linkage for
      * that row only. */
-    bool       has_model_sources = !PG_ARGISNULL(4);
-    ArrayType* msrc_arr = has_model_sources ? PG_GETARG_ARRAYTYPE_P(4) : NULL;
+    has_model_sources = !PG_ARGISNULL(4);
+    msrc_arr = has_model_sources ? PG_GETARG_ARRAYTYPE_P(4) : NULL;
 
-    int n = ArrayGetNItems(ARR_NDIM(utf8s_arr), ARR_DIMS(utf8s_arr));
+    n = ArrayGetNItems(ARR_NDIM(utf8s_arr), ARR_DIMS(utf8s_arr));
     if (n != ArrayGetNItems(ARR_NDIM(types_arr), ARR_DIMS(types_arr)) ||
         n != ArrayGetNItems(ARR_NDIM(mus_arr),   ARR_DIMS(mus_arr))   ||
         n != ArrayGetNItems(ARR_NDIM(provs_arr), ARR_DIMS(provs_arr))) {
@@ -1345,12 +1476,8 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
      * A single backend can't safely fan out SPI across threads, so this
      * is sequential. Wall-time win comes from amortizing the function-
      * call overhead and from using shared cached property tables. */
-    Datum* utf8_d; bool* utf8_n;
-    Datum* type_d; bool* type_n;
-    Datum* mu_d;   bool* mu_n;
-    Datum* prov_d; bool* prov_n;
-    Datum* msrc_d = NULL; bool* msrc_n = NULL;
-    int dummy;
+    msrc_d = NULL;
+    msrc_n = NULL;
     deconstruct_array(utf8s_arr, BYTEAOID, -1, false, TYPALIGN_INT, &utf8_d, &utf8_n, &dummy);
     deconstruct_array(types_arr, TEXTOID, -1, false, TYPALIGN_INT, &type_d, &type_n, &dummy);
     deconstruct_array(mus_arr,   FLOAT8OID, sizeof(float8), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE, &mu_d, &mu_n, &dummy);
@@ -1359,12 +1486,14 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
         deconstruct_array(msrc_arr, INT4OID, sizeof(int32), true, TYPALIGN_INT, &msrc_d, &msrc_n, &dummy);
     }
 
-    TextDecomposeSummary total;
     memset(&total, 0, sizeof(total));
 
-    for (int i = 0; i < n; i++) {
-        if (utf8_n[i] || type_n[i] || mu_n[i] || prov_n[i]) continue;
+    for (i = 0; i < n; i++) {
         LOCAL_FCINFO(inner, 5);
+        Datum result;
+        bool isnull;
+
+        if (utf8_n[i] || type_n[i] || mu_n[i] || prov_n[i]) continue;
         InitFunctionCallInfoData(*inner, NULL, 5, InvalidOid, NULL, NULL);
         inner->args[0].value = utf8_d[i]; inner->args[0].isnull = false;
         inner->args[1].value = type_d[i]; inner->args[1].isnull = false;
@@ -1377,7 +1506,7 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
             inner->args[4].value  = (Datum) 0;
             inner->args[4].isnull = true;
         }
-        Datum result = pg_text_decompose(inner);
+        result = pg_text_decompose(inner);
         if (!inner->isnull) {
             HeapTupleHeader hth = DatumGetHeapTupleHeader(result);
             HeapTupleData htd;
@@ -1385,18 +1514,16 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
             ItemPointerSetInvalid(&(htd.t_self));
             htd.t_tableOid = InvalidOid;
             htd.t_data = hth;
-            bool isnull;
             total.entity_count        += DatumGetInt64(GetAttributeByNum(hth, 1, &isnull));
             total.edge_count          += DatumGetInt64(GetAttributeByNum(hth, 2, &isnull));
             total.edge_member_count   += DatumGetInt64(GetAttributeByNum(hth, 3, &isnull));
             total.physicality_count   += DatumGetInt64(GetAttributeByNum(hth, 4, &isnull));
-            total.sequence_count      += DatumGetInt64(GetAttributeByNum(hth, 5, &isnull));
+            total.composition_child_count += DatumGetInt64(GetAttributeByNum(hth, 5, &isnull));
             total.significance_count  += DatumGetInt64(GetAttributeByNum(hth, 6, &isnull));
             total.classification_count += DatumGetInt64(GetAttributeByNum(hth, 7, &isnull));
         }
     }
 
-    TupleDesc tupdesc;
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
         ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                         errmsg("pg_text_decompose_batch: composite type expected")));
@@ -1406,17 +1533,15 @@ Datum pg_text_decompose_batch(PG_FUNCTION_ARGS)
     /* 9-field summary. Batch never returns a single root — root_hash and
      * root_entity_type_id are always NULL. Callers that need per-row
      * roots should iterate text_decompose() one row at a time. */
-    Datum values[9];
-    bool  nulls[9] = { false,false,false,false,false,false,false,true,true };
     values[0] = Int64GetDatum(total.entity_count);
     values[1] = Int64GetDatum(total.edge_count);
     values[2] = Int64GetDatum(total.edge_member_count);
     values[3] = Int64GetDatum(total.physicality_count);
-    values[4] = Int64GetDatum(total.sequence_count);
+    values[4] = Int64GetDatum(total.composition_child_count);
     values[5] = Int64GetDatum(total.significance_count);
     values[6] = Int64GetDatum(total.classification_count);
     values[7] = (Datum) 0;
     values[8] = (Datum) 0;
-    HeapTuple tup = heap_form_tuple(tupdesc, values, nulls);
+    tup = heap_form_tuple(tupdesc, values, nulls);
     PG_RETURN_DATUM(HeapTupleGetDatum(tup));
 }

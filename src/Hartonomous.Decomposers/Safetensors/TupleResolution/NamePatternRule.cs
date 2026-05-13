@@ -27,9 +27,3 @@ public sealed record NamePatternRule(
     string? ExpertGroupName = null,
     string? AdapterNameGroupName = null,
     IReadOnlyList<FusedSplitSpec>? FusedSplits = null);
-
-public sealed record FusedSplitSpec(
-    TupleSlot Slot,
-    int Axis,
-    int Ordinal,
-    int Parts);

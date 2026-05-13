@@ -108,26 +108,6 @@ CREATE FUNCTION normalize_4d(point4d) RETURNS point4d
     AS 'MODULE_PATHNAME', 'pg_normalize_4d'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- substrate.ls4d_from_centroids — build a PostGIS LINESTRINGZM from an
--- ordered point4d[] participant array. Used by edge emission paths to
--- materialize edge.geom from participant centroids in role order. The
--- inner C function returns EWKB; ST_GeomFromWKB lifts it to geometry.
--- Producers can also build the same EWKB directly in C# and skip this
--- round-trip when emitting via binary COPY.
-CREATE FUNCTION substrate.ls4d_from_centroids_wkb(point4d[]) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_ls4d_from_centroids_wkb'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE OR REPLACE FUNCTION substrate.ls4d_from_centroids(point4d[])
-RETURNS geometry(LINESTRINGZM)
-LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE
-AS $$
-    SELECT ST_GeomFromWKB(substrate.ls4d_from_centroids_wkb($1), 0)::geometry(LINESTRINGZM);
-$$;
-
-COMMENT ON FUNCTION substrate.ls4d_from_centroids(point4d[]) IS
-    'Build a LINESTRINGZM from an ordered participant centroid array. Used to compute edge.geom inline from participants in role order, avoiding any post-insert geometry-population pass. SRID 0 (substrate is not georeferenced).';
-
 CREATE FUNCTION slerp(point4d, point4d, double precision) RETURNS point4d
     AS 'MODULE_PATHNAME', 'pg_slerp'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
@@ -456,7 +436,7 @@ CREATE OR REPLACE FUNCTION substrate.similarity_topk(
     LANGUAGE C STABLE STRICT;
 
 -- ── substrate.recompose_walk ────────────────────────────────────────────
--- Iterative DFS over substrate.sequence starting at p_root_hash. Emits the
+-- Iterative DFS over physicality-backed composition metadata starting at p_root_hash. Emits the
 -- root first then descendants in left-to-right depth-first order. content_label
 -- is always NULL — substrate.entity is hash-only; the C# layer joins content
 -- (codepoint_value, classification, etc.) out-of-band.
@@ -683,6 +663,8 @@ CREATE FUNCTION geometry4d_eq(geometry4d, geometry4d) RETURNS boolean
     AS 'MODULE_PATHNAME', 'pg_geometry4d_eq' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 CREATE FUNCTION geometry4d_ne(geometry4d, geometry4d) RETURNS boolean
     AS 'MODULE_PATHNAME', 'pg_geometry4d_ne' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION bytea_to_geometry4d(bytea) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_bytea_to_geometry4d' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 CREATE OPERATOR = (
     LEFTARG = geometry4d, RIGHTARG = geometry4d,
@@ -854,7 +836,7 @@ CREATE TYPE substrate.text_decompose_summary AS (
     edge_count            BIGINT,
     edge_member_count     BIGINT,
     physicality_count     BIGINT,
-    sequence_count        BIGINT,
+    composition_child_count BIGINT,
     significance_count    BIGINT,
     classification_count  BIGINT,
     root_hash             bytea,
@@ -967,7 +949,7 @@ CREATE FUNCTION substrate.cp_z(cp int) RETURNS double precision
 CREATE FUNCTION substrate.cp_m(cp int) RETURNS double precision
     AS 'MODULE_PATHNAME', 'pg_cp_m' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
-COMMENT ON FUNCTION substrate.cp_x(int) IS 'Codepoint S^3 X coordinate. Combine with cp_y/z/m + ST_MakePoint to build POINTZM.';
+COMMENT ON FUNCTION substrate.cp_x(int) IS 'Codepoint S^3 X coordinate. Combine with cp_y/z/m + ST_MakePoint4D to build POINT4D geometry4d.';
 
 -- ── (22) Extended UCD/UCA accessors — full catalog from generated tables ──
 -- Bidi class, East-Asian width, Hangul syllable type, numeric type,

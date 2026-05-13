@@ -6,7 +6,8 @@ BEGIN
     RETURN QUERY
         SELECT 'entities'::TEXT, count(*)::BIGINT FROM substrate.entity
       UNION ALL SELECT 'edges',           count(*) FROM substrate.edge
-      UNION ALL SELECT 'sequences',       count(*) FROM substrate.sequence
+      UNION ALL SELECT 'composition_metadata',
+                       count(*) FROM substrate.physicality WHERE child_hashes IS NOT NULL
       UNION ALL SELECT 'physicalities',   count(*) FROM substrate.physicality
       UNION ALL SELECT 'classifications', count(*) FROM substrate.entity_classification;
 END

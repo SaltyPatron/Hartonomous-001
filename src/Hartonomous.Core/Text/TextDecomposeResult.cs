@@ -16,7 +16,7 @@ public readonly record struct TextDecomposeResult(
     EntityHandle RootHandle,
     Hash32 RootHash,
     long EntitiesEmitted,
-    long SequenceRowsEmitted,
+    long CompositionChildrenEmitted,
     long PhysicalityRowsEmitted,
     long SignificanceRowsEmitted,
     (double X, double Y, double Z, double M) RootCentroid);

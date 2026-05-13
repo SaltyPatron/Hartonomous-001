@@ -47,6 +47,7 @@ BEGIN
             is_extended_pictographic,
             ccc,
             name,
+            decomposition_type,
             decomposition_mapping,
             simple_uppercase,
             simple_lowercase,
@@ -72,6 +73,28 @@ BEGIN
             a.extended_pictographic,
             a.ccc::SMALLINT,
             a.name,
+            -- Map UC_DECOMP_TYPE_* enum (pg_ucd_decomp.h) to canonical UCD
+            -- decomposition-type names per UAX #44 §5.7.3. 0 = None → NULL.
+            CASE a.decomp_type
+                WHEN  1 THEN 'Canonical'
+                WHEN  2 THEN 'Compat'
+                WHEN  3 THEN 'Circle'
+                WHEN  4 THEN 'Final'
+                WHEN  5 THEN 'Font'
+                WHEN  6 THEN 'Fraction'
+                WHEN  7 THEN 'Initial'
+                WHEN  8 THEN 'Isolated'
+                WHEN  9 THEN 'Medial'
+                WHEN 10 THEN 'Narrow'
+                WHEN 11 THEN 'NoBreak'
+                WHEN 12 THEN 'Small'
+                WHEN 13 THEN 'Square'
+                WHEN 14 THEN 'Sub'
+                WHEN 15 THEN 'Super'
+                WHEN 16 THEN 'Vertical'
+                WHEN 17 THEN 'Wide'
+                ELSE NULL
+            END,
             a.decomposition_mapping,
             CASE WHEN a.simple_uppercase > 0 AND a.simple_uppercase <> a.cp THEN a.simple_uppercase END,
             CASE WHEN a.simple_lowercase > 0 AND a.simple_lowercase <> a.cp THEN a.simple_lowercase END,

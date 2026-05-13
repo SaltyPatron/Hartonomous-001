@@ -15,7 +15,7 @@ applyTo: 'sql/**/*.sql'
 
 | Schema | Purpose | Canonical location |
 |--------|---------|----------------|
-| `substrate` | Core tables: `entity`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `sequence` | `sql/schema/tables/core/` |
+| `substrate` | Core tables: `entity`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance` | `sql/schema/tables/core/` |
 | `substrate` | Reference tables: `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. | `sql/schema/tables/reference/`, `sql/schema/seed/` |
 | `substrate` | Junction tables: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc. | `sql/schema/tables/junctions/` |
 | `monitor` | Operational monitoring and metrics | `sql/schema/tables/monitor/` |
@@ -56,10 +56,10 @@ Junction table names are validated against an allowlist (e.g., `AssertSafeIdenti
 
 - **Reference tables**: classification vocabularies — `entity_type`, `pos`, `deprel`, `morph_feature`, `sense`, `language`, `tensor_role`, etc. Small, indexed, rarely changed.
 - **Junction tables**: evidence and classification mappings — `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc.
-- **Content tables**: the substrate itself — `entity`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `sequence`.
+- **Content tables**: the substrate itself — `entity`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`.
 
 Do not push classification rows into `substrate.entity` or `substrate.edge`. Classifications are infrastructure.
 
 ## Geometry rules
 
-Substrate physicality uses `geometry(GeometryZM)`. Do not call raw PostGIS `ST_Distance`, `ST_Centroid`, `ST_FrechetDistance`, or `ST_HausdorffDistance` on substrate physicality; use substrate 4D/S3 functions instead.
+Substrate physicality uses native `geometry4d`. Do not call raw PostGIS `ST_Distance`, `ST_Centroid`, `ST_FrechetDistance`, or `ST_HausdorffDistance` on substrate physicality; use substrate 4D/S3 functions instead.

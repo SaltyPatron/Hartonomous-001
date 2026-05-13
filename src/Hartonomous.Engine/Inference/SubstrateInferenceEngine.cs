@@ -119,13 +119,10 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
     }
 
     /// <summary>
-    /// Poll until the prompt's text_composition AND its child sequence rows
-    /// have drained into substrate. Waiting only for the entity is insufficient
-    /// — substrate.entity and substrate.sequence drain via independent
-    /// per-kind drain tasks (post-W2E: each on its own connection with a
-    /// session-local temp table), so the document can land in entity before
-    /// its sequence rows land. Inference's seed activation walks
-    /// substrate.sequence, so we must wait for that too.
+    /// Poll until the prompt's text_composition and physicality-backed
+    /// composition metadata have drained into substrate. Waiting only for the
+    /// entity is insufficient because inference seed activation reads child
+    /// hashes from physicality metadata.
     /// </summary>
     private async Task<bool> WaitForDocumentAsync(byte[] hash, CancellationToken ct)
     {
@@ -142,8 +139,8 @@ public sealed partial class SubstrateInferenceEngine : IInferenceEngine
             if (await r.ReadAsync(ct).ConfigureAwait(false))
             {
                 long entityCount = r.GetInt64(0);
-                long sequenceCount = r.GetInt64(1);
-                if (entityCount > 0 && sequenceCount > 0)
+                long compositionChildCount = r.GetInt64(1);
+                if (entityCount > 0 && compositionChildCount > 0)
                 {
                     if (i > 0) { LogDrainBarrier(_logger, i * 50); }
                     return true;

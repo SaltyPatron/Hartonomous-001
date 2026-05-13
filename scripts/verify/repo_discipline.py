@@ -42,7 +42,7 @@ TYPE_DECL = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\b"
 )
 SQL_PRIMARY_OBJECT = re.compile(
-    r"(?im)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?"
+    r"(?im)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?"
     r"(?P<kind>DOMAIN|TYPE|TABLE|FUNCTION|PROCEDURE|VIEW|SCHEMA|EXTENSION|INDEX|TRIGGER|AGGREGATE)"
     r"\s+(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(?P<name>(?:\"[^\"]+\"|[a-z_][a-z0-9_]*)(?:\s*\.\s*(?:\"[^\"]+\"|[a-z_][a-z0-9_]*))?)\b",

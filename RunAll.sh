@@ -28,6 +28,7 @@ codegen_force=true
 build_clean=true
 install_mode="${HARTONOMOUS_RUNALL_INSTALL_MODE:-copy}"
 source_root=""
+model_source=""
 ucd_root=""
 
 usage() {
@@ -45,6 +46,9 @@ usage() {
 |
 |Options:
 |  --source PATH          Seed source root passed to each scripts/hart seed phase.
+|  --model-source PATH    Override the model hub root for ModelDecomp (independent of --source).
+|                         Defaults to $HARTONOMOUS_PATHS__MODELSOURCE / $HARTONOMOUS_MODEL_SOURCE,
+|                         else falls back to Decomposers.Safetensors.HubPath in appsettings.
 |  --ucd-root PATH        UCD root passed to scripts/hart codegen unicode.
 |  --with-model           Include the ModelDecomp seed phase.
 |  --with-tests           Also run native/unit tests after build and smoke/integration around DB work.
@@ -93,6 +97,7 @@ write_run_metadata() {
         printf 'postgres_user=%s\n' "$POSTGRES_USER"
         printf 'postgres_db=%s\n' "$POSTGRES_DB"
         printf 'source_root=%s\n' "${source_root:-$SOURCE_ROOT}"
+        printf 'model_source=%s\n' "${model_source:-$MODEL_SOURCE}"
         printf 'ucd_root=%s\n' "${ucd_root:-$UCD_ROOT}"
         printf 'dotnet_configuration=%s\n' "$DOTNET_CONFIGURATION"
         printf 'native_configuration=%s\n' "$NATIVE_CONFIGURATION"
@@ -167,6 +172,7 @@ run_step() {
 while (($#)); do
     case "$1" in
         --source) source_root="${2:?missing source path}"; shift 2 ;;
+        --model-source) model_source="${2:?missing model source}"; shift 2 ;;
         --ucd-root) ucd_root="${2:?missing UCD root}"; shift 2 ;;
         --with-model) with_model=true; shift ;;
         --with-tests) with_tests=true; shift ;;
@@ -245,6 +251,8 @@ fi
 if [[ "$skip_seed" == false ]]; then
     seed_common=()
     [[ -n "$source_root" ]] && seed_common+=(--source "$source_root")
+    effective_model_source="${model_source:-$MODEL_SOURCE}"
+    [[ -n "$effective_model_source" ]] && seed_common+=(--model-source "$effective_model_source")
     [[ "$skip_build" == false ]] && seed_common+=(--no-build)
 
     for phase_spec in \

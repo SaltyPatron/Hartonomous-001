@@ -236,8 +236,8 @@ internal sealed partial class ModelPassOrchestrator
                 new EdgeMemberSpec(modelEntity, "source", 0),
                 new EdgeMemberSpec(tensorH, "target", 1),
             ]);
-            batch.AddSequence(packageEntity, tensorIdx, packageTensorH);
-            batch.AddSequence(packageTensorH, 1, tensorH);
+            batch.AddCompositionChild(packageEntity, tensorIdx, packageTensorH);
+            batch.AddCompositionChild(packageTensorH, 1, tensorH);
 
             // Tensor name + dtype + shape as substrate documents (seed-uses-core).
             // Identical strings across models collapse to ONE document with N

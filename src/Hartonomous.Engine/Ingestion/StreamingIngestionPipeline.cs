@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -33,7 +34,7 @@ namespace Hartonomous.Engine.Ingestion;
 ///   * Entity significance records are emitted inline by producers. Edge
 ///     significance is primed by the phase-owned post-pass, cross-producted
 ///     against every arena present at execution time.
-///   * Edge LINESTRINGZM geometry is built inline in C# when participant
+///   * Edge LINESTRING4D geometry is built inline in C# when participant
 ///     centroids are present in the producer batch. Edges whose participant
 ///     physicality is not available inline are populated by the phase-owned
 ///     <c>populate_edge_trajectories</c> post-pass.
@@ -117,7 +118,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly Channel<EdgeMemberRecord> _edgeMembers;
     private readonly Channel<JunctionRecord> _junctions;
     private readonly Channel<PhysicalityRecord> _physicalities;
-    private readonly Channel<SequenceRecord> _sequences;
     private readonly Channel<EntitySignificanceRecord> _entitySignificances;
     private readonly Channel<EdgeSignificanceRecord> _edgeSignificances;
     private readonly Channel<EntityModelSourceRecord> _entityModelSources;
@@ -145,7 +145,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private long _edgeMembersEmitted;
     private long _junctionsEmitted;
     private long _physicalitiesEmitted;
-    private long _sequencesEmitted;
     private long _entitySignificancesEmitted;
     private long _edgeSignificancesEmitted;
     private long _entityModelSourcesEmitted;
@@ -183,12 +182,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         public const int EdgeMember = 3;
         public const int Junction = 4;
         public const int Physicality = 5;
-        public const int Sequence = 6;
-        public const int EntitySignificance = 7;
-        public const int EdgeSignificance = 8;
-        public const int EntityModelSource = 9;
-        public const int EdgeRatingEvent = 10;
-        public const int Count = 11;
+        public const int EntitySignificance = 6;
+        public const int EdgeSignificance = 7;
+        public const int EntityModelSource = 8;
+        public const int EdgeRatingEvent = 9;
+        public const int Count = 10;
 
         public static string Name(int idx) => idx switch
         {
@@ -198,7 +196,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             EdgeMember => "edge_member",
             Junction => "junction",
             Physicality => "physicality",
-            Sequence => "sequence",
             EntitySignificance => "entity_significance",
             EdgeSignificance => "edge_significance",
             EntityModelSource => "entity_model_source",
@@ -246,7 +243,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private readonly ConcurrentDictionary<Hash32, byte> _edgeDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _edgeMemberDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _physicalityDedup = new();
-    private readonly ConcurrentDictionary<Hash32, byte> _sequenceDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _entitySignificanceDedup = new();
     private readonly ConcurrentDictionary<Hash32, byte> _edgeSignificanceDedup = new();
     private long _entityDedupCount;
@@ -254,7 +250,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private long _edgeDedupCount;
     private long _edgeMemberDedupCount;
     private long _physicalityDedupCount;
-    private long _sequenceDedupCount;
     private long _entitySignificanceDedupCount;
     private long _edgeSignificanceDedupCount;
 
@@ -262,7 +257,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     // SubmitBatchAsync drops its (entity_hash → Point4D) here. Edges built
     // in subsequent batches look up their participants' centroids here so
     // cross-batch references (an edge whose participants were emitted in
-    // earlier batches) get inline LINESTRINGZM at submit time — no DB
+    // earlier batches) get inline LINESTRING4D at submit time — no DB
     // round-trip, no end-of-phase populate_edge_trajectories post-pass
     // needed.
     //
@@ -297,7 +292,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _edgeMembers = Channel.CreateBounded<EdgeMemberRecord>(opts);
         _junctions = Channel.CreateBounded<JunctionRecord>(opts);
         _physicalities = Channel.CreateBounded<PhysicalityRecord>(opts);
-        _sequences = Channel.CreateBounded<SequenceRecord>(opts);
         _entitySignificances = Channel.CreateBounded<EntitySignificanceRecord>(opts);
         _edgeSignificances = Channel.CreateBounded<EdgeSignificanceRecord>(opts);
         _entityModelSources = Channel.CreateBounded<EntityModelSourceRecord>(opts);
@@ -348,7 +342,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         KindIndex.EdgeMember => DrainEdgeMembersAsync(ct),
         KindIndex.Junction => DrainJunctionsAsync(ct),
         KindIndex.Physicality => DrainPhysicalitiesAsync(ct),
-        KindIndex.Sequence => DrainSequencesAsync(ct),
         KindIndex.EntitySignificance => DrainEntitySignificancesAsync(ct),
         KindIndex.EdgeSignificance => DrainEdgeSignificancesAsync(ct),
         KindIndex.EntityModelSource => DrainEntityModelSourcesAsync(ct),
@@ -382,7 +375,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _edgeMembers.Writer.TryComplete(ex);
         _junctions.Writer.TryComplete(ex);
         _physicalities.Writer.TryComplete(ex);
-        _sequences.Writer.TryComplete(ex);
         _entitySignificances.Writer.TryComplete(ex);
         _edgeSignificances.Writer.TryComplete(ex);
         _entityModelSources.Writer.TryComplete(ex);
@@ -499,7 +491,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         EdgeMembersEmitted = _edgeMembersEmitted,
         JunctionsEmitted = _junctionsEmitted,
         PhysicalitiesEmitted = _physicalitiesEmitted,
-        SequencesEmitted = _sequencesEmitted,
         EntitySignificancesEmitted = _entitySignificancesEmitted,
         EdgeSignificancesEmitted = _edgeSignificancesEmitted,
         EntityModelSourcesEmitted = _entityModelSourcesEmitted,
@@ -559,7 +550,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             b.Entities.Count
             + b.Physicalities.Count
             + b.Junctions.Count
-            + b.Sequences.Count
             + b.Significances.Count
             + b.EntityModelSources.Count;
         foreach (EdgeEntry edge in b.Edges)
@@ -569,6 +559,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
         List<IngestionRecord> records = new(estimatedCount);
         string batchProvenance = b.ProvenanceCode;
+        Dictionary<Hash32, (Hash32[] ChildHashes, int[] OrdinalStarts, int[] RleCounts)> compositionMetadata =
+            BuildCompositionMetadata(b.CompositionChildren);
+        HashSet<Hash32> parentsWithPhysicality = new();
         foreach (EntityEntry e in b.Entities)
         {
             records.Add(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance));
@@ -576,14 +569,76 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
         foreach (PhysicalityEntry p in b.Physicalities)
         {
-            Hash32 contentHash = Hartonomous.Core.Compute.Common.Blake3.Hash32(p.Wkb.AsSpan());
+            Hash32[]? childHashes = p.ChildHashes;
+            int[]? ordinalStarts = p.OrdinalStarts;
+            int[]? rleCounts = p.RleCounts;
+            if (compositionMetadata.TryGetValue(p.Entity.Hash, out var metadata))
+            {
+                childHashes = metadata.ChildHashes;
+                ordinalStarts = metadata.OrdinalStarts;
+                rleCounts = metadata.RleCounts;
+            }
+
+            Hash32 contentHash = ComputePhysicalityContentHash(
+                p.Geometry,
+                childHashes,
+                ordinalStarts,
+                rleCounts);
             _centroids[p.Entity.Hash] = p.Centroid;
             records.Add(new PhysicalityRecord(
                 p.PhysicalityTypeCode,
                 p.Entity.Hash,
                 contentHash,
-                p.Wkb,
-                p.Centroid));
+                p.Geometry,
+                p.Centroid,
+                childHashes,
+                ordinalStarts,
+                rleCounts));
+            parentsWithPhysicality.Add(p.Entity.Hash);
+        }
+
+        foreach (var pair in compositionMetadata)
+        {
+            if (parentsWithPhysicality.Contains(pair.Key))
+            {
+                continue;
+            }
+
+            Hartonomous.Core.Geometry.Point4D[] vertices =
+                new Hartonomous.Core.Geometry.Point4D[pair.Value.ChildHashes.Length];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!_centroids.TryGetValue(pair.Value.ChildHashes[i], out var childCentroid))
+                {
+                    throw new InvalidOperationException(
+                        $"Composition physicality for {pair.Key.ToHexString()} cannot be built: " +
+                        $"child {pair.Value.ChildHashes[i].ToHexString()} has no centroid in the current ingestion phase.");
+                }
+                vertices[i] = childCentroid;
+            }
+
+            if (!Hartonomous.Core.Geometry.Point4D.TryMean(vertices, out var centroid))
+            {
+                throw new InvalidOperationException(
+                    $"Composition physicality for {pair.Key.ToHexString()} has no child vertices.");
+            }
+
+            byte[] geometry = Geometry4dPayloadBuilder.LineString(vertices);
+            Hash32 contentHash = ComputePhysicalityContentHash(
+                geometry,
+                pair.Value.ChildHashes,
+                pair.Value.OrdinalStarts,
+                pair.Value.RleCounts);
+            _centroids[pair.Key] = centroid;
+            records.Add(new PhysicalityRecord(
+                "contour",
+                pair.Key,
+                contentHash,
+                geometry,
+                centroid,
+                pair.Value.ChildHashes,
+                pair.Value.OrdinalStarts,
+                pair.Value.RleCounts));
         }
 
         Dictionary<string, int> edgeTypeIds = new(StringComparer.Ordinal);
@@ -604,7 +659,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 orderedHashes[j] = sorted[j].Entity.Hash;
             }
             Hash32 edgeHash = ComputeEdgeHash(edgeTypeId, orderedHashes);
-            byte[]? inlineGeomWkb = null;
+            byte[]? inlineGeometry = null;
             if (sorted.Length >= 2)
             {
                 Hartonomous.Core.Geometry.Point4D[] verts =
@@ -621,11 +676,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
                 if (allPresent)
                 {
-                    inlineGeomWkb = PostGisWkbBuilder.LineStringZM((ReadOnlySpan<Hartonomous.Core.Geometry.Point4D>)verts);
+                    inlineGeometry = Geometry4dPayloadBuilder.LineString((ReadOnlySpan<Hartonomous.Core.Geometry.Point4D>)verts);
                 }
             }
 
-            records.Add(new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode, inlineGeomWkb));
+            records.Add(new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode, inlineGeometry));
             for (int j = 0; j < sorted.Length; j++)
             {
                 records.Add(new EdgeMemberRecord(
@@ -692,15 +747,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 j.Mu));
         }
 
-        foreach (SequenceEntry s in b.Sequences)
-        {
-            records.Add(new SequenceRecord(
-                s.Parent.Hash,
-                s.Ordinal,
-                s.Child.Hash,
-                s.RleCount));
-        }
-
         foreach (SignificanceEntry sig in b.Significances)
         {
             records.Add(new EntitySignificanceRecord(
@@ -718,6 +764,84 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         }
 
         return records;
+    }
+
+    private static Dictionary<Hash32, (Hash32[] ChildHashes, int[] OrdinalStarts, int[] RleCounts)>
+        BuildCompositionMetadata(IReadOnlyList<CompositionChildEntry> entries)
+    {
+        Dictionary<Hash32, List<CompositionChildEntry>> grouped = new();
+        foreach (CompositionChildEntry entry in entries)
+        {
+            if (entry.RleCount <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(entries), "RLE count must be positive.");
+            }
+            if (!grouped.TryGetValue(entry.Parent.Hash, out             List<CompositionChildEntry>? list))
+            {
+                list = [];
+                grouped.Add(entry.Parent.Hash, list);
+            }
+            list.Add(entry);
+        }
+
+        Dictionary<Hash32, (Hash32[] ChildHashes, int[] OrdinalStarts, int[] RleCounts)> metadata = new(grouped.Count);
+        foreach (var pair in grouped)
+        {
+            pair.Value.Sort((a, b) => a.Ordinal.CompareTo(b.Ordinal));
+            Hash32[] childHashes = new Hash32[pair.Value.Count];
+            int[] ordinalStarts = new int[pair.Value.Count];
+            int[] rleCounts = new int[pair.Value.Count];
+            int previousEnd = 0;
+            for (int i = 0; i < pair.Value.Count; i++)
+            {
+                CompositionChildEntry entry = pair.Value[i];
+                if (entry.Ordinal <= previousEnd)
+                {
+                    throw new InvalidOperationException(
+                        $"Composition metadata for {pair.Key.ToHexString()} overlaps at ordinal {entry.Ordinal}.");
+                }
+                childHashes[i] = entry.Child.Hash;
+                ordinalStarts[i] = entry.Ordinal;
+                rleCounts[i] = entry.RleCount;
+                previousEnd = entry.Ordinal + entry.RleCount - 1;
+            }
+            metadata.Add(pair.Key, (childHashes, ordinalStarts, rleCounts));
+        }
+
+        return metadata;
+    }
+
+    private static Hash32 ComputePhysicalityContentHash(
+        byte[] geometry,
+        Hash32[]? childHashes,
+        int[]? ordinalStarts,
+        int[]? rleCounts)
+    {
+        if (childHashes is null || ordinalStarts is null || rleCounts is null)
+        {
+            return Hartonomous.Core.Compute.Common.Blake3.Hash32(geometry.AsSpan());
+        }
+        if (childHashes.Length != ordinalStarts.Length || childHashes.Length != rleCounts.Length)
+        {
+            throw new InvalidOperationException("Composition physicality metadata arrays must have matching lengths.");
+        }
+
+        int length = geometry.Length + sizeof(int) + childHashes.Length * (32 + sizeof(int) + sizeof(int));
+        byte[] bytes = new byte[length];
+        geometry.CopyTo(bytes, 0);
+        int offset = geometry.Length;
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(offset, sizeof(int)), childHashes.Length);
+        offset += sizeof(int);
+        for (int i = 0; i < childHashes.Length; i++)
+        {
+            childHashes[i].ToByteArray().CopyTo(bytes, offset);
+            offset += 32;
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(offset, sizeof(int)), ordinalStarts[i]);
+            offset += sizeof(int);
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(offset, sizeof(int)), rleCounts[i]);
+            offset += sizeof(int);
+        }
+        return Hartonomous.Core.Compute.Common.Blake3.Hash32(bytes.AsSpan());
     }
 
     public async Task DrainPendingAsync(CancellationToken ct)
@@ -986,367 +1110,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         return existing;
     }
 
-    public async Task<HashSet<SequenceKey>> GetExistingSequenceRowsAsync(
-        IReadOnlyCollection<SequenceKey> tuples, CancellationToken ct)
-    {
-        HashSet<SequenceKey> existing = new(tuples.Count);
-        if (tuples.Count == 0)
-        {
-            return existing;
-        }
-
-        int n = tuples.Count;
-        byte[][] phArr = new byte[n][];
-        int[] ordArr = new int[n];
-        int i = 0;
-        foreach (SequenceKey k in tuples)
-        {
-            phArr[i]  = k.ParentHash.ToByteArray();
-            ordArr[i] = k.Ordinal;
-            i++;
-        }
-
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingSequenceRows, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = phArr,  NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = ordArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await r.ReadAsync(ct).ConfigureAwait(false))
-        {
-            byte[] ph = (byte[])r[0];
-            int ord   = (int)r[1];
-            existing.Add(new SequenceKey(ph, ord));
-        }
-        return existing;
-    }
-
-    private async Task<(
-        HashSet<HashKey> ExistingEntities,
-        HashSet<EntityClassificationKey> ExistingClassifications,
-        HashSet<EdgeKey> ExistingEdges,
-        HashSet<EdgeMemberKey> ExistingEdgeMembers,
-        HashSet<PhysicalityKey> ExistingPhysicalities,
-        HashSet<SequenceKey> ExistingSequences,
-        HashSet<Hash32> ExistingEntitySignificances)> GetExistingIngressKeysAsync(
-            HashSet<HashKey> entityCandidates,
-            HashSet<EntityClassificationKey> classificationCandidates,
-            HashSet<EdgeKey> edgeCandidates,
-            HashSet<EdgeMemberKey> edgeMemberCandidates,
-            HashSet<PhysicalityKey> physicalityCandidates,
-            HashSet<SequenceKey> sequenceCandidates,
-            Dictionary<Hash32, EntitySignificanceRecord> entitySignificanceCandidates,
-            CancellationToken ct)
-    {
-        HashSet<HashKey> existingEntities = new(entityCandidates.Count);
-        HashSet<EntityClassificationKey> existingClassifications = new(classificationCandidates.Count);
-        HashSet<EdgeKey> existingEdges = new(edgeCandidates.Count);
-        HashSet<EdgeMemberKey> existingEdgeMembers = new(edgeMemberCandidates.Count);
-        HashSet<PhysicalityKey> existingPhysicalities = new(physicalityCandidates.Count);
-        HashSet<SequenceKey> existingSequences = new(sequenceCandidates.Count);
-        HashSet<Hash32> existingEntitySignificances = new(entitySignificanceCandidates.Count);
-
-        if (entityCandidates.Count == 0
-            && classificationCandidates.Count == 0
-            && edgeCandidates.Count == 0
-            && edgeMemberCandidates.Count == 0
-            && physicalityCandidates.Count == 0
-            && sequenceCandidates.Count == 0
-            && entitySignificanceCandidates.Count == 0)
-        {
-            return (
-                existingEntities,
-                existingClassifications,
-                existingEdges,
-                existingEdgeMembers,
-                existingPhysicalities,
-                existingSequences,
-                existingEntitySignificances);
-        }
-
-        byte[][] entityHashArr = new byte[entityCandidates.Count][];
-        int i = 0;
-        foreach (HashKey k in entityCandidates)
-        {
-            entityHashArr[i++] = k.Hash.ToByteArray();
-        }
-
-        Dictionary<string, int> entityTypeIds = new(StringComparer.Ordinal);
-        Dictionary<string, int> provenanceIds = new(StringComparer.Ordinal);
-        byte[][] classificationHashArr = new byte[classificationCandidates.Count][];
-        int[] classificationTypeArr = new int[classificationCandidates.Count];
-        int[] classificationProvenanceArr = new int[classificationCandidates.Count];
-        i = 0;
-        foreach (EntityClassificationKey k in classificationCandidates)
-        {
-            classificationHashArr[i] = k.EntityHash.ToByteArray();
-            classificationTypeArr[i] = await ResolveEntityTypeIdAsync(
-                entityTypeIds, k.EntityTypeCode, ct).ConfigureAwait(false);
-            classificationProvenanceArr[i] = await ResolveProvenanceIdAsync(
-                provenanceIds, k.ProvenanceCode, ct).ConfigureAwait(false);
-            i++;
-        }
-
-        Dictionary<string, int> edgeTypeIds = new(StringComparer.Ordinal);
-        int[] edgeTypeArr = new int[edgeCandidates.Count];
-        byte[][] edgeHashArr = new byte[edgeCandidates.Count][];
-        i = 0;
-        foreach (EdgeKey k in edgeCandidates)
-        {
-            edgeTypeArr[i] = await ResolveEdgeTypeIdAsync(edgeTypeIds, k.EdgeTypeCode, ct).ConfigureAwait(false);
-            edgeHashArr[i] = k.EdgeHash.ToByteArray();
-            i++;
-        }
-
-        Dictionary<string, int> roleIds = new(StringComparer.Ordinal);
-        int[] memberEdgeTypeArr = new int[edgeMemberCandidates.Count];
-        byte[][] memberEdgeHashArr = new byte[edgeMemberCandidates.Count][];
-        byte[][] memberEntityHashArr = new byte[edgeMemberCandidates.Count][];
-        int[] memberRoleArr = new int[edgeMemberCandidates.Count];
-        int[] memberPositionArr = new int[edgeMemberCandidates.Count];
-        i = 0;
-        foreach (EdgeMemberKey k in edgeMemberCandidates)
-        {
-            memberEdgeTypeArr[i] = await ResolveEdgeTypeIdAsync(edgeTypeIds, k.EdgeTypeCode, ct).ConfigureAwait(false);
-            memberEdgeHashArr[i] = k.EdgeHash.ToByteArray();
-            memberEntityHashArr[i] = k.EntityHash.ToByteArray();
-            memberRoleArr[i] = await ResolveEdgeRoleIdAsync(roleIds, k.RoleCode, ct).ConfigureAwait(false);
-            memberPositionArr[i] = k.RolePosition;
-            i++;
-        }
-
-        Dictionary<string, int> physicalityTypeIds = new(StringComparer.Ordinal);
-        int[] physicalityTypeArr = new int[physicalityCandidates.Count];
-        byte[][] physicalityEntityHashArr = new byte[physicalityCandidates.Count][];
-        byte[][] physicalityContentHashArr = new byte[physicalityCandidates.Count][];
-        i = 0;
-        foreach (PhysicalityKey k in physicalityCandidates)
-        {
-            physicalityTypeArr[i] = await ResolvePhysicalityTypeIdAsync(
-                physicalityTypeIds, k.PhysicalityTypeCode, ct).ConfigureAwait(false);
-            physicalityEntityHashArr[i] = k.EntityHash.ToByteArray();
-            physicalityContentHashArr[i] = k.ContentHash.ToByteArray();
-            i++;
-        }
-
-        byte[][] sequenceParentHashArr = new byte[sequenceCandidates.Count][];
-        int[] sequenceOrdinalArr = new int[sequenceCandidates.Count];
-        i = 0;
-        foreach (SequenceKey k in sequenceCandidates)
-        {
-            sequenceParentHashArr[i] = k.ParentHash.ToByteArray();
-            sequenceOrdinalArr[i] = k.Ordinal;
-            i++;
-        }
-
-        Dictionary<string, int> contextIds = new(StringComparer.Ordinal);
-        Dictionary<string, int> attestationTypeIds = new(StringComparer.Ordinal);
-        int[] entitySignificanceContextArr = new int[entitySignificanceCandidates.Count];
-        byte[][] entitySignificanceHashArr = new byte[entitySignificanceCandidates.Count][];
-        int[] entitySignificanceAttestationArr = new int[entitySignificanceCandidates.Count];
-        i = 0;
-        foreach (EntitySignificanceRecord k in entitySignificanceCandidates.Values)
-        {
-            entitySignificanceContextArr[i] = await ResolveSignificanceContextIdAsync(
-                contextIds, k.ContextTypeCode, ct).ConfigureAwait(false);
-            entitySignificanceHashArr[i] = k.EntityHash.ToByteArray();
-            entitySignificanceAttestationArr[i] = await ResolveAttestationTypeIdAsync(
-                attestationTypeIds, k.AttestationTypeCode, ct).ConfigureAwait(false);
-            i++;
-        }
-
-        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(IngestionSql.GetExistingIngressKeys, conn);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = entityHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = classificationHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = classificationTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = classificationProvenanceArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = edgeTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = edgeHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = memberEdgeTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = memberEdgeHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = memberEntityHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = memberRoleArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = memberPositionArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = physicalityTypeArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = physicalityEntityHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = physicalityContentHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = sequenceParentHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = sequenceOrdinalArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = entitySignificanceContextArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = entitySignificanceHashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = entitySignificanceAttestationArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
-
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await r.ReadAsync(ct).ConfigureAwait(false))
-        {
-            int kind = r.GetInt32(0);
-            switch (kind)
-            {
-                case 0:
-                    existingEntities.Add(new HashKey((byte[])r[3]));
-                    break;
-                case 1:
-                    existingClassifications.Add(new EntityClassificationKey(
-                        (byte[])r[3],
-                        r.GetString(1),
-                        r.GetString(2)));
-                    break;
-                case 2:
-                    existingEdges.Add(new EdgeKey(r.GetString(1), (byte[])r[3]));
-                    break;
-                case 3:
-                    existingEdgeMembers.Add(new EdgeMemberKey(
-                        r.GetString(1),
-                        (byte[])r[3],
-                        (byte[])r[4],
-                        r.GetString(2),
-                        r.GetInt32(5)));
-                    break;
-                case 4:
-                    existingPhysicalities.Add(new PhysicalityKey(
-                        r.GetString(1),
-                        (byte[])r[3],
-                        (byte[])r[4]));
-                    break;
-                case 5:
-                    existingSequences.Add(new SequenceKey((byte[])r[3], r.GetInt32(5)));
-                    break;
-                case 6:
-                    existingEntitySignificances.Add(ComposeKey(r.GetString(1), r.GetString(2), new Hash32((byte[])r[3])));
-                    break;
-                default:
-                    throw new InvalidOperationException($"Unknown ingress key probe result kind: {kind}");
-            }
-        }
-
-        return (
-            existingEntities,
-            existingClassifications,
-            existingEdges,
-            existingEdgeMembers,
-            existingPhysicalities,
-            existingSequences,
-            existingEntitySignificances);
-    }
-
-    private void MarkExistingIngressKeys(
-        HashSet<HashKey> existingEntities,
-        HashSet<EntityClassificationKey> existingClassifications,
-        HashSet<EdgeKey> existingEdges,
-        HashSet<EdgeMemberKey> existingEdgeMembers,
-        HashSet<PhysicalityKey> existingPhysicalities,
-        HashSet<SequenceKey> existingSequences,
-        HashSet<Hash32> existingEntitySignificances)
-    {
-        foreach (HashKey key in existingEntities)
-        {
-            MarkDedup(_entityDedup, ref _entityDedupCount, key.Hash);
-        }
-        foreach (EntityClassificationKey key in existingClassifications)
-        {
-            MarkDedup(_entityClassificationDedup, ref _entityClassificationDedupCount, ComposeKey(key.EntityTypeCode, key.ProvenanceCode, key.EntityHash));
-        }
-        foreach (EdgeKey key in existingEdges)
-        {
-            MarkDedup(_edgeDedup, ref _edgeDedupCount, ComposeKey(key.EdgeTypeCode, key.EdgeHash));
-        }
-        foreach (EdgeMemberKey key in existingEdgeMembers)
-        {
-            MarkDedup(_edgeMemberDedup, ref _edgeMemberDedupCount, ComposeKey(
-                key.EdgeTypeCode,
-                key.RoleCode,
-                key.EdgeHash,
-                key.EntityHash,
-                key.RolePosition));
-        }
-        foreach (PhysicalityKey key in existingPhysicalities)
-        {
-            MarkDedup(_physicalityDedup, ref _physicalityDedupCount, ComposeKey(key.PhysicalityTypeCode, key.EntityHash, key.ContentHash));
-        }
-        foreach (SequenceKey key in existingSequences)
-        {
-            MarkDedup(_sequenceDedup, ref _sequenceDedupCount, ComposeKey(key.ParentHash, key.Ordinal));
-        }
-        foreach (Hash32 key in existingEntitySignificances)
-        {
-            MarkDedup(_entitySignificanceDedup, ref _entitySignificanceDedupCount, key);
-        }
-    }
-
-    private async Task<int> ResolveEntityTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.EntityTypeIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
-    private async Task<int> ResolveEdgeTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.EdgeTypeIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
-    private async Task<int> ResolvePhysicalityTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.PhysicalityTypeIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
-    private async Task<int> ResolveProvenanceIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.ProvenanceIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
-    private async Task<int> ResolveEdgeRoleIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.EdgeRoleIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
-    private async Task<int> ResolveSignificanceContextIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.SignificanceContextIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
-    private async Task<int> ResolveAttestationTypeIdAsync(Dictionary<string, int> cache, string code, CancellationToken ct)
-    {
-        if (!cache.TryGetValue(code, out int id))
-        {
-            id = await _codeResolver.AttestationTypeIdAsync(code, ct).ConfigureAwait(false);
-            cache.Add(code, id);
-        }
-        return id;
-    }
-
     public async Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
     {
         // Populate geom on edges where the producer didn't (or couldn't)
-        // attach an inline LINESTRINGZM EWKB. Per-chunk connection so a PG
+        // attach an inline LINESTRING4D geometry. Per-chunk connection so a PG
         // restart between chunks doesn't poison the whole post-pass; small
         // chunk + parallel-disabled session so the per-call working set fits
         // comfortably under work_mem and never spawns parallel workers each
@@ -1435,7 +1202,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         EdgesSubmitted = _edgesEmitted,
         JunctionsSubmitted = _junctionsEmitted,
         PhysicalitiesSubmitted = _physicalitiesEmitted,
-        SequencesSubmitted = _sequencesEmitted,
         SignificanceInitialized = _entitySignificancesEmitted,
         EntityModelSourcesLinked = _entityModelSourcesEmitted,
         BatchesCommitted = _copyCommits,
@@ -1567,6 +1333,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Interlocked.Exchange(ref _ingressDiffRows, buffer.Count);
 
         HashSet<EdgeKey> edgeRecordsInBuffer = new();
+        Dictionary<Hash32, (Hash32[] ChildHashes, int[] OrdinalStarts, int[] RleCounts)> compositionMetadata =
+            BuildCompositionMetadata(buffer);
         foreach (IngestionRecord record in buffer)
         {
             if (record is EdgeRecord edge)
@@ -1600,12 +1368,30 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 case EntityClassificationRecord:
                 case EdgeRecord:
                 case PhysicalityRecord:
-                case SequenceRecord:
                 case EntitySignificanceRecord:
                 {
-                    await EmitDirectAsync(record, ct).ConfigureAwait(false);
+                    IngestionRecord recordToEmit = record;
+                    if (record is PhysicalityRecord physicality &&
+                        compositionMetadata.TryGetValue(physicality.EntityHash, out var metadata))
+                    {
+                        Hash32 contentHash = ComputePhysicalityContentHash(
+                            physicality.Geometry,
+                            metadata.ChildHashes,
+                            metadata.OrdinalStarts,
+                            metadata.RleCounts);
+                        recordToEmit = physicality with
+                        {
+                            ContentHash = contentHash,
+                            ChildHashes = metadata.ChildHashes,
+                            OrdinalStarts = metadata.OrdinalStarts,
+                            RleCounts = metadata.RleCounts,
+                        };
+                    }
+                    await EmitDirectAsync(recordToEmit, ct).ConfigureAwait(false);
                     break;
                 }
+                case CompositionChildRecord:
+                    break;
                 default:
                     await EmitDirectAsync(record, ct).ConfigureAwait(false);
                     break;
@@ -1613,6 +1399,55 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         }
 
         buffer.Clear();
+    }
+
+    private static Dictionary<Hash32, (Hash32[] ChildHashes, int[] OrdinalStarts, int[] RleCounts)>
+        BuildCompositionMetadata(IEnumerable<IngestionRecord> records)
+    {
+        Dictionary<Hash32, List<CompositionChildRecord>> grouped = new();
+        foreach (IngestionRecord record in records)
+        {
+            if (record is not CompositionChildRecord entry)
+            {
+                continue;
+            }
+            if (entry.RleCount <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(records), "RLE count must be positive.");
+            }
+            if (!grouped.TryGetValue(entry.ParentEntityHash, out List<CompositionChildRecord>? list))
+            {
+                list = [];
+                grouped.Add(entry.ParentEntityHash, list);
+            }
+            list.Add(entry);
+        }
+
+        Dictionary<Hash32, (Hash32[] ChildHashes, int[] OrdinalStarts, int[] RleCounts)> metadata = new(grouped.Count);
+        foreach (var pair in grouped)
+        {
+            pair.Value.Sort((a, b) => a.Ordinal.CompareTo(b.Ordinal));
+            Hash32[] childHashes = new Hash32[pair.Value.Count];
+            int[] ordinalStarts = new int[pair.Value.Count];
+            int[] rleCounts = new int[pair.Value.Count];
+            int previousEnd = 0;
+            for (int i = 0; i < pair.Value.Count; i++)
+            {
+                CompositionChildRecord entry = pair.Value[i];
+                if (entry.Ordinal <= previousEnd)
+                {
+                    throw new InvalidOperationException(
+                        $"Composition metadata for {pair.Key.ToHexString()} overlaps at ordinal {entry.Ordinal}.");
+                }
+                childHashes[i] = entry.ChildEntityHash;
+                ordinalStarts[i] = entry.Ordinal;
+                rleCounts[i] = entry.RleCount;
+                previousEnd = entry.Ordinal + entry.RleCount - 1;
+            }
+            metadata.Add(pair.Key, (childHashes, ordinalStarts, rleCounts));
+        }
+
+        return metadata;
     }
 
     private ValueTask EmitDirectAsync(IngestionRecord record, CancellationToken ct)
@@ -1625,7 +1460,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             EdgeMemberRecord r => EmitEdgeMemberAsync(r, ct),
             JunctionRecord r => WriteTrackedAsync(_junctions.Writer, r, KindIndex.Junction, ct),
             PhysicalityRecord r => EmitPhysicalityAsync(r, ct),
-            SequenceRecord r => EmitSequenceAsync(r, ct),
+            CompositionChildRecord => ValueTask.CompletedTask,
             EntitySignificanceRecord r => EmitEntitySignificanceAsync(r, ct),
             EdgeSignificanceRecord r => EmitEdgeSignificanceAsync(r, ct),
             EntityModelSourceRecord r => WriteTrackedAsync(_entityModelSources.Writer, r, KindIndex.EntityModelSource, ct),
@@ -1691,16 +1526,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         if (TryAddDedup(_physicalityDedup, ref _physicalityDedupCount, key))
         {
             await WriteTrackedAsync(_physicalities.Writer, r, KindIndex.Physicality, ct).ConfigureAwait(false);
-        }
-    }
-
-    private async ValueTask EmitSequenceAsync(SequenceRecord r, CancellationToken ct)
-    {
-        // (parent_hash, ordinal) is the PK; child_hash and rle_count not in PK.
-        Hash32 key = ComposeKey(r.ParentEntityHash, r.Ordinal);
-        if (TryAddDedup(_sequenceDedup, ref _sequenceDedupCount, key))
-        {
-            await WriteTrackedAsync(_sequences.Writer, r, KindIndex.Sequence, ct).ConfigureAwait(false);
         }
     }
 
@@ -1866,7 +1691,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         _edgeMembers.Writer.TryComplete();
         _junctions.Writer.TryComplete();
         _physicalities.Writer.TryComplete();
-        _sequences.Writer.TryComplete();
         _entitySignificances.Writer.TryComplete();
         _edgeSignificances.Writer.TryComplete();
         _entityModelSources.Writer.TryComplete();
@@ -1880,7 +1704,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         Log.PipelineFlushed(_logger,
             _entitiesEmitted, _entityClassificationsEmitted,
             _edgesEmitted, _edgeMembersEmitted,
-            _junctionsEmitted, _physicalitiesEmitted, _sequencesEmitted,
+            _junctionsEmitted, _physicalitiesEmitted,
             _entitySignificancesEmitted, _edgeSignificancesEmitted, _entityModelSourcesEmitted,
             _copyCommits, _copyErrors);
 
@@ -1916,83 +1740,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 #pragma warning restore CA1873
         }
 
-        // FlushAsync drains channels only. Post-phase enrichment (sequence
-        // physicality, edge trajectory population, and significance priming) is the phase orchestrator's
+        // FlushAsync drains channels only. Post-phase enrichment (edge trajectory
+        // population and significance priming) is the phase orchestrator's
         // responsibility and must be called explicitly via
-        // PopulateSequencePhysicalityAsync, PopulateEdgeTrajectoriesAsync,
-        // and PrimeAllSignificanceAsync.
+        // PopulateEdgeTrajectoriesAsync and PrimeAllSignificanceAsync.
         // Keeping them here would execute them twice — once per phase by the
         // orchestrator and again at dispose — wasting time on already-complete
         // work. Idempotency of the underlying functions makes the double-call
         // safe but not free; at Wiktionary scale each redundant pass is minutes.
-    }
-
-    public async Task PopulateSequencePhysicalityAsync(CancellationToken ct)
-    {
-        const int chunkSize = 16_384;
-        const int maxRetries = 5;
-        long totalInserted = 0;
-        int chunksProcessed = 0;
-
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            long inserted = 0;
-            Exception? lastEx = null;
-            for (int attempt = 0; attempt < maxRetries; attempt++)
-            {
-                try
-                {
-                    await using NpgsqlConnection conn =
-                        await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-                    await using (NpgsqlCommand setCmd = new(IngestionSql.PostPassSessionSettings, conn))
-                    {
-                        await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                    }
-                    await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
-                        conn,
-                        SubstrateFunctionNames.PopulateSequencePhysicality,
-                        [new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = chunkSize }]);
-                    cmd.CommandTimeout = 0;
-                    object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-                    inserted = result is long l ? l : (long?)result ?? 0L;
-                    lastEx = null;
-                    break;
-                }
-                catch (Exception ex) when ( // BOUNDARY: transient post-pass connection failure is retried before fail-loud exhaustion.
-                    ex is NpgsqlException ||
-                    ex is System.IO.IOException ||
-                    ex is System.Net.Sockets.SocketException ||
-                    (ex.InnerException is System.Net.Sockets.SocketException))
-                {
-                    lastEx = ex;
-                    int delayMs = 1000 * (1 << attempt);
-                    Log.PostPassRetry(_logger, "populate_sequence_physicality", attempt + 1, delayMs, ex);
-                    await Task.Delay(delayMs, ct).ConfigureAwait(false);
-                }
-            }
-
-            if (lastEx is not null)
-            {
-                Log.PostPassGivingUp(_logger, "populate_sequence_physicality", maxRetries, totalInserted, lastEx);
-                throw new InvalidOperationException(
-                    "populate_sequence_physicality failed after retry exhaustion; phase cannot complete with missing sequence physicality.",
-                    lastEx);
-            }
-
-            totalInserted += inserted;
-            chunksProcessed++;
-            if (chunksProcessed % 50 == 0 || inserted == 0)
-            {
-                Log.PostPassProgress(_logger, "populate_sequence_physicality", chunksProcessed, totalInserted);
-            }
-            if (inserted == 0)
-            {
-                break;
-            }
-        }
-
-        Log.SequencePhysicalityPopulated(_logger, totalInserted);
     }
 
     /// <summary>
@@ -2227,10 +1982,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             tempCreate: sql.TempCreate,
             copySql: sql.Copy,
             truncateSql: sql.Truncate,
-            // Inline geom path: ST_GeomFromWKB lifts producer-built EWKB to
-            // substrate.edge.geom. Edges with NULL geom_wkb go in with
-            // geom = NULL for substrate.populate_edge_trajectories
-            // at end-of-phase via PopulateEdgeTrajectoriesAsync.
                         drainSql: sql.Drain,
             kindName: "edges",
             kindIndex: KindIndex.Edge,
@@ -2250,13 +2001,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 writer.Write(edgeTypeId, NpgsqlDbType.Integer);
                 writer.Write(rec.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea);
                 writer.Write(provenanceId, NpgsqlDbType.Integer);
-                if (rec.GeomWkb is null)
+                if (rec.Geometry is null)
                 {
                     writer.WriteNull();
                 }
                 else
                 {
-                    writer.Write(rec.GeomWkb, NpgsqlDbType.Bytea);
+                    writer.Write(rec.Geometry, NpgsqlDbType.Bytea);
                 }
                 Interlocked.Increment(ref _edgesEmitted);
             },
@@ -2354,10 +2105,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             tempCreate: sql.TempCreate,
             copySql: sql.Copy,
             truncateSql: sql.Truncate,
-            // WKB → geometry conversion happens in this INSERT-SELECT step,
-            // exactly as the deleted drain_staging_physicality_chunk did.
-            // Producer streams raw WKB bytes (cheap to encode in C#);
-            // ST_GeomFromWKB runs server-side once per chunk.
                         drainSql: sql.Drain,
             kindName: "physicalities",
             kindIndex: KindIndex.Physicality,
@@ -2372,32 +2119,25 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 writer.Write(physTypeId, NpgsqlDbType.Integer);
                 writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
                 writer.Write(rec.ContentHash.ToByteArray(), NpgsqlDbType.Bytea);
-                writer.Write(rec.Wkb, NpgsqlDbType.Bytea);
+                writer.Write(rec.Geometry, NpgsqlDbType.Bytea);
+                if (rec.ChildHashes is null)
+                {
+                    writer.WriteNull();
+                    writer.WriteNull();
+                    writer.WriteNull();
+                }
+                else
+                {
+                    byte[][] childHashes = new byte[rec.ChildHashes.Length][];
+                    for (int i = 0; i < rec.ChildHashes.Length; i++)
+                    {
+                        childHashes[i] = rec.ChildHashes[i].ToByteArray();
+                    }
+                    writer.Write(childHashes, NpgsqlDbType.Array | NpgsqlDbType.Bytea);
+                    writer.Write(rec.OrdinalStarts!, NpgsqlDbType.Array | NpgsqlDbType.Integer);
+                    writer.Write(rec.RleCounts!, NpgsqlDbType.Array | NpgsqlDbType.Integer);
+                }
                 Interlocked.Increment(ref _physicalitiesEmitted);
-            },
-            ct).ConfigureAwait(false);
-    }
-
-    private async Task DrainSequencesAsync(CancellationToken ct)
-    {
-        DrainSqlSpec sql = IngestionSql.Sequence;
-        await DrainKindAsync(
-            _sequences.Reader,
-            tempCreate: sql.TempCreate,
-            copySql: sql.Copy,
-            truncateSql: sql.Truncate,
-            drainSql: sql.Drain,
-            kindName: "sequences",
-            kindIndex: KindIndex.Sequence,
-            writeRow: (writer, rec) =>
-            {
-                writer.StartRow();
-                writer.Write(rec.ParentEntityHash.ToByteArray(), NpgsqlDbType.Bytea);
-                writer.Write(rec.Ordinal, NpgsqlDbType.Integer);
-                writer.Write(rec.ChildEntityHash.ToByteArray(), NpgsqlDbType.Bytea);
-                writer.Write(rec.RleCount, NpgsqlDbType.Integer);
-                Interlocked.Increment(ref _sequencesEmitted);
-                return ValueTask.CompletedTask;
             },
             ct).ConfigureAwait(false);
     }
@@ -2751,8 +2491,8 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
 
             // Per-connection temp_buffers bump. Default 8MB is far too small for
-            // 32k-row PostGIS GeometryZM chunks (each LINESTRINGZM vertex is 32B
-            // plus WKB overhead; a single physicality chunk can exceed 8MB and
+            // 32k-row geometry4d chunks (each LINESTRING4D vertex is 32B;
+            // a single physicality chunk can exceed 8MB and
             // trip PG 53000 'no empty local buffer available' which kills the
             // drain task and silently deadlocks the producer. Set per-session
             // before any temp pages are touched.
@@ -2903,15 +2643,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         public static partial void DrainTaskCrashed(ILogger logger, string kind, Exception ex);
 
         [LoggerMessage(Level = LogLevel.Information,
-            Message = "Pipeline flushed: entities={Entities} classifications={Classifications} edges={Edges} edge_members={EdgeMembers} junctions={Junctions} physicalities={Physicalities} sequences={Sequences} entity_sigs={EntitySigs} edge_sigs={EdgeSigs} model_sources={ModelSources} commits={Commits} errors={Errors}")]
+            Message = "Pipeline flushed: entities={Entities} classifications={Classifications} edges={Edges} edge_members={EdgeMembers} junctions={Junctions} physicalities={Physicalities} entity_sigs={EntitySigs} edge_sigs={EdgeSigs} model_sources={ModelSources} commits={Commits} errors={Errors}")]
         public static partial void PipelineFlushed(ILogger logger,
             long entities, long classifications, long edges, long edgeMembers, long junctions,
-            long physicalities, long sequences, long entitySigs, long edgeSigs, long modelSources,
+            long physicalities, long entitySigs, long edgeSigs, long modelSources,
             long commits, long errors);
-
-        [LoggerMessage(Level = LogLevel.Information,
-            Message = "Sequence physicality populated (post-pass): entities_inserted={EntitiesInserted}")]
-        public static partial void SequencePhysicalityPopulated(ILogger logger, long entitiesInserted);
 
         [LoggerMessage(Level = LogLevel.Information,
             Message = "Edge trajectories populated (post-pass): edges_updated={EdgesUpdated}")]

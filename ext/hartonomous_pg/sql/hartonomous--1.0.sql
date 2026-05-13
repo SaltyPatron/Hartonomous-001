@@ -78,18 +78,6 @@ CREATE DOMAIN substrate.significance_volatility AS FLOAT8
 COMMENT ON DOMAIN substrate.significance_volatility IS
     'Glicko-2 meta-uncertainty (rate of mu change). Strictly positive.';
 
--- ── sql/schema/domains/ordinal_position.sql ───────────────────────────────────────
-CREATE DOMAIN substrate.ordinal_position AS INTEGER
-    CONSTRAINT position_non_negative CHECK (VALUE >= 0);
-COMMENT ON DOMAIN substrate.ordinal_position IS
-    '0-indexed ordinal position in a parent composition (substrate.sequence).';
-
--- ── sql/schema/domains/rle_count.sql ───────────────────────────────────────
-CREATE DOMAIN substrate.rle_count AS INTEGER
-    CONSTRAINT rle_at_least_one CHECK (VALUE >= 1);
-COMMENT ON DOMAIN substrate.rle_count IS
-    'Run-length count for repeated children at the same ordinal position in substrate.sequence.';
-
 -- ── sql/schema/domains/code_value.sql ───────────────────────────────────────
 CREATE DOMAIN substrate.code_value AS VARCHAR(128)
     CONSTRAINT code_not_empty CHECK (LENGTH(TRIM(VALUE)) > 0);
@@ -134,6 +122,1183 @@ COMMENT ON TYPE substrate.edge_ref IS
 
 -- ── Phase 5: reference tables (no FK to substrate-side) ──────────────
 
+-- ── ext/hartonomous_pg/sql/hartonomous--1.0.sql.in ───────────────────────────────────────
+
+-- ════════════════════════════════════════════════════════════════════
+-- Native C-binding declarations (from hartonomous--1.0.sql.in)
+-- ════════════════════════════════════════════════════════════════════
+-- hartonomous--1.0.sql
+--
+-- Per docs/specs/native/4d-type-and-index.md, declarations are ordered:
+--   (1) shell types  → (2) I/O fns  → (3) full CREATE TYPE
+--   (4) constructors and scalar fns
+--   (5) operators
+--   (6) GiST/SP-GiST opclasses (P1a.3 — declared empty here, populated later)
+--   (7) aggregates
+--   (8) BLAKE3 + traversal (preserved from prior version)
+--
+-- All wrappers are `PARALLEL SAFE` because the underlying native code is
+-- pure (no shared mutable state) and the substrate-side functions only
+-- read tables.
+
+
+-- ── (1) Shell types ────────────────────────────────────────────────
+CREATE TYPE point4d;
+CREATE TYPE box4d;
+
+-- ── (2) I/O functions ──────────────────────────────────────────────
+CREATE FUNCTION point4d_in(cstring) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_point4d_in'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point4d_out(point4d) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'pg_point4d_out'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point4d_recv(internal) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_point4d_recv'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point4d_send(point4d) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_point4d_send'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION box4d_in(cstring) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_box4d_in'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_out(box4d) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'pg_box4d_out'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_recv(internal) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_box4d_recv'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_send(box4d) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_box4d_send'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ── (3) Full CREATE TYPE ───────────────────────────────────────────
+CREATE TYPE point4d (
+    INTERNALLENGTH = 32,
+    INPUT          = point4d_in,
+    OUTPUT         = point4d_out,
+    RECEIVE        = point4d_recv,
+    SEND           = point4d_send,
+    ALIGNMENT      = double,
+    STORAGE        = plain
+);
+
+CREATE TYPE box4d (
+    INTERNALLENGTH = 64,
+    INPUT          = box4d_in,
+    OUTPUT         = box4d_out,
+    RECEIVE        = box4d_recv,
+    SEND           = box4d_send,
+    ALIGNMENT      = double,
+    STORAGE        = plain
+);
+
+-- ── (4) Constructors and scalar functions ──────────────────────────
+
+-- point4d(x1, x2, x3, x4)
+CREATE FUNCTION point4d(double precision, double precision, double precision, double precision)
+    RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_point4d_constructor'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- bbox(point4d) — degenerate box at a point
+CREATE FUNCTION bbox(point4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_bbox_from_point'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION bbox_expand(box4d, point4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_box4d_expand_point'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION bbox_union(box4d, box4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_box4d_union'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Distances and S³ helpers (point4d-typed, no PostGIS bridge).
+CREATE FUNCTION distance_4d(point4d, point4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_distance_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION distance_s3(point4d, point4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_distance_s3'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION dot_4d(point4d, point4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_dot_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION norm_4d(point4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_norm_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION normalize_4d(point4d) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_normalize_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION slerp(point4d, point4d, double precision) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_slerp'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION antipode(point4d) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_antipode'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Super-Fibonacci S³ sample point and Hilbert index (4D).
+CREATE FUNCTION super_fibonacci_4d(bigint, bigint) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_super_fibonacci_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION hilbert_4d(point4d, int) RETURNS bigint
+    AS 'MODULE_PATHNAME', 'pg_hilbert_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION hilbert_4d_inverse(bigint, int) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_hilbert_4d_inverse'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Equality and hash for point4d.
+CREATE FUNCTION point4d_eq(point4d, point4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_point4d_eq'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point4d_ne(point4d, point4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_point4d_ne'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point4d_hash(point4d) RETURNS integer
+    AS 'MODULE_PATHNAME', 'pg_point4d_hash'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Box4D predicates and equality.
+CREATE FUNCTION box4d_overlaps(box4d, box4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_box4d_overlaps'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_contains_point(box4d, point4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_box4d_contains_point'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point_contained_by_box4d(point4d, box4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_point_contained_by_box4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_contains_box(box4d, box4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_box4d_contains_box'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_contained_by_box(box4d, box4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_box4d_contained_by_box'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION box4d_eq(box4d, box4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_box4d_eq'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ── (5) Operators ──────────────────────────────────────────────────
+
+CREATE OPERATOR <-> (
+    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = distance_4d,
+    COMMUTATOR = <->
+);
+CREATE OPERATOR <=> (
+    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = distance_s3,
+    COMMUTATOR = <=>
+);
+
+CREATE OPERATOR = (
+    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = point4d_eq,
+    COMMUTATOR = =, NEGATOR = <>, HASHES, MERGES
+);
+CREATE OPERATOR <> (
+    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = point4d_ne,
+    COMMUTATOR = <>, NEGATOR = =
+);
+
+CREATE OPERATOR && (
+    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_overlaps,
+    COMMUTATOR = &&
+);
+CREATE OPERATOR @> (
+    LEFTARG = box4d, RIGHTARG = point4d, FUNCTION = box4d_contains_point
+);
+CREATE OPERATOR <@ (
+    LEFTARG = point4d, RIGHTARG = box4d, FUNCTION = point_contained_by_box4d
+);
+CREATE OPERATOR @> (
+    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_contains_box,
+    COMMUTATOR = <@
+);
+CREATE OPERATOR <@ (
+    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_contained_by_box,
+    COMMUTATOR = @>
+);
+CREATE OPERATOR = (
+    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_eq,
+    COMMUTATOR = =
+);
+
+-- ── (6) Hash op family for point4d (covers the HASHES / MERGES properties) ──
+CREATE OPERATOR FAMILY point4d_hash_ops USING hash;
+CREATE OPERATOR CLASS point4d_hash_ops
+    DEFAULT FOR TYPE point4d USING hash FAMILY point4d_hash_ops AS
+        OPERATOR 1 = (point4d, point4d),
+        FUNCTION 1 point4d_hash(point4d);
+
+-- ── (6b) GiST opclass for point4d (R-tree-style, STORAGE box4d) ────────
+CREATE FUNCTION gist_point4d_consistent(internal, point4d, smallint, oid, internal)
+    RETURNS bool
+    AS 'MODULE_PATHNAME', 'gist_point4d_consistent'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_union(internal, internal) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'gist_point4d_union'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_compress(internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'gist_point4d_compress'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_decompress(internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'gist_point4d_decompress'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_penalty(internal, internal, internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'gist_point4d_penalty'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_picksplit(internal, internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'gist_point4d_picksplit'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_same(box4d, box4d, internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'gist_point4d_same'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION gist_point4d_distance(internal, point4d, smallint, oid, internal)
+    RETURNS double precision
+    AS 'MODULE_PATHNAME', 'gist_point4d_distance'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE OPERATOR CLASS point4d_gist_ops
+    DEFAULT FOR TYPE point4d USING gist AS
+        OPERATOR  1  <@ (point4d, box4d),
+        OPERATOR  2  <-> (point4d, point4d) FOR ORDER BY float_ops,
+        OPERATOR  3  <=> (point4d, point4d) FOR ORDER BY float_ops,
+        FUNCTION  1  gist_point4d_consistent(internal, point4d, smallint, oid, internal),
+        FUNCTION  2  gist_point4d_union(internal, internal),
+        FUNCTION  3  gist_point4d_compress(internal),
+        FUNCTION  4  gist_point4d_decompress(internal),
+        FUNCTION  5  gist_point4d_penalty(internal, internal, internal),
+        FUNCTION  6  gist_point4d_picksplit(internal, internal),
+        FUNCTION  7  gist_point4d_same(box4d, box4d, internal),
+        FUNCTION  8  (point4d, point4d) gist_point4d_distance(internal, point4d, smallint, oid, internal),
+        STORAGE   box4d;
+
+-- ── (6c) SP-GiST opclass for point4d (16-way quad-tree) ────────────────
+CREATE FUNCTION spg_point4d_config(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spg_point4d_config'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION spg_point4d_choose(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spg_point4d_choose'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION spg_point4d_picksplit(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spg_point4d_picksplit'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION spg_point4d_inner_consistent(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spg_point4d_inner_consistent'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION spg_point4d_leaf_consistent(internal, internal) RETURNS bool
+    AS 'MODULE_PATHNAME', 'spg_point4d_leaf_consistent'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE OPERATOR CLASS point4d_spgist_ops
+    DEFAULT FOR TYPE point4d USING spgist AS
+        OPERATOR  1  <@ (point4d, box4d),
+        FUNCTION  1  spg_point4d_config(internal, internal),
+        FUNCTION  2  spg_point4d_choose(internal, internal),
+        FUNCTION  3  spg_point4d_picksplit(internal, internal),
+        FUNCTION  4  spg_point4d_inner_consistent(internal, internal),
+        FUNCTION  5  spg_point4d_leaf_consistent(internal, internal);
+
+-- ── (7) Aggregates ─────────────────────────────────────────────────
+
+-- centroid_4d (Euclidean mean) — uses internal-state aggregate with combine
+-- and serialize/deserialize for parallel-safe execution.
+CREATE FUNCTION centroid_4d_sfunc(internal, point4d) RETURNS internal
+    AS 'MODULE_PATHNAME', 'pg_centroid_4d_sfunc'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION centroid_4d_combine(internal, internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'pg_centroid_4d_combine'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION centroid_4d_serialize(internal) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_centroid_4d_serialize'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION centroid_4d_deserialize(bytea, internal) RETURNS internal
+    AS 'MODULE_PATHNAME', 'pg_centroid_4d_deserialize'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION centroid_4d_ffunc(internal) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_centroid_4d_ffunc'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION centroid_s3_ffunc(internal) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_centroid_s3_ffunc'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE AGGREGATE centroid_4d(point4d) (
+    SFUNC      = centroid_4d_sfunc,
+    STYPE      = internal,
+    FINALFUNC  = centroid_4d_ffunc,
+    COMBINEFUNC = centroid_4d_combine,
+    SERIALFUNC = centroid_4d_serialize,
+    DESERIALFUNC = centroid_4d_deserialize,
+    PARALLEL = SAFE
+);
+
+CREATE AGGREGATE centroid_s3(point4d) (
+    SFUNC      = centroid_4d_sfunc,
+    STYPE      = internal,
+    FINALFUNC  = centroid_s3_ffunc,
+    COMBINEFUNC = centroid_4d_combine,
+    SERIALFUNC = centroid_4d_serialize,
+    DESERIALFUNC = centroid_4d_deserialize,
+    PARALLEL = SAFE
+);
+
+-- bbox_4d uses box4d as state directly — no internal/serialize needed.
+CREATE FUNCTION bbox_4d_sfunc(box4d, point4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_bbox_4d_sfunc'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION bbox_4d_combine(box4d, box4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_bbox_4d_combine'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE AGGREGATE bbox_4d(point4d) (
+    SFUNC      = bbox_4d_sfunc,
+    STYPE      = box4d,
+    COMBINEFUNC = bbox_4d_combine,
+    PARALLEL = SAFE
+);
+
+-- ── (8) Version, BLAKE3, traversal (preserved verbatim) ────────────
+
+CREATE FUNCTION hartonomous_version()
+RETURNS text
+AS 'MODULE_PATHNAME', 'pg_hartonomous_version'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Returns runtime introspection: MKL version, thread pool sizes, the active
+-- CBWR branch, and whether strict-determinism was requested at load. Lets
+-- callers verify the determinism contract (Law #6) without parsing logs.
+CREATE FUNCTION hartonomous_runtime_info(
+    OUT mkl_version text,
+    OUT mkl_max_threads int,
+    OUT omp_max_threads int,
+    OUT cbwr_branch int,
+    OUT strict_determinism boolean
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'pg_hartonomous_runtime_info'
+LANGUAGE C VOLATILE PARALLEL RESTRICTED;
+
+CREATE FUNCTION blake3_hash(bytea) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_blake3_hash'
+    LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION blake3_hash_text(text) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_blake3_hash_text'
+    LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
+
+-- Hash-only result types (Phase C unification). substrate.entity has a
+-- hash-only PK; classifications are junction metadata. Neighbors and
+-- traversal_path carry hash-only handles. Edge identity stays composite —
+-- edge_type IS structural.
+CREATE TYPE neighbors_result AS (
+    target_entity_hash bytea,
+    edge_type_id       int,
+    edge_hash          bytea,
+    depth              int,
+    path_ehashes       bytea[]
+);
+
+CREATE TYPE traversal_path AS (
+    target_entity_hash bytea,
+    depth              int,
+    total_mu           double precision,
+    path_ehashes       bytea[]
+);
+
+-- BFS expansion. Required: seed_entity_hash. Optional: edge_type_filter
+-- (NULL = any edge type), max_hops (default 1).
+CREATE FUNCTION neighbors(
+    seed_entity_hash bytea,
+    edge_type_filter int DEFAULT NULL,
+    max_hops         int DEFAULT 1
+)
+    RETURNS SETOF neighbors_result
+    AS 'MODULE_PATHNAME', 'pg_neighbors'
+    LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
+
+-- Glicko-2-rated A* over typed edges. Edge cost = 1 / edge_mu where edge_mu
+-- is read via the COALESCE prior formula
+--   mu = COALESCE(
+--          edge_significance.mu,
+--          provenance_edge_authority.initial_mu,
+--          provenance.initial_mu * edge_type.semantic_weight * provenance.derivation_decay
+--        )
+-- total_mu in the result is 1/sum(1/mu_i), the path's aggregate trust score
+-- in the requested arena.
+CREATE FUNCTION traverse_astar(
+    seed_entity_hash bytea,
+    edge_type_filter int,
+    arena_id         int,
+    max_depth        int              DEFAULT 5,
+    max_results      int              DEFAULT 100,
+    p_min_mu         double precision DEFAULT NULL
+)
+    RETURNS SETOF traversal_path
+    AS 'MODULE_PATHNAME', 'pg_traverse_astar'
+    LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
+
+-- ── substrate.similarity_topk ───────────────────────────────────────────
+-- Bounded-K nearest-neighbor scan over an arbitrary candidate query.
+-- Distance kind dispatches by name to a substrate-side wrapper:
+--   '4d'      → substrate.dist_4d(geometry, geometry)
+--   's3'      → substrate.dist_s3(geometry, geometry)
+--   'frechet' → substrate.frechet_4d_geom(geometry, geometry)
+-- The candidate query MUST yield (entity_type_id int, entity_hash bytea, geom geometry).
+-- Optional distance threshold filters per-candidate before the top-K cut.
+CREATE OR REPLACE FUNCTION substrate.similarity_topk(
+    p_seed_geom          geometry,
+    p_k                  int,
+    p_distance_kind      text,
+    p_candidate_query    text,
+    p_distance_threshold double precision DEFAULT NULL
+) RETURNS TABLE (entity_type_id int, entity_hash bytea, distance double precision)
+    AS 'MODULE_PATHNAME', 'pg_similarity_topk'
+    LANGUAGE C STABLE STRICT;
+
+-- ── substrate.recompose_walk ────────────────────────────────────────────
+-- Iterative DFS over physicality-backed composition metadata starting at p_root_hash. Emits the
+-- root first then descendants in left-to-right depth-first order. content_label
+-- is always NULL — substrate.entity is hash-only; the C# layer joins content
+-- (codepoint_value, classification, etc.) out-of-band.
+CREATE OR REPLACE FUNCTION substrate.recompose_walk(
+    p_root_hash bytea,
+    p_max_depth int DEFAULT 16
+) RETURNS TABLE (entity_hash bytea, ordinal_position int, content_label text, depth int)
+    AS 'MODULE_PATHNAME', 'pg_recompose_walk'
+    LANGUAGE C STABLE STRICT;
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (9) linestring4d — varlena polyline type for 4D trajectories
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TYPE linestring4d;
+
+CREATE FUNCTION linestring4d_in(cstring) RETURNS linestring4d
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_in'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION linestring4d_out(linestring4d) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_out'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION linestring4d_recv(internal) RETURNS linestring4d
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_recv'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION linestring4d_send(linestring4d) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_send'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE TYPE linestring4d (
+    INTERNALLENGTH = variable,
+    INPUT          = linestring4d_in,
+    OUTPUT         = linestring4d_out,
+    RECEIVE        = linestring4d_recv,
+    SEND           = linestring4d_send,
+    ALIGNMENT      = double,
+    STORAGE        = extended
+);
+
+CREATE FUNCTION npoints(linestring4d) RETURNS integer
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_npoints'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION point_n(linestring4d, integer) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_point_n'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION bbox(linestring4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_bbox'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION linestring4d_append(linestring4d, point4d) RETURNS linestring4d
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_append'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION length_4d(linestring4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_linestring4d_length'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Bulk constructor: flat float8[] of length 4n → linestring4d with n vertices.
+-- Canonical batch-insert path for the C# ingestion pipeline.
+CREATE FUNCTION array_to_linestring4d(double precision[]) RETURNS linestring4d
+    AS 'MODULE_PATHNAME', 'pg_array_to_linestring4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Per-row binary constructor: bytea holding the linestring4d wire format
+-- (int32 npoints BE, then 4n float8 BE) → linestring4d. Used by the C#
+-- ingestion pipeline to write batches of variable-length linestrings via
+-- INSERT ... SELECT FROM unnest($n::bytea[]) without flattening multidim
+-- float8 arrays. Decode mirrors pg_linestring4d_recv exactly.
+CREATE FUNCTION bytea_to_linestring4d(bytea) RETURNS linestring4d
+    AS 'MODULE_PATHNAME', 'pg_bytea_to_linestring4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (10) Trajectory distances (Frechet, Hausdorff)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE FUNCTION frechet_4d(linestring4d, linestring4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_frechet_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION hausdorff_4d(linestring4d, linestring4d) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_hausdorff_4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (11) Glicko-2 bulk update wrapper
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE FUNCTION glicko2_bulk_update(
+    mu        double precision[],
+    sigma     double precision[],
+    vol       double precision[],
+    opp_mu    double precision[],
+    opp_sigma double precision[],
+    score     double precision[],
+    OUT new_mu        double precision[],
+    OUT new_sigma     double precision[],
+    OUT new_vol       double precision[]
+) RETURNS record
+    AS 'MODULE_PATHNAME', 'pg_glicko2_bulk_update'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (12) Casts: point4d <-> double precision[4]
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE FUNCTION point4d_to_array(point4d) RETURNS double precision[]
+    AS 'MODULE_PATHNAME', 'pg_point4d_to_array'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION array_to_point4d(double precision[]) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_array_to_point4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE CAST (point4d AS double precision[])
+    WITH FUNCTION point4d_to_array(point4d) AS ASSIGNMENT;
+CREATE CAST (double precision[] AS point4d)
+    WITH FUNCTION array_to_point4d(double precision[]) AS ASSIGNMENT;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (13) Domains: typed constraints for substrate columns
+--   - unit_quaternion enforces ||q||=1 (S^3 membership)
+--   - s3_arc_length enforces [0, pi]
+--   - glicko_mu/sigma/vol enforce sane Glicko-2 parameter ranges
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE DOMAIN unit_quaternion AS point4d
+    CHECK (abs(norm_4d(VALUE) - 1.0) < 1e-9);
+
+CREATE DOMAIN s3_arc_length AS double precision
+    CHECK (VALUE >= 0.0 AND VALUE <= 3.14159265358979323846);
+
+CREATE DOMAIN glicko_mu AS double precision
+    DEFAULT 1500.0
+    CHECK (VALUE >= 0.0 AND VALUE <= 4000.0);
+CREATE DOMAIN glicko_sigma AS double precision
+    DEFAULT 350.0
+    CHECK (VALUE > 0.0 AND VALUE <= 700.0);
+CREATE DOMAIN glicko_volatility AS double precision
+    DEFAULT 0.06
+    CHECK (VALUE > 0.0 AND VALUE <= 1.0);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (14) Diagnostic views
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE VIEW point4d_index_stats AS
+SELECT
+    n.nspname     AS schema_name,
+    c.relname     AS index_name,
+    t.relname     AS table_name,
+    am.amname     AS index_type,
+    c.relpages    AS pages,
+    c.reltuples   AS approx_rows
+FROM pg_class c
+JOIN pg_index i ON c.oid = i.indexrelid
+JOIN pg_class t ON i.indrelid = t.oid
+JOIN pg_am am   ON c.relam = am.oid
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE am.amname IN ('gist', 'spgist')
+  AND EXISTS (
+      SELECT 1
+      FROM pg_attribute a
+      JOIN pg_type ty ON a.atttypid = ty.oid
+      WHERE a.attrelid = i.indrelid
+        AND ty.typname IN ('point4d', 'box4d')
+  );
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (15) Concurrent reindex helper
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE PROCEDURE reindex_point4d_concurrent(idx_name regclass)
+LANGUAGE plpgsql AS $$
+BEGIN
+    EXECUTE format('REINDEX INDEX CONCURRENTLY %s', idx_name);
+END;
+$$;
+
+-- hartonomous_geometry4d.sql — appended to hartonomous--1.0.sql by build.
+--
+-- Umbrella 4D geometry type and 10 SQL subtype DOMAINs. Each DOMAIN
+-- pins a specific tag; automatic cast-to-umbrella is inherited from
+-- the DOMAIN→base relationship. See pg_geometry4d.c for wire layout.
+
+-- ── (16) geometry4d umbrella ────────────────────────────────────────
+CREATE TYPE geometry4d;
+
+CREATE FUNCTION geometry4d_in(cstring) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_in'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION geometry4d_out(geometry4d) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_out'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION geometry4d_recv(internal) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_recv'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION geometry4d_send(geometry4d) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_send'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE TYPE geometry4d (
+    INTERNALLENGTH = variable,
+    INPUT          = geometry4d_in,
+    OUTPUT         = geometry4d_out,
+    RECEIVE        = geometry4d_recv,
+    SEND           = geometry4d_send,
+    ALIGNMENT      = double,
+    STORAGE        = extended
+);
+
+-- Accessors & predicates
+CREATE FUNCTION ST_TypeTag4D(geometry4d) RETURNS int4
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_tag' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION ST_TypeName4D(geometry4d) RETURNS text
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_tag_name' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION ST_SRID4D(geometry4d) RETURNS int4
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_srid' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION ST_BBox4D(geometry4d) RETURNS box4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_bbox' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION ST_NumGeometries4D(geometry4d) RETURNS int4
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_num_geoms' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION ST_NumPoints4D(geometry4d) RETURNS int8
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_num_points' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION geometry4d_eq(geometry4d, geometry4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_eq' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION geometry4d_ne(geometry4d, geometry4d) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_ne' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION bytea_to_geometry4d(bytea) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_bytea_to_geometry4d' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR = (
+    LEFTARG = geometry4d, RIGHTARG = geometry4d,
+    PROCEDURE = geometry4d_eq,
+    COMMUTATOR = =, NEGATOR = <>
+);
+CREATE OPERATOR <> (
+    LEFTARG = geometry4d, RIGHTARG = geometry4d,
+    PROCEDURE = geometry4d_ne,
+    COMMUTATOR = <>, NEGATOR = =
+);
+
+-- Constructors
+CREATE FUNCTION ST_MakePoint4D(double precision, double precision, double precision, double precision)
+    RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_makepoint'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION ST_MakeLine4D(point4d[]) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_makeline'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Casts to/from existing fixed-structure subtypes
+CREATE FUNCTION cast_point4d_to_geometry4d(point4d) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_from_point4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION cast_geometry4d_to_point4d(geometry4d) RETURNS point4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_to_point4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION cast_linestring4d_to_geometry4d(linestring4d) RETURNS geometry4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_from_linestring4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION cast_geometry4d_to_linestring4d(geometry4d) RETURNS linestring4d
+    AS 'MODULE_PATHNAME', 'pg_geometry4d_to_linestring4d'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE CAST (point4d AS geometry4d)      WITH FUNCTION cast_point4d_to_geometry4d(point4d)      AS IMPLICIT;
+CREATE CAST (geometry4d AS point4d)      WITH FUNCTION cast_geometry4d_to_point4d(geometry4d)   AS ASSIGNMENT;
+CREATE CAST (linestring4d AS geometry4d) WITH FUNCTION cast_linestring4d_to_geometry4d(linestring4d) AS IMPLICIT;
+CREATE CAST (geometry4d AS linestring4d) WITH FUNCTION cast_geometry4d_to_linestring4d(geometry4d)   AS ASSIGNMENT;
+
+-- ── (17) 10 subtype DOMAINs ────────────────────────────────────────
+-- Each DOMAIN is a column-usable distinct SQL type pinned to one tag and
+-- automatically cast-equivalent with geometry4d via the DOMAIN → base
+-- relationship. See docs/specs/native/4d-type-and-index.md §subtype-domains.
+
+CREATE DOMAIN point4d_g             AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 1);
+CREATE DOMAIN linestring4d_g        AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 2);
+CREATE DOMAIN polygon4d             AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 3);
+CREATE DOMAIN multipoint4d          AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 4);
+CREATE DOMAIN multilinestring4d     AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 5);
+CREATE DOMAIN multipolygon4d        AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 6);
+CREATE DOMAIN triangle4d            AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 7);
+CREATE DOMAIN tin4d                 AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 8);
+CREATE DOMAIN polyhedralsurface4d   AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 9);
+CREATE DOMAIN geometrycollection4d  AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 10);
+
+COMMENT ON DOMAIN point4d_g IS
+  'geometry4d pinned to tag POINT4D. Distinct column type; casts implicitly to/from geometry4d.';
+COMMENT ON DOMAIN linestring4d_g IS
+  'geometry4d pinned to tag LINESTRING4D.';
+COMMENT ON DOMAIN polygon4d IS
+  'geometry4d pinned to tag POLYGON4D; stored as one outer ring plus zero or more inner rings, each closed.';
+
+-- ── (18) GiST opclass for geometry4d ───────────────────────────────
+CREATE FUNCTION gist_geometry4d_consistent(internal, geometry4d, smallint, oid, internal) RETURNS boolean
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION gist_geometry4d_union(internal, internal) RETURNS box4d
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION gist_geometry4d_compress(internal) RETURNS internal
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION gist_geometry4d_decompress(internal) RETURNS internal
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION gist_geometry4d_penalty(internal, internal, internal) RETURNS internal
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION gist_geometry4d_picksplit(internal, internal) RETURNS internal
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION gist_geometry4d_same(box4d, box4d, internal) RETURNS internal
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- bbox-based operators between two geometry4d values. Operators reuse
+-- box4d operator infrastructure: each performs g4d_compute_bbox on both
+-- sides and delegates to the box4d primitive.
+CREATE FUNCTION geometry4d_overlaps_geometry4d(geometry4d, geometry4d) RETURNS boolean
+    AS $$ SELECT box4d_overlaps(ST_BBox4D($1), ST_BBox4D($2)) $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION geometry4d_contains_geometry4d(geometry4d, geometry4d) RETURNS boolean
+    AS $$ SELECT box4d_contains_box(ST_BBox4D($1), ST_BBox4D($2)) $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION geometry4d_contained_by_geometry4d(geometry4d, geometry4d) RETURNS boolean
+    AS $$ SELECT box4d_contains_box(ST_BBox4D($2), ST_BBox4D($1)) $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR && (
+    LEFTARG = geometry4d, RIGHTARG = geometry4d,
+    PROCEDURE = geometry4d_overlaps_geometry4d,
+    COMMUTATOR = &&
+);
+CREATE OPERATOR @> (
+    LEFTARG = geometry4d, RIGHTARG = geometry4d,
+    PROCEDURE = geometry4d_contains_geometry4d,
+    COMMUTATOR = <@
+);
+CREATE OPERATOR <@ (
+    LEFTARG = geometry4d, RIGHTARG = geometry4d,
+    PROCEDURE = geometry4d_contained_by_geometry4d,
+    COMMUTATOR = @>
+);
+
+CREATE OPERATOR CLASS geometry4d_gist_ops
+    DEFAULT FOR TYPE geometry4d USING gist AS
+        OPERATOR        1       && ,
+        OPERATOR        2       @> ,
+        OPERATOR        3       <@ ,
+        OPERATOR        4       =  ,
+        FUNCTION        1       gist_geometry4d_consistent (internal, geometry4d, smallint, oid, internal),
+        FUNCTION        2       gist_geometry4d_union (internal, internal),
+        FUNCTION        3       gist_geometry4d_compress (internal),
+        FUNCTION        4       gist_geometry4d_decompress (internal),
+        FUNCTION        5       gist_geometry4d_penalty (internal, internal, internal),
+        FUNCTION        6       gist_geometry4d_picksplit (internal, internal),
+        FUNCTION        7       gist_geometry4d_same (box4d, box4d, internal),
+        STORAGE         box4d ;
+
+-- ── (19) SP-GiST quadtree opclass for geometry4d ───────────────────
+CREATE FUNCTION spg_geometry4d_config(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION spg_geometry4d_choose(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION spg_geometry4d_picksplit(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION spg_geometry4d_inner_consistent(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION spg_geometry4d_leaf_consistent(internal, internal) RETURNS boolean
+    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR CLASS geometry4d_spgist_ops
+    FOR TYPE geometry4d USING spgist AS
+        OPERATOR        1       && ,
+        OPERATOR        2       @> ,
+        OPERATOR        3       <@ ,
+        OPERATOR        4       =  ,
+        FUNCTION        1       spg_geometry4d_config(internal, internal),
+        FUNCTION        2       spg_geometry4d_choose(internal, internal),
+        FUNCTION        3       spg_geometry4d_picksplit(internal, internal),
+        FUNCTION        4       spg_geometry4d_inner_consistent(internal, internal),
+        FUNCTION        5       spg_geometry4d_leaf_consistent(internal, internal);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (20) Native text decomposition — UAX #29 + BLAKE3 chains + 4D centroids
+--
+-- Replaces the per-codepoint C# loop in CanonicalTextDecomposer.Emit with
+-- a single C function that does the whole decomposition tree in one
+-- compiled pass: UTF-8 decode, codepoint property lookup (cached per
+-- backend), UAX #29 grapheme + word boundary detection, batched BLAKE3
+-- chain hashing via libhartonomous, S^3 centroid math, and SPI INSERTs
+-- into substrate.staging_*.
+--
+-- text_decompose_batch processes N texts concurrently across CPU cores
+-- via #pragma omp parallel for. Determinism via MKL CBWR + UCD-table
+-- property lookups (Law #6).
+-- ═══════════════════════════════════════════════════════════════════════
+-- 9-field summary: 7 counts + root composition hash + root entity_type_id.
+-- The root fields let C# callers immediately wire downstream edges
+-- (has_text, has_gloss, has_example, has_name, has_token_string, etc.)
+-- without recomputing the BLAKE3 themselves. Empty-input → root NULL.
+CREATE TYPE substrate.text_decompose_summary AS (
+    entity_count          BIGINT,
+    edge_count            BIGINT,
+    edge_member_count     BIGINT,
+    physicality_count     BIGINT,
+    composition_child_count BIGINT,
+    significance_count    BIGINT,
+    classification_count  BIGINT,
+    root_hash             bytea,
+    root_entity_type_id   INT
+);
+
+-- text_decompose now writes DIRECTLY to substrate.entity / entity_classification
+-- / physicality / sequence / entity_significance with ON CONFLICT DO NOTHING.
+-- No staging detour. p_model_source_id is OPTIONAL: when supplied, the root
+-- composition entity gets an entity_model_source row pointing at that source.
+CREATE FUNCTION substrate.text_decompose(
+    p_utf8                  bytea,
+    p_top_entity_type_code  text,
+    p_trust_mu              double precision,
+    p_provenance_code       text,
+    p_model_source_id       int DEFAULT NULL
+) RETURNS substrate.text_decompose_summary
+    AS 'MODULE_PATHNAME', 'pg_text_decompose'
+    LANGUAGE C VOLATILE;
+
+CREATE FUNCTION substrate.text_decompose_batch(
+    p_utf8s                  bytea[],
+    p_top_entity_type_codes  text[],
+    p_trust_mus              double precision[],
+    p_provenance_codes       text[],
+    p_model_source_ids       int[] DEFAULT NULL
+) RETURNS substrate.text_decompose_summary
+    AS 'MODULE_PATHNAME', 'pg_text_decompose_batch'
+    LANGUAGE C VOLATILE;
+
+COMMENT ON FUNCTION substrate.text_decompose(bytea, text, double precision, text, int) IS
+    'Native UAX #29 + BLAKE3 + 4D centroid pipeline. Decodes UTF-8, runs grapheme + word boundary detection from the embedded UCD blob, emits codepoint/grapheme_cluster/word_form/composition entities + sequence + physicality + significance rows DIRECTLY into substrate core tables (no staging) via SPI with ON CONFLICT DO NOTHING. When p_model_source_id is non-NULL, the root composition is also linked via substrate.entity_model_source. Returns counts + root_hash + root_entity_type_id so callers can wire downstream edges without recomputing BLAKE3.';
+
+COMMENT ON FUNCTION substrate.text_decompose_batch(bytea[], text[], double precision[], text[], int[]) IS
+    'Batched variant: processes N texts in one SQL invocation, recursing into text_decompose per row. Per-row optional p_model_source_ids[i] parameter — NULL element skips linkage. Returns aggregated counts only; root_hash/root_entity_type_id are always NULL for the batch form (call text_decompose() one at a time when per-row roots are needed).';
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- (21) Tier-0 codepoint atoms — embedded UCD/UCA, O(1) array lookups
+--
+-- All Unicode property data for the 1,114,112 codepoints is baked into
+-- the extension at build time from UCD 17.0.0. Lookups are flat array
+-- accesses — no SPI, no DB JOIN, no runtime computation. Codepoint
+-- BLAKE3 hashes, S^3 centroids, and Hilbert indices are precomputed.
+-- substrate.cp_from_hash provides the inverse mapping for hash
+-- deconstruction during inference / recompose.
+--
+-- Determinism (Law #6): UCD version pinned at extension build time.
+-- substrate.ucd_version() returns the pinned version string.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE FUNCTION substrate.cp_hash(cp int) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_cp_hash' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_centroid(cp int) RETURNS public.point4d
+    AS 'MODULE_PATHNAME', 'pg_cp_centroid' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_hilbert(cp int) RETURNS bigint
+    AS 'MODULE_PATHNAME', 'pg_cp_hilbert' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_from_hash(h bytea) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_from_hash' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION substrate.cp_gcb(cp int)  RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_gcb'  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_wb(cp int)   RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_wb'   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_sb(cp int)   RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_sb'   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_lb(cp int)   RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_lb'   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_incb(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_incb' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_extended_pictographic(cp int) RETURNS bool
+    AS 'MODULE_PATHNAME', 'pg_cp_extended_pictographic' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_general_category(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_general_category' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_ccc(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_ccc' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_script(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_script' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_block(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_block' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_simple_uppercase(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_simple_uppercase' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_simple_lowercase(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_simple_lowercase' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_simple_titlecase(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_simple_titlecase' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_simple_case_fold(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_simple_case_fold' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_index(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_uca_index' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_total() RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_uca_total' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION substrate.ucd_version() RETURNS text
+    AS 'MODULE_PATHNAME', 'pg_ucd_version' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+COMMENT ON FUNCTION substrate.cp_hash(int) IS
+    'O(1) precomputed BLAKE3 hash of the codepoint (big-endian 4-byte rune). Tier-0 atom — frozen at extension build time, UCD-version-pinned.';
+COMMENT ON FUNCTION substrate.cp_centroid(int) IS
+    'O(1) precomputed 4D Super-Fibonacci centroid on S^3 anchored by UCA-sorted index. Tier-0 atom.';
+COMMENT ON FUNCTION substrate.cp_from_hash(bytea) IS
+    'Inverse of substrate.cp_hash — given a 32-byte BLAKE3 hash, return the codepoint value, or NULL if no codepoint produces that hash. O(log N) binary search over the embedded sorted-by-hash table.';
+COMMENT ON FUNCTION substrate.ucd_version() IS
+    'UCD version pinned into the extension at build time. Determinism gate: same UCD version → byte-identical tier-0 atoms forever.';
+
+CREATE FUNCTION substrate.cp_x(cp int) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_cp_x' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_y(cp int) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_cp_y' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_z(cp int) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_cp_z' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_m(cp int) RETURNS double precision
+    AS 'MODULE_PATHNAME', 'pg_cp_m' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+COMMENT ON FUNCTION substrate.cp_x(int) IS 'Codepoint S^3 X coordinate. Combine with cp_y/z/m + ST_MakePoint4D to build POINT4D geometry4d.';
+
+-- ── (22) Extended UCD/UCA accessors — full catalog from generated tables ──
+-- Bidi class, East-Asian width, Hangul syllable type, numeric type,
+-- decomposition type. All O(1) array loads.
+CREATE FUNCTION substrate.cp_bidi(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_bidi' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_eaw(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_eaw' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_hsy(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_hsy' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_num_type(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_num_type' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_decomp_type(cp int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_decomp_type' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Variable-length per-codepoint payloads. Empty arrays (NOT NULL) for the
+-- common case; pg_cp_name returns NULL for unnamed codepoints.
+CREATE FUNCTION substrate.cp_decomp(cp int) RETURNS int[]
+    AS 'MODULE_PATHNAME', 'pg_cp_decomp' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_full_case_fold(cp int) RETURNS int[]
+    AS 'MODULE_PATHNAME', 'pg_cp_full_case_fold' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_weights(cp int) RETURNS int[]
+    AS 'MODULE_PATHNAME', 'pg_cp_uca_weights' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_name(cp int) RETURNS text
+    AS 'MODULE_PATHNAME', 'pg_cp_name' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ── (23) SETOF inventory accessors — drive reference-table population ────
+-- Return shapes match the per-inventory struct in pg_unicode_inventory.h.
+CREATE FUNCTION substrate.ucd_general_categories(
+    OUT id int, OUT code text, OUT description text, OUT group_code text
+) RETURNS SETOF record
+    AS 'MODULE_PATHNAME', 'pg_ucd_general_categories'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_scripts(
+    OUT id int, OUT code text
+) RETURNS SETOF record
+    AS 'MODULE_PATHNAME', 'pg_ucd_scripts'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_blocks(
+    OUT id int, OUT code text, OUT range_start int, OUT range_end int
+) RETURNS SETOF record
+    AS 'MODULE_PATHNAME', 'pg_ucd_blocks'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_break_properties(
+    OUT id int, OUT category text, OUT code text, OUT enum_id int
+) RETURNS SETOF record
+    AS 'MODULE_PATHNAME', 'pg_ucd_break_properties'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+COMMENT ON FUNCTION substrate.ucd_general_categories() IS
+    'Inventory of 30 UCD General_Category values from the embedded extension catalog (code, long description, top-level group L/M/N/P/S/Z/C). Drives substrate.populate_general_categories_from_ext().';
+COMMENT ON FUNCTION substrate.ucd_scripts() IS
+    'Inventory of 175 UCD Script values from the embedded extension catalog. Drives substrate.populate_scripts_from_ext().';
+COMMENT ON FUNCTION substrate.ucd_blocks() IS
+    'Inventory of 347 UCD Block values from the embedded extension catalog with explicit range_start/range_end. Drives substrate.populate_blocks_from_ext().';
+COMMENT ON FUNCTION substrate.ucd_break_properties() IS
+    'Inventory of 101 break-property enums (GCB/WB/SB/LB) from the embedded extension catalog with explicit category column. Drives substrate.populate_break_properties_from_ext().';
+
+-- ── (24) Codepoint domain + composite atom type + bulk SRFs ──────────────
+-- The codepoint domain bounds-checks at the type-system level so callers
+-- get a clear constraint violation instead of an in-function ereport, and
+-- so the planner can use the CHECK for partition pruning when columns are
+-- typed substrate.codepoint instead of plain INT.
+CREATE DOMAIN substrate.codepoint AS int
+    CHECK (VALUE >= 0 AND VALUE <= 1114111);
+
+-- 30-column composite covering the entire per-codepoint record,
+-- including variable-length payloads (decomposition_mapping,
+-- full_case_fold). Bulk consumers SELECT FROM substrate.ucd_codepoints()
+-- and read the array columns directly — never call substrate.cp_decomp /
+-- substrate.cp_full_case_fold per row, which scales as 2.2M scalar SPI
+-- C invocations and is fragile under heavy executor pressure.
+CREATE TYPE substrate.codepoint_atom AS (
+    cp                    int,
+    hash                  bytea,
+    x                     double precision,
+    y                     double precision,
+    z                     double precision,
+    m                     double precision,
+    hilbert               bigint,
+    gcb                   int,
+    wb                    int,
+    sb                    int,
+    lb                    int,
+    incb                  int,
+    general_category      int,
+    ccc                   int,
+    script                int,
+    block                 int,
+    simple_uppercase      int,
+    simple_lowercase      int,
+    simple_titlecase      int,
+    simple_case_fold      int,
+    uca_index             int,
+    bidi                  int,
+    eaw                   int,
+    hsy                   int,
+    num_type              int,
+    decomp_type           int,
+    extended_pictographic boolean,
+    name                  text,
+    decomposition_mapping int[],
+    full_case_fold        int[]
+);
+
+CREATE FUNCTION substrate.cp_atom(cp int) RETURNS substrate.codepoint_atom
+    AS 'MODULE_PATHNAME', 'pg_cp_atom' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Bulk SRF over the entire UCD plane, or a slice. Default args emit all
+-- 1,114,112 codepoints. Use this for INSERT INTO substrate.entity from
+-- the extension catalog — single C call, no per-cp function invocation.
+CREATE FUNCTION substrate.ucd_codepoints(
+    "start" int DEFAULT 0,
+    "count" int DEFAULT 1114112
+) RETURNS SETOF substrate.codepoint_atom
+    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+-- Predicate-pushdown SRFs. The predicate is evaluated inside C against
+-- the embedded array — no SQL-side filter, no row materialization for
+-- non-matches.
+CREATE FUNCTION substrate.ucd_codepoints_in_block(block_id int)
+    RETURNS SETOF substrate.codepoint_atom
+    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_in_block'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_codepoints_in_script(script_id int)
+    RETURNS SETOF substrate.codepoint_atom
+    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_in_script'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_codepoints_with_gc(gc_id int)
+    RETURNS SETOF substrate.codepoint_atom
+    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_with_gc'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- ── (25) Bulk hash array helpers ─────────────────────────────────────────
+CREATE FUNCTION substrate.cp_hashes(cps int[]) RETURNS bytea[]
+    AS 'MODULE_PATHNAME', 'pg_cp_hashes'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_from_hashes(hashes bytea[]) RETURNS int[]
+    AS 'MODULE_PATHNAME', 'pg_cp_from_hashes'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+COMMENT ON FUNCTION substrate.cp_hashes(int[]) IS
+    'Vectorized per-cp hash lookup. One C call per call regardless of array length; out-of-range elements are NULL.';
+COMMENT ON FUNCTION substrate.cp_from_hashes(bytea[]) IS
+    'Vectorized hash → codepoint reverse. NULL for unknown hashes. Uses the embedded sorted-by-hash table.';
+
+-- ── (26) UCA sort key + collation operator class ─────────────────────────
+-- substrate.uca_sort_key(text) returns a binary key suitable for ORDER BY.
+-- Replaces ICU COLLATE for substrate-internal ordering — pure C array walk
+-- against the embedded UCA 17.0.0 weight blob.
+CREATE FUNCTION substrate.uca_sort_key(s text) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'pg_uca_sort_key'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Codepoint-level UCA comparator and btree opclass. Lets SQL do
+--   ORDER BY cp USING OPERATOR(substrate.uca_lt)
+-- without dragging COLLATE through every query. The opclass is btree-only
+-- and keyed on int (so a substrate.codepoint column slots in directly).
+CREATE FUNCTION substrate.cp_uca_compare(a int, b int) RETURNS int
+    AS 'MODULE_PATHNAME', 'pg_cp_uca_compare'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION substrate.cp_uca_lt(a int, b int) RETURNS boolean
+    AS $$ SELECT substrate.cp_uca_compare($1, $2) <  0 $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_le(a int, b int) RETURNS boolean
+    AS $$ SELECT substrate.cp_uca_compare($1, $2) <= 0 $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_eq(a int, b int) RETURNS boolean
+    AS $$ SELECT substrate.cp_uca_compare($1, $2) =  0 $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_ge(a int, b int) RETURNS boolean
+    AS $$ SELECT substrate.cp_uca_compare($1, $2) >= 0 $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION substrate.cp_uca_gt(a int, b int) RETURNS boolean
+    AS $$ SELECT substrate.cp_uca_compare($1, $2) >  0 $$
+    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR substrate.<#  (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_lt, COMMUTATOR = >#);
+CREATE OPERATOR substrate.<=# (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_le, COMMUTATOR = >=#);
+CREATE OPERATOR substrate.=#  (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_eq, COMMUTATOR = =#);
+CREATE OPERATOR substrate.>=# (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_ge, COMMUTATOR = <=#);
+CREATE OPERATOR substrate.>#  (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_gt, COMMUTATOR = <#);
+
+CREATE OPERATOR CLASS substrate.cp_uca_ops
+    FOR TYPE int USING btree AS
+        OPERATOR 1 substrate.<#,
+        OPERATOR 2 substrate.<=#,
+        OPERATOR 3 substrate.=#,
+        OPERATOR 4 substrate.>=#,
+        OPERATOR 5 substrate.>#,
+        FUNCTION 1 substrate.cp_uca_compare(int, int);
+
+COMMENT ON OPERATOR CLASS substrate.cp_uca_ops USING btree IS
+    'Btree opclass keyed on int (or substrate.codepoint) that sorts by UCA-derived position from the embedded catalog. Use as ORDER BY cp USING OPERATOR(substrate.<#) or via index opclass on a codepoint column.';
+
+-- ── (27) Inventory views over the SRFs ───────────────────────────────────
+CREATE VIEW substrate.v_general_category   AS SELECT * FROM substrate.ucd_general_categories();
+CREATE VIEW substrate.v_script             AS SELECT * FROM substrate.ucd_scripts();
+CREATE VIEW substrate.v_block              AS SELECT * FROM substrate.ucd_blocks();
+CREATE VIEW substrate.v_break_property     AS SELECT * FROM substrate.ucd_break_properties();
+CREATE VIEW substrate.v_codepoint_atom     AS SELECT * FROM substrate.ucd_codepoints();
+
+COMMENT ON VIEW substrate.v_codepoint_atom IS
+    '1,114,112-row view over the embedded UCD/UCA 17.0.0 catalog. Each row is a complete codepoint atom (id, hash, 4D centroid, hilbert, all enum/case properties, name). Materialized at query time via a single C SRF call.';
+
+-- ── (28) Case folding via embedded full-case-fold blob ──────────────────
+CREATE FUNCTION substrate.case_fold_text(s text) RETURNS text
+    AS 'MODULE_PATHNAME', 'pg_case_fold_text'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+COMMENT ON FUNCTION substrate.case_fold_text(text) IS
+    'Full Unicode case fold using the embedded UCD CaseFolding.txt mapping. Multi-codepoint expansions (German ß → ss, etc.) handled correctly. Drop-in for lower(text COLLATE "und-x-icu") in substrate-internal paths.';
+
+
 -- ── sql/schema/tables/reference/entity_type.sql ───────────────────────────────────────
 CREATE TABLE substrate.entity_type (
     id        SERIAL PRIMARY KEY,
@@ -159,7 +1324,7 @@ CREATE TABLE substrate.physicality_type (
     code VARCHAR(64) NOT NULL UNIQUE
 );
 COMMENT ON TABLE substrate.physicality_type IS
-    'Geometry interpretation. What the GeometryZM value in substrate.physicality represents (s3_position, contour, weight_distribution, etc.).';
+    'Geometry interpretation. What the geometry4d value in substrate.physicality represents (s3_position, contour, weight_distribution, etc.).';
 
 -- ── sql/schema/tables/reference/significance_context.sql ───────────────────────────────────────
 CREATE TABLE substrate.significance_context (
@@ -336,17 +1501,27 @@ COMMENT ON TABLE substrate.east_asian_width IS
 
 -- ── sql/schema/tables/reference/language.sql ───────────────────────────────────────
 CREATE TABLE substrate.language (
-    id    SERIAL PRIMARY KEY,
-    code  VARCHAR(3) NOT NULL UNIQUE CHECK (LENGTH(code) = 3),
-    name  VARCHAR(128) NOT NULL,
-    scope VARCHAR(1) NOT NULL CHECK (LENGTH(scope) = 1),
-    type  VARCHAR(1) NOT NULL CHECK (LENGTH(type) = 1)
+    id     SERIAL PRIMARY KEY,
+    code   VARCHAR(3) NOT NULL UNIQUE CHECK (LENGTH(code) = 3),
+    name   VARCHAR(128) NOT NULL,
+    scope  VARCHAR(1) NOT NULL CHECK (LENGTH(scope) = 1),
+    type   VARCHAR(1) NOT NULL CHECK (LENGTH(type) = 1),
+    part1  CHAR(2) NULL CHECK (part1  IS NULL OR LENGTH(part1)  = 2),
+    part2b CHAR(3) NULL CHECK (part2b IS NULL OR LENGTH(part2b) = 3),
+    part2t CHAR(3) NULL CHECK (part2t IS NULL OR LENGTH(part2t) = 3)
 );
 
 COMMENT ON TABLE substrate.language IS
-    'ISO 639-3 language inventory. ~7,928 languages. Populated by ISO 639 seed.';
-COMMENT ON COLUMN substrate.language.scope IS 'I = individual, M = macrolanguage, S = special.';
-COMMENT ON COLUMN substrate.language.type  IS 'A = ancient, C = constructed, E = extinct, H = historical, L = living, S = special.';
+    'ISO 639-3 language inventory (~7,928 rows). The 3-letter ISO 639-3 identifier is `code`. '
+    'part1 is ISO 639-1 (2-letter), part2b is ISO 639-2/B (bibliographic), part2t is ISO 639-2/T '
+    '(terminology). Part1 is the join key for CLDR locale identifiers (which use ISO 639-1 when '
+    'available, else ISO 639-3).';
+COMMENT ON COLUMN substrate.language.scope  IS 'I = individual, M = macrolanguage, S = special.';
+COMMENT ON COLUMN substrate.language.type   IS 'A = ancient, C = constructed, E = extinct, H = historical, L = living, S = special.';
+COMMENT ON COLUMN substrate.language.part1  IS 'ISO 639-1 two-letter code. NULL when not assigned.';
+COMMENT ON COLUMN substrate.language.part2b IS 'ISO 639-2/B bibliographic three-letter code. Usually equals code or part2t; differs for ~20 languages (e.g. ger vs deu).';
+COMMENT ON COLUMN substrate.language.part2t IS 'ISO 639-2/T terminology three-letter code. Usually equals code.';
+
 
 -- ── sql/schema/tables/reference/general_category.sql ───────────────────────────────────────
 CREATE TABLE substrate.general_category (
@@ -1065,7 +2240,7 @@ COMMENT ON TABLE substrate.entity IS
 CREATE TABLE substrate.edge (
     edge_type_id  INT  NOT NULL REFERENCES substrate.edge_type(id),
     hash          substrate.hash_value NOT NULL,
-    geom          geometry(GeometryZM),
+    geom          geometry4d,
     provenance_id INT  NOT NULL REFERENCES substrate.provenance(id),
     PRIMARY KEY (edge_type_id, hash)
 ) PARTITION BY LIST (edge_type_id);
@@ -1241,9 +2416,9 @@ CREATE TABLE substrate.edge_member_default
     PARTITION OF substrate.edge_member DEFAULT;
 
 -- ── sql/schema/tables/core/physicality.sql ───────────────────────────────────────
--- 4D geometric realization of an entity. PostGIS-native GeometryZM
--- (POINTZM for atoms, LINESTRINGZM for compositions, M as a real spatial
--- axis). Per-partition CHECK constraints enforce the dimensionality each
+-- 4D geometric realization of an entity. geometry4d is the substrate
+-- geometry carrier (POINT4D for atoms, LINESTRING4D for compositions).
+-- Per-partition CHECK constraints enforce the dimensionality each
 -- physicality_type expects. content_hash distinguishes multiple physicalities
 -- of the same type for the same entity (e.g., multiple firefly samples).
 --
@@ -1254,7 +2429,20 @@ CREATE TABLE substrate.physicality (
     physicality_type_id INT  NOT NULL REFERENCES substrate.physicality_type(id),
     entity_hash         substrate.hash_value NOT NULL,
     content_hash        substrate.hash_value NOT NULL,
-    geom                geometry(GeometryZM) NOT NULL,
+    geom                geometry4d NOT NULL,
+    child_hashes        substrate.hash_value[] NULL,
+    ordinal_starts      INT[] NULL,
+    rle_counts          INT[] NULL,
+    CHECK (
+        (child_hashes IS NULL AND ordinal_starts IS NULL AND rle_counts IS NULL)
+        OR (
+            child_hashes IS NOT NULL
+            AND ordinal_starts IS NOT NULL
+            AND rle_counts IS NOT NULL
+            AND array_length(child_hashes, 1) = array_length(ordinal_starts, 1)
+            AND array_length(child_hashes, 1) = array_length(rle_counts, 1)
+        )
+    ),
     PRIMARY KEY (physicality_type_id, entity_hash, content_hash)
     -- FK to substrate.entity(hash) application-enforced — pipeline batch
     -- ordering writes entities before physicalities. (PG18.3 partitionwise-FK
@@ -1262,85 +2450,49 @@ CREATE TABLE substrate.physicality (
 ) PARTITION BY LIST (physicality_type_id);
 
 COMMENT ON TABLE substrate.physicality IS
-    'Geometric realizations of entities. PostGIS GeometryZM. Hash-only entity reference (no type_id). Partitioned by physicality_type_id. FK to substrate.entity application-enforced.';
+    'Geometric realizations of entities. Native geometry4d. Hash-only entity reference (no type_id). Composition child identity, ordinal, and RLE metadata live on the physicality row.';
 
 -- ── sql/schema/tables/core/physicality_s3.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_s3
     PARTITION OF substrate.physicality FOR VALUES IN (1);
 ALTER TABLE substrate.physicality_s3
-    ADD CONSTRAINT physicality_s3_pointzm
-    CHECK (ST_GeometryType(geom) = 'ST_Point' AND ST_NDims(geom) = 4);
+    ADD CONSTRAINT physicality_s3_point4d
+    CHECK (ST_TypeTag4D(geom) = 1);
 
 -- ── sql/schema/tables/core/physicality_hilbert.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_hilbert
     PARTITION OF substrate.physicality FOR VALUES IN (2);
 ALTER TABLE substrate.physicality_hilbert
-    ADD CONSTRAINT physicality_hilbert_pointzm
-    CHECK (ST_GeometryType(geom) = 'ST_Point' AND ST_NDims(geom) = 4);
+    ADD CONSTRAINT physicality_hilbert_point4d
+    CHECK (ST_TypeTag4D(geom) = 1);
 
 -- ── sql/schema/tables/core/physicality_audio.sql ───────────────────────────────────────
 -- Physicality types 3..10: waveform, fft_spectrum, stft_spectrogram,
 -- pitch_contour, formant_trajectory, spectral_centroid, mfcc_frame, chromagram.
--- Mixed geometry shapes (POINTZM for spectral_centroid, LINESTRINGZM for
--- contours/trajectories, MULTILINESTRINGZM for spectrograms) — no single
--- partition CHECK; per-row geometry validated by PostGIS internals.
+-- Mixed geometry shapes (POINT4D for spectral_centroid, LINESTRING4D for
+-- contours/trajectories, multi-trajectory shapes) — no single
+-- partition CHECK.
 CREATE TABLE substrate.physicality_audio
     PARTITION OF substrate.physicality FOR VALUES IN (3, 4, 5, 6, 7, 8, 9, 10);
 
 -- ── sql/schema/tables/core/physicality_model.sql ───────────────────────────────────────
 -- Physicality types 11..12: svd_spectrum, weight_distribution.
--- Both 4D (POINTZM or LINESTRINGZM); enforced per-row.
+-- Both 4D (POINT4D or LINESTRING4D); enforced per-row.
 CREATE TABLE substrate.physicality_model
     PARTITION OF substrate.physicality FOR VALUES IN (11, 12);
 
 -- ── sql/schema/tables/core/physicality_contour.sql ───────────────────────────────────────
--- Physicality type 13: contour. LINESTRINGZM trajectories through codepoint
+-- Physicality type 13: contour. LINESTRING4D trajectories through codepoint
 -- S3 positions. The dominant text-side physicality.
 CREATE TABLE substrate.physicality_contour
     PARTITION OF substrate.physicality FOR VALUES IN (13);
 ALTER TABLE substrate.physicality_contour
-    ADD CONSTRAINT physicality_contour_linestringzm
-    CHECK (ST_GeometryType(geom) = 'ST_LineString' AND ST_NDims(geom) = 4);
+    ADD CONSTRAINT physicality_contour_linestring4d
+    CHECK (ST_TypeTag4D(geom) = 2);
 
 -- ── sql/schema/tables/core/physicality_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_default
     PARTITION OF substrate.physicality DEFAULT;
-
--- ── sql/schema/tables/core/sequence.sql ───────────────────────────────────────
--- substrate.sequence — the indexed parent → ordered children record.
---
--- Hash-as-PK throughout. Composite (parent_hash, ordinal) is the natural
--- key — repetition (refrain in Green Eggs and Ham, noreply@example.com
--- appearing 47 times in one email body) is preserved by distinct ordinals
--- pointing to the SAME content-addressed child entity. The child entity
--- stays one row in substrate.entity (content dedup); the sequence rows
--- are how we record where that one entity sits inside each parent.
---
--- rle_count compresses contiguous runs of the same child: three identical
--- sentences in a row collapse to one row with ordinal = first position
--- and rle_count = 3. Lookup at ordinal N walks
--- WHERE ordinal <= N AND ordinal + rle_count > N — still indexed,
--- still microseconds.
---
--- Per-entity-type partitioning DROPPED: substrate.entity is no longer
--- partitioned by type (Phase C of unification refactor — entity is
--- content-only; types are junction metadata). Sequence is similarly
--- single-table now. Index on (parent_hash, ordinal) provides O(log N)
--- random access; inverse index on (child_hash) provides parent lookup.
-CREATE TABLE substrate.sequence (
-    parent_hash substrate.hash_value NOT NULL,
-    ordinal     INT  NOT NULL,
-    child_hash  substrate.hash_value NOT NULL,
-    rle_count   INT  NOT NULL DEFAULT 1,
-    PRIMARY KEY (parent_hash, ordinal)
-    -- FK to substrate.entity intentionally omitted — application-layer
-    -- batch ordering guarantees parent + child entity rows exist before
-    -- their sequence rows. (Same PG18.3 partitionwise-FK SEGV pattern
-    -- documented elsewhere; conservatively kept omitted post-collapse.)
-);
-
-COMMENT ON TABLE substrate.sequence IS
-    'Parent → ordered children with RLE for refrain compression. Hash-only references — entity type is irrelevant to ordinal lookup. Btree-indexed on (parent_hash, ordinal) for microsecond random access; inverse index on (child_hash) for parent lookup.';
 
 -- ── sql/schema/tables/core/entity_significance.sql ───────────────────────────────────────
 -- Glicko-2 ratings on entities, per arena, per attestation_type. Hash-only
@@ -2038,6 +3190,15 @@ CREATE INDEX idx_language_scope ON substrate.language(scope);
 -- ── sql/schema/indexes/idx_language_type.sql ───────────────────────────────────────
 CREATE INDEX idx_language_type ON substrate.language(type);
 
+-- ── sql/schema/indexes/idx_language_part1.sql ───────────────────────────────────────
+CREATE UNIQUE INDEX idx_language_part1 ON substrate.language(part1) WHERE part1 IS NOT NULL;
+
+-- ── sql/schema/indexes/idx_language_part2b.sql ───────────────────────────────────────
+CREATE INDEX idx_language_part2b ON substrate.language(part2b) WHERE part2b IS NOT NULL;
+
+-- ── sql/schema/indexes/idx_language_part2t.sql ───────────────────────────────────────
+CREATE INDEX idx_language_part2t ON substrate.language(part2t) WHERE part2t IS NOT NULL;
+
 -- ── sql/schema/indexes/idx_model_arch_class.sql ───────────────────────────────────────
 CREATE INDEX idx_model_arch_class ON substrate.model_architecture_class(architecture_class_id, entity_hash);
 
@@ -2068,9 +3229,6 @@ CREATE INDEX idx_safetensor_observation_source
 CREATE INDEX idx_safetensor_observation_tensor
     ON substrate.safetensor_observation (package_tensor_hash, tensor_hash);
 
--- ── sql/schema/indexes/idx_sequence_child.sql ───────────────────────────────────────
-CREATE INDEX idx_sequence_child ON substrate.sequence(child_hash, parent_hash);
-
 -- ── sql/schema/indexes/idx_session_started.sql ───────────────────────────────────────
 CREATE INDEX idx_session_started ON monitor.session(started_at DESC);
 
@@ -2099,1201 +3257,6 @@ CREATE INDEX idx_tensor_role ON substrate.tensor_tensor_role(tensor_role_id, ent
 
 -- ── Phase 13: functions ──────────────────────────────────────────────
 -- Reference / utility helpers
-
--- ── ext/hartonomous_pg/sql/hartonomous--1.0.sql.in ───────────────────────────────────────
-
--- ════════════════════════════════════════════════════════════════════
--- Native C-binding declarations (from hartonomous--1.0.sql.in)
--- ════════════════════════════════════════════════════════════════════
--- hartonomous--1.0.sql
---
--- Per docs/specs/native/4d-type-and-index.md, declarations are ordered:
---   (1) shell types  → (2) I/O fns  → (3) full CREATE TYPE
---   (4) constructors and scalar fns
---   (5) operators
---   (6) GiST/SP-GiST opclasses (P1a.3 — declared empty here, populated later)
---   (7) aggregates
---   (8) BLAKE3 + traversal (preserved from prior version)
---
--- All wrappers are `PARALLEL SAFE` because the underlying native code is
--- pure (no shared mutable state) and the substrate-side functions only
--- read tables.
-
-
--- ── (1) Shell types ────────────────────────────────────────────────
-CREATE TYPE point4d;
-CREATE TYPE box4d;
-
--- ── (2) I/O functions ──────────────────────────────────────────────
-CREATE FUNCTION point4d_in(cstring) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_point4d_in'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point4d_out(point4d) RETURNS cstring
-    AS 'MODULE_PATHNAME', 'pg_point4d_out'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point4d_recv(internal) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_point4d_recv'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point4d_send(point4d) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_point4d_send'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION box4d_in(cstring) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_box4d_in'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_out(box4d) RETURNS cstring
-    AS 'MODULE_PATHNAME', 'pg_box4d_out'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_recv(internal) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_box4d_recv'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_send(box4d) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_box4d_send'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ── (3) Full CREATE TYPE ───────────────────────────────────────────
-CREATE TYPE point4d (
-    INTERNALLENGTH = 32,
-    INPUT          = point4d_in,
-    OUTPUT         = point4d_out,
-    RECEIVE        = point4d_recv,
-    SEND           = point4d_send,
-    ALIGNMENT      = double,
-    STORAGE        = plain
-);
-
-CREATE TYPE box4d (
-    INTERNALLENGTH = 64,
-    INPUT          = box4d_in,
-    OUTPUT         = box4d_out,
-    RECEIVE        = box4d_recv,
-    SEND           = box4d_send,
-    ALIGNMENT      = double,
-    STORAGE        = plain
-);
-
--- ── (4) Constructors and scalar functions ──────────────────────────
-
--- point4d(x1, x2, x3, x4)
-CREATE FUNCTION point4d(double precision, double precision, double precision, double precision)
-    RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_point4d_constructor'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- bbox(point4d) — degenerate box at a point
-CREATE FUNCTION bbox(point4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_bbox_from_point'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION bbox_expand(box4d, point4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_box4d_expand_point'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION bbox_union(box4d, box4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_box4d_union'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Distances and S³ helpers (point4d-typed, no PostGIS bridge).
-CREATE FUNCTION distance_4d(point4d, point4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_distance_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION distance_s3(point4d, point4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_distance_s3'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION dot_4d(point4d, point4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_dot_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION norm_4d(point4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_norm_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION normalize_4d(point4d) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_normalize_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- substrate.ls4d_from_centroids — build a PostGIS LINESTRINGZM from an
--- ordered point4d[] participant array. Used by edge emission paths to
--- materialize edge.geom from participant centroids in role order. The
--- inner C function returns EWKB; ST_GeomFromWKB lifts it to geometry.
--- Producers can also build the same EWKB directly in C# and skip this
--- round-trip when emitting via binary COPY.
-CREATE FUNCTION substrate.ls4d_from_centroids_wkb(point4d[]) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_ls4d_from_centroids_wkb'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE OR REPLACE FUNCTION substrate.ls4d_from_centroids(point4d[])
-RETURNS geometry(LINESTRINGZM)
-LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE
-AS $$
-    SELECT ST_GeomFromWKB(substrate.ls4d_from_centroids_wkb($1), 0)::geometry(LINESTRINGZM);
-$$;
-
-COMMENT ON FUNCTION substrate.ls4d_from_centroids(point4d[]) IS
-    'Build a LINESTRINGZM from an ordered participant centroid array. Used to compute edge.geom inline from participants in role order, avoiding any post-insert geometry-population pass. SRID 0 (substrate is not georeferenced).';
-
-CREATE FUNCTION slerp(point4d, point4d, double precision) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_slerp'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION antipode(point4d) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_antipode'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Super-Fibonacci S³ sample point and Hilbert index (4D).
-CREATE FUNCTION super_fibonacci_4d(bigint, bigint) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_super_fibonacci_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION hilbert_4d(point4d, int) RETURNS bigint
-    AS 'MODULE_PATHNAME', 'pg_hilbert_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION hilbert_4d_inverse(bigint, int) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_hilbert_4d_inverse'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Equality and hash for point4d.
-CREATE FUNCTION point4d_eq(point4d, point4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_point4d_eq'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point4d_ne(point4d, point4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_point4d_ne'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point4d_hash(point4d) RETURNS integer
-    AS 'MODULE_PATHNAME', 'pg_point4d_hash'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Box4D predicates and equality.
-CREATE FUNCTION box4d_overlaps(box4d, box4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_box4d_overlaps'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_contains_point(box4d, point4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_box4d_contains_point'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point_contained_by_box4d(point4d, box4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_point_contained_by_box4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_contains_box(box4d, box4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_box4d_contains_box'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_contained_by_box(box4d, box4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_box4d_contained_by_box'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION box4d_eq(box4d, box4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_box4d_eq'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ── (5) Operators ──────────────────────────────────────────────────
-
-CREATE OPERATOR <-> (
-    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = distance_4d,
-    COMMUTATOR = <->
-);
-CREATE OPERATOR <=> (
-    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = distance_s3,
-    COMMUTATOR = <=>
-);
-
-CREATE OPERATOR = (
-    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = point4d_eq,
-    COMMUTATOR = =, NEGATOR = <>, HASHES, MERGES
-);
-CREATE OPERATOR <> (
-    LEFTARG = point4d, RIGHTARG = point4d, FUNCTION = point4d_ne,
-    COMMUTATOR = <>, NEGATOR = =
-);
-
-CREATE OPERATOR && (
-    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_overlaps,
-    COMMUTATOR = &&
-);
-CREATE OPERATOR @> (
-    LEFTARG = box4d, RIGHTARG = point4d, FUNCTION = box4d_contains_point
-);
-CREATE OPERATOR <@ (
-    LEFTARG = point4d, RIGHTARG = box4d, FUNCTION = point_contained_by_box4d
-);
-CREATE OPERATOR @> (
-    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_contains_box,
-    COMMUTATOR = <@
-);
-CREATE OPERATOR <@ (
-    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_contained_by_box,
-    COMMUTATOR = @>
-);
-CREATE OPERATOR = (
-    LEFTARG = box4d, RIGHTARG = box4d, FUNCTION = box4d_eq,
-    COMMUTATOR = =
-);
-
--- ── (6) Hash op family for point4d (covers the HASHES / MERGES properties) ──
-CREATE OPERATOR FAMILY point4d_hash_ops USING hash;
-CREATE OPERATOR CLASS point4d_hash_ops
-    DEFAULT FOR TYPE point4d USING hash FAMILY point4d_hash_ops AS
-        OPERATOR 1 = (point4d, point4d),
-        FUNCTION 1 point4d_hash(point4d);
-
--- ── (6b) GiST opclass for point4d (R-tree-style, STORAGE box4d) ────────
-CREATE FUNCTION gist_point4d_consistent(internal, point4d, smallint, oid, internal)
-    RETURNS bool
-    AS 'MODULE_PATHNAME', 'gist_point4d_consistent'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_union(internal, internal) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'gist_point4d_union'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_compress(internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'gist_point4d_compress'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_decompress(internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'gist_point4d_decompress'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_penalty(internal, internal, internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'gist_point4d_penalty'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_picksplit(internal, internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'gist_point4d_picksplit'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_same(box4d, box4d, internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'gist_point4d_same'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION gist_point4d_distance(internal, point4d, smallint, oid, internal)
-    RETURNS double precision
-    AS 'MODULE_PATHNAME', 'gist_point4d_distance'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE OPERATOR CLASS point4d_gist_ops
-    DEFAULT FOR TYPE point4d USING gist AS
-        OPERATOR  1  <@ (point4d, box4d),
-        OPERATOR  2  <-> (point4d, point4d) FOR ORDER BY float_ops,
-        OPERATOR  3  <=> (point4d, point4d) FOR ORDER BY float_ops,
-        FUNCTION  1  gist_point4d_consistent(internal, point4d, smallint, oid, internal),
-        FUNCTION  2  gist_point4d_union(internal, internal),
-        FUNCTION  3  gist_point4d_compress(internal),
-        FUNCTION  4  gist_point4d_decompress(internal),
-        FUNCTION  5  gist_point4d_penalty(internal, internal, internal),
-        FUNCTION  6  gist_point4d_picksplit(internal, internal),
-        FUNCTION  7  gist_point4d_same(box4d, box4d, internal),
-        FUNCTION  8  (point4d, point4d) gist_point4d_distance(internal, point4d, smallint, oid, internal),
-        STORAGE   box4d;
-
--- ── (6c) SP-GiST opclass for point4d (16-way quad-tree) ────────────────
-CREATE FUNCTION spg_point4d_config(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME', 'spg_point4d_config'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION spg_point4d_choose(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME', 'spg_point4d_choose'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION spg_point4d_picksplit(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME', 'spg_point4d_picksplit'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION spg_point4d_inner_consistent(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME', 'spg_point4d_inner_consistent'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION spg_point4d_leaf_consistent(internal, internal) RETURNS bool
-    AS 'MODULE_PATHNAME', 'spg_point4d_leaf_consistent'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE OPERATOR CLASS point4d_spgist_ops
-    DEFAULT FOR TYPE point4d USING spgist AS
-        OPERATOR  1  <@ (point4d, box4d),
-        FUNCTION  1  spg_point4d_config(internal, internal),
-        FUNCTION  2  spg_point4d_choose(internal, internal),
-        FUNCTION  3  spg_point4d_picksplit(internal, internal),
-        FUNCTION  4  spg_point4d_inner_consistent(internal, internal),
-        FUNCTION  5  spg_point4d_leaf_consistent(internal, internal);
-
--- ── (7) Aggregates ─────────────────────────────────────────────────
-
--- centroid_4d (Euclidean mean) — uses internal-state aggregate with combine
--- and serialize/deserialize for parallel-safe execution.
-CREATE FUNCTION centroid_4d_sfunc(internal, point4d) RETURNS internal
-    AS 'MODULE_PATHNAME', 'pg_centroid_4d_sfunc'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION centroid_4d_combine(internal, internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'pg_centroid_4d_combine'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION centroid_4d_serialize(internal) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_centroid_4d_serialize'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION centroid_4d_deserialize(bytea, internal) RETURNS internal
-    AS 'MODULE_PATHNAME', 'pg_centroid_4d_deserialize'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION centroid_4d_ffunc(internal) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_centroid_4d_ffunc'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION centroid_s3_ffunc(internal) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_centroid_s3_ffunc'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE AGGREGATE centroid_4d(point4d) (
-    SFUNC      = centroid_4d_sfunc,
-    STYPE      = internal,
-    FINALFUNC  = centroid_4d_ffunc,
-    COMBINEFUNC = centroid_4d_combine,
-    SERIALFUNC = centroid_4d_serialize,
-    DESERIALFUNC = centroid_4d_deserialize,
-    PARALLEL = SAFE
-);
-
-CREATE AGGREGATE centroid_s3(point4d) (
-    SFUNC      = centroid_4d_sfunc,
-    STYPE      = internal,
-    FINALFUNC  = centroid_s3_ffunc,
-    COMBINEFUNC = centroid_4d_combine,
-    SERIALFUNC = centroid_4d_serialize,
-    DESERIALFUNC = centroid_4d_deserialize,
-    PARALLEL = SAFE
-);
-
--- bbox_4d uses box4d as state directly — no internal/serialize needed.
-CREATE FUNCTION bbox_4d_sfunc(box4d, point4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_bbox_4d_sfunc'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION bbox_4d_combine(box4d, box4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_bbox_4d_combine'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE AGGREGATE bbox_4d(point4d) (
-    SFUNC      = bbox_4d_sfunc,
-    STYPE      = box4d,
-    COMBINEFUNC = bbox_4d_combine,
-    PARALLEL = SAFE
-);
-
--- ── (8) Version, BLAKE3, traversal (preserved verbatim) ────────────
-
-CREATE FUNCTION hartonomous_version()
-RETURNS text
-AS 'MODULE_PATHNAME', 'pg_hartonomous_version'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Returns runtime introspection: MKL version, thread pool sizes, the active
--- CBWR branch, and whether strict-determinism was requested at load. Lets
--- callers verify the determinism contract (Law #6) without parsing logs.
-CREATE FUNCTION hartonomous_runtime_info(
-    OUT mkl_version text,
-    OUT mkl_max_threads int,
-    OUT omp_max_threads int,
-    OUT cbwr_branch int,
-    OUT strict_determinism boolean
-)
-RETURNS record
-AS 'MODULE_PATHNAME', 'pg_hartonomous_runtime_info'
-LANGUAGE C VOLATILE PARALLEL RESTRICTED;
-
-CREATE FUNCTION blake3_hash(bytea) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_blake3_hash'
-    LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION blake3_hash_text(text) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_blake3_hash_text'
-    LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
-
--- Hash-only result types (Phase C unification). substrate.entity has a
--- hash-only PK; classifications are junction metadata. Neighbors and
--- traversal_path carry hash-only handles. Edge identity stays composite —
--- edge_type IS structural.
-CREATE TYPE neighbors_result AS (
-    target_entity_hash bytea,
-    edge_type_id       int,
-    edge_hash          bytea,
-    depth              int,
-    path_ehashes       bytea[]
-);
-
-CREATE TYPE traversal_path AS (
-    target_entity_hash bytea,
-    depth              int,
-    total_mu           double precision,
-    path_ehashes       bytea[]
-);
-
--- BFS expansion. Required: seed_entity_hash. Optional: edge_type_filter
--- (NULL = any edge type), max_hops (default 1).
-CREATE FUNCTION neighbors(
-    seed_entity_hash bytea,
-    edge_type_filter int DEFAULT NULL,
-    max_hops         int DEFAULT 1
-)
-    RETURNS SETOF neighbors_result
-    AS 'MODULE_PATHNAME', 'pg_neighbors'
-    LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
-
--- Glicko-2-rated A* over typed edges. Edge cost = 1 / edge_mu where edge_mu
--- is read via the COALESCE prior formula
---   mu = COALESCE(
---          edge_significance.mu,
---          provenance_edge_authority.initial_mu,
---          provenance.initial_mu * edge_type.semantic_weight * provenance.derivation_decay
---        )
--- total_mu in the result is 1/sum(1/mu_i), the path's aggregate trust score
--- in the requested arena.
-CREATE FUNCTION traverse_astar(
-    seed_entity_hash bytea,
-    edge_type_filter int,
-    arena_id         int,
-    max_depth        int              DEFAULT 5,
-    max_results      int              DEFAULT 100,
-    p_min_mu         double precision DEFAULT NULL
-)
-    RETURNS SETOF traversal_path
-    AS 'MODULE_PATHNAME', 'pg_traverse_astar'
-    LANGUAGE C STABLE PARALLEL SAFE ROWS 100;
-
--- ── substrate.similarity_topk ───────────────────────────────────────────
--- Bounded-K nearest-neighbor scan over an arbitrary candidate query.
--- Distance kind dispatches by name to a substrate-side wrapper:
---   '4d'      → substrate.dist_4d(geometry, geometry)
---   's3'      → substrate.dist_s3(geometry, geometry)
---   'frechet' → substrate.frechet_4d_geom(geometry, geometry)
--- The candidate query MUST yield (entity_type_id int, entity_hash bytea, geom geometry).
--- Optional distance threshold filters per-candidate before the top-K cut.
-CREATE OR REPLACE FUNCTION substrate.similarity_topk(
-    p_seed_geom          geometry,
-    p_k                  int,
-    p_distance_kind      text,
-    p_candidate_query    text,
-    p_distance_threshold double precision DEFAULT NULL
-) RETURNS TABLE (entity_type_id int, entity_hash bytea, distance double precision)
-    AS 'MODULE_PATHNAME', 'pg_similarity_topk'
-    LANGUAGE C STABLE STRICT;
-
--- ── substrate.recompose_walk ────────────────────────────────────────────
--- Iterative DFS over substrate.sequence starting at p_root_hash. Emits the
--- root first then descendants in left-to-right depth-first order. content_label
--- is always NULL — substrate.entity is hash-only; the C# layer joins content
--- (codepoint_value, classification, etc.) out-of-band.
-CREATE OR REPLACE FUNCTION substrate.recompose_walk(
-    p_root_hash bytea,
-    p_max_depth int DEFAULT 16
-) RETURNS TABLE (entity_hash bytea, ordinal_position int, content_label text, depth int)
-    AS 'MODULE_PATHNAME', 'pg_recompose_walk'
-    LANGUAGE C STABLE STRICT;
-
-
--- ═══════════════════════════════════════════════════════════════════════
--- (9) linestring4d — varlena polyline type for 4D trajectories
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE TYPE linestring4d;
-
-CREATE FUNCTION linestring4d_in(cstring) RETURNS linestring4d
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_in'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION linestring4d_out(linestring4d) RETURNS cstring
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_out'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION linestring4d_recv(internal) RETURNS linestring4d
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_recv'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION linestring4d_send(linestring4d) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_send'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE TYPE linestring4d (
-    INTERNALLENGTH = variable,
-    INPUT          = linestring4d_in,
-    OUTPUT         = linestring4d_out,
-    RECEIVE        = linestring4d_recv,
-    SEND           = linestring4d_send,
-    ALIGNMENT      = double,
-    STORAGE        = extended
-);
-
-CREATE FUNCTION npoints(linestring4d) RETURNS integer
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_npoints'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION point_n(linestring4d, integer) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_point_n'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION bbox(linestring4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_bbox'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION linestring4d_append(linestring4d, point4d) RETURNS linestring4d
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_append'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION length_4d(linestring4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_linestring4d_length'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Bulk constructor: flat float8[] of length 4n → linestring4d with n vertices.
--- Canonical batch-insert path for the C# ingestion pipeline.
-CREATE FUNCTION array_to_linestring4d(double precision[]) RETURNS linestring4d
-    AS 'MODULE_PATHNAME', 'pg_array_to_linestring4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Per-row binary constructor: bytea holding the linestring4d wire format
--- (int32 npoints BE, then 4n float8 BE) → linestring4d. Used by the C#
--- ingestion pipeline to write batches of variable-length linestrings via
--- INSERT ... SELECT FROM unnest($n::bytea[]) without flattening multidim
--- float8 arrays. Decode mirrors pg_linestring4d_recv exactly.
-CREATE FUNCTION bytea_to_linestring4d(bytea) RETURNS linestring4d
-    AS 'MODULE_PATHNAME', 'pg_bytea_to_linestring4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ═══════════════════════════════════════════════════════════════════════
--- (10) Trajectory distances (Frechet, Hausdorff)
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE FUNCTION frechet_4d(linestring4d, linestring4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_frechet_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION hausdorff_4d(linestring4d, linestring4d) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_hausdorff_4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ═══════════════════════════════════════════════════════════════════════
--- (11) Glicko-2 bulk update wrapper
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE FUNCTION glicko2_bulk_update(
-    mu        double precision[],
-    sigma     double precision[],
-    vol       double precision[],
-    opp_mu    double precision[],
-    opp_sigma double precision[],
-    score     double precision[],
-    OUT new_mu        double precision[],
-    OUT new_sigma     double precision[],
-    OUT new_vol       double precision[]
-) RETURNS record
-    AS 'MODULE_PATHNAME', 'pg_glicko2_bulk_update'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ═══════════════════════════════════════════════════════════════════════
--- (12) Casts: point4d <-> double precision[4]
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE FUNCTION point4d_to_array(point4d) RETURNS double precision[]
-    AS 'MODULE_PATHNAME', 'pg_point4d_to_array'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION array_to_point4d(double precision[]) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_array_to_point4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE CAST (point4d AS double precision[])
-    WITH FUNCTION point4d_to_array(point4d) AS ASSIGNMENT;
-CREATE CAST (double precision[] AS point4d)
-    WITH FUNCTION array_to_point4d(double precision[]) AS ASSIGNMENT;
-
--- ═══════════════════════════════════════════════════════════════════════
--- (13) Domains: typed constraints for substrate columns
---   - unit_quaternion enforces ||q||=1 (S^3 membership)
---   - s3_arc_length enforces [0, pi]
---   - glicko_mu/sigma/vol enforce sane Glicko-2 parameter ranges
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE DOMAIN unit_quaternion AS point4d
-    CHECK (abs(norm_4d(VALUE) - 1.0) < 1e-9);
-
-CREATE DOMAIN s3_arc_length AS double precision
-    CHECK (VALUE >= 0.0 AND VALUE <= 3.14159265358979323846);
-
-CREATE DOMAIN glicko_mu AS double precision
-    DEFAULT 1500.0
-    CHECK (VALUE >= 0.0 AND VALUE <= 4000.0);
-CREATE DOMAIN glicko_sigma AS double precision
-    DEFAULT 350.0
-    CHECK (VALUE > 0.0 AND VALUE <= 700.0);
-CREATE DOMAIN glicko_volatility AS double precision
-    DEFAULT 0.06
-    CHECK (VALUE > 0.0 AND VALUE <= 1.0);
-
--- ═══════════════════════════════════════════════════════════════════════
--- (14) Diagnostic views
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE VIEW point4d_index_stats AS
-SELECT
-    n.nspname     AS schema_name,
-    c.relname     AS index_name,
-    t.relname     AS table_name,
-    am.amname     AS index_type,
-    c.relpages    AS pages,
-    c.reltuples   AS approx_rows
-FROM pg_class c
-JOIN pg_index i ON c.oid = i.indexrelid
-JOIN pg_class t ON i.indrelid = t.oid
-JOIN pg_am am   ON c.relam = am.oid
-JOIN pg_namespace n ON c.relnamespace = n.oid
-WHERE am.amname IN ('gist', 'spgist')
-  AND EXISTS (
-      SELECT 1
-      FROM pg_attribute a
-      JOIN pg_type ty ON a.atttypid = ty.oid
-      WHERE a.attrelid = i.indrelid
-        AND ty.typname IN ('point4d', 'box4d')
-  );
-
--- ═══════════════════════════════════════════════════════════════════════
--- (15) Concurrent reindex helper
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE PROCEDURE reindex_point4d_concurrent(idx_name regclass)
-LANGUAGE plpgsql AS $$
-BEGIN
-    EXECUTE format('REINDEX INDEX CONCURRENTLY %s', idx_name);
-END;
-$$;
-
--- hartonomous_geometry4d.sql — appended to hartonomous--1.0.sql by build.
---
--- Umbrella 4D geometry type and 10 SQL subtype DOMAINs. Each DOMAIN
--- pins a specific tag; automatic cast-to-umbrella is inherited from
--- the DOMAIN→base relationship. See pg_geometry4d.c for wire layout.
-
--- ── (16) geometry4d umbrella ────────────────────────────────────────
-CREATE TYPE geometry4d;
-
-CREATE FUNCTION geometry4d_in(cstring) RETURNS geometry4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_in'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION geometry4d_out(geometry4d) RETURNS cstring
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_out'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION geometry4d_recv(internal) RETURNS geometry4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_recv'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION geometry4d_send(geometry4d) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_send'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE TYPE geometry4d (
-    INTERNALLENGTH = variable,
-    INPUT          = geometry4d_in,
-    OUTPUT         = geometry4d_out,
-    RECEIVE        = geometry4d_recv,
-    SEND           = geometry4d_send,
-    ALIGNMENT      = double,
-    STORAGE        = extended
-);
-
--- Accessors & predicates
-CREATE FUNCTION ST_TypeTag4D(geometry4d) RETURNS int4
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_tag' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION ST_TypeName4D(geometry4d) RETURNS text
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_tag_name' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION ST_SRID4D(geometry4d) RETURNS int4
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_srid' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION ST_BBox4D(geometry4d) RETURNS box4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_bbox' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION ST_NumGeometries4D(geometry4d) RETURNS int4
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_num_geoms' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION ST_NumPoints4D(geometry4d) RETURNS int8
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_num_points' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION geometry4d_eq(geometry4d, geometry4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_eq' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION geometry4d_ne(geometry4d, geometry4d) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_ne' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE OPERATOR = (
-    LEFTARG = geometry4d, RIGHTARG = geometry4d,
-    PROCEDURE = geometry4d_eq,
-    COMMUTATOR = =, NEGATOR = <>
-);
-CREATE OPERATOR <> (
-    LEFTARG = geometry4d, RIGHTARG = geometry4d,
-    PROCEDURE = geometry4d_ne,
-    COMMUTATOR = <>, NEGATOR = =
-);
-
--- Constructors
-CREATE FUNCTION ST_MakePoint4D(double precision, double precision, double precision, double precision)
-    RETURNS geometry4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_makepoint'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION ST_MakeLine4D(point4d[]) RETURNS geometry4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_makeline'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Casts to/from existing fixed-structure subtypes
-CREATE FUNCTION cast_point4d_to_geometry4d(point4d) RETURNS geometry4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_from_point4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION cast_geometry4d_to_point4d(geometry4d) RETURNS point4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_to_point4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION cast_linestring4d_to_geometry4d(linestring4d) RETURNS geometry4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_from_linestring4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION cast_geometry4d_to_linestring4d(geometry4d) RETURNS linestring4d
-    AS 'MODULE_PATHNAME', 'pg_geometry4d_to_linestring4d'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE CAST (point4d AS geometry4d)      WITH FUNCTION cast_point4d_to_geometry4d(point4d)      AS IMPLICIT;
-CREATE CAST (geometry4d AS point4d)      WITH FUNCTION cast_geometry4d_to_point4d(geometry4d)   AS ASSIGNMENT;
-CREATE CAST (linestring4d AS geometry4d) WITH FUNCTION cast_linestring4d_to_geometry4d(linestring4d) AS IMPLICIT;
-CREATE CAST (geometry4d AS linestring4d) WITH FUNCTION cast_geometry4d_to_linestring4d(geometry4d)   AS ASSIGNMENT;
-
--- ── (17) 10 subtype DOMAINs ────────────────────────────────────────
--- Each DOMAIN is a column-usable distinct SQL type pinned to one tag and
--- automatically cast-equivalent with geometry4d via the DOMAIN → base
--- relationship. See docs/specs/native/4d-type-and-index.md §subtype-domains.
-
-CREATE DOMAIN point4d_g             AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 1);
-CREATE DOMAIN linestring4d_g        AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 2);
-CREATE DOMAIN polygon4d             AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 3);
-CREATE DOMAIN multipoint4d          AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 4);
-CREATE DOMAIN multilinestring4d     AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 5);
-CREATE DOMAIN multipolygon4d        AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 6);
-CREATE DOMAIN triangle4d            AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 7);
-CREATE DOMAIN tin4d                 AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 8);
-CREATE DOMAIN polyhedralsurface4d   AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 9);
-CREATE DOMAIN geometrycollection4d  AS geometry4d CHECK (ST_TypeTag4D(VALUE) = 10);
-
-COMMENT ON DOMAIN point4d_g IS
-  'geometry4d pinned to tag POINT4D. Distinct column type; casts implicitly to/from geometry4d.';
-COMMENT ON DOMAIN linestring4d_g IS
-  'geometry4d pinned to tag LINESTRING4D.';
-COMMENT ON DOMAIN polygon4d IS
-  'geometry4d pinned to tag POLYGON4D; stored as one outer ring plus zero or more inner rings, each closed.';
-
--- ── (18) GiST opclass for geometry4d ───────────────────────────────
-CREATE FUNCTION gist_geometry4d_consistent(internal, geometry4d, smallint, oid, internal) RETURNS boolean
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION gist_geometry4d_union(internal, internal) RETURNS box4d
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION gist_geometry4d_compress(internal) RETURNS internal
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION gist_geometry4d_decompress(internal) RETURNS internal
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION gist_geometry4d_penalty(internal, internal, internal) RETURNS internal
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION gist_geometry4d_picksplit(internal, internal) RETURNS internal
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION gist_geometry4d_same(box4d, box4d, internal) RETURNS internal
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- bbox-based operators between two geometry4d values. Operators reuse
--- box4d operator infrastructure: each performs g4d_compute_bbox on both
--- sides and delegates to the box4d primitive.
-CREATE FUNCTION geometry4d_overlaps_geometry4d(geometry4d, geometry4d) RETURNS boolean
-    AS $$ SELECT box4d_overlaps(ST_BBox4D($1), ST_BBox4D($2)) $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION geometry4d_contains_geometry4d(geometry4d, geometry4d) RETURNS boolean
-    AS $$ SELECT box4d_contains_box(ST_BBox4D($1), ST_BBox4D($2)) $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION geometry4d_contained_by_geometry4d(geometry4d, geometry4d) RETURNS boolean
-    AS $$ SELECT box4d_contains_box(ST_BBox4D($2), ST_BBox4D($1)) $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE OPERATOR && (
-    LEFTARG = geometry4d, RIGHTARG = geometry4d,
-    PROCEDURE = geometry4d_overlaps_geometry4d,
-    COMMUTATOR = &&
-);
-CREATE OPERATOR @> (
-    LEFTARG = geometry4d, RIGHTARG = geometry4d,
-    PROCEDURE = geometry4d_contains_geometry4d,
-    COMMUTATOR = <@
-);
-CREATE OPERATOR <@ (
-    LEFTARG = geometry4d, RIGHTARG = geometry4d,
-    PROCEDURE = geometry4d_contained_by_geometry4d,
-    COMMUTATOR = @>
-);
-
-CREATE OPERATOR CLASS geometry4d_gist_ops
-    DEFAULT FOR TYPE geometry4d USING gist AS
-        OPERATOR        1       && ,
-        OPERATOR        2       @> ,
-        OPERATOR        3       <@ ,
-        OPERATOR        4       =  ,
-        FUNCTION        1       gist_geometry4d_consistent (internal, geometry4d, smallint, oid, internal),
-        FUNCTION        2       gist_geometry4d_union (internal, internal),
-        FUNCTION        3       gist_geometry4d_compress (internal),
-        FUNCTION        4       gist_geometry4d_decompress (internal),
-        FUNCTION        5       gist_geometry4d_penalty (internal, internal, internal),
-        FUNCTION        6       gist_geometry4d_picksplit (internal, internal),
-        FUNCTION        7       gist_geometry4d_same (box4d, box4d, internal),
-        STORAGE         box4d ;
-
--- ── (19) SP-GiST quadtree opclass for geometry4d ───────────────────
-CREATE FUNCTION spg_geometry4d_config(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION spg_geometry4d_choose(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION spg_geometry4d_picksplit(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION spg_geometry4d_inner_consistent(internal, internal) RETURNS void
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION spg_geometry4d_leaf_consistent(internal, internal) RETURNS boolean
-    AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE OPERATOR CLASS geometry4d_spgist_ops
-    FOR TYPE geometry4d USING spgist AS
-        OPERATOR        1       && ,
-        OPERATOR        2       @> ,
-        OPERATOR        3       <@ ,
-        OPERATOR        4       =  ,
-        FUNCTION        1       spg_geometry4d_config(internal, internal),
-        FUNCTION        2       spg_geometry4d_choose(internal, internal),
-        FUNCTION        3       spg_geometry4d_picksplit(internal, internal),
-        FUNCTION        4       spg_geometry4d_inner_consistent(internal, internal),
-        FUNCTION        5       spg_geometry4d_leaf_consistent(internal, internal);
-
--- ═══════════════════════════════════════════════════════════════════════
--- (20) Native text decomposition — UAX #29 + BLAKE3 chains + 4D centroids
---
--- Replaces the per-codepoint C# loop in CanonicalTextDecomposer.Emit with
--- a single C function that does the whole decomposition tree in one
--- compiled pass: UTF-8 decode, codepoint property lookup (cached per
--- backend), UAX #29 grapheme + word boundary detection, batched BLAKE3
--- chain hashing via libhartonomous, S^3 centroid math, and SPI INSERTs
--- into substrate.staging_*.
---
--- text_decompose_batch processes N texts concurrently across CPU cores
--- via #pragma omp parallel for. Determinism via MKL CBWR + UCD-table
--- property lookups (Law #6).
--- ═══════════════════════════════════════════════════════════════════════
--- 9-field summary: 7 counts + root composition hash + root entity_type_id.
--- The root fields let C# callers immediately wire downstream edges
--- (has_text, has_gloss, has_example, has_name, has_token_string, etc.)
--- without recomputing the BLAKE3 themselves. Empty-input → root NULL.
-CREATE TYPE substrate.text_decompose_summary AS (
-    entity_count          BIGINT,
-    edge_count            BIGINT,
-    edge_member_count     BIGINT,
-    physicality_count     BIGINT,
-    sequence_count        BIGINT,
-    significance_count    BIGINT,
-    classification_count  BIGINT,
-    root_hash             bytea,
-    root_entity_type_id   INT
-);
-
--- text_decompose now writes DIRECTLY to substrate.entity / entity_classification
--- / physicality / sequence / entity_significance with ON CONFLICT DO NOTHING.
--- No staging detour. p_model_source_id is OPTIONAL: when supplied, the root
--- composition entity gets an entity_model_source row pointing at that source.
-CREATE FUNCTION substrate.text_decompose(
-    p_utf8                  bytea,
-    p_top_entity_type_code  text,
-    p_trust_mu              double precision,
-    p_provenance_code       text,
-    p_model_source_id       int DEFAULT NULL
-) RETURNS substrate.text_decompose_summary
-    AS 'MODULE_PATHNAME', 'pg_text_decompose'
-    LANGUAGE C VOLATILE;
-
-CREATE FUNCTION substrate.text_decompose_batch(
-    p_utf8s                  bytea[],
-    p_top_entity_type_codes  text[],
-    p_trust_mus              double precision[],
-    p_provenance_codes       text[],
-    p_model_source_ids       int[] DEFAULT NULL
-) RETURNS substrate.text_decompose_summary
-    AS 'MODULE_PATHNAME', 'pg_text_decompose_batch'
-    LANGUAGE C VOLATILE;
-
-COMMENT ON FUNCTION substrate.text_decompose(bytea, text, double precision, text, int) IS
-    'Native UAX #29 + BLAKE3 + 4D centroid pipeline. Decodes UTF-8, runs grapheme + word boundary detection from the embedded UCD blob, emits codepoint/grapheme_cluster/word_form/composition entities + sequence + physicality + significance rows DIRECTLY into substrate core tables (no staging) via SPI with ON CONFLICT DO NOTHING. When p_model_source_id is non-NULL, the root composition is also linked via substrate.entity_model_source. Returns counts + root_hash + root_entity_type_id so callers can wire downstream edges without recomputing BLAKE3.';
-
-COMMENT ON FUNCTION substrate.text_decompose_batch(bytea[], text[], double precision[], text[], int[]) IS
-    'Batched variant: processes N texts in one SQL invocation, recursing into text_decompose per row. Per-row optional p_model_source_ids[i] parameter — NULL element skips linkage. Returns aggregated counts only; root_hash/root_entity_type_id are always NULL for the batch form (call text_decompose() one at a time when per-row roots are needed).';
-
--- ═══════════════════════════════════════════════════════════════════════
--- (21) Tier-0 codepoint atoms — embedded UCD/UCA, O(1) array lookups
---
--- All Unicode property data for the 1,114,112 codepoints is baked into
--- the extension at build time from UCD 17.0.0. Lookups are flat array
--- accesses — no SPI, no DB JOIN, no runtime computation. Codepoint
--- BLAKE3 hashes, S^3 centroids, and Hilbert indices are precomputed.
--- substrate.cp_from_hash provides the inverse mapping for hash
--- deconstruction during inference / recompose.
---
--- Determinism (Law #6): UCD version pinned at extension build time.
--- substrate.ucd_version() returns the pinned version string.
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE FUNCTION substrate.cp_hash(cp int) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_cp_hash' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_centroid(cp int) RETURNS public.point4d
-    AS 'MODULE_PATHNAME', 'pg_cp_centroid' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_hilbert(cp int) RETURNS bigint
-    AS 'MODULE_PATHNAME', 'pg_cp_hilbert' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_from_hash(h bytea) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_from_hash' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION substrate.cp_gcb(cp int)  RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_gcb'  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_wb(cp int)   RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_wb'   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_sb(cp int)   RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_sb'   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_lb(cp int)   RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_lb'   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_incb(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_incb' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_extended_pictographic(cp int) RETURNS bool
-    AS 'MODULE_PATHNAME', 'pg_cp_extended_pictographic' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_general_category(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_general_category' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_ccc(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_ccc' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_script(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_script' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_block(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_block' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_simple_uppercase(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_simple_uppercase' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_simple_lowercase(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_simple_lowercase' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_simple_titlecase(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_simple_titlecase' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_simple_case_fold(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_simple_case_fold' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_index(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_uca_index' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_total() RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_uca_total' LANGUAGE C IMMUTABLE PARALLEL SAFE;
-CREATE FUNCTION substrate.ucd_version() RETURNS text
-    AS 'MODULE_PATHNAME', 'pg_ucd_version' LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-COMMENT ON FUNCTION substrate.cp_hash(int) IS
-    'O(1) precomputed BLAKE3 hash of the codepoint (big-endian 4-byte rune). Tier-0 atom — frozen at extension build time, UCD-version-pinned.';
-COMMENT ON FUNCTION substrate.cp_centroid(int) IS
-    'O(1) precomputed 4D Super-Fibonacci centroid on S^3 anchored by UCA-sorted index. Tier-0 atom.';
-COMMENT ON FUNCTION substrate.cp_from_hash(bytea) IS
-    'Inverse of substrate.cp_hash — given a 32-byte BLAKE3 hash, return the codepoint value, or NULL if no codepoint produces that hash. O(log N) binary search over the embedded sorted-by-hash table.';
-COMMENT ON FUNCTION substrate.ucd_version() IS
-    'UCD version pinned into the extension at build time. Determinism gate: same UCD version → byte-identical tier-0 atoms forever.';
-
-CREATE FUNCTION substrate.cp_x(cp int) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_cp_x' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_y(cp int) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_cp_y' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_z(cp int) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_cp_z' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_m(cp int) RETURNS double precision
-    AS 'MODULE_PATHNAME', 'pg_cp_m' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-COMMENT ON FUNCTION substrate.cp_x(int) IS 'Codepoint S^3 X coordinate. Combine with cp_y/z/m + ST_MakePoint to build POINTZM.';
-
--- ── (22) Extended UCD/UCA accessors — full catalog from generated tables ──
--- Bidi class, East-Asian width, Hangul syllable type, numeric type,
--- decomposition type. All O(1) array loads.
-CREATE FUNCTION substrate.cp_bidi(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_bidi' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_eaw(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_eaw' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_hsy(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_hsy' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_num_type(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_num_type' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_decomp_type(cp int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_decomp_type' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Variable-length per-codepoint payloads. Empty arrays (NOT NULL) for the
--- common case; pg_cp_name returns NULL for unnamed codepoints.
-CREATE FUNCTION substrate.cp_decomp(cp int) RETURNS int[]
-    AS 'MODULE_PATHNAME', 'pg_cp_decomp' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_full_case_fold(cp int) RETURNS int[]
-    AS 'MODULE_PATHNAME', 'pg_cp_full_case_fold' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_weights(cp int) RETURNS int[]
-    AS 'MODULE_PATHNAME', 'pg_cp_uca_weights' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_name(cp int) RETURNS text
-    AS 'MODULE_PATHNAME', 'pg_cp_name' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ── (23) SETOF inventory accessors — drive reference-table population ────
--- Return shapes match the per-inventory struct in pg_unicode_inventory.h.
-CREATE FUNCTION substrate.ucd_general_categories(
-    OUT id int, OUT code text, OUT description text, OUT group_code text
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_general_categories'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_scripts(
-    OUT id int, OUT code text
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_scripts'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_blocks(
-    OUT id int, OUT code text, OUT range_start int, OUT range_end int
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_blocks'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_break_properties(
-    OUT id int, OUT category text, OUT code text, OUT enum_id int
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_break_properties'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-COMMENT ON FUNCTION substrate.ucd_general_categories() IS
-    'Inventory of 30 UCD General_Category values from the embedded extension catalog (code, long description, top-level group L/M/N/P/S/Z/C). Drives substrate.populate_general_categories_from_ext().';
-COMMENT ON FUNCTION substrate.ucd_scripts() IS
-    'Inventory of 175 UCD Script values from the embedded extension catalog. Drives substrate.populate_scripts_from_ext().';
-COMMENT ON FUNCTION substrate.ucd_blocks() IS
-    'Inventory of 347 UCD Block values from the embedded extension catalog with explicit range_start/range_end. Drives substrate.populate_blocks_from_ext().';
-COMMENT ON FUNCTION substrate.ucd_break_properties() IS
-    'Inventory of 101 break-property enums (GCB/WB/SB/LB) from the embedded extension catalog with explicit category column. Drives substrate.populate_break_properties_from_ext().';
-
--- ── (24) Codepoint domain + composite atom type + bulk SRFs ──────────────
--- The codepoint domain bounds-checks at the type-system level so callers
--- get a clear constraint violation instead of an in-function ereport, and
--- so the planner can use the CHECK for partition pruning when columns are
--- typed substrate.codepoint instead of plain INT.
-CREATE DOMAIN substrate.codepoint AS int
-    CHECK (VALUE >= 0 AND VALUE <= 1114111);
-
--- 30-column composite covering the entire per-codepoint record,
--- including variable-length payloads (decomposition_mapping,
--- full_case_fold). Bulk consumers SELECT FROM substrate.ucd_codepoints()
--- and read the array columns directly — never call substrate.cp_decomp /
--- substrate.cp_full_case_fold per row, which scales as 2.2M scalar SPI
--- C invocations and is fragile under heavy executor pressure.
-CREATE TYPE substrate.codepoint_atom AS (
-    cp                    int,
-    hash                  bytea,
-    x                     double precision,
-    y                     double precision,
-    z                     double precision,
-    m                     double precision,
-    hilbert               bigint,
-    gcb                   int,
-    wb                    int,
-    sb                    int,
-    lb                    int,
-    incb                  int,
-    general_category      int,
-    ccc                   int,
-    script                int,
-    block                 int,
-    simple_uppercase      int,
-    simple_lowercase      int,
-    simple_titlecase      int,
-    simple_case_fold      int,
-    uca_index             int,
-    bidi                  int,
-    eaw                   int,
-    hsy                   int,
-    num_type              int,
-    decomp_type           int,
-    extended_pictographic boolean,
-    name                  text,
-    decomposition_mapping int[],
-    full_case_fold        int[]
-);
-
-CREATE FUNCTION substrate.cp_atom(cp int) RETURNS substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_cp_atom' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Bulk SRF over the entire UCD plane, or a slice. Default args emit all
--- 1,114,112 codepoints. Use this for INSERT INTO substrate.entity from
--- the extension catalog — single C call, no per-cp function invocation.
-CREATE FUNCTION substrate.ucd_codepoints(
-    "start" int DEFAULT 0,
-    "count" int DEFAULT 1114112
-) RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
--- Predicate-pushdown SRFs. The predicate is evaluated inside C against
--- the embedded array — no SQL-side filter, no row materialization for
--- non-matches.
-CREATE FUNCTION substrate.ucd_codepoints_in_block(block_id int)
-    RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_in_block'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_codepoints_in_script(script_id int)
-    RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_in_script'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_codepoints_with_gc(gc_id int)
-    RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_with_gc'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ── (25) Bulk hash array helpers ─────────────────────────────────────────
-CREATE FUNCTION substrate.cp_hashes(cps int[]) RETURNS bytea[]
-    AS 'MODULE_PATHNAME', 'pg_cp_hashes'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_from_hashes(hashes bytea[]) RETURNS int[]
-    AS 'MODULE_PATHNAME', 'pg_cp_from_hashes'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-COMMENT ON FUNCTION substrate.cp_hashes(int[]) IS
-    'Vectorized per-cp hash lookup. One C call per call regardless of array length; out-of-range elements are NULL.';
-COMMENT ON FUNCTION substrate.cp_from_hashes(bytea[]) IS
-    'Vectorized hash → codepoint reverse. NULL for unknown hashes. Uses the embedded sorted-by-hash table.';
-
--- ── (26) UCA sort key + collation operator class ─────────────────────────
--- substrate.uca_sort_key(text) returns a binary key suitable for ORDER BY.
--- Replaces ICU COLLATE for substrate-internal ordering — pure C array walk
--- against the embedded UCA 17.0.0 weight blob.
-CREATE FUNCTION substrate.uca_sort_key(s text) RETURNS bytea
-    AS 'MODULE_PATHNAME', 'pg_uca_sort_key'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- Codepoint-level UCA comparator and btree opclass. Lets SQL do
---   ORDER BY cp USING OPERATOR(substrate.uca_lt)
--- without dragging COLLATE through every query. The opclass is btree-only
--- and keyed on int (so a substrate.codepoint column slots in directly).
-CREATE FUNCTION substrate.cp_uca_compare(a int, b int) RETURNS int
-    AS 'MODULE_PATHNAME', 'pg_cp_uca_compare'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION substrate.cp_uca_lt(a int, b int) RETURNS boolean
-    AS $$ SELECT substrate.cp_uca_compare($1, $2) <  0 $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_le(a int, b int) RETURNS boolean
-    AS $$ SELECT substrate.cp_uca_compare($1, $2) <= 0 $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_eq(a int, b int) RETURNS boolean
-    AS $$ SELECT substrate.cp_uca_compare($1, $2) =  0 $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_ge(a int, b int) RETURNS boolean
-    AS $$ SELECT substrate.cp_uca_compare($1, $2) >= 0 $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-CREATE FUNCTION substrate.cp_uca_gt(a int, b int) RETURNS boolean
-    AS $$ SELECT substrate.cp_uca_compare($1, $2) >  0 $$
-    LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE OPERATOR substrate.<#  (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_lt, COMMUTATOR = >#);
-CREATE OPERATOR substrate.<=# (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_le, COMMUTATOR = >=#);
-CREATE OPERATOR substrate.=#  (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_eq, COMMUTATOR = =#);
-CREATE OPERATOR substrate.>=# (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_ge, COMMUTATOR = <=#);
-CREATE OPERATOR substrate.>#  (LEFTARG = int, RIGHTARG = int, FUNCTION = substrate.cp_uca_gt, COMMUTATOR = <#);
-
-CREATE OPERATOR CLASS substrate.cp_uca_ops
-    FOR TYPE int USING btree AS
-        OPERATOR 1 substrate.<#,
-        OPERATOR 2 substrate.<=#,
-        OPERATOR 3 substrate.=#,
-        OPERATOR 4 substrate.>=#,
-        OPERATOR 5 substrate.>#,
-        FUNCTION 1 substrate.cp_uca_compare(int, int);
-
-COMMENT ON OPERATOR CLASS substrate.cp_uca_ops USING btree IS
-    'Btree opclass keyed on int (or substrate.codepoint) that sorts by UCA-derived position from the embedded catalog. Use as ORDER BY cp USING OPERATOR(substrate.<#) or via index opclass on a codepoint column.';
-
--- ── (27) Inventory views over the SRFs ───────────────────────────────────
-CREATE VIEW substrate.v_general_category   AS SELECT * FROM substrate.ucd_general_categories();
-CREATE VIEW substrate.v_script             AS SELECT * FROM substrate.ucd_scripts();
-CREATE VIEW substrate.v_block              AS SELECT * FROM substrate.ucd_blocks();
-CREATE VIEW substrate.v_break_property     AS SELECT * FROM substrate.ucd_break_properties();
-CREATE VIEW substrate.v_codepoint_atom     AS SELECT * FROM substrate.ucd_codepoints();
-
-COMMENT ON VIEW substrate.v_codepoint_atom IS
-    '1,114,112-row view over the embedded UCD/UCA 17.0.0 catalog. Each row is a complete codepoint atom (id, hash, 4D centroid, hilbert, all enum/case properties, name). Materialized at query time via a single C SRF call.';
-
--- ── (28) Case folding via embedded full-case-fold blob ──────────────────
-CREATE FUNCTION substrate.case_fold_text(s text) RETURNS text
-    AS 'MODULE_PATHNAME', 'pg_case_fold_text'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-COMMENT ON FUNCTION substrate.case_fold_text(text) IS
-    'Full Unicode case fold using the embedded UCD CaseFolding.txt mapping. Multi-codepoint expansions (German ß → ss, etc.) handled correctly. Drop-in for lower(text COLLATE "und-x-icu") in substrate-internal paths.';
-
 
 -- ── sql/schema/functions/reference_code_map.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.reference_code_map(p_table TEXT)
@@ -3535,17 +3498,24 @@ CREATE OR REPLACE FUNCTION substrate.populate_languages(
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    INSERT INTO substrate.language (code, name, scope, type)
+    INSERT INTO substrate.language (code, name, scope, type, part1, part2b, part2t)
     SELECT
         code,
         name,
         scope,
-        type
-    FROM unnest(p_codes, p_names, p_scopes, p_types) AS t(code, name, scope, type)
+        type,
+        NULLIF(part1,  ''),
+        NULLIF(part2b, ''),
+        NULLIF(part2t, '')
+    FROM unnest(p_codes, p_names, p_scopes, p_types, p_part1s, p_part2bs, p_part2ts)
+        AS t(code, name, scope, type, part1, part2b, part2t)
     ON CONFLICT (code) DO UPDATE
-        SET name  = EXCLUDED.name,
-            scope = EXCLUDED.scope,
-            type  = EXCLUDED.type;
+        SET name   = EXCLUDED.name,
+            scope  = EXCLUDED.scope,
+            type   = EXCLUDED.type,
+            part1  = EXCLUDED.part1,
+            part2b = EXCLUDED.part2b,
+            part2t = EXCLUDED.part2t;
 END $$;
 
 -- ── sql/schema/functions/populate_morph_features.sql ───────────────────────────────────────
@@ -3759,303 +3729,138 @@ COMMENT ON FUNCTION substrate.get_completed_model_passes(BIGINT) IS
 
 -- Geometry / 4D operators
 
--- ── sql/schema/functions/geom_to_linestring4d.sql ───────────────────────────────────────
--- Walk one GeometryZM value's vertex stream into a native linestring4d.
-CREATE OR REPLACE FUNCTION substrate.geom_to_linestring4d(g geometry)
-RETURNS public.linestring4d
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-AS $$
-    SELECT public.array_to_linestring4d(
-        ARRAY(
-            SELECT v
-            FROM ST_DumpPoints(g) AS d,
-                 LATERAL (
-                     VALUES
-                         (COALESCE(ST_X(d.geom), 0)::DOUBLE PRECISION),
-                         (COALESCE(ST_Y(d.geom), 0)::DOUBLE PRECISION),
-                         (COALESCE(ST_Z(d.geom), 0)::DOUBLE PRECISION),
-                         (COALESCE(ST_M(d.geom), 0)::DOUBLE PRECISION)
-                 ) AS f(v)
-            ORDER BY d.path, f.v
-        )
-    );
-$$;
-
-COMMENT ON FUNCTION substrate.geom_to_linestring4d(geometry) IS
-    'Walk one geometry depth-first into a flat (x,y,z,m) sequence packed as a native linestring4d. Used only after callers have chosen a subtype-aware dispatch path.';
-
--- ── sql/schema/functions/polygon_exterior_linestring4d.sql ───────────────────────────────────────
--- Extract a POLYGONZM exterior ring as a native linestring4d.
-CREATE OR REPLACE FUNCTION substrate.polygon_exterior_linestring4d(g geometry)
-RETURNS public.linestring4d
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-AS $$
-    SELECT substrate.geom_to_linestring4d(ST_ExteriorRing(g));
-$$;
-
-COMMENT ON FUNCTION substrate.polygon_exterior_linestring4d(geometry) IS
-    'Extract a POLYGONZM exterior ring as a linestring4d for boundary-shape comparison. Interior rings are excluded.';
-
 -- ── sql/schema/functions/dist_4d.sql ───────────────────────────────────────
--- Subtype-dispatching 4D distance over GeometryZM.
-CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry, g2 geometry)
+-- Subtype-dispatching 4D distance over geometry4d.
+CREATE OR REPLACE FUNCTION substrate.dist_4d(g1 geometry4d, g2 geometry4d)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
 DECLARE
-    t1 TEXT := ST_GeometryType(g1);
-    t2 TEXT := ST_GeometryType(g2);
+    t1 INT := ST_TypeTag4D(g1);
+    t2 INT := ST_TypeTag4D(g2);
+    p1 point4d;
+    p2 point4d;
 BEGIN
-    IF t1 = 'ST_Point' AND t2 = 'ST_Point' THEN
-        RETURN public.distance_4d(
-            public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
-            public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0)));
+    IF t1 = 1 AND t2 = 1 THEN
+        RETURN public.distance_4d(g1::point4d, g2::point4d);
     END IF;
 
-    IF t1 = 'ST_LineString' AND t2 = 'ST_LineString' THEN
-        RETURN public.frechet_4d(
-            substrate.geom_to_linestring4d(g1),
-            substrate.geom_to_linestring4d(g2));
+    IF t1 = 2 AND t2 = 2 THEN
+        RETURN public.frechet_4d(g1::linestring4d, g2::linestring4d);
     END IF;
 
-    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
-        RETURN public.frechet_4d(
-            substrate.polygon_exterior_linestring4d(g1),
-            substrate.polygon_exterior_linestring4d(g2));
-    END IF;
-
-    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
+    IF t1 = 1 AND t2 = 2 THEN
+        p1 := g1::point4d;
         RETURN (
-            SELECT MIN(public.frechet_4d(
-                       substrate.geom_to_linestring4d(c1.geom),
-                       substrate.geom_to_linestring4d(c2.geom)))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
+            SELECT MIN(public.distance_4d(p1, point_n(g2::linestring4d, i)))
+              FROM generate_series(1, npoints(g2::linestring4d)) AS i
         );
     END IF;
 
-    IF t1 = 'ST_MultiPoint' AND t2 = 'ST_MultiPoint' THEN
-        RETURN public.hausdorff_4d(
-            substrate.geom_to_linestring4d(g1),
-            substrate.geom_to_linestring4d(g2));
-    END IF;
-
-    IF t1 = 'ST_Point' THEN
+    IF t1 = 2 AND t2 = 1 THEN
+        p2 := g2::point4d;
         RETURN (
-            SELECT MIN(public.distance_4d(
-                       public.point4d(ST_X(g1), ST_Y(g1), COALESCE(ST_Z(g1), 0), COALESCE(ST_M(g1), 0)),
-                       public.point4d(ST_X(d.geom), ST_Y(d.geom), COALESCE(ST_Z(d.geom), 0), COALESCE(ST_M(d.geom), 0))))
-              FROM ST_DumpPoints(g2) d
+            SELECT MIN(public.distance_4d(point_n(g1::linestring4d, i), p2))
+              FROM generate_series(1, npoints(g1::linestring4d)) AS i
         );
     END IF;
 
-    IF t2 = 'ST_Point' THEN
-        RETURN (
-            SELECT MIN(public.distance_4d(
-                       public.point4d(ST_X(d.geom), ST_Y(d.geom), COALESCE(ST_Z(d.geom), 0), COALESCE(ST_M(d.geom), 0)),
-                       public.point4d(ST_X(g2), ST_Y(g2), COALESCE(ST_Z(g2), 0), COALESCE(ST_M(g2), 0))))
-              FROM ST_DumpPoints(g1) d
-        );
-    END IF;
-
-    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
-        RETURN (
-            SELECT MIN(substrate.dist_4d(c1.geom, c2.geom))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
-        );
-    END IF;
-
-    RETURN public.frechet_4d(
-        substrate.geom_to_linestring4d(g1),
-        substrate.geom_to_linestring4d(g2));
+    RAISE EXCEPTION 'dist_4d: unsupported geometry4d tag pair %, %', t1, t2;
 END;
 $$;
 
-COMMENT ON FUNCTION substrate.dist_4d(geometry, geometry) IS
-    'Subtype-dispatching 4D distance over GeometryZM. POINT/LINESTRING/POLYGON/MULTI*/COLLECTION pairs route to the structurally appropriate native primitive.';
+COMMENT ON FUNCTION substrate.dist_4d(geometry4d, geometry4d) IS
+    'Subtype-dispatching 4D distance over native geometry4d. POINT4D/LINESTRING4D pairs route to native 4D primitives.';
 
 -- ── sql/schema/functions/frechet_4d_geom.sql ───────────────────────────────────────
--- Subtype-aware discrete Frechet over GeometryZM.
-CREATE OR REPLACE FUNCTION substrate.frechet_4d_geom(g1 geometry, g2 geometry)
+-- Discrete Frechet over native geometry4d trajectories.
+CREATE OR REPLACE FUNCTION substrate.frechet_4d_geom(g1 geometry4d, g2 geometry4d)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
-DECLARE
-    t1 TEXT := ST_GeometryType(g1);
-    t2 TEXT := ST_GeometryType(g2);
 BEGIN
-    IF t1 = 'ST_MultiPoint' OR t2 = 'ST_MultiPoint' THEN
-        RAISE EXCEPTION 'frechet_4d_geom: Frechet is undefined on MULTIPOINTZM. Use substrate.hausdorff_4d_geom for scatter-cloud comparison.';
+    IF ST_TypeTag4D(g1) <> 2 OR ST_TypeTag4D(g2) <> 2 THEN
+        RAISE EXCEPTION 'frechet_4d_geom: both arguments must be LINESTRING4D';
     END IF;
 
-    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
-        RETURN public.frechet_4d(
-            substrate.polygon_exterior_linestring4d(g1),
-            substrate.polygon_exterior_linestring4d(g2));
-    END IF;
-
-    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
-        RETURN (
-            SELECT MIN(public.frechet_4d(
-                       substrate.geom_to_linestring4d(c1.geom),
-                       substrate.geom_to_linestring4d(c2.geom)))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
-        );
-    END IF;
-
-    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
-        RETURN (
-            SELECT MIN(substrate.frechet_4d_geom(c1.geom, c2.geom))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
-              WHERE ST_GeometryType(c1.geom) <> 'ST_MultiPoint'
-                AND ST_GeometryType(c2.geom) <> 'ST_MultiPoint'
-        );
-    END IF;
-
-    RETURN public.frechet_4d(
-        substrate.geom_to_linestring4d(g1),
-        substrate.geom_to_linestring4d(g2));
+    RETURN public.frechet_4d(g1::linestring4d, g2::linestring4d);
 END;
 $$;
 
-COMMENT ON FUNCTION substrate.frechet_4d_geom(geometry, geometry) IS
-    'Subtype-aware discrete Frechet over GeometryZM. POLYGONZM uses exterior-ring trajectory; MULTI* uses minimum across component pairs; GEOMETRYCOLLECTIONZM dispatches per component.';
+COMMENT ON FUNCTION substrate.frechet_4d_geom(geometry4d, geometry4d) IS
+    'Discrete Frechet over native LINESTRING4D geometry4d trajectories.';
 
 -- ── sql/schema/functions/hausdorff_4d_geom.sql ───────────────────────────────────────
--- Subtype-aware symmetric Hausdorff over GeometryZM.
-CREATE OR REPLACE FUNCTION substrate.hausdorff_4d_geom(g1 geometry, g2 geometry)
+-- Symmetric Hausdorff over native geometry4d trajectories.
+CREATE OR REPLACE FUNCTION substrate.hausdorff_4d_geom(g1 geometry4d, g2 geometry4d)
 RETURNS DOUBLE PRECISION
 LANGUAGE plpgsql STABLE STRICT PARALLEL SAFE
 AS $$
-DECLARE
-    t1 TEXT := ST_GeometryType(g1);
-    t2 TEXT := ST_GeometryType(g2);
 BEGIN
-    IF t1 = 'ST_Polygon' AND t2 = 'ST_Polygon' THEN
-        RETURN public.hausdorff_4d(
-            substrate.polygon_exterior_linestring4d(g1),
-            substrate.polygon_exterior_linestring4d(g2));
+    IF ST_TypeTag4D(g1) <> 2 OR ST_TypeTag4D(g2) <> 2 THEN
+        RAISE EXCEPTION 'hausdorff_4d_geom: both arguments must be LINESTRING4D';
     END IF;
 
-    IF t1 IN ('ST_MultiLineString', 'ST_MultiPolygon') AND t2 = t1 THEN
-        RETURN (
-            SELECT MAX(public.hausdorff_4d(
-                       substrate.geom_to_linestring4d(c1.geom),
-                       substrate.geom_to_linestring4d(c2.geom)))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
-        );
-    END IF;
-
-    IF t1 = 'ST_GeometryCollection' OR t2 = 'ST_GeometryCollection' THEN
-        RETURN (
-            SELECT MAX(substrate.hausdorff_4d_geom(c1.geom, c2.geom))
-              FROM ST_Dump(g1) c1, ST_Dump(g2) c2
-        );
-    END IF;
-
-    RETURN public.hausdorff_4d(
-        substrate.geom_to_linestring4d(g1),
-        substrate.geom_to_linestring4d(g2));
+    RETURN public.hausdorff_4d(g1::linestring4d, g2::linestring4d);
 END;
 $$;
 
-COMMENT ON FUNCTION substrate.hausdorff_4d_geom(geometry, geometry) IS
-    'Subtype-aware symmetric Hausdorff over GeometryZM. POLYGONZM uses exterior-ring; MULTI* takes maximum across component pairs; GEOMETRYCOLLECTIONZM dispatches per component.';
+COMMENT ON FUNCTION substrate.hausdorff_4d_geom(geometry4d, geometry4d) IS
+    'Symmetric Hausdorff over native LINESTRING4D geometry4d trajectories.';
+
+-- ── sql/schema/functions/geometry4d_centroid.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.geometry4d_centroid(g geometry4d)
+RETURNS point4d
+LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+DECLARE
+    tag INT := ST_TypeTag4D(g);
+    ls linestring4d;
+    n INT;
+    sx DOUBLE PRECISION := 0.0;
+    sy DOUBLE PRECISION := 0.0;
+    sz DOUBLE PRECISION := 0.0;
+    sm DOUBLE PRECISION := 0.0;
+BEGIN
+    IF tag = 1 THEN
+        RETURN g::point4d;
+    END IF;
+
+    IF tag <> 2 THEN
+        RAISE EXCEPTION 'geometry4d_centroid: unsupported geometry4d tag %', tag;
+    END IF;
+
+    ls := g::linestring4d;
+    n := npoints(ls);
+    IF n <= 0 THEN
+        RAISE EXCEPTION 'geometry4d_centroid: empty LINESTRING4D';
+    END IF;
+
+    SELECT sum(coords[1]), sum(coords[2]), sum(coords[3]), sum(coords[4])
+      INTO sx, sy, sz, sm
+      FROM generate_series(1, n) AS vertex(i)
+      CROSS JOIN LATERAL point4d_to_array(point_n(ls, vertex.i)) AS coords;
+
+    RETURN array_to_point4d(ARRAY[
+        sx / n::DOUBLE PRECISION,
+        sy / n::DOUBLE PRECISION,
+        sz / n::DOUBLE PRECISION,
+        sm / n::DOUBLE PRECISION
+    ]);
+END;
+$$;
 
 -- ── sql/schema/functions/entity_centroid_4d.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.entity_centroid_4d(INT, BYTEA);
 CREATE OR REPLACE FUNCTION substrate.entity_centroid_4d(
     p_entity_hash BYTEA
-) RETURNS geometry(GeometryZM)
+) RETURNS point4d
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT geom FROM substrate.physicality
+    SELECT substrate.geometry4d_centroid(geom)
+     FROM substrate.physicality
      WHERE entity_hash = p_entity_hash
      ORDER BY physicality_type_id LIMIT 1;
 $f$;
-
--- ── sql/schema/functions/geom_to_pointzm.sql ───────────────────────────────────────
--- Collapse any GeometryZM subtype to a representative POINTZM.
-CREATE OR REPLACE FUNCTION substrate.geom_to_pointzm(g geometry)
-RETURNS geometry(PointZM)
-LANGUAGE sql IMMUTABLE PARALLEL SAFE
-AS $$
-    SELECT CASE
-        WHEN g IS NULL OR ST_IsEmpty(g) THEN NULL
-        WHEN ST_GeometryType(g) = 'ST_Point' THEN
-            ST_MakePoint(
-                ST_X(g),
-                ST_Y(g),
-                COALESCE(ST_Z(g), 0)::DOUBLE PRECISION,
-                COALESCE(ST_M(g), 0)::DOUBLE PRECISION)
-        ELSE (
-            SELECT ST_MakePoint(
-                AVG(ST_X(d.geom))::DOUBLE PRECISION,
-                AVG(ST_Y(d.geom))::DOUBLE PRECISION,
-                AVG(COALESCE(ST_Z(d.geom), 0))::DOUBLE PRECISION,
-                AVG(COALESCE(ST_M(d.geom), 0))::DOUBLE PRECISION)
-              FROM ST_DumpPoints(g) AS d
-        )
-    END;
-$$;
-
-COMMENT ON FUNCTION substrate.geom_to_pointzm(geometry) IS
-    'Collapse any GeometryZM subtype to a representative POINTZM = 4D mean of its vertex stream. Used before ST_MakeLine in populate_edge_trajectories.';
-
--- ── sql/schema/functions/populate_sequence_physicality.sql ───────────────────────────────────────
--- Populate missing composition physicality from existing sequence child centroids.
-CREATE OR REPLACE FUNCTION substrate.populate_sequence_physicality(p_limit INT)
-RETURNS BIGINT
-LANGUAGE plpgsql VOLATILE
-AS $$
-DECLARE
-    v_inserted BIGINT;
-BEGIN
-    WITH candidate_parents AS (
-        SELECT s.parent_hash
-          FROM substrate.sequence s
-         WHERE NOT EXISTS (
-                   SELECT 1
-                     FROM substrate.physicality existing
-                    WHERE existing.entity_hash = s.parent_hash)
-         GROUP BY s.parent_hash
-        HAVING count(*) >= 1
-           AND count(substrate.geom_to_pointzm(substrate.entity_centroid_4d(s.child_hash))) = count(*)
-         ORDER BY s.parent_hash
-         LIMIT p_limit
-    ), child_points AS (
-        SELECT s.parent_hash,
-               s.ordinal,
-               s.child_hash,
-               substrate.geom_to_pointzm(substrate.entity_centroid_4d(s.child_hash)) AS point_geom
-          FROM substrate.sequence s
-          JOIN candidate_parents c ON c.parent_hash = s.parent_hash
-    ), assembled AS (
-        SELECT parent_hash,
-               count(*) AS child_count,
-               (array_agg(point_geom ORDER BY ordinal, child_hash))[1] AS first_point,
-               ST_MakeLine(point_geom ORDER BY ordinal, child_hash) AS line_geom
-          FROM child_points
-         GROUP BY parent_hash
-    ), rows_to_insert AS (
-        SELECT CASE WHEN a.child_count = 1 THEN s3.id ELSE contour.id END AS physicality_type_id,
-               a.parent_hash AS entity_hash,
-               a.parent_hash AS content_hash,
-               CASE WHEN a.child_count = 1 THEN a.first_point ELSE a.line_geom END AS geom
-          FROM assembled a
-          JOIN substrate.physicality_type s3 ON s3.code = 's3_position'
-          JOIN substrate.physicality_type contour ON contour.code = 'contour'
-    )
-    INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
-    SELECT physicality_type_id, entity_hash, content_hash, geom
-      FROM rows_to_insert
-     WHERE geom IS NOT NULL
-    ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING;
-
-    GET DIAGNOSTICS v_inserted = ROW_COUNT;
-    RETURN v_inserted;
-END $$;
-
-COMMENT ON FUNCTION substrate.populate_sequence_physicality(INT) IS
-    'Populate missing entity physicality from substrate.sequence child centroids: singleton compositions receive POINTZM s3_position, multi-child compositions receive contour LINESTRINGZM.';
 
 -- ── sql/schema/functions/populate_edge_trajectories.sql ───────────────────────────────────────
 -- Populate edge trajectories from participant centroids.
@@ -4073,8 +3878,8 @@ COMMENT ON FUNCTION substrate.populate_sequence_physicality(INT) IS
 --   2. `substrate.entity_centroid_4d(entity_hash)` UDF call is replaced
 --      with a LATERAL JOIN onto substrate.physicality. plpgsql + PG cannot
 --      amortize STABLE-function calls across rows; an explicit JOIN can.
---   3. `ST_MakeLine(... ORDER BY ...)` ordered-set aggregate is replaced by
---      a pre-sorted subquery feeding a plain `ST_MakeLine(arr)` over the
+--   3. Native geometry4d LINESTRING construction uses a pre-sorted array
+--      feeding `ST_MakeLine4D(point4d[])` over the
 --      array form. PostGIS's ordered-set aggregate path spills to temp
 --      files under memory pressure and was the SIGSEGV site (NULL deref at
 --      offset 0x17 in tuplestore recovery). The array form materializes in
@@ -4100,7 +3905,7 @@ BEGIN
                em.edge_role_id,
                em.role_position,
                em.entity_hash,
-               substrate.geom_to_pointzm(p.geom) AS cgeom
+               substrate.geometry4d_centroid(p.geom) AS cgeom
           FROM null_edges ne
           JOIN substrate.edge_member em
             ON em.edge_type_id = ne.edge_type_id
@@ -4134,7 +3939,7 @@ BEGIN
     aggregated AS (
         SELECT edge_type_id,
                edge_hash,
-               ST_MakeLine(array_agg(cgeom ORDER BY rn)) AS line_geom,
+               ST_MakeLine4D(array_agg(cgeom ORDER BY rn)) AS line_geom,
                count(*) AS member_count
           FROM sorted_pts
          GROUP BY edge_type_id, edge_hash
@@ -4147,14 +3952,14 @@ BEGIN
        AND e.geom IS NULL
        AND a.member_count >= 2
        AND a.line_geom IS NOT NULL
-       AND ST_NumPoints(a.line_geom) >= 2;
+       AND ST_NumPoints4D(a.line_geom) >= 2;
 
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated;
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with LINESTRINGZM through participant centroids in role order. LATERAL JOIN onto substrate.physicality (no per-row UDF), pre-sorted array_agg feeding ST_MakeLine (no ordered-set aggregate spill). Edges with missing participant centroids are left NULL.';
+    'Populate substrate.edge.geom with native LINESTRING4D geometry through participant centroids in role order. Edges with missing participant physicality are left NULL.';
 
 -- ── sql/schema/functions/count_missing_edge_trajectories.sql ───────────────────────────────────────
 -- Count edges whose relation trajectory failed to populate.
@@ -4213,16 +4018,15 @@ CREATE OR REPLACE FUNCTION substrate.physicality_linestring4d(
 ) RETURNS DOUBLE PRECISION[]
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT ARRAY(
-        SELECT unnest(ARRAY[ST_X(d.geom), ST_Y(d.geom), ST_Z(d.geom), ST_M(d.geom)])
-          FROM ST_DumpPoints(p.geom) AS d
-         ORDER BY (d.path)[1]
+        SELECT unnest(point4d_to_array(point_n(p.geom::linestring4d, i)))
+          FROM generate_series(1, npoints(p.geom::linestring4d)) AS i
+         ORDER BY i
     )
       FROM substrate.physicality p
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
      WHERE p.entity_hash = p_entity_hash
        AND pt.code = p_physicality_type_code
-       AND ST_GeometryType(p.geom) = 'ST_LineString'
-       AND ST_NDims(p.geom) = 4
+       AND ST_TypeTag4D(p.geom) = 2
        AND EXISTS (
            SELECT 1
              FROM substrate.entity_classification ec
@@ -4235,7 +4039,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 COMMENT ON FUNCTION substrate.physicality_linestring4d(substrate.hash_value, TEXT, TEXT) IS
-    'Return a flat x/y/z/m coordinate array for the first deterministic LINESTRINGZM physicality attached to a hash classified as the requested entity type.';
+    'Return a flat x/y/z/m coordinate array for the first deterministic LINESTRING4D physicality attached to a hash classified as the requested entity type.';
 
 -- ── sql/schema/functions/physicality_point4d.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.physicality_point4d(
@@ -4244,13 +4048,13 @@ CREATE OR REPLACE FUNCTION substrate.physicality_point4d(
     p_physicality_type_code TEXT
 ) RETURNS TABLE (x1 DOUBLE PRECISION, x2 DOUBLE PRECISION, x3 DOUBLE PRECISION, x4 DOUBLE PRECISION)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT ST_X(p.geom), ST_Y(p.geom), ST_Z(p.geom), ST_M(p.geom)
+    SELECT coords.v[1], coords.v[2], coords.v[3], coords.v[4]
       FROM substrate.physicality p
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
+      CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
      WHERE p.entity_hash = p_entity_hash
        AND pt.code = p_physicality_type_code
-       AND ST_GeometryType(p.geom) = 'ST_Point'
-       AND ST_NDims(p.geom) = 4
+       AND ST_TypeTag4D(p.geom) = 1
        AND EXISTS (
            SELECT 1
              FROM substrate.entity_classification ec
@@ -4263,7 +4067,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
 $f$;
 
 COMMENT ON FUNCTION substrate.physicality_point4d(substrate.hash_value, TEXT, TEXT) IS
-    'Return x/y/z/m coordinates for the first deterministic POINTZM physicality attached to a hash classified as the requested entity type.';
+    'Return x/y/z/m coordinates for the first deterministic POINT4D physicality attached to a hash classified as the requested entity type.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -4278,7 +4082,8 @@ BEGIN
     RETURN QUERY
         SELECT 'entities'::TEXT, count(*)::BIGINT FROM substrate.entity
       UNION ALL SELECT 'edges',           count(*) FROM substrate.edge
-      UNION ALL SELECT 'sequences',       count(*) FROM substrate.sequence
+      UNION ALL SELECT 'composition_metadata',
+                       count(*) FROM substrate.physicality WHERE child_hashes IS NOT NULL
       UNION ALL SELECT 'physicalities',   count(*) FROM substrate.physicality
       UNION ALL SELECT 'classifications', count(*) FROM substrate.entity_classification;
 END
@@ -4481,10 +4286,22 @@ CREATE OR REPLACE FUNCTION substrate.get_composition_children(
     p_parent_hash BYTEA
 ) RETURNS TABLE (ordinal INT, child_hash BYTEA, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT s.ordinal, s.child_hash, s.rle_count
-      FROM substrate.sequence s
-     WHERE s.parent_hash = p_parent_hash
-     ORDER BY s.ordinal;
+    WITH selected_physicality AS (
+        SELECT p.child_hashes, p.ordinal_starts, p.rle_counts
+          FROM substrate.physicality p
+          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
+         WHERE p.entity_hash = p_parent_hash
+           AND pt.code = 'contour'
+           AND p.child_hashes IS NOT NULL
+         ORDER BY p.content_hash
+         LIMIT 1
+    )
+    SELECT selected_physicality.ordinal_starts[i],
+           selected_physicality.child_hashes[i],
+           selected_physicality.rle_counts[i]
+      FROM selected_physicality
+      CROSS JOIN LATERAL generate_subscripts(selected_physicality.child_hashes, 1) AS i
+     ORDER BY selected_physicality.ordinal_starts[i];
 $f$;
 
 -- ── sql/schema/functions/api_entity_classifications.sql ───────────────────────────────────────
@@ -4677,7 +4494,7 @@ $f$;
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
--- Composition / sequence
+-- Composition helpers
 
 -- ── sql/schema/functions/composition_at.sql ───────────────────────────────────────
 -- composition_at(parent_hash, ordinal) - hash-only.
@@ -4687,11 +4504,10 @@ CREATE OR REPLACE FUNCTION substrate.composition_at(
     p_ordinal     INT
 ) RETURNS TABLE (child_hash BYTEA, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT s.child_hash, s.rle_count
-      FROM substrate.sequence s
-     WHERE s.parent_hash = p_parent_hash
-       AND p_ordinal >= s.ordinal
-       AND p_ordinal <  s.ordinal + s.rle_count
+    SELECT c.child_hash, c.rle_count
+      FROM substrate.get_composition_children(p_parent_hash) c
+     WHERE p_ordinal >= c.ordinal
+       AND p_ordinal <  c.ordinal + c.rle_count
      LIMIT 1;
 $f$;
 
@@ -4719,23 +4535,22 @@ CREATE OR REPLACE FUNCTION substrate.composition_range(
     p_parent_hash BYTEA, p_start INT, p_end INT
 ) RETURNS TABLE (child_type_code TEXT, child_hash BYTEA, ordinal INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT child_cls.code, s.child_hash, expanded.ordinal
-      FROM substrate.sequence s
+    SELECT child_cls.code, c.child_hash, expanded.ordinal
+      FROM substrate.get_composition_children(p_parent_hash) c
       CROSS JOIN LATERAL generate_series(
-          GREATEST(s.ordinal, p_start),
-          LEAST(s.ordinal + s.rle_count - 1, p_end)
+         GREATEST(c.ordinal, p_start),
+         LEAST(c.ordinal + c.rle_count - 1, p_end)
       ) AS expanded(ordinal)
       CROSS JOIN LATERAL (
-          SELECT et.code
-            FROM substrate.entity_classification ec
-            JOIN substrate.entity_type et ON et.id = ec.entity_type_id
-           WHERE ec.entity_hash = s.child_hash
-           ORDER BY et.code
-           LIMIT 1
+         SELECT et.code
+           FROM substrate.entity_classification ec
+           JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+          WHERE ec.entity_hash = c.child_hash
+          ORDER BY et.code
+          LIMIT 1
       ) child_cls
-     WHERE s.parent_hash = p_parent_hash
-       AND s.ordinal + s.rle_count > p_start
-       AND s.ordinal <= p_end
+     WHERE c.ordinal + c.rle_count > p_start
+      AND c.ordinal <= p_end
      ORDER BY expanded.ordinal;
 $f$;
 
@@ -4745,10 +4560,10 @@ CREATE OR REPLACE FUNCTION substrate.composition_subtrajectory(
     p_parent_hash BYTEA, p_start INT, p_end INT
 ) RETURNS TABLE (ordinal INT, child_hash BYTEA)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT g.n AS ordinal, s.child_hash
-      FROM substrate.sequence s
-      CROSS JOIN LATERAL generate_series(s.ordinal, s.ordinal + s.rle_count - 1) AS g(n)
-     WHERE s.parent_hash = p_parent_hash
+    SELECT g.n AS ordinal, c.child_hash
+      FROM substrate.get_composition_children(p_parent_hash) c
+      CROSS JOIN LATERAL generate_series(c.ordinal, c.ordinal + c.rle_count - 1) AS g(n)
+     WHERE TRUE
        AND g.n BETWEEN p_start AND p_end
      ORDER BY g.n;
 $f$;
@@ -4759,13 +4574,18 @@ CREATE OR REPLACE FUNCTION substrate.composition_parents(
     p_child_hash BYTEA
 ) RETURNS TABLE (parent_hash BYTEA, ordinal INT, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    SELECT s.parent_hash, s.ordinal, s.rle_count
-      FROM substrate.sequence s
-     WHERE s.child_hash = p_child_hash;
+    SELECT p.entity_hash, p.ordinal_starts[i], p.rle_counts[i]
+      FROM substrate.physicality p
+      JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
+      CROSS JOIN LATERAL generate_subscripts(p.child_hashes, 1) AS i
+     WHERE pt.code = 'contour'
+       AND p.child_hashes IS NOT NULL
+       AND p.child_hashes[i] = p_child_hash
+     ORDER BY p.entity_hash, p.ordinal_starts[i];
 $f$;
 
 -- ── sql/schema/functions/recompose_text.sql ───────────────────────────────────────
--- Byte-for-byte text reconstruction by recursive sequence walk.
+-- Byte-for-byte text reconstruction by recursive composition walk.
 CREATE OR REPLACE FUNCTION substrate.recompose_text(
     p_entity_hash BYTEA,
     p_max_depth   INT DEFAULT 100000
@@ -4781,8 +4601,7 @@ AS $$
             walk.ord_path || gs.n,
             walk.depth + 1
           FROM walk
-          JOIN substrate.sequence s
-            ON s.parent_hash = walk.entity_hash
+          JOIN LATERAL substrate.get_composition_children(walk.entity_hash) s ON TRUE
           CROSS JOIN LATERAL generate_series(
               s.ordinal, s.ordinal + s.rle_count - 1
           ) AS gs(n)
@@ -4806,7 +4625,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
-    'Byte-for-byte text reconstruction via substrate.sequence walk. RLE-expanded. Hash-only signature.';
+    'Byte-for-byte text reconstruction via composition metadata on substrate.physicality. RLE-expanded. Hash-only signature.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -6440,7 +6259,7 @@ BEGIN
     SELECT v_s3_phys_type,
            a.hash,
            a.hash,
-           ST_MakePoint(a.x, a.y, a.z, a.m)
+           ST_MakePoint4D(a.x, a.y, a.z, a.m)
       FROM substrate.ucd_codepoints() a
     ON CONFLICT DO NOTHING;
 
@@ -6544,7 +6363,7 @@ BEGIN
     SELECT v_s3_phys_type,
            a.hash,
            a.hash,
-           ST_MakePoint(a.x, a.y, a.z, a.m)
+           ST_MakePoint4D(a.x, a.y, a.z, a.m)
       FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
     ON CONFLICT DO NOTHING;
 
@@ -6776,6 +6595,7 @@ BEGIN
             is_extended_pictographic,
             ccc,
             name,
+            decomposition_type,
             decomposition_mapping,
             simple_uppercase,
             simple_lowercase,
@@ -6801,6 +6621,28 @@ BEGIN
             a.extended_pictographic,
             a.ccc::SMALLINT,
             a.name,
+            -- Map UC_DECOMP_TYPE_* enum (pg_ucd_decomp.h) to canonical UCD
+            -- decomposition-type names per UAX #44 §5.7.3. 0 = None → NULL.
+            CASE a.decomp_type
+                WHEN  1 THEN 'Canonical'
+                WHEN  2 THEN 'Compat'
+                WHEN  3 THEN 'Circle'
+                WHEN  4 THEN 'Final'
+                WHEN  5 THEN 'Font'
+                WHEN  6 THEN 'Fraction'
+                WHEN  7 THEN 'Initial'
+                WHEN  8 THEN 'Isolated'
+                WHEN  9 THEN 'Medial'
+                WHEN 10 THEN 'Narrow'
+                WHEN 11 THEN 'NoBreak'
+                WHEN 12 THEN 'Small'
+                WHEN 13 THEN 'Square'
+                WHEN 14 THEN 'Sub'
+                WHEN 15 THEN 'Super'
+                WHEN 16 THEN 'Vertical'
+                WHEN 17 THEN 'Wide'
+                ELSE NULL
+            END,
             a.decomposition_mapping,
             CASE WHEN a.simple_uppercase > 0 AND a.simple_uppercase <> a.cp THEN a.simple_uppercase END,
             CASE WHEN a.simple_lowercase > 0 AND a.simple_lowercase <> a.cp THEN a.simple_lowercase END,
@@ -6907,7 +6749,10 @@ BEGIN
             provenance.initial_sigma AS provenance_initial_sigma,
             provenance.derivation_decay,
             et.semantic_weight,
-            ST_MakeLine(source_physicality.geom, target_physicality.geom)::geometry(GeometryZM) AS geom
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(source_physicality.geom),
+                substrate.geometry4d_centroid(target_physicality.geom)
+            ]) AS geom
         FROM edge_specs
         JOIN substrate.edge_type et ON et.code = edge_specs.edge_code
         JOIN substrate.provenance provenance ON provenance.code = 'unicode_consortium'
@@ -7070,7 +6915,7 @@ COMMENT ON FUNCTION substrate.ucd_materialization_counts() IS
 -- Steps 1-4 of docs/specs/engine/inference.md, executed inside one PG
 -- function:
 --   1. Seed activation: collect the prompt's word_form children from
---      substrate.sequence + cross-classification matches via
+--      composition physicality metadata + cross-classification matches via
 --      substrate.entity_classification (a hash classified as "lemma" by
 --      WordNet AND as "word_form" by Tatoeba is the SAME hash; A* gets
 --      both classifications' edge sets implicitly).
@@ -7104,26 +6949,25 @@ DECLARE
 BEGIN
     SELECT id INTO v_word_form_id FROM substrate.entity_type WHERE code = 'word_form';
 
-    -- Materialize seeds: prompt's word_form-classified sequence children
+    -- Materialize seeds: prompt's word_form-classified composition children
     -- + the prompt itself + parent compositions of those word_forms.
     CREATE TEMP TABLE IF NOT EXISTS _infer_seeds (seed_hash bytea PRIMARY KEY) ON COMMIT DROP;
     TRUNCATE _infer_seeds;
     INSERT INTO _infer_seeds (seed_hash)
     WITH direct_seeds AS (
         SELECT DISTINCT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_doc_hash) s
         JOIN substrate.entity_classification c
           ON c.entity_hash = s.child_hash
          AND c.entity_type_id = v_word_form_id
-        WHERE s.parent_hash = p_doc_hash
     ),
-    -- Inverse-sequence: lemma / synset compositions that contain the
+    -- Inverse-composition: lemma / synset compositions that contain the
     -- prompt's word_form hashes as children. These are the substrate's
     -- "where else does this word appear" bridges into the rich graph.
     indirect_seeds AS (
         SELECT DISTINCT s.parent_hash AS h
         FROM direct_seeds d
-        JOIN substrate.sequence s ON s.child_hash = d.h
+        JOIN substrate.composition_parents(d.h) s ON TRUE
         JOIN substrate.entity_classification c ON c.entity_hash = s.parent_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         WHERE et.code IN ('lemma', 'synset')
@@ -7207,7 +7051,7 @@ DROP FUNCTION IF EXISTS substrate.infer(INT, substrate.hash_value, INT, INT);
 --   * Honest abstention threshold: when no top-K row exceeds a confidence
 --     floor, the engine abstains rather than fabricating.
 --
--- Hash-only signature throughout. recompose_text walks substrate.sequence
+-- Hash-only signature throughout. recompose_text walks physicality metadata
 -- to codepoint leaves; each row is a real recomposition of substrate
 -- content, not a sampled string.
 DROP FUNCTION IF EXISTS substrate.infer_topk(BYTEA, INT, INT, INT);
@@ -7230,23 +7074,22 @@ DECLARE
 BEGIN
     SELECT id INTO v_word_form_id FROM substrate.entity_type WHERE code = 'word_form';
 
-    -- Seeds: prompt's word_form-classified sequence children + their
+    -- Seeds: prompt's word_form-classified composition children + their
     -- lemma/synset parent compositions. Same seed activation as substrate.infer.
     CREATE TEMP TABLE IF NOT EXISTS _topk_seeds (seed_hash bytea PRIMARY KEY) ON COMMIT DROP;
     TRUNCATE _topk_seeds;
     INSERT INTO _topk_seeds (seed_hash)
     WITH direct_seeds AS (
         SELECT DISTINCT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_doc_hash) s
         JOIN substrate.entity_classification c
           ON c.entity_hash = s.child_hash
          AND c.entity_type_id = v_word_form_id
-        WHERE s.parent_hash = p_doc_hash
     ),
     indirect_seeds AS (
         SELECT DISTINCT s.parent_hash AS h
         FROM direct_seeds d
-        JOIN substrate.sequence s ON s.child_hash = d.h
+        JOIN substrate.composition_parents(d.h) s ON TRUE
         JOIN substrate.entity_classification c ON c.entity_hash = s.parent_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         WHERE et.code IN ('lemma', 'synset')
@@ -7307,15 +7150,15 @@ COMMENT ON FUNCTION substrate.infer_topk(BYTEA, INT, INT, INT) IS
 
 -- ── sql/schema/functions/prompt_document_ready.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.prompt_document_ready(p_hash BYTEA)
-RETURNS TABLE (entity_count BIGINT, sequence_count BIGINT)
+RETURNS TABLE (entity_count BIGINT, composition_child_count BIGINT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT
         (SELECT count(*) FROM substrate.entity e WHERE e.hash = p_hash)::BIGINT AS entity_count,
-        (SELECT count(*) FROM substrate.sequence s WHERE s.parent_hash = p_hash)::BIGINT AS sequence_count;
+        (SELECT count(*) FROM substrate.get_composition_children(p_hash))::BIGINT AS composition_child_count;
 $f$;
 
 COMMENT ON FUNCTION substrate.prompt_document_ready(BYTEA) IS
-    'Return prompt document drain-barrier counts for entity and sequence rows.';
+    'Return prompt document drain-barrier counts for entity and composition-physicality child metadata.';
 
 -- ── sql/schema/functions/recall.sql ───────────────────────────────────────
 -- substrate.recall(p_prompt_hash) — the brain's primary direct operation,
@@ -7366,21 +7209,20 @@ DECLARE
 BEGIN
     SELECT id INTO v_word_form_id FROM substrate.entity_type WHERE code = 'word_form';
 
-    -- Seed activation: prompt's word_form sequence children + their
+    -- Seed activation: prompt's word_form composition children + their
     -- lemma/synset parent compositions.
     SELECT array_agg(DISTINCT h)
     INTO v_seeds
     FROM (
         SELECT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_prompt_hash) s
         JOIN substrate.entity_classification c
           ON c.entity_hash = s.child_hash
          AND c.entity_type_id = v_word_form_id
-        WHERE s.parent_hash = p_prompt_hash
         UNION
         SELECT s.parent_hash AS h
-        FROM substrate.sequence s
-        JOIN substrate.sequence sd ON sd.parent_hash = p_prompt_hash AND sd.child_hash = s.child_hash
+        FROM substrate.get_composition_children(p_prompt_hash) sd
+        JOIN substrate.composition_parents(sd.child_hash) s ON TRUE
         JOIN substrate.entity_classification c ON c.entity_hash = s.parent_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         WHERE et.code IN ('lemma', 'synset')
@@ -7438,7 +7280,7 @@ BEGIN
         WHERE em_s.entity_hash = v_best_hash
           AND et.code IN ('has_gloss', 'has_example', 'has_text', 'has_etymology', 'has_pronunciation')
           AND et_t.code = 'text_composition'
-          AND EXISTS (SELECT 1 FROM substrate.sequence sq WHERE sq.parent_hash = em_t.entity_hash LIMIT 1)
+          AND EXISTS (SELECT 1 FROM substrate.get_composition_children(em_t.entity_hash) LIMIT 1)
         ORDER BY
             CASE et.code
                 WHEN 'has_gloss'     THEN 0
@@ -7658,31 +7500,29 @@ AS $$
 
     UNION ALL
 
-    -- 3. Sequence parents: compositions containing this entity.
+    -- 3. Composition parents: compositions containing this entity.
     SELECT
-        'sequence_parent'::TEXT,
+        'composition_parent'::TEXT,
         s.parent_hash,
         NULL::TEXT,
         NULL::TEXT,
         NULL::DOUBLE PRECISION,
         NULL::DOUBLE PRECISION,
         s.ordinal
-    FROM substrate.sequence s
-    WHERE s.child_hash = p_entity_hash
+    FROM substrate.composition_parents(p_entity_hash) s
 
     UNION ALL
 
-    -- 4. Sequence children: entities this composition contains (if any).
+    -- 4. Composition children: entities this composition contains (if any).
     SELECT
-        'sequence_child'::TEXT,
+        'composition_child'::TEXT,
         s.child_hash,
         NULL::TEXT,
         NULL::TEXT,
         NULL::DOUBLE PRECISION,
         NULL::DOUBLE PRECISION,
         s.ordinal
-    FROM substrate.sequence s
-    WHERE s.parent_hash = p_entity_hash
+    FROM substrate.get_composition_children(p_entity_hash) s
 
     UNION ALL
 
@@ -7772,7 +7612,7 @@ AS $$
                JOIN substrate.edge_role r_t ON r_t.id = em_t.edge_role_id AND r_t.code = 'target'
               WHERE em_s.entity_hash = h.entity_hash
                 AND et2.code = 'has_gloss'
-                AND EXISTS (SELECT 1 FROM substrate.sequence sq WHERE sq.parent_hash = em_t.entity_hash LIMIT 1)
+                AND EXISTS (SELECT 1 FROM substrate.get_composition_children(em_t.entity_hash) LIMIT 1)
               LIMIT 1
             ) AS gloss_hash
         FROM high_mu_synsets h
@@ -7807,9 +7647,9 @@ COMMENT ON FUNCTION substrate.surprise(INT, INT) IS
 -- hands the candidate query to the C kernel.
 --
 -- Distance kinds:
---   '4d'      → substrate.dist_4d (POINTZM short-circuits to native
+--   '4d'      → substrate.dist_4d (POINT4D short-circuits to native
 --               distance_4d; multi-vertex geometries fall through to native
---               frechet_4d via ST_DumpPoints).
+--               frechet_4d over native trajectory vertices).
 --   'frechet' → substrate.frechet_4d_geom (always Fréchet over depth-first
 --               vertex sequence, even for two POINTs — costs more, but
 --               useful when comparing trajectory shapes).
@@ -7892,7 +7732,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.embed_lookup(BYTEA, TEXT, INT, TEXT, DOUBLE PRECISION) IS
-    'Top-k entities by 4D distance from the seed entity''s stored physicality, filtered to a target entity_type via substrate.entity_classification. Uses the pg_similarity_topk C SRF for the inner scan and heap. Distance kinds: 4d (default; POINTZM fast path) | frechet (always vertex-stream Fréchet) | s3 (reserved, not yet wired).';
+    'Top-k entities by 4D distance from the seed entity''s stored physicality, filtered to a target entity_type via substrate.entity_classification. Uses the pg_similarity_topk C SRF for the inner scan and heap. Distance kinds: 4d (default; POINT4D fast path) | frechet (vertex-stream Frechet) | s3.';
 
 -- ── sql/schema/functions/classify.sql ───────────────────────────────────────
 -- substrate.classify(seed_hash, junction_kind, k)
@@ -8186,14 +8026,13 @@ BEGIN
     -- language via entity_language.
     WITH seeds AS (
         SELECT DISTINCT s.child_hash AS h
-        FROM substrate.sequence s
+        FROM substrate.get_composition_children(p_seed_hash) s
         JOIN substrate.entity_classification c ON c.entity_hash = s.child_hash
         JOIN substrate.entity_type et ON et.id = c.entity_type_id
         LEFT JOIN substrate.entity_language el
                ON el.entity_hash = s.child_hash
               AND (v_lang_id IS NULL OR el.language_id = v_lang_id)
-        WHERE s.parent_hash = p_seed_hash
-          AND et.code IN ('bpe_token', 'word_form')
+        WHERE et.code IN ('bpe_token', 'word_form')
           AND (v_lang_id IS NULL OR el.language_id = v_lang_id)
     ),
     seed_count AS (SELECT count(*) AS n FROM seeds)
@@ -8219,7 +8058,7 @@ BEGIN
                                              row_number() OVER (
                                                      ORDER BY sum(COALESCE(es.mu, 1500.0)) DESC, em_t.entity_hash ASC
                                              ) AS rn
-                                    FROM substrate.sequence sq
+                                    FROM substrate.get_composition_children(p_seed_hash) sq
                                     JOIN substrate.edge_member em_s
                                         ON em_s.entity_hash = sq.child_hash
                                     JOIN substrate.edge e
@@ -8238,8 +8077,7 @@ BEGIN
                                         ON es.edge_type_id = e.edge_type_id
                                      AND es.edge_hash = e.hash
                                      AND es.context_type_id = v_arena_id
-                                 WHERE sq.parent_hash = p_seed_hash
-                                     AND em_t.entity_hash <> p_seed_hash
+                                 WHERE em_t.entity_hash <> p_seed_hash
                                  GROUP BY em_t.entity_hash
                         ) ranked
                      WHERE ranked.rn <= GREATEST(COALESCE(p_max_results, 25), 0)
@@ -8392,7 +8230,7 @@ COMMENT ON FUNCTION substrate.embedding_firefly_token_hashes(INT) IS
 -- ── sql/schema/functions/apply_firefly_rotation.sql ───────────────────────────────────────
 -- substrate.apply_firefly_rotation(p_model_source_id, R 3x3)
 --
--- Rotate every embedding_firefly POINTZM physicality of a given
+-- Rotate every embedding_firefly POINT4D physicality of a given
 -- model_source by a 3×3 orthogonal matrix R, leaving the M coordinate
 -- (L2 magnitude) untouched. Run after EmbeddingFireflyPass for non-anchor
 -- models. R must be orthogonal (det = +1); the caller is responsible —
@@ -8412,13 +8250,19 @@ VOLATILE
 AS $$
     WITH updated AS (
         UPDATE substrate.physicality p
-           SET geom = ST_MakePoint(
-                   p_r00 * ST_X(p.geom) + p_r01 * ST_Y(p.geom) + p_r02 * ST_Z(p.geom),
-                   p_r10 * ST_X(p.geom) + p_r11 * ST_Y(p.geom) + p_r12 * ST_Z(p.geom),
-                   p_r20 * ST_X(p.geom) + p_r21 * ST_Y(p.geom) + p_r22 * ST_Z(p.geom),
-                   ST_M(p.geom))
+           SET geom = ST_MakePoint4D(
+                  p_r00 * (point4d_to_array(p.geom::point4d))[1]
+                      + p_r01 * (point4d_to_array(p.geom::point4d))[2]
+                      + p_r02 * (point4d_to_array(p.geom::point4d))[3],
+                  p_r10 * (point4d_to_array(p.geom::point4d))[1]
+                      + p_r11 * (point4d_to_array(p.geom::point4d))[2]
+                      + p_r12 * (point4d_to_array(p.geom::point4d))[3],
+                  p_r20 * (point4d_to_array(p.geom::point4d))[1]
+                      + p_r21 * (point4d_to_array(p.geom::point4d))[2]
+                      + p_r22 * (point4d_to_array(p.geom::point4d))[3],
+                  (point4d_to_array(p.geom::point4d))[4])
           FROM substrate.entity_model_source ems,
-               substrate.physicality_type pt
+              substrate.physicality_type pt
          WHERE p.entity_hash         = ems.entity_hash
            AND ems.model_source_id   = p_model_source_id
            AND p.physicality_type_id = pt.id
@@ -8429,12 +8273,12 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.apply_firefly_rotation(INT, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8) IS
-    'Rotate every embedding_firefly POINTZM physicality of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
+    'Rotate every embedding_firefly POINT4D physicality of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
 
 -- ── sql/schema/functions/get_firefly_coords.sql ───────────────────────────────────────
 -- substrate.get_firefly_coords(p_bpe_token_entity_hashes BYTEA[], p_model_source_id INT)
 --
--- Return per-entity firefly POINTZM coordinates for a vocab intersection
+-- Return per-entity firefly POINT4D coordinates for a vocab intersection
 -- set, scoped to one model_source. Used by EmbeddingAlignmentPass to pull
 -- the (anchor, this-model) coordinate pairs into managed memory for
 -- Procrustes/Kabsch fitting.
@@ -8456,14 +8300,15 @@ LANGUAGE SQL
 STABLE
 AS $$
     SELECT p.entity_hash,
-           ST_X(p.geom) AS x,
-           ST_Y(p.geom) AS y,
-           ST_Z(p.geom) AS z
+           coords.v[1] AS x,
+           coords.v[2] AS y,
+           coords.v[3] AS z
       FROM substrate.physicality p
       JOIN substrate.entity_model_source ems
         ON ems.entity_hash = p.entity_hash
       JOIN substrate.physicality_type pt
         ON pt.id = p.physicality_type_id
+      CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
      WHERE p.entity_hash = ANY(p_bpe_token_entity_hashes)
        AND ems.model_source_id = p_model_source_id
        AND pt.code = 'embedding_firefly'
@@ -8645,10 +8490,10 @@ COMMENT ON FUNCTION substrate.model_vocab_recovered(bytea) IS
 --
 -- Voronoi-tessellation centroid + dispersion + agreement score over a
 -- token entity's firefly cloud. Each model that has ingested this token
--- contributed one POINTZM physicality of type embedding_firefly.
+-- contributed one POINT4D physicality of type embedding_firefly.
 --
 -- All numerical work runs in compiled C from the hartonomous extension:
---   public.point4d(x,y,z,m)      — POINTZM vertex → native point4d
+--   public.point4d(x,y,z,m)      — native point4d
 --   public.centroid_4d(point4d)  — single-pass centroid aggregate (C)
 --   public.distance_4d(p,q)      — 4D Euclidean distance (C)
 --
@@ -8678,12 +8523,7 @@ AS $$
              ELSE 1.0 / (1.0 + COALESCE(d.max_dist, 0.0))
         END
       FROM (
-          SELECT public.centroid_4d(
-                     public.point4d(
-                         ST_X(p.geom)::double precision,
-                         ST_Y(p.geom)::double precision,
-                         COALESCE(ST_Z(p.geom), 0)::double precision,
-                         COALESCE(ST_M(p.geom), 0)::double precision))   AS centroid,
+          SELECT public.centroid_4d(p.geom::point4d)                     AS centroid,
                  count(*)::int                                            AS n
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
@@ -8692,13 +8532,7 @@ AS $$
            WHERE p.entity_hash = p_token_hash
       ) c
       CROSS JOIN LATERAL (
-          SELECT max(public.distance_4d(
-                     public.point4d(
-                         ST_X(p.geom)::double precision,
-                         ST_Y(p.geom)::double precision,
-                         COALESCE(ST_Z(p.geom), 0)::double precision,
-                         COALESCE(ST_M(p.geom), 0)::double precision),
-                     c.centroid))                                          AS max_dist
+          SELECT max(public.distance_4d(p.geom::point4d, c.centroid))       AS max_dist
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
@@ -8726,12 +8560,13 @@ RETURNS DOUBLE PRECISION
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $$
     WITH a AS (
-        SELECT ST_X(ST_PointN(p.geom, 1)) AS x,
-               ST_Y(ST_PointN(p.geom, 1)) AS y,
-               ST_Z(ST_PointN(p.geom, 1)) AS z,
-               ST_M(ST_PointN(p.geom, 1)) AS m
+        SELECT coords.v[1] AS x,
+               coords.v[2] AS y,
+               coords.v[3] AS z,
+               coords.v[4] AS m
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_a
             ON ems_a.model_source_id = ems_t.model_source_id
@@ -8739,12 +8574,13 @@ AS $$
          WHERE p.entity_hash = p_token_hash
     ),
     b AS (
-        SELECT ST_X(ST_PointN(p.geom, 1)) AS x,
-               ST_Y(ST_PointN(p.geom, 1)) AS y,
-               ST_Z(ST_PointN(p.geom, 1)) AS z,
-               ST_M(ST_PointN(p.geom, 1)) AS m
+        SELECT coords.v[1] AS x,
+               coords.v[2] AS y,
+               coords.v[3] AS z,
+               coords.v[4] AS m
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          CROSS JOIN LATERAL (SELECT point4d_to_array(p.geom::point4d) AS v) AS coords
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_b
             ON ems_b.model_source_id = ems_t.model_source_id
@@ -8926,38 +8762,36 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
     SELECT DISTINCT
            package_type.code AS package_type_code,
            package_class.entity_hash AS package_hash,
-           sequence_row.ordinal,
+           package_child.ordinal,
            occurrence_type.code AS occurrence_type_code,
-           sequence_row.child_hash AS occurrence_hash,
+           package_child.child_hash AS occurrence_hash,
            tensor_type.code AS tensor_type_code,
-           tensor_sequence.child_hash AS tensor_hash
+           tensor_child.child_hash AS tensor_hash
       FROM substrate.entity_model_source package_source
       JOIN substrate.entity_classification package_class
         ON package_class.entity_hash = package_source.entity_hash
       JOIN substrate.entity_type package_type
         ON package_type.id = package_class.entity_type_id
        AND package_type.code = 'model_package'
-      JOIN substrate.sequence sequence_row
-        ON sequence_row.parent_hash = package_class.entity_hash
+      JOIN LATERAL substrate.get_composition_children(package_class.entity_hash) package_child ON TRUE
       JOIN substrate.entity_classification occurrence_class
-        ON occurrence_class.entity_hash = sequence_row.child_hash
+        ON occurrence_class.entity_hash = package_child.child_hash
       JOIN substrate.entity_type occurrence_type
         ON occurrence_type.id = occurrence_class.entity_type_id
        AND occurrence_type.code = 'model_package_tensor'
-      JOIN substrate.sequence tensor_sequence
-        ON tensor_sequence.parent_hash = sequence_row.child_hash
-       AND tensor_sequence.ordinal = 1
+      JOIN LATERAL substrate.get_composition_children(package_child.child_hash) tensor_child ON TRUE
+       AND tensor_child.ordinal = 1
       JOIN substrate.entity_classification tensor_class
-        ON tensor_class.entity_hash = tensor_sequence.child_hash
+        ON tensor_class.entity_hash = tensor_child.child_hash
       JOIN substrate.entity_type tensor_type
         ON tensor_type.id = tensor_class.entity_type_id
        AND tensor_type.code = 'tensor'
      WHERE package_source.model_source_id = p_model_source_id
-     ORDER BY package_class.entity_hash ASC, sequence_row.ordinal ASC;
+     ORDER BY package_class.entity_hash ASC, package_child.ordinal ASC;
 $f$;
 
 COMMENT ON FUNCTION substrate.query_tensors_for_model_source(INT) IS
-    'Return one model_source package tensor enumeration from sequence(model_package -> tensor), preserving package-scoped tensor order without conflating shared model_architecture entities.';
+    'Return one model_source package tensor enumeration from composition physicality metadata, preserving package-scoped tensor order without conflating shared model_architecture entities.';
 
 -- ── sql/schema/functions/query_fireflies_for_vocab.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.query_fireflies_for_vocab(
