@@ -2521,22 +2521,34 @@ CREATE TABLE substrate.edge_member_default
 -- geometric shape (POINTZM for atoms, LINESTRINGZM / MULTILINESTRINGZM for
 -- compositions).
 --
--- Two geometric expressions across the substrate:
---   * Atom physicality (codepoint_atom S3 position, audio sample,
---     image pixel, etc.): geom = POINTZM at the atom's real centroid in its
---     modality's content-derived metric space.
---   * Composition physicality (word_form, sentence, paragraph, document,
---     model_architecture, audio chunk, etc.): geom = LINESTRINGZM whose
---     vertices encode the children's identities — per the mantissa packing
---     contract, X = child hash bits 0..51, Y = ordinal + RLE bit-banged,
---     Z = child hash bits 52..103, M = bit-banged metadata. The geometry IS
---     the relational structure: reading the trajectory's vertices recovers
---     the children + their order in one row; ST_Frechet over two compositions
---     compares sequence-of-IDs directly. PostGIS R-tree + GiST handle
---     "find every parent that references this child" via bbox prefilter on
---     the encoded coordinate value; `substrate.entity_by_hash_prefix` resolves
---     the encoded vertex back to a full hash via the composite btree on
---     (hash_bits_0_51, hash_bits_52_103).
+-- Geometric expressions across the substrate (real coords only — NO mantissa
+-- packing of identity bits into vertices; identity lives in the relational
+-- child-tracking layer, geometry stores the canonical SHAPE):
+--   * Atom physicality (codepoint S3 position, audio sample, image pixel,
+--     etc.): geom = POINTZM at the atom's real centroid in its modality's
+--     content-derived metric space. Codepoints: 4 real Super-Fibonacci S^3
+--     unit-quaternion components by UCA collation rank
+--     (`scripts/build/generate_unicode_tables.py:83,1080`).
+--   * Entity physicality (word_form, lemma, morpheme — compositions over
+--     atoms): geom = LINESTRINGZM whose vertices ARE the real centroids of
+--     the children at the next tier down, in canonical role / sequence order.
+--     For "cat" (word_form): three vertices = c.centroid, a.centroid,
+--     t.centroid (each a real S^3 POINTZM read from its physicality_s3 row).
+--   * Content physicality (text_composition, sentence, paragraph, document,
+--     audio_chunk, image_region, video_shot — compositions of compositions):
+--     geom = LINESTRINGZM whose vertices ARE the real centroids of the
+--     constituent entities. For "the cat sat on the mat" (text_composition):
+--     six vertices = the.centroid, cat.centroid, sat.centroid, on.centroid,
+--     the.centroid, mat.centroid. Branching / discontinuous structure uses
+--     MULTILINESTRINGZM. Identity of which children are referenced is
+--     resolved through the relational child-tracking layer, NOT through
+--     bit-decoding the geometry vertices (per memory
+--     `feedback-no-mantissa-vertex-packing` and the S3.D chunk-1 corrected
+--     model).
+--
+-- ST_Frechet / Hausdorff over two composition geoms compares geometric
+-- trajectory SHAPE through real-coord space (analogy completion, frayed-edge
+-- detection, application-fault matching) — not sequence-of-IDs equality.
 --
 -- content_hash distinguishes multiple physicalities of the same
 -- (physicality_type, entity) — e.g., multiple firefly samples per token from
@@ -2613,20 +2625,33 @@ CREATE TABLE substrate.physicality_model
     PARTITION OF substrate.physicality FOR VALUES IN (11, 12);
 
 -- ── sql/schema/tables/core/physicality_contour.sql ───────────────────────────────────────
--- Physicality type 13: contour. LINESTRINGZM with mantissa-packed vertices
--- encoding children's identities — the substrate's universal carrier for
--- COMPOSITION entities (word_form, sentence, paragraph, document,
--- model_architecture, audio chunk, image region, video shot, etc.). Per the
--- mantissa packing contract: vertex X = child hash bits 0..51 packed via
--- bb_pack_hash_lo, Y = ordinal + RLE bit-banged via bb_pack_ordinal_rle,
--- Z = child hash bits 52..103 via bb_pack_hash_hi, M = metadata via
--- bb_pack_metadata. The geometry IS the relational structure — ST_PointN
--- recovers vertex i; bb_unpack_* extracts identity / ordinal / RLE / metadata;
--- substrate.entity_by_hash_prefix resolves to full child hash via composite
--- btree. ST_Frechet over two contour geoms = sequence-of-IDs match (same
--- children in same order). Multi-segment compositions (multi-tier views,
--- discontinuous content, parallel sub-sequences) use MULTILINESTRINGZM via
--- the same packing scheme.
+-- Physicality type 13: contour. LINESTRINGZM whose vertices ARE the real
+-- centroids of the composition's children in canonical role / sequence
+-- order — NO mantissa packing of identity bits (per memory
+-- `feedback-no-mantissa-vertex-packing` and the S3.D chunk-1 corrected
+-- model). Universal carrier for COMPOSITION entities at every tier:
+--   * Entity-tier (word_form, lemma, morpheme): vertices are the real
+--     codepoint POINTZMs — for "cat" (word_form), three vertices =
+--     c.centroid, a.centroid, t.centroid each read from physicality_s3.
+--   * Content-tier (text_composition, sentence, paragraph, document,
+--     audio_chunk, image_region, video_shot): vertices are the real
+--     centroids of the constituent entities — for "the cat sat on the
+--     mat" (text_composition), six vertices = the.centroid, cat.centroid,
+--     sat.centroid, on.centroid, the.centroid, mat.centroid.
+--
+-- Multi-segment / branching / parallel-sub-sequence compositions use
+-- MULTILINESTRINGZM. Identity of which children are referenced lives in
+-- the relational child-tracking layer; geometry stores SHAPE only.
+-- ST_Frechet / Hausdorff over two contour geoms compares trajectory shape
+-- in real-coord space (analogy completion, frayed-edge detection,
+-- application-fault matching across structurally-similar trajectories
+-- whose categorical labels differ).
+--
+-- TODO (post-S3.D follow-on): split this single contour partition into
+-- two physicality_types — entity_shape (atoms-as-vertices) and
+-- content_trajectory (entities-as-vertices) — so per-partition CHECK
+-- constraints can declare the per-tier axis-meaning conventions
+-- separately.
 CREATE TABLE substrate.physicality_contour
     PARTITION OF substrate.physicality FOR VALUES IN (13);
 ALTER TABLE substrate.physicality_contour
