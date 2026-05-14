@@ -61,8 +61,9 @@ BEGIN
         RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
     END IF;
 
-    INSERT INTO substrate.entity (hash)
-    SELECT a.hash FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
+    INSERT INTO substrate.entity (hash, centroid_4d)
+    SELECT a.hash, ST_MakePoint(a.x, a.y, a.z, a.m)
+      FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
     ON CONFLICT (hash) DO NOTHING;
 
     INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
@@ -74,7 +75,7 @@ BEGIN
     SELECT v_s3_phys_type,
            a.hash,
            a.hash,
-           ST_MakePoint4D(a.x, a.y, a.z, a.m)
+           ST_MakePoint(a.x, a.y, a.z, a.m)
       FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
     ON CONFLICT DO NOTHING;
 

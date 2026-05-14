@@ -83,9 +83,11 @@ BEGIN
     -- Warm up the composite tupdesc cache before plpgsql plans the SRF.
     PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
 
-    -- 1. Insert all 1,114,112 codepoint entities.
-    INSERT INTO substrate.entity (hash)
-    SELECT a.hash FROM substrate.ucd_codepoints() a
+    -- 1. Insert all 1,114,112 codepoint entities with their S^3 centroid.
+    --    centroid_4d = S^3 Super-Fibonacci point by UCA rank, from the SRF.
+    INSERT INTO substrate.entity (hash, centroid_4d)
+    SELECT a.hash, ST_MakePoint(a.x, a.y, a.z, a.m)
+      FROM substrate.ucd_codepoints() a
     ON CONFLICT (hash) DO NOTHING;
 
     -- 2. Classify each as 'codepoint' under the given provenance.
@@ -99,7 +101,7 @@ BEGIN
     SELECT v_s3_phys_type,
            a.hash,
            a.hash,
-           ST_MakePoint4D(a.x, a.y, a.z, a.m)
+           ST_MakePoint(a.x, a.y, a.z, a.m)
       FROM substrate.ucd_codepoints() a
     ON CONFLICT DO NOTHING;
 
