@@ -253,21 +253,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private long _entitySignificanceDedupCount;
     private long _edgeSignificanceDedupCount;
 
-    // Phase-scoped centroid index. Every PhysicalityEntry processed by
-    // SubmitBatchAsync drops its (entity_hash → Point4D) here. Edges built
-    // in subsequent batches look up their participants' centroids here so
-    // cross-batch references (an edge whose participants were emitted in
-    // earlier batches) get inline LINESTRING4D at submit time — no DB
-    // round-trip, no end-of-phase populate_edge_trajectories post-pass
-    // needed.
-    //
-    // Memory bound: 32 bytes (Hash32 key) + 32 bytes (Point4D value) ≈
-    // 64 B/entry, plus dictionary overhead. 10M entities ≈ 640 MB worst
-    // case on a fully-seeded substrate; bounded by phase scope (cleared
-    // when a new pipeline is constructed) so it does not survive
-    // process-wide.
-    private readonly ConcurrentDictionary<Hash32, Hartonomous.Core.Geometry.Point4D> _centroids = new();
-
     public StreamingIngestionPipeline(
         string connectionString,
         IReferenceDataReader referenceDataReader,
@@ -569,31 +554,27 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
         foreach (PhysicalityEntry p in b.Physicalities)
         {
-            Hash32[]? childHashes = p.ChildHashes;
-            int[]? ordinalStarts = p.OrdinalStarts;
-            int[]? rleCounts = p.RleCounts;
+            byte[] geometry;
             if (compositionMetadata.TryGetValue(p.Entity.Hash, out var metadata))
             {
-                childHashes = metadata.ChildHashes;
-                ordinalStarts = metadata.OrdinalStarts;
-                rleCounts = metadata.RleCounts;
+                geometry = BuildCompositionGeometry(
+                    metadata.ChildHashes, metadata.OrdinalStarts, metadata.RleCounts);
+            }
+            else if (p.ChildHashes is not null && p.OrdinalStarts is not null && p.RleCounts is not null)
+            {
+                geometry = BuildCompositionGeometry(p.ChildHashes, p.OrdinalStarts, p.RleCounts);
+            }
+            else
+            {
+                geometry = p.Geometry;
             }
 
-            Hash32 contentHash = ComputePhysicalityContentHash(
-                p.Geometry,
-                childHashes,
-                ordinalStarts,
-                rleCounts);
-            _centroids[p.Entity.Hash] = p.Centroid;
+            Hash32 contentHash = ComputePhysicalityContentHash(geometry);
             records.Add(new PhysicalityRecord(
                 p.PhysicalityTypeCode,
                 p.Entity.Hash,
                 contentHash,
-                p.Geometry,
-                p.Centroid,
-                childHashes,
-                ordinalStarts,
-                rleCounts));
+                geometry));
             parentsWithPhysicality.Add(p.Entity.Hash);
         }
 
@@ -604,41 +585,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 continue;
             }
 
-            Hartonomous.Core.Geometry.Point4D[] vertices =
-                new Hartonomous.Core.Geometry.Point4D[pair.Value.ChildHashes.Length];
-            for (int i = 0; i < vertices.Length; i++)
-            {
-                if (!_centroids.TryGetValue(pair.Value.ChildHashes[i], out var childCentroid))
-                {
-                    throw new InvalidOperationException(
-                        $"Composition physicality for {pair.Key.ToHexString()} cannot be built: " +
-                        $"child {pair.Value.ChildHashes[i].ToHexString()} has no centroid in the current ingestion phase.");
-                }
-                vertices[i] = childCentroid;
-            }
-
-            if (!Hartonomous.Core.Geometry.Point4D.TryMean(vertices, out var centroid))
-            {
-                throw new InvalidOperationException(
-                    $"Composition physicality for {pair.Key.ToHexString()} has no child vertices.");
-            }
-
-            byte[] geometry = Geometry4dPayloadBuilder.LineString(vertices);
-            Hash32 contentHash = ComputePhysicalityContentHash(
-                geometry,
-                pair.Value.ChildHashes,
-                pair.Value.OrdinalStarts,
-                pair.Value.RleCounts);
-            _centroids[pair.Key] = centroid;
+            byte[] geometry = BuildCompositionGeometry(
+                pair.Value.ChildHashes, pair.Value.OrdinalStarts, pair.Value.RleCounts);
+            Hash32 contentHash = ComputePhysicalityContentHash(geometry);
             records.Add(new PhysicalityRecord(
                 "contour",
                 pair.Key,
                 contentHash,
-                geometry,
-                centroid,
-                pair.Value.ChildHashes,
-                pair.Value.OrdinalStarts,
-                pair.Value.RleCounts));
+                geometry));
         }
 
         Dictionary<string, int> edgeTypeIds = new(StringComparer.Ordinal);
@@ -664,20 +618,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             {
                 Hartonomous.Core.Geometry.Point4D[] verts =
                     new Hartonomous.Core.Geometry.Point4D[sorted.Length];
-                bool allPresent = true;
                 for (int j = 0; j < sorted.Length; j++)
                 {
-                    if (!_centroids.TryGetValue(sorted[j].Entity.Hash, out var c))
-                    {
-                        allPresent = false;
-                        break;
-                    }
-                    verts[j] = c;
+                    verts[j] = IdentityPoint4D(sorted[j].Entity.Hash, j + 1);
                 }
-                if (allPresent)
-                {
-                    inlineGeometry = Geometry4dPayloadBuilder.LineString((ReadOnlySpan<Hartonomous.Core.Geometry.Point4D>)verts);
-                }
+                inlineGeometry = Geometry4dPayloadBuilder.LineString((ReadOnlySpan<Hartonomous.Core.Geometry.Point4D>)verts);
             }
 
             records.Add(new EdgeRecord(edge.EdgeTypeCode, edgeHash, edge.ProvenanceCode, inlineGeometry));
@@ -811,38 +756,51 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         return metadata;
     }
 
-    private static Hash32 ComputePhysicalityContentHash(
-        byte[] geometry,
-        Hash32[]? childHashes,
-        int[]? ordinalStarts,
-        int[]? rleCounts)
-    {
-        if (childHashes is null || ordinalStarts is null || rleCounts is null)
-        {
-            return Hartonomous.Core.Compute.Common.Blake3.Hash32(geometry.AsSpan());
-        }
-        if (childHashes.Length != ordinalStarts.Length || childHashes.Length != rleCounts.Length)
-        {
-            throw new InvalidOperationException("Composition physicality metadata arrays must have matching lengths.");
-        }
+    private static Hash32 ComputePhysicalityContentHash(byte[] geometry)
+        => Hartonomous.Core.Compute.Common.Blake3.Hash32(geometry.AsSpan());
 
-        int length = geometry.Length + sizeof(int) + childHashes.Length * (32 + sizeof(int) + sizeof(int));
-        byte[] bytes = new byte[length];
-        geometry.CopyTo(bytes, 0);
-        int offset = geometry.Length;
-        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(offset, sizeof(int)), childHashes.Length);
-        offset += sizeof(int);
+    /// <summary>
+    /// Build a composition LINESTRINGZM payload from an ordered child manifest
+    /// using the substrate mantissa packing contract. Each vertex encodes
+    /// (X = bb_pack_hash_lo(child.bits_0_51),
+    ///  Y = bb_pack_ordinal_rle(ordinal, rle),
+    ///  Z = bb_pack_hash_hi(child.bits_52_103),
+    ///  M = bb_pack_metadata(0)). The geometry IS the indexed relational
+    /// child manifest at this composition tier; substrate.get_composition_children
+    /// reverses by unpacking each vertex and joining against
+    /// substrate.entity's (hash_bits_0_51, hash_bits_52_103) composite btree.
+    /// </summary>
+    private static byte[] BuildCompositionGeometry(
+        Hash32[] childHashes, int[] ordinals, int[] rleCounts)
+    {
+        if (childHashes.Length != ordinals.Length || childHashes.Length != rleCounts.Length)
+        {
+            throw new InvalidOperationException("Composition manifest arrays must have matching lengths.");
+        }
+        var verts = new Hartonomous.Core.Geometry.Point4D[childHashes.Length];
         for (int i = 0; i < childHashes.Length; i++)
         {
-            childHashes[i].ToByteArray().CopyTo(bytes, offset);
-            offset += 32;
-            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(offset, sizeof(int)), ordinalStarts[i]);
-            offset += sizeof(int);
-            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(offset, sizeof(int)), rleCounts[i]);
-            offset += sizeof(int);
+            verts[i] = new Hartonomous.Core.Geometry.Point4D(
+                MantissaPacking.PackHashLo(childHashes[i].BitsLow52()),
+                MantissaPacking.PackOrdinalRle(ordinals[i], rleCounts[i]),
+                MantissaPacking.PackHashHi(childHashes[i].BitsHigh52()),
+                MantissaPacking.PackMetadata(0L));
         }
-        return Hartonomous.Core.Compute.Common.Blake3.Hash32(bytes.AsSpan());
+        return Geometry4dPayloadBuilder.LineString((ReadOnlySpan<Hartonomous.Core.Geometry.Point4D>)verts);
     }
+
+    /// <summary>
+    /// Mantissa-packed identity-POINTZM for an entity, used as a vertex of
+    /// edge.geom LINESTRINGZM. Mirrors substrate.populate_edge_trajectories
+    /// inline: (bb_pack_hash_lo(hash.bits_0_51), bb_pack_ordinal_rle(rolePosition, 1),
+    /// bb_pack_hash_hi(hash.bits_52_103), bb_pack_metadata(0)).
+    /// </summary>
+    private static Hartonomous.Core.Geometry.Point4D IdentityPoint4D(Hash32 hash, int rolePosition)
+        => new(
+            MantissaPacking.PackHashLo(hash.BitsLow52()),
+            MantissaPacking.PackOrdinalRle(rolePosition, 1),
+            MantissaPacking.PackHashHi(hash.BitsHigh52()),
+            MantissaPacking.PackMetadata(0L));
 
     public async Task DrainPendingAsync(CancellationToken ct)
     {
@@ -1341,10 +1299,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             {
                 edgeRecordsInBuffer.Add(new EdgeKey(edge.EdgeTypeCode, edge.EdgeHash));
             }
-            else if (record is PhysicalityRecord physicality)
-            {
-                _centroids[physicality.EntityHash] = physicality.Centroid;
-            }
         }
 
         foreach (IngestionRecord record in buffer)
@@ -1374,17 +1328,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     if (record is PhysicalityRecord physicality &&
                         compositionMetadata.TryGetValue(physicality.EntityHash, out var metadata))
                     {
-                        Hash32 contentHash = ComputePhysicalityContentHash(
-                            physicality.Geometry,
-                            metadata.ChildHashes,
-                            metadata.OrdinalStarts,
-                            metadata.RleCounts);
+                        byte[] geometry = BuildCompositionGeometry(
+                            metadata.ChildHashes, metadata.OrdinalStarts, metadata.RleCounts);
+                        Hash32 contentHash = ComputePhysicalityContentHash(geometry);
                         recordToEmit = physicality with
                         {
+                            Geometry = geometry,
                             ContentHash = contentHash,
-                            ChildHashes = metadata.ChildHashes,
-                            OrdinalStarts = metadata.OrdinalStarts,
-                            RleCounts = metadata.RleCounts,
                         };
                     }
                     await EmitDirectAsync(recordToEmit, ct).ConfigureAwait(false);
@@ -2120,23 +2070,6 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 writer.Write(rec.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
                 writer.Write(rec.ContentHash.ToByteArray(), NpgsqlDbType.Bytea);
                 writer.Write(rec.Geometry, NpgsqlDbType.Bytea);
-                if (rec.ChildHashes is null)
-                {
-                    writer.WriteNull();
-                    writer.WriteNull();
-                    writer.WriteNull();
-                }
-                else
-                {
-                    byte[][] childHashes = new byte[rec.ChildHashes.Length][];
-                    for (int i = 0; i < rec.ChildHashes.Length; i++)
-                    {
-                        childHashes[i] = rec.ChildHashes[i].ToByteArray();
-                    }
-                    writer.Write(childHashes, NpgsqlDbType.Array | NpgsqlDbType.Bytea);
-                    writer.Write(rec.OrdinalStarts!, NpgsqlDbType.Array | NpgsqlDbType.Integer);
-                    writer.Write(rec.RleCounts!, NpgsqlDbType.Array | NpgsqlDbType.Integer);
-                }
                 Interlocked.Increment(ref _physicalitiesEmitted);
             },
             ct).ConfigureAwait(false);

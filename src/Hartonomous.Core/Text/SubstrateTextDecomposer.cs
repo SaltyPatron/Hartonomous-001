@@ -609,17 +609,11 @@ public sealed class SubstrateTextDecomposer
                         break;
                     }
                     byte[] geometry = ReadBytes(record.Geometry, (int) record.GeometryLen);
-                    Hartonomous.Core.Geometry.Point4D centroid = new(
-                        record.CentroidX,
-                        record.CentroidY,
-                        record.CentroidZ,
-                        record.CentroidM);
                     Records.Add(new PhysicalityRecord(
                         physCode,
                         entHash,
                         Blake3.Hash32(geometry.AsSpan()),
-                        geometry,
-                        centroid));
+                        geometry));
                     PhysicalityCount++;
                     break;
                 }

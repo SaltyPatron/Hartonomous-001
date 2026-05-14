@@ -83,10 +83,12 @@ BEGIN
     -- Warm up the composite tupdesc cache before plpgsql plans the SRF.
     PERFORM 1 FROM substrate.ucd_codepoints(0, 1);
 
-    -- 1. Insert all 1,114,112 codepoint entities with their S^3 centroid.
-    --    centroid_4d = S^3 Super-Fibonacci point by UCA rank, from the SRF.
-    INSERT INTO substrate.entity (hash, centroid_4d)
-    SELECT a.hash, ST_MakePoint(a.x, a.y, a.z, a.m)
+    -- 1. Insert all 1,114,112 codepoint entities (hash-only). The canonical
+    --    S^3 Super-Fibonacci centroid lives in substrate.physicality_s3 below,
+    --    not on substrate.entity — entity carries identity only, physicality
+    --    carries geometry partitioned by physicality_type_id.
+    INSERT INTO substrate.entity (hash)
+    SELECT a.hash
       FROM substrate.ucd_codepoints() a
     ON CONFLICT (hash) DO NOTHING;
 

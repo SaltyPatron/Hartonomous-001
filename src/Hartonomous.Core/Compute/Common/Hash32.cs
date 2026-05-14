@@ -107,4 +107,30 @@ public readonly struct Hash32 : IEquatable<Hash32>, IComparable<Hash32>
     }
 
     public override string ToString() => ToHexString();
+
+    /// <summary>
+    /// Bits 0..51 of the hash as a 52-bit BIGINT, little-endian byte order.
+    /// Mirrors <c>substrate.bb_hash_lo</c> and matches
+    /// <c>substrate.entity.hash_bits_0_51</c> byte-for-byte. Use for the X
+    /// mantissa of mantissa-packed identity-POINTZM / LINESTRINGZM vertices.
+    /// </summary>
+    public long BitsLow52()
+        => (long)(_a & MantissaPacking.Mask52);
+
+    /// <summary>
+    /// Bits 52..103 of the hash as a 52-bit BIGINT, little-endian byte order.
+    /// Mirrors <c>substrate.bb_hash_hi</c> and matches
+    /// <c>substrate.entity.hash_bits_52_103</c> byte-for-byte. Spans bytes
+    /// 6..12 — the low nibble of byte 6 belongs to <see cref="Bits0_51"/>;
+    /// the high nibble starts the upper half, followed by bytes 7..12.
+    /// </summary>
+    public long BitsHigh52()
+    {
+        // _a covers bytes 0..7. The high 12 bits of _a are bits 52..63 of
+        // the hash (i.e. bits 0..11 of the upper-half payload), but we
+        // already consumed only bits 0..51 of _a, so bits 52..63 of the
+        // hash live in the top 12 bits of _a. _b covers bytes 8..15.
+        ulong upper = (_a >> 52) | (_b << 12);
+        return (long)(upper & MantissaPacking.Mask52);
+    }
 }

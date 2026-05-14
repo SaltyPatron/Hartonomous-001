@@ -5,9 +5,12 @@
 -- S^3, audio sample, image pixel, etc.).
 --
 -- For composition entities, this function returns no row — their
--- physicality geom is LINESTRINGZM with ID-encoded vertices, not POINTZM.
--- Callers wanting a composition's representative POINTZM should use
--- substrate.entity_centroid_4d(hash) → substrate.entity.centroid_4d.
+-- physicality geom is LINESTRINGZM with mantissa-packed child refs, not
+-- POINTZM. Composition representative POINTZMs are derived inline from
+-- substrate.entity.hash_bits_0_51 / hash_bits_52_103 via
+-- substrate.bb_pack_hash_lo / bb_pack_hash_hi when needed for edge.geom
+-- construction (see substrate.populate_edge_trajectories) — they are not
+-- stored anywhere.
 CREATE OR REPLACE FUNCTION substrate.physicality_point4d(
     p_entity_hash substrate.hash_value,
     p_entity_type_code TEXT,

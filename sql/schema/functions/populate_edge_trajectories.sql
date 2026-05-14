@@ -1,15 +1,19 @@
--- Populate edge trajectories from participant centroids — PostGIS-native
--- LINESTRINGZM built via ST_MakeLine over each participant's
--- substrate.entity.centroid_4d POINTZM in role order. Participants whose
--- centroid_4d isn't yet populated (entity row not in place when this runs)
--- cause the edge to be skipped; subsequent calls re-attempt.
+-- Populate edge trajectories from participant identity-POINTZMs in role
+-- order. Each participant entity's identity-POINTZM is derived from its
+-- BLAKE3 hash mantissa-packed into (X, Z) via substrate.bb_pack_hash_lo /
+-- bb_pack_hash_hi — the same encoding composition LINESTRINGZM vertices
+-- use, so edge.geom and composition.geom share one structural-identity
+-- coordinate system. R-tree GiST indexes (gist_geometry_ops_nd) prune
+-- across edge.geom and physicality.geom uniformly.
+--
+-- The Y mantissa carries the role-position (1-based ordinal in role-sorted
+-- member order) via substrate.bb_pack_ordinal_rle with rle_count=1. M is
+-- 0 (reserved for future per-edge metadata).
 --
 -- Performance: edge selection CTE pushes LIMIT FIRST so only the chosen
--- edges' members are joined. STABLE-function calls are amortized via an
--- explicit JOIN onto substrate.entity rather than a per-row UDF dispatch.
--- ST_MakeLine over an ordered array materializes in one pass without the
--- ordered-set-aggregate tuplestore-spill pattern that previously SIGSEGV'd
--- at >800k edges.
+-- edges' members are joined. ST_MakeLine over an ordered array materializes
+-- in one pass without the ordered-set-aggregate tuplestore-spill pattern
+-- that previously SIGSEGV'd at >800k edges.
 CREATE OR REPLACE FUNCTION substrate.populate_edge_trajectories(p_limit INT DEFAULT NULL)
 RETURNS BIGINT
 LANGUAGE plpgsql VOLATILE
@@ -31,7 +35,8 @@ BEGIN
                em.edge_role_id,
                em.role_position,
                em.entity_hash,
-               e.centroid_4d AS cgeom
+               e.hash_bits_0_51,
+               e.hash_bits_52_103
           FROM null_edges ne
           JOIN substrate.edge_member em
             ON em.edge_type_id = ne.edge_type_id
@@ -44,10 +49,13 @@ BEGIN
           FROM per_edge_pts
          GROUP BY edge_type_id, edge_hash
         HAVING count(*) >= 2
-           AND count(cgeom) = count(*)
+           AND count(hash_bits_0_51) = count(*)
     ),
     sorted_pts AS (
-        SELECT p.edge_type_id, p.edge_hash, p.cgeom,
+        SELECT p.edge_type_id,
+               p.edge_hash,
+               p.hash_bits_0_51,
+               p.hash_bits_52_103,
                row_number() OVER (
                    PARTITION BY p.edge_type_id, p.edge_hash
                    ORDER BY p.edge_role_id, p.role_position, p.entity_hash
@@ -57,12 +65,24 @@ BEGIN
             ON c.edge_type_id = p.edge_type_id
            AND c.edge_hash    = p.edge_hash
     ),
+    vertex_pts AS (
+        SELECT edge_type_id,
+               edge_hash,
+               rn,
+               ST_MakePoint(
+                   substrate.bb_pack_hash_lo(hash_bits_0_51),
+                   substrate.bb_pack_ordinal_rle(rn::INT, 1),
+                   substrate.bb_pack_hash_hi(hash_bits_52_103),
+                   substrate.bb_pack_metadata(0)
+               ) AS pt
+          FROM sorted_pts
+    ),
     aggregated AS (
         SELECT edge_type_id,
                edge_hash,
-               ST_MakeLine(array_agg(cgeom ORDER BY rn)) AS line_geom,
+               ST_MakeLine(array_agg(pt ORDER BY rn)) AS line_geom,
                count(*) AS member_count
-          FROM sorted_pts
+          FROM vertex_pts
          GROUP BY edge_type_id, edge_hash
     )
     UPDATE substrate.edge e
@@ -80,4 +100,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.populate_edge_trajectories(INT) IS
-    'Populate substrate.edge.geom with PostGIS-native LINESTRINGZM through participants'' substrate.entity.centroid_4d in role order. Edges with missing participant centroids are left NULL and retried on subsequent calls.';
+    'Populate substrate.edge.geom with LINESTRINGZM through participants'' mantissa-packed identity-POINTZMs in role order. Vertex = (bb_pack_hash_lo(hash_bits_0_51), bb_pack_ordinal_rle(role_position, 1), bb_pack_hash_hi(hash_bits_52_103), bb_pack_metadata(0)). Same encoding composition LINESTRINGZMs use, so edge.geom and composition.geom share one structural-identity coordinate system. Edges with missing participant entities are left NULL and retried on subsequent calls.';

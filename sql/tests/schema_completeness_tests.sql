@@ -241,7 +241,7 @@ DECLARE
         'prime_unprimed_edges_chunk', 'prune_significance',
         'create_arena', 'create_model_trust_arena',
         'populate_edge_trajectories',
-        'dist_4d', 'entity_centroid_4d',
+        'dist_4d',
         'entity_outbound_edges', 'entity_inbound_edges', 'entity_neighbors',
         'resolve_entity_handles', 'get_entity_info_by_handles',
         'get_edge_info_by_handles', 'get_outbound_edge_targets',

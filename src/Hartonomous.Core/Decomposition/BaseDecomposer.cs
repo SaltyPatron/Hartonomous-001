@@ -254,8 +254,7 @@ public abstract partial class BaseDecomposer : IDecomposer
             physicalityTypeCode,
             entity.Hash,
             contentHash,
-            geometry,
-            centroid), ct);
+            geometry), ct);
     }
 
     /// <summary>

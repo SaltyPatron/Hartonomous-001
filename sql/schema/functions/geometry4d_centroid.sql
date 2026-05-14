@@ -1,12 +1,13 @@
 -- Centroid over a real-coord PostGIS GeometryZM. For POINTZM returns the
 -- point itself; for LINESTRINGZM returns the mean of vertex coordinates.
 --
--- NOT INTENDED for ID-encoded composition LINESTRINGZM geometries — those
--- have mantissa-packed identity vertices, not metric coordinates, so a
--- coordinate mean is meaningless. For an entity's representative 4D
--- centroid, callers should read substrate.entity.centroid_4d directly
--- (populated by the ingestion pipeline as content-derived real centroid for
--- atoms / recursive mean of children's centroid_4d for compositions).
+-- NOT INTENDED for composition LINESTRINGZM geometries — those have
+-- mantissa-packed identity vertices, not metric coordinates, so a
+-- coordinate mean is meaningless. Composition entities do not have a
+-- stored representative-POINTZM; if one is needed (e.g. for edge.geom
+-- construction) it is derived inline from the entity's hash bits via
+-- substrate.bb_pack_hash_lo / bb_pack_hash_hi (see
+-- substrate.populate_edge_trajectories).
 CREATE OR REPLACE FUNCTION substrate.geometry4d_centroid(g geometry)
 RETURNS public.point4d
 LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
@@ -51,4 +52,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.geometry4d_centroid(geometry) IS
-    'Vertex-mean centroid of a real-coord 4D GeometryZM. NOT for ID-encoded composition LINESTRINGZM (those carry identity bits, not metric coords) — use substrate.entity.centroid_4d for an entity''s representative position.';
+    'Vertex-mean centroid of a real-coord 4D GeometryZM. NOT for composition LINESTRINGZM (those carry mantissa-packed identity bits, not metric coords). Composition representative POINTZMs are derived inline from entity.hash_bits_* via bb_pack_hash_lo/hi when needed; not stored.';

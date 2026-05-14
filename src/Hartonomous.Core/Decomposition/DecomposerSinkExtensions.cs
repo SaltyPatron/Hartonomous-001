@@ -180,8 +180,7 @@ public static class DecomposerSinkExtensions
             physicalityTypeCode,
             entity.Hash,
             contentHash,
-            geometry,
-            centroid), ct);
+            geometry), ct);
     }
 
     /// <summary>
