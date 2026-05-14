@@ -188,6 +188,7 @@ set(HARTONOMOUS_SOURCES
     src/ucd_atoms_blob.c
     src/text_decompose.c
     src/ucd_properties.c
+    src/trajectory_walk.c
     # ── Phase A.0.4 synthesis primitive stubs (Phase B.1 fills them in) ──
     src/synth_stubs.c
 )

@@ -22,5 +22,6 @@
 #include "hartonomous/glicko.h"
 
 #include "hartonomous/text_decompose.h"
+#include "hartonomous/trajectory.h"
 
 #endif /* HARTONOMOUS_H */
