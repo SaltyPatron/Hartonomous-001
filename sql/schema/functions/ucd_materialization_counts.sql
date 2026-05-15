@@ -49,7 +49,7 @@ AS $$
               FROM substrate.edge_significance es
               JOIN substrate.attestation_type at ON at.id = es.attestation_type_id
              WHERE es.edge_type_id IN (SELECT id FROM case_edge_types)
-               AND at.code = 'provenance_authority_corroboration'
+               AND at.code = 'positive_evidence'
         ) AS simple_case_edge_significance;
 $$;
 

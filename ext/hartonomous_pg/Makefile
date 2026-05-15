@@ -25,6 +25,7 @@ OBJS         = src/hartonomous.o \
                src/pg_text_decompose.o \
                src/pg_codepoint_atoms_pg.o \
                src/pg_ucd_atoms_blob.o \
+               src/pg_ucd_sequences_pg.o \
                src/generated/pg_ucd_segmentation.o \
                src/generated/pg_ucd_classification.o \
                src/generated/pg_ucd_casing.o \
@@ -34,7 +35,14 @@ OBJS         = src/hartonomous.o \
                src/generated/pg_ucd_uca.o \
                src/generated/pg_ucd_names.o \
                src/generated/pg_ucd_inventory.o \
-               src/generated/pg_ucd_tier1.o
+               src/generated/pg_ucd_tier1.o \
+               src/generated/pg_ucd_named_sequences.o \
+               src/generated/pg_ucd_emoji_seq.o \
+               src/generated/pg_ucd_emoji_zwj_seq.o \
+               src/generated/pg_ucd_standardized_variants.o \
+               src/generated/pg_ucd_confusables.o \
+               src/generated/pg_ucd_idna_mapping.o \
+               src/generated/pg_ucd_cjk_radicals.o
 
 DATA         = sql/hartonomous--$(EXTVERSION).sql
 

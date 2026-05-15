@@ -69,6 +69,13 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             new CodepointAtomPass(),
             new CodepointPropertyPass(),
             new UnicodeCaseEdgePass(),
+            new UnicodeDecompositionEdgePass(),
+            new UnicodeFullCaseMappingEdgePass(),
+            new UnicodeConfusablePass(),
+            new UnicodeStandardizedVariantPass(),
+            new UnicodeRadicalStrokePass(),
+            new UnicodeNamedSequencePass(),
+            new UnicodeEmojiSequencePass(),
             new UnicodeMaterializationValidationPass(),
         ];
 

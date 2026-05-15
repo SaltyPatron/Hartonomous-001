@@ -109,7 +109,7 @@ BEGIN
         LEFT JOIN substrate.provenance_edge_authority
           ON provenance_edge_authority.provenance_id = edge_rows.provenance_id
          AND provenance_edge_authority.edge_type_id = edge_rows.edge_type_id
-        WHERE attestation.code = 'provenance_authority_corroboration'
+        WHERE attestation.code = 'positive_evidence'
         ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
         RETURNING 1
     ),

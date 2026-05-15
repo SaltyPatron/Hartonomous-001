@@ -62,6 +62,13 @@ public static class SubstrateFunctionNames
     public const string PopulateScripts = "substrate.populate_scripts";
     public const string PopulateScriptsFromExt = "substrate.populate_scripts_from_ext";
     public const string PopulateUnicodeCaseEdgesFromProperties = "substrate.populate_unicode_case_edges_from_properties";
+    public const string PopulateUnicodeDecompositionEdgesFromExt = "substrate.populate_unicode_decomposition_edges_from_ext";
+    public const string PopulateUnicodeFullCaseMappingEdgesFromExt = "substrate.populate_unicode_full_case_mapping_edges_from_ext";
+    public const string PopulateUnicodeConfusablesFromExt = "substrate.populate_unicode_confusables_from_ext";
+    public const string PopulateUnicodeStandardizedVariantsFromExt = "substrate.populate_unicode_standardized_variants_from_ext";
+    public const string PopulateUnicodeRadicalStrokeFromExt = "substrate.populate_unicode_radical_stroke_from_ext";
+    public const string PopulateUnicodeNamedSequencesFromExt = "substrate.populate_unicode_named_sequences_from_ext";
+    public const string PopulateUnicodeEmojiSequencesFromExt = "substrate.populate_unicode_emoji_sequences_from_ext";
     public const string PreviewTargetArch = "substrate.preview_target_arch";
     public const string QueryAttentionComponents = "substrate.query_attention_components";
     public const string QueryEntities = "substrate.query_entities";
@@ -154,6 +161,13 @@ public static class SubstrateFunctionNames
         PopulateScripts,
         PopulateScriptsFromExt,
         PopulateUnicodeCaseEdgesFromProperties,
+        PopulateUnicodeDecompositionEdgesFromExt,
+        PopulateUnicodeFullCaseMappingEdgesFromExt,
+        PopulateUnicodeConfusablesFromExt,
+        PopulateUnicodeStandardizedVariantsFromExt,
+        PopulateUnicodeRadicalStrokeFromExt,
+        PopulateUnicodeNamedSequencesFromExt,
+        PopulateUnicodeEmojiSequencesFromExt,
         PreviewTargetArch,
         QueryAttentionComponents,
         QueryEntities,

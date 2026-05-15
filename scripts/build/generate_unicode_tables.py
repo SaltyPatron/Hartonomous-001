@@ -1667,12 +1667,16 @@ def main():
     if not std_var_path.exists():
         std_var_path = ucd_root / "ucd" / "emoji" / "emoji-variation-sequences.txt"
     print("[gen] parsing StandardizedVariants.txt..."); std_variants = parse_standardized_variants(std_var_path) if std_var_path.exists() else []
-    security_dir = ucd_root.parent / "security"
+    security_dir = ucd_root / "security"
+    if not (security_dir / "confusables.txt").exists():
+        security_dir = ucd_root.parent / "security"  # fallback for layouts where security/ is sibling to ucd/
     if (security_dir / "confusables.txt").exists():
         print("[gen] parsing confusables.txt..."); confusables = parse_confusables(security_dir / "confusables.txt")
     else:
         confusables = []
-    idna_dir = ucd_root.parent / "idna"
+    idna_dir = ucd_root / "idna"
+    if not (idna_dir / "IdnaMappingTable.txt").exists():
+        idna_dir = ucd_root.parent / "idna"  # fallback for layouts where idna/ is sibling to ucd/
     if (idna_dir / "IdnaMappingTable.txt").exists():
         print("[gen] parsing IdnaMappingTable.txt..."); idna_rows = parse_idna_mapping(idna_dir / "IdnaMappingTable.txt")
     else:

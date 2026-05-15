@@ -372,6 +372,13 @@
 -- @include schema/functions/populate_codepoint_property_range_from_ext.sql
 -- @include schema/functions/unicode_edge_hash.sql
 -- @include schema/functions/populate_unicode_case_edges_from_properties.sql
+-- @include schema/functions/populate_unicode_decomposition_edges_from_ext.sql
+-- @include schema/functions/populate_unicode_full_case_mapping_edges_from_ext.sql
+-- @include schema/functions/populate_unicode_confusables_from_ext.sql
+-- @include schema/functions/populate_unicode_standardized_variants_from_ext.sql
+-- @include schema/functions/populate_unicode_radical_stroke_from_ext.sql
+-- @include schema/functions/populate_unicode_named_sequences_from_ext.sql
+-- @include schema/functions/populate_unicode_emoji_sequences_from_ext.sql
 -- @include schema/functions/ucd_materialization_counts.sql
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local

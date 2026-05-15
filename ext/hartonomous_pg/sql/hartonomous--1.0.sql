@@ -1217,6 +1217,47 @@ CREATE FUNCTION substrate.ucd_codepoints_with_gc(gc_id int)
     AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_with_gc'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- ── (24b) Multi-codepoint sequence + cross-codepoint relation SRFs ──────
+-- Backed by pg_ucd_sequences_pg.c against the .py-emitted pre-gen tables.
+-- One row per entry in the embedded blob; substrate.populate_unicode_*_from_ext
+-- functions materialise text_composition entities + LINESTRINGZM physicality +
+-- typed edges under unicode_consortium provenance.
+
+CREATE FUNCTION substrate.ucd_named_sequences()
+    RETURNS TABLE (codepoint_sequence int[], name text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_named_sequences'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_emoji_sequences()
+    RETURNS TABLE (codepoint_sequence int[], name text, props text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_emoji_sequences'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_emoji_zwj_sequences()
+    RETURNS TABLE (codepoint_sequence int[], name text, props text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_emoji_zwj_sequences'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_standardized_variants()
+    RETURNS TABLE (base_codepoint int, variation_selector_codepoint int, description text, scope text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_standardized_variants'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_confusables()
+    RETURNS TABLE (source_codepoints int[], target_codepoints int[], confusable_class text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_confusables'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_idna_mapping()
+    RETURNS TABLE (codepoint_lo int, codepoint_hi int, status text, mapping_codepoints int[])
+    AS 'MODULE_PATHNAME', 'pg_ucd_idna_mapping'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_cjk_radicals()
+    RETURNS TABLE (radical_number text, radical_form_codepoint int, unified_ideograph_codepoint int)
+    AS 'MODULE_PATHNAME', 'pg_ucd_cjk_radicals'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
 -- ── (25) Bulk hash array helpers ─────────────────────────────────────────
 CREATE FUNCTION substrate.cp_hashes(cps int[]) RETURNS bytea[]
     AS 'MODULE_PATHNAME', 'pg_cp_hashes'
@@ -2212,7 +2253,7 @@ BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
             ('substrate.entity_type',           23),
-            ('substrate.physicality_type',      14),
+            ('substrate.physicality_type',      16),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
             ('substrate.provenance',            10),
@@ -2221,7 +2262,7 @@ BEGIN
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
             ('substrate.edge_type',            120),
-            ('substrate.attestation_type',      27)
+            ('substrate.attestation_type',       3)
         ) AS t(table_name, expected)
     LOOP
         EXECUTE format('SELECT count(*) FROM %s', rec.table_name) INTO actual;
@@ -2566,11 +2607,15 @@ ALTER TABLE substrate.physicality_s3
     CHECK (GeometryType(geom) = 'POINT' AND ST_NDims(geom) = 4);
 
 -- ── sql/schema/tables/core/physicality_hilbert.sql ───────────────────────────────────────
+-- Hilbert-index physicality partition: stores a POINTZM whose mantissas
+-- pack a 4-component Hilbert curve index. PostGIS-native CHECK on
+-- GeometryType / ST_NDims (the prior ST_TypeTag4D(geometry4d) signature
+-- was orphaned by the geometry4d → geometry(GeometryZM) migration).
 CREATE TABLE substrate.physicality_hilbert
     PARTITION OF substrate.physicality FOR VALUES IN (2);
 ALTER TABLE substrate.physicality_hilbert
-    ADD CONSTRAINT physicality_hilbert_point4d
-    CHECK (ST_TypeTag4D(geom) = 1);
+    ADD CONSTRAINT physicality_hilbert_pointzm
+    CHECK (GeometryType(geom) = 'POINT' AND ST_NDims(geom) = 4);
 
 -- ── sql/schema/tables/core/physicality_audio.sql ───────────────────────────────────────
 -- Physicality types 3..10: waveform, fft_spectrum, stft_spectrogram,
@@ -7487,7 +7532,7 @@ BEGIN
         LEFT JOIN substrate.provenance_edge_authority
           ON provenance_edge_authority.provenance_id = edge_rows.provenance_id
          AND provenance_edge_authority.edge_type_id = edge_rows.edge_type_id
-        WHERE attestation.code = 'provenance_authority_corroboration'
+        WHERE attestation.code = 'positive_evidence'
         ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
         RETURNING 1
     ),
@@ -7519,6 +7564,1456 @@ BEGIN
     RETURN inserted_count;
 END;
 $$;
+
+-- ── sql/schema/functions/populate_unicode_decomposition_edges_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_decomposition_edges_from_ext()
+--
+-- Emits Unicode canonical / compatibility decomposition edges from the
+-- embedded UCD 17.0.0 catalog.
+--
+-- For each codepoint with a non-empty decomposition_mapping:
+--   1. text_composition entity (Merkle hash = BLAKE3 over ordered child
+--      codepoint hashes — matches Hartonomous.Core.Compute.Common.Merkle.Hash32)
+--   2. entity_classification under unicode_consortium provenance
+--   3. ingestion_trajectory LINESTRINGZM physicality with mantissa-packed
+--      child refs. For singleton decompositions (one target codepoint)
+--      the vertex is doubled so PostGIS LINESTRINGZM's >=2-vertex minimum
+--      is satisfied; readers deduplicate via identical (X, Z) hash prefix.
+--   4. typed edge: has_canonical_decomposition for decomp_type=1,
+--      has_compatibility_decomposition for decomp_type 2..17, role-ordered
+--      (source=codepoint, target=text_composition)
+--   5. canonical_composes_to(text_composition → codepoint) for every
+--      canonical decomposition — the NFC composition direction.
+--      NOTE: this over-emits for codepoints in the Full_Composition_Exclusion
+--      list (~80 codepoints out of ~2000). Full correctness requires
+--      surfacing Full_Composition_Exclusion in the embedded UCD blob; that
+--      filter lands in a follow-up slice.
+--   6. per-arena edge_significance rows under positive_evidence
+--
+-- Pre-requisite: substrate.populate_codepoint_atoms (source codepoint
+-- s3_position physicality used to build edge.geom).
+--
+-- Idempotent via ON CONFLICT. Pure WITH-chain (no TEMP TABLE) — re-entry
+-- safe under multi-call transactions.
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_decomposition_edges_from_ext()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_s3_phys                INT;
+    v_positive_attest        INT;
+    v_canonical_edge_type    INT;
+    v_compat_edge_type       INT;
+    v_composes_edge_type     INT;
+    v_canonical_semantic     FLOAT8;
+    v_compat_semantic        FLOAT8;
+    v_composes_semantic      FLOAT8;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    SELECT id INTO v_s3_phys
+      FROM substrate.physicality_type WHERE code = 's3_position';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+
+    SELECT id, semantic_weight INTO v_canonical_edge_type, v_canonical_semantic
+      FROM substrate.edge_type WHERE code = 'has_canonical_decomposition';
+    SELECT id, semantic_weight INTO v_compat_edge_type, v_compat_semantic
+      FROM substrate.edge_type WHERE code = 'has_compatibility_decomposition';
+    SELECT id, semantic_weight INTO v_composes_edge_type, v_composes_semantic
+      FROM substrate.edge_type WHERE code = 'canonical_composes_to';
+
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    WITH source_decomps AS (
+        SELECT
+            a.cp                    AS source_cp,
+            a.hash                  AS source_hash,
+            a.decomp_type           AS decomp_type,
+            a.decomposition_mapping AS targets
+          FROM substrate.ucd_codepoints() a
+         WHERE a.decomp_type > 0
+           AND a.decomposition_mapping IS NOT NULL
+           AND array_length(a.decomposition_mapping, 1) >= 1
+    ),
+    target_hashes AS (
+        SELECT
+            sd.source_cp,
+            sd.source_hash,
+            sd.decomp_type,
+            ord.ordinality          AS pos,
+            cp_atom.hash            AS target_cp_hash
+          FROM source_decomps sd
+          CROSS JOIN LATERAL unnest(sd.targets) WITH ORDINALITY AS ord(target_cp, ordinality)
+          CROSS JOIN LATERAL substrate.cp_atom(ord.target_cp::int) AS cp_atom
+    ),
+    composition_pre AS (
+        SELECT
+            source_cp,
+            source_hash,
+            decomp_type,
+            count(*)::int AS target_count,
+            blake3_hash(
+                string_agg(target_cp_hash, ''::bytea ORDER BY pos)
+            )::substrate.hash_value AS composition_hash,
+            array_agg(
+                ST_MakePoint(
+                    substrate.bb_pack_hash_lo(substrate.bb_hash_lo(target_cp_hash::substrate.hash_value)),
+                    substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                    substrate.bb_pack_hash_hi(substrate.bb_hash_hi(target_cp_hash::substrate.hash_value)),
+                    substrate.bb_pack_metadata(0)
+                ) ORDER BY pos
+            ) AS vertex_array
+          FROM target_hashes
+         GROUP BY source_cp, source_hash, decomp_type
+    ),
+    composition_rows AS (
+        SELECT
+            source_cp,
+            source_hash,
+            decomp_type,
+            composition_hash,
+            -- PostGIS LINESTRINGZM requires >= 2 vertices. For singleton
+            -- decompositions (target_count=1) duplicate the lone vertex —
+            -- readers deduplicate via identical (X,Z) hash prefix.
+            ST_SetSRID(
+                ST_MakeLine(
+                    CASE WHEN target_count = 1
+                         THEN ARRAY[vertex_array[1], vertex_array[1]]
+                         ELSE vertex_array
+                    END
+                ), 0
+            ) AS composition_geom
+          FROM composition_pre
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash)
+        SELECT DISTINCT composition_hash FROM composition_rows
+        ON CONFLICT (hash) DO NOTHING
+        RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance
+          FROM composition_rows
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
+        RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash)
+               v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM composition_rows
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
+        RETURNING entity_hash
+    ),
+    -- Forward direction: codepoint → text_composition
+    --   decomp_type = 1     → has_canonical_decomposition
+    --   decomp_type 2..17   → has_compatibility_decomposition
+    forward_edge_specs AS (
+        SELECT
+            CASE WHEN cr.decomp_type = 1 THEN v_canonical_edge_type
+                 ELSE v_compat_edge_type
+            END AS edge_type_id,
+            CASE WHEN cr.decomp_type = 1 THEN v_canonical_semantic
+                 ELSE v_compat_semantic
+            END AS semantic_weight,
+            substrate.unicode_edge_hash(
+                CASE WHEN cr.decomp_type = 1 THEN v_canonical_edge_type
+                     ELSE v_compat_edge_type
+                END,
+                ARRAY[cr.source_hash, cr.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            cr.source_hash      AS pos0_hash,
+            cr.composition_hash AS pos1_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(src_phys.geom),
+                substrate.geometry4d_centroid(cr.composition_geom)
+            ]) AS edge_geom
+          FROM composition_rows cr
+          JOIN substrate.physicality src_phys
+            ON src_phys.physicality_type_id = v_s3_phys
+           AND src_phys.entity_hash = cr.source_hash
+           AND src_phys.content_hash = cr.source_hash
+    ),
+    -- Reverse direction: text_composition → codepoint
+    --   decomp_type = 1 only → canonical_composes_to
+    -- Compatibility decompositions do NOT round-trip (UAX #15) — no
+    -- compat_composes_to edge type exists.
+    reverse_edge_specs AS (
+        SELECT
+            v_composes_edge_type AS edge_type_id,
+            v_composes_semantic  AS semantic_weight,
+            substrate.unicode_edge_hash(
+                v_composes_edge_type,
+                ARRAY[cr.composition_hash, cr.source_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            cr.composition_hash AS pos0_hash,
+            cr.source_hash      AS pos1_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(cr.composition_geom),
+                substrate.geometry4d_centroid(src_phys.geom)
+            ]) AS edge_geom
+          FROM composition_rows cr
+          JOIN substrate.physicality src_phys
+            ON src_phys.physicality_type_id = v_s3_phys
+           AND src_phys.entity_hash = cr.source_hash
+           AND src_phys.content_hash = cr.source_hash
+         WHERE cr.decomp_type = 1
+    ),
+    all_edge_specs AS (
+        SELECT edge_type_id, semantic_weight, edge_hash, pos0_hash, pos1_hash, edge_geom
+          FROM forward_edge_specs
+        UNION ALL
+        SELECT edge_type_id, semantic_weight, edge_hash, pos0_hash, pos1_hash, edge_geom
+          FROM reverse_edge_specs
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance
+          FROM all_edge_specs
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.pos0_hash, v_source_role, 0
+          FROM all_edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.pos1_hash, v_target_role, 1
+          FROM all_edge_specs es
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id,
+            mu, sigma, volatility, games
+        )
+        SELECT
+            ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+            COALESCE(pea.initial_mu,
+                     v_provenance_mu * es.semantic_weight * v_provenance_decay),
+            COALESCE(pea.initial_sigma, v_provenance_sigma),
+            0.06, 0
+          FROM all_edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance
+           AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    counts AS (
+        SELECT (SELECT count(*) FROM insert_edges) AS edge_count
+    )
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_decomposition_edges_from_ext() IS
+    'Materialise text_composition entities + ingestion_trajectory LINESTRINGZM physicality + has_canonical_decomposition + has_compatibility_decomposition + canonical_composes_to edges + per-arena positive_evidence significance from the embedded UCD 17.0.0 catalog. Singleton decompositions get doubled-vertex LINESTRINGZM (PostGIS minimum). canonical_composes_to over-emits for Full_Composition_Exclusion codepoints (filter pending separate slice). Pre-req: populate_codepoint_atoms.';
+
+-- ── sql/schema/functions/populate_unicode_full_case_mapping_edges_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_full_case_mapping_edges_from_ext()
+--
+-- Emits has_full_case_mapping edges for codepoints whose case fold expands
+-- to multiple target codepoints (Latin ß → 'ss', Greek final sigma forms,
+-- Turkish locale dotted-I, etc.). Mirrors the decomposition-edges pattern:
+-- materialise a text_composition entity for the multi-CP fold target with
+-- LINESTRINGZM ingestion_trajectory physicality + the typed edge from
+-- source codepoint to that composition + per-arena positive_evidence
+-- significance.
+--
+-- Singleton case folds (length 1) are covered by populate_unicode_case_edges
+-- via the case_folds_to(codepoint, codepoint) edge type.
+--
+-- Note (P3 follow-up): this slice handles full_case_fold only.
+-- SpecialCasing.txt also defines full_uppercase / full_lowercase /
+-- full_titlecase expansions. The substrate.codepoint_atom composite type
+-- does not currently expose those arrays; once the embedded UCD blob
+-- surfaces full_uc / full_lc / full_tc, this function extends with three
+-- more passes over the same pattern.
+--
+-- Pre-requisite: populate_codepoint_atoms. Idempotent via ON CONFLICT.
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_full_case_mapping_edges_from_ext()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_s3_phys                INT;
+    v_positive_attest        INT;
+    v_edge_type_id           INT;
+    v_edge_semantic_weight   FLOAT8;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    SELECT id INTO v_s3_phys
+      FROM substrate.physicality_type WHERE code = 's3_position';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+    SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
+      FROM substrate.edge_type WHERE code = 'has_full_case_mapping';
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    WITH source_folds AS (
+        SELECT
+            a.cp             AS source_cp,
+            a.hash           AS source_hash,
+            a.full_case_fold AS targets
+          FROM substrate.ucd_codepoints() a
+         WHERE a.full_case_fold IS NOT NULL
+           AND array_length(a.full_case_fold, 1) >= 2
+    ),
+    target_hashes AS (
+        SELECT
+            sf.source_cp,
+            sf.source_hash,
+            ord.ordinality AS pos,
+            cp_atom.hash   AS target_cp_hash
+          FROM source_folds sf
+          CROSS JOIN LATERAL unnest(sf.targets) WITH ORDINALITY AS ord(target_cp, ordinality)
+          CROSS JOIN LATERAL substrate.cp_atom(ord.target_cp::int) AS cp_atom
+    ),
+    composition_rows AS (
+        SELECT
+            source_cp,
+            source_hash,
+            blake3_hash(
+                string_agg(target_cp_hash, ''::bytea ORDER BY pos)
+            )::substrate.hash_value AS composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(array_agg(
+                    ST_MakePoint(
+                        substrate.bb_pack_hash_lo(substrate.bb_hash_lo(target_cp_hash::substrate.hash_value)),
+                        substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                        substrate.bb_pack_hash_hi(substrate.bb_hash_hi(target_cp_hash::substrate.hash_value)),
+                        substrate.bb_pack_metadata(0)
+                    ) ORDER BY pos
+                )),
+                0
+            ) AS composition_geom
+          FROM target_hashes
+         GROUP BY source_cp, source_hash
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash)
+        SELECT DISTINCT composition_hash FROM composition_rows
+        ON CONFLICT (hash) DO NOTHING
+        RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance
+          FROM composition_rows
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
+        RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash)
+               v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM composition_rows
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
+        RETURNING entity_hash
+    ),
+    edge_specs AS (
+        SELECT
+            v_edge_type_id AS edge_type_id,
+            substrate.unicode_edge_hash(
+                v_edge_type_id,
+                ARRAY[cr.source_hash, cr.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            cr.source_hash,
+            cr.composition_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(src_phys.geom),
+                substrate.geometry4d_centroid(cr.composition_geom)
+            ]) AS edge_geom
+          FROM composition_rows cr
+          JOIN substrate.physicality src_phys
+            ON src_phys.physicality_type_id = v_s3_phys
+           AND src_phys.entity_hash = cr.source_hash
+           AND src_phys.content_hash = cr.source_hash
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance
+          FROM edge_specs
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.source_hash, v_source_role, 0 FROM edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.composition_hash, v_target_role, 1 FROM edge_specs es
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id,
+            mu, sigma, volatility, games
+        )
+        SELECT
+            ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+            COALESCE(pea.initial_mu,
+                     v_provenance_mu * v_edge_semantic_weight * v_provenance_decay),
+            COALESCE(pea.initial_sigma, v_provenance_sigma),
+            0.06, 0
+          FROM edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance
+           AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    counts AS (
+        SELECT (SELECT count(*) FROM insert_edges) AS edge_count
+    )
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_full_case_mapping_edges_from_ext() IS
+    'Materialise text_composition + ingestion_trajectory physicality + has_full_case_mapping edges + per-arena positive_evidence significance for codepoints whose case fold expands to >= 2 targets. Reads full_case_fold INT[] from substrate.ucd_codepoints. Singleton case folds use case_folds_to via populate_unicode_case_edges. Pre-requisite: populate_codepoint_atoms.';
+
+-- ── sql/schema/functions/populate_unicode_confusables_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_confusables_from_ext()
+--
+-- UTS #39 §4 confusables — pairs of codepoint sequences that look visually
+-- identical or near-identical. Source: confusables.txt as parsed into the
+-- embedded pre-gen pg_ucd_confusables blob.
+--
+-- For each row (source_cps[], target_cps[], cls):
+--   1. text_composition entity for source_cps (Merkle hash over ordered
+--      codepoint hashes), classification + ingestion_trajectory
+--      LINESTRINGZM physicality (doubled-vertex for singletons).
+--   2. text_composition entity for target_cps with the same shape.
+--   3. confusable_with(source_composition, target_composition) edge with
+--      per-arena positive_evidence significance under unicode_consortium
+--      provenance.
+--
+-- Idempotent via ON CONFLICT. Pre-req: populate_codepoint_atoms (codepoint
+-- entities + S3 physicality must exist for child hash lookup).
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_confusables_from_ext()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_positive_attest        INT;
+    v_edge_type_id           INT;
+    v_edge_semantic_weight   FLOAT8;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+    SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
+      FROM substrate.edge_type WHERE code = 'confusable_with';
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    WITH confusable_rows AS (
+        SELECT
+            row_number() OVER () AS rn,
+            source_codepoints,
+            target_codepoints
+          FROM substrate.ucd_confusables()
+    ),
+    -- Expand source-side codepoints + lookup hashes
+    src_child_lookups AS (
+        SELECT
+            cr.rn,
+            ord.ordinality AS pos,
+            cp_atom.hash   AS child_hash
+          FROM confusable_rows cr
+          CROSS JOIN LATERAL unnest(cr.source_codepoints) WITH ORDINALITY AS ord(cp, ordinality)
+          CROSS JOIN LATERAL substrate.cp_atom(ord.cp::int) AS cp_atom
+    ),
+    -- Aggregate to per-row source composition
+    src_compositions AS (
+        SELECT
+            rn,
+            count(*)::int AS child_count,
+            blake3_hash(
+                string_agg(child_hash, ''::bytea ORDER BY pos)
+            )::substrate.hash_value AS composition_hash,
+            array_agg(
+                ST_MakePoint(
+                    substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                    substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_metadata(0)
+                ) ORDER BY pos
+            ) AS vertex_array
+          FROM src_child_lookups
+         GROUP BY rn
+    ),
+    -- Same for target side
+    tgt_child_lookups AS (
+        SELECT
+            cr.rn,
+            ord.ordinality AS pos,
+            cp_atom.hash   AS child_hash
+          FROM confusable_rows cr
+          CROSS JOIN LATERAL unnest(cr.target_codepoints) WITH ORDINALITY AS ord(cp, ordinality)
+          CROSS JOIN LATERAL substrate.cp_atom(ord.cp::int) AS cp_atom
+    ),
+    tgt_compositions AS (
+        SELECT
+            rn,
+            count(*)::int AS child_count,
+            blake3_hash(
+                string_agg(child_hash, ''::bytea ORDER BY pos)
+            )::substrate.hash_value AS composition_hash,
+            array_agg(
+                ST_MakePoint(
+                    substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                    substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_metadata(0)
+                ) ORDER BY pos
+            ) AS vertex_array
+          FROM tgt_child_lookups
+         GROUP BY rn
+    ),
+    -- Build composition geom (doubled vertex for singletons)
+    src_built AS (
+        SELECT
+            rn,
+            composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(
+                    CASE WHEN child_count = 1
+                         THEN ARRAY[vertex_array[1], vertex_array[1]]
+                         ELSE vertex_array
+                    END
+                ), 0
+            ) AS composition_geom
+          FROM src_compositions
+    ),
+    tgt_built AS (
+        SELECT
+            rn,
+            composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(
+                    CASE WHEN child_count = 1
+                         THEN ARRAY[vertex_array[1], vertex_array[1]]
+                         ELSE vertex_array
+                    END
+                ), 0
+            ) AS composition_geom
+          FROM tgt_compositions
+    ),
+    -- Unified set of composition rows for entity / classification / physicality emission
+    all_compositions AS (
+        SELECT composition_hash, composition_geom FROM src_built
+        UNION
+        SELECT composition_hash, composition_geom FROM tgt_built
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash)
+        SELECT DISTINCT composition_hash FROM all_compositions
+        ON CONFLICT (hash) DO NOTHING
+        RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance
+          FROM all_compositions
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
+        RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash)
+               v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM all_compositions
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
+        RETURNING entity_hash
+    ),
+    -- Build edge specs joining src and tgt compositions per row
+    edge_specs AS (
+        SELECT
+            v_edge_type_id AS edge_type_id,
+            substrate.unicode_edge_hash(
+                v_edge_type_id,
+                ARRAY[s.composition_hash, t.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            s.composition_hash AS source_hash,
+            t.composition_hash AS target_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(s.composition_geom),
+                substrate.geometry4d_centroid(t.composition_geom)
+            ]) AS edge_geom
+          FROM src_built s
+          JOIN tgt_built t ON t.rn = s.rn
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance
+          FROM edge_specs
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.source_hash, v_source_role, 0 FROM edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.target_hash, v_target_role, 1 FROM edge_specs es
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id,
+            mu, sigma, volatility, games
+        )
+        SELECT
+            ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+            COALESCE(pea.initial_mu,
+                     v_provenance_mu * v_edge_semantic_weight * v_provenance_decay),
+            COALESCE(pea.initial_sigma, v_provenance_sigma),
+            0.06, 0
+          FROM edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance
+           AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    counts AS (
+        SELECT (SELECT count(*) FROM insert_edges) AS edge_count
+    )
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_confusables_from_ext() IS
+    'Materialise text_composition entities for both sides of each UTS #39 confusable pair + ingestion_trajectory LINESTRINGZM physicality + confusable_with edges + per-arena positive_evidence significance. Doubled-vertex LINESTRINGZM for singleton codepoint sequences. Pre-req: populate_codepoint_atoms.';
+
+-- ── sql/schema/functions/populate_unicode_standardized_variants_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_standardized_variants_from_ext()
+--
+-- UCD StandardizedVariants.txt + emoji-variation-sequences.txt.
+-- Each row: (base_codepoint, variation_selector_codepoint, description, scope).
+--
+-- Materialises:
+--   1. text_composition entity for the 2-element [base, vs] codepoint
+--      sequence (Merkle hash over ordered codepoint hashes)
+--   2. ingestion_trajectory LINESTRINGZM physicality (mantissa-packed)
+--   3. entity_classification under unicode_consortium
+--   4. has_standardized_variant(base_codepoint → variant_composition) edge
+--      with per-arena positive_evidence significance
+--
+-- Pre-req: populate_codepoint_atoms.
+-- Idempotent via ON CONFLICT.
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_standardized_variants_from_ext()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_s3_phys                INT;
+    v_positive_attest        INT;
+    v_edge_type_id           INT;
+    v_edge_semantic_weight   FLOAT8;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    SELECT id INTO v_s3_phys
+      FROM substrate.physicality_type WHERE code = 's3_position';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+    SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
+      FROM substrate.edge_type WHERE code = 'has_standardized_variant';
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    WITH variant_rows AS (
+        SELECT
+            base_codepoint,
+            variation_selector_codepoint,
+            base.hash AS base_hash,
+            vs.hash   AS vs_hash
+          FROM substrate.ucd_standardized_variants()
+          CROSS JOIN LATERAL substrate.cp_atom(base_codepoint) AS base
+          CROSS JOIN LATERAL substrate.cp_atom(variation_selector_codepoint) AS vs
+    ),
+    composition_rows AS (
+        SELECT
+            base_codepoint,
+            base_hash,
+            blake3_hash(base_hash::bytea || vs_hash::bytea)::substrate.hash_value AS composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(ARRAY[
+                    ST_MakePoint(
+                        substrate.bb_pack_hash_lo(substrate.bb_hash_lo(base_hash::substrate.hash_value)),
+                        substrate.bb_pack_ordinal_rle(0, 1),
+                        substrate.bb_pack_hash_hi(substrate.bb_hash_hi(base_hash::substrate.hash_value)),
+                        substrate.bb_pack_metadata(0)
+                    ),
+                    ST_MakePoint(
+                        substrate.bb_pack_hash_lo(substrate.bb_hash_lo(vs_hash::substrate.hash_value)),
+                        substrate.bb_pack_ordinal_rle(1, 1),
+                        substrate.bb_pack_hash_hi(substrate.bb_hash_hi(vs_hash::substrate.hash_value)),
+                        substrate.bb_pack_metadata(0)
+                    )
+                ]), 0
+            ) AS composition_geom
+          FROM variant_rows
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash)
+        SELECT DISTINCT composition_hash FROM composition_rows
+        ON CONFLICT (hash) DO NOTHING
+        RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance
+          FROM composition_rows
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
+        RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash)
+               v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM composition_rows
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
+        RETURNING entity_hash
+    ),
+    edge_specs AS (
+        SELECT
+            v_edge_type_id AS edge_type_id,
+            substrate.unicode_edge_hash(
+                v_edge_type_id,
+                ARRAY[cr.base_hash, cr.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            cr.base_hash,
+            cr.composition_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(src_phys.geom),
+                substrate.geometry4d_centroid(cr.composition_geom)
+            ]) AS edge_geom
+          FROM composition_rows cr
+          JOIN substrate.physicality src_phys
+            ON src_phys.physicality_type_id = v_s3_phys
+           AND src_phys.entity_hash = cr.base_hash
+           AND src_phys.content_hash = cr.base_hash
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance
+          FROM edge_specs
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.base_hash, v_source_role, 0 FROM edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.composition_hash, v_target_role, 1 FROM edge_specs es
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id,
+            mu, sigma, volatility, games
+        )
+        SELECT
+            ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+            COALESCE(pea.initial_mu,
+                     v_provenance_mu * v_edge_semantic_weight * v_provenance_decay),
+            COALESCE(pea.initial_sigma, v_provenance_sigma),
+            0.06, 0
+          FROM edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance
+           AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    counts AS (
+        SELECT (SELECT count(*) FROM insert_edges) AS edge_count
+    )
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_standardized_variants_from_ext() IS
+    'Materialise 2-element [base, variation_selector] text_composition entities + ingestion_trajectory physicality + has_standardized_variant edges + per-arena positive_evidence significance. Pre-req: populate_codepoint_atoms.';
+
+-- ── sql/schema/functions/populate_unicode_radical_stroke_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_radical_stroke_from_ext()
+--
+-- UCD CJKRadicals.txt — Kangxi radical numbering for CJK unified
+-- ideographs. Each row: (radical_number_text, radical_form_codepoint,
+-- unified_ideograph_codepoint).
+--
+-- Emits:
+--   1. text_composition entity for the radical_number text (ASCII bytes
+--      → codepoint hashes; Merkle hash over ordered codepoint hashes)
+--   2. ingestion_trajectory LINESTRINGZM physicality (doubled-vertex for
+--      single-character radical numbers)
+--   3. has_radical_stroke(unified_ideograph_codepoint → number_composition) edge
+--      with per-arena positive_evidence significance
+--
+-- The radical_form_codepoint (in the CJK Radicals block U+2F00..U+2FDF)
+-- is not directly emitted as an edge in this slice — a future
+-- has_radical_form(unified, radical_block) edge can layer on the same
+-- pre-gen data.
+--
+-- Pre-req: populate_codepoint_atoms.
+-- Idempotent via ON CONFLICT.
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_radical_stroke_from_ext()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_s3_phys                INT;
+    v_positive_attest        INT;
+    v_edge_type_id           INT;
+    v_edge_semantic_weight   FLOAT8;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    SELECT id INTO v_s3_phys
+      FROM substrate.physicality_type WHERE code = 's3_position';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+    SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
+      FROM substrate.edge_type WHERE code = 'has_radical_stroke';
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    WITH radical_rows AS (
+        SELECT
+            row_number() OVER () AS rn,
+            radical_number,
+            unified_ideograph_codepoint,
+            unified.hash AS unified_hash
+          FROM substrate.ucd_cjk_radicals()
+          CROSS JOIN LATERAL substrate.cp_atom(unified_ideograph_codepoint) AS unified
+    ),
+    -- Expand the ASCII radical_number text into per-character codepoint
+    -- lookups. octet_length is fine here because radical numbers are ASCII.
+    number_chars AS (
+        SELECT
+            rr.rn,
+            rr.unified_hash,
+            byte_idx + 1 AS pos,
+            cp_atom.hash AS child_hash
+          FROM radical_rows rr
+          CROSS JOIN LATERAL generate_series(0, octet_length(rr.radical_number) - 1) AS byte_idx
+          CROSS JOIN LATERAL substrate.cp_atom(get_byte(convert_to(rr.radical_number, 'UTF8'), byte_idx)::int) AS cp_atom
+    ),
+    composition_pre AS (
+        SELECT
+            rn,
+            unified_hash,
+            count(*)::int AS child_count,
+            blake3_hash(
+                string_agg(child_hash, ''::bytea ORDER BY pos)
+            )::substrate.hash_value AS composition_hash,
+            array_agg(
+                ST_MakePoint(
+                    substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                    substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_metadata(0)
+                ) ORDER BY pos
+            ) AS vertex_array
+          FROM number_chars
+         GROUP BY rn, unified_hash
+    ),
+    composition_rows AS (
+        SELECT
+            rn,
+            unified_hash,
+            composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(
+                    CASE WHEN child_count = 1
+                         THEN ARRAY[vertex_array[1], vertex_array[1]]
+                         ELSE vertex_array
+                    END
+                ), 0
+            ) AS composition_geom
+          FROM composition_pre
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash)
+        SELECT DISTINCT composition_hash FROM composition_rows
+        ON CONFLICT (hash) DO NOTHING
+        RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance
+          FROM composition_rows
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
+        RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash)
+               v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM composition_rows
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
+        RETURNING entity_hash
+    ),
+    edge_specs AS (
+        SELECT
+            v_edge_type_id AS edge_type_id,
+            substrate.unicode_edge_hash(
+                v_edge_type_id,
+                ARRAY[cr.unified_hash, cr.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            cr.unified_hash,
+            cr.composition_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(src_phys.geom),
+                substrate.geometry4d_centroid(cr.composition_geom)
+            ]) AS edge_geom
+          FROM composition_rows cr
+          JOIN substrate.physicality src_phys
+            ON src_phys.physicality_type_id = v_s3_phys
+           AND src_phys.entity_hash = cr.unified_hash
+           AND src_phys.content_hash = cr.unified_hash
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance
+          FROM edge_specs
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.unified_hash, v_source_role, 0 FROM edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.composition_hash, v_target_role, 1 FROM edge_specs es
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id,
+            mu, sigma, volatility, games
+        )
+        SELECT
+            ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+            COALESCE(pea.initial_mu,
+                     v_provenance_mu * v_edge_semantic_weight * v_provenance_decay),
+            COALESCE(pea.initial_sigma, v_provenance_sigma),
+            0.06, 0
+          FROM edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance
+           AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    counts AS (
+        SELECT (SELECT count(*) FROM insert_edges) AS edge_count
+    )
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_radical_stroke_from_ext() IS
+    'Materialise text_composition entities for Kangxi radical numbers (ASCII text → codepoint hash sequences) + ingestion_trajectory physicality + has_radical_stroke edges from CJK unified ideographs to their radical number compositions, with per-arena positive_evidence significance. Pre-req: populate_codepoint_atoms.';
+
+-- ── sql/schema/functions/populate_unicode_named_sequences_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_named_sequences_from_ext()
+--
+-- UCD NamedSequences.txt — Consortium-blessed multi-codepoint sequences
+-- with canonical names. Each row: (codepoint_sequence int[], name text).
+--
+-- Materialises:
+--   1. text_composition entity for the codepoint sequence (Merkle hash
+--      over ordered codepoint hashes; mantissa-packed LINESTRINGZM
+--      physicality).
+--   2. text_composition entity for the name text (ASCII bytes →
+--      codepoint hashes; same shape).
+--   3. has_named_sequence(name_composition → codepoint_composition) edge
+--      with per-arena positive_evidence significance.
+--
+-- Pre-req: populate_codepoint_atoms.
+-- Idempotent via ON CONFLICT.
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_named_sequences_from_ext()
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_positive_attest        INT;
+    v_edge_type_id           INT;
+    v_edge_semantic_weight   FLOAT8;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+    SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
+      FROM substrate.edge_type WHERE code = 'has_named_sequence';
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    WITH src_rows AS (
+        SELECT row_number() OVER () AS rn, codepoint_sequence, name
+          FROM substrate.ucd_named_sequences()
+    ),
+    -- codepoint-sequence composition (the actual sequence the entry names)
+    cp_child_lookups AS (
+        SELECT
+            sr.rn,
+            ord.ordinality AS pos,
+            cp_atom.hash   AS child_hash
+          FROM src_rows sr
+          CROSS JOIN LATERAL unnest(sr.codepoint_sequence) WITH ORDINALITY AS ord(cp, ordinality)
+          CROSS JOIN LATERAL substrate.cp_atom(ord.cp::int) AS cp_atom
+    ),
+    cp_compositions AS (
+        SELECT
+            rn,
+            count(*)::int AS child_count,
+            blake3_hash(string_agg(child_hash, ''::bytea ORDER BY pos))::substrate.hash_value AS composition_hash,
+            array_agg(
+                ST_MakePoint(
+                    substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                    substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_metadata(0)
+                ) ORDER BY pos
+            ) AS vertex_array
+          FROM cp_child_lookups
+         GROUP BY rn
+    ),
+    cp_built AS (
+        SELECT
+            rn,
+            composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(
+                    CASE WHEN child_count = 1
+                         THEN ARRAY[vertex_array[1], vertex_array[1]]
+                         ELSE vertex_array
+                    END
+                ), 0
+            ) AS composition_geom
+          FROM cp_compositions
+    ),
+    -- name composition (ASCII bytes → codepoint hashes)
+    name_chars AS (
+        SELECT
+            sr.rn,
+            byte_idx + 1 AS pos,
+            cp_atom.hash AS child_hash
+          FROM src_rows sr
+          CROSS JOIN LATERAL generate_series(0, octet_length(sr.name) - 1) AS byte_idx
+          CROSS JOIN LATERAL substrate.cp_atom(get_byte(convert_to(sr.name, 'UTF8'), byte_idx)::int) AS cp_atom
+    ),
+    name_compositions AS (
+        SELECT
+            rn,
+            count(*)::int AS child_count,
+            blake3_hash(string_agg(child_hash, ''::bytea ORDER BY pos))::substrate.hash_value AS composition_hash,
+            array_agg(
+                ST_MakePoint(
+                    substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                    substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                    substrate.bb_pack_metadata(0)
+                ) ORDER BY pos
+            ) AS vertex_array
+          FROM name_chars
+         GROUP BY rn
+    ),
+    name_built AS (
+        SELECT
+            rn,
+            composition_hash,
+            ST_SetSRID(
+                ST_MakeLine(
+                    CASE WHEN child_count = 1
+                         THEN ARRAY[vertex_array[1], vertex_array[1]]
+                         ELSE vertex_array
+                    END
+                ), 0
+            ) AS composition_geom
+          FROM name_compositions
+    ),
+    all_compositions AS (
+        SELECT composition_hash, composition_geom FROM cp_built
+        UNION
+        SELECT composition_hash, composition_geom FROM name_built
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash)
+        SELECT DISTINCT composition_hash FROM all_compositions
+        ON CONFLICT (hash) DO NOTHING
+        RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance
+          FROM all_compositions
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING
+        RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash)
+               v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM all_compositions
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING
+        RETURNING entity_hash
+    ),
+    edge_specs AS (
+        SELECT
+            v_edge_type_id AS edge_type_id,
+            substrate.unicode_edge_hash(
+                v_edge_type_id,
+                ARRAY[n.composition_hash, c.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            n.composition_hash AS name_hash,
+            c.composition_hash AS cp_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(n.composition_geom),
+                substrate.geometry4d_centroid(c.composition_geom)
+            ]) AS edge_geom
+          FROM name_built n
+          JOIN cp_built c ON c.rn = n.rn
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance
+          FROM edge_specs
+        ON CONFLICT DO NOTHING
+        RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.name_hash, v_source_role, 0 FROM edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.cp_hash, v_target_role, 1 FROM edge_specs es
+        ON CONFLICT DO NOTHING
+        RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id,
+            mu, sigma, volatility, games
+        )
+        SELECT
+            ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+            COALESCE(pea.initial_mu,
+                     v_provenance_mu * v_edge_semantic_weight * v_provenance_decay),
+            COALESCE(pea.initial_sigma, v_provenance_sigma),
+            0.06, 0
+          FROM edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance
+           AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING
+        RETURNING 1
+    ),
+    counts AS (
+        SELECT (SELECT count(*) FROM insert_edges) AS edge_count
+    )
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_named_sequences_from_ext() IS
+    'Materialise text_composition entities for both the codepoint sequence AND its canonical name (ASCII text) + ingestion_trajectory physicality + has_named_sequence(name → codepoint_sequence) edges with per-arena positive_evidence significance. Pre-req: populate_codepoint_atoms.';
+
+-- ── sql/schema/functions/populate_unicode_emoji_sequences_from_ext.sql ───────────────────────────────────────
+-- substrate.populate_unicode_emoji_sequences_from_ext(p_use_zwj BOOLEAN)
+--
+-- RGI emoji sequences from emoji-sequences.txt or emoji-zwj-sequences.txt.
+-- Each row: (codepoint_sequence int[], name text, props text).
+--
+-- Materialises:
+--   1. text_composition entity for the codepoint sequence
+--   2. text_composition entity for the name (ASCII)
+--   3. ingestion_trajectory LINESTRINGZM physicality for both
+--   4. has_emoji_sequence (or has_emoji_zwj_sequence when p_use_zwj=true)
+--      edge from name composition → codepoint sequence composition
+--   5. per-arena positive_evidence significance
+--
+-- The `props` field (Basic_Emoji / RGI_Emoji_Modifier_Sequence / ...) is
+-- not currently emitted as a separate edge; it can layer on later via a
+-- has_emoji_property edge_type.
+--
+-- Pre-req: populate_codepoint_atoms.
+CREATE OR REPLACE FUNCTION substrate.populate_unicode_emoji_sequences_from_ext(p_use_zwj BOOLEAN DEFAULT FALSE)
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_text_composition_etype INT;
+    v_unicode_provenance     INT;
+    v_provenance_mu          FLOAT8;
+    v_provenance_sigma       FLOAT8;
+    v_provenance_decay       FLOAT8;
+    v_ingest_traj_phys       INT;
+    v_positive_attest        INT;
+    v_edge_type_id           INT;
+    v_edge_semantic_weight   FLOAT8;
+    v_edge_code              TEXT;
+    v_source_role            INT;
+    v_target_role            INT;
+    v_edges_inserted         BIGINT := 0;
+BEGIN
+    SELECT id INTO v_text_composition_etype
+      FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id, initial_mu, initial_sigma, derivation_decay
+      INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
+      FROM substrate.provenance WHERE code = 'unicode_consortium';
+    SELECT id INTO v_ingest_traj_phys
+      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+    v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
+    v_edge_code := CASE WHEN p_use_zwj THEN 'has_emoji_zwj_sequence' ELSE 'has_emoji_sequence' END;
+    SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
+      FROM substrate.edge_type WHERE code = v_edge_code;
+    SELECT id INTO v_source_role FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role FROM substrate.edge_role WHERE code = 'target';
+
+    -- Use a CTE that dispatches by p_use_zwj rather than two separate
+    -- WITH chains.
+    WITH src_rows AS (
+        SELECT row_number() OVER () AS rn, codepoint_sequence, name
+          FROM (
+            SELECT codepoint_sequence, name FROM substrate.ucd_emoji_sequences()
+             WHERE NOT p_use_zwj
+            UNION ALL
+            SELECT codepoint_sequence, name FROM substrate.ucd_emoji_zwj_sequences()
+             WHERE p_use_zwj
+          ) src
+    ),
+    cp_child_lookups AS (
+        SELECT sr.rn, ord.ordinality AS pos, cp_atom.hash AS child_hash
+          FROM src_rows sr
+          CROSS JOIN LATERAL unnest(sr.codepoint_sequence) WITH ORDINALITY AS ord(cp, ordinality)
+          CROSS JOIN LATERAL substrate.cp_atom(ord.cp::int) AS cp_atom
+    ),
+    cp_compositions AS (
+        SELECT rn, count(*)::int AS child_count,
+               blake3_hash(string_agg(child_hash, ''::bytea ORDER BY pos))::substrate.hash_value AS composition_hash,
+               array_agg(
+                   ST_MakePoint(
+                       substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                       substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                       substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                       substrate.bb_pack_metadata(0)
+                   ) ORDER BY pos
+               ) AS vertex_array
+          FROM cp_child_lookups GROUP BY rn
+    ),
+    cp_built AS (
+        SELECT rn, composition_hash,
+               ST_SetSRID(ST_MakeLine(
+                   CASE WHEN child_count = 1 THEN ARRAY[vertex_array[1], vertex_array[1]] ELSE vertex_array END
+               ), 0) AS composition_geom
+          FROM cp_compositions
+    ),
+    name_chars AS (
+        SELECT sr.rn, byte_idx + 1 AS pos, cp_atom.hash AS child_hash
+          FROM src_rows sr
+          CROSS JOIN LATERAL generate_series(0, octet_length(sr.name) - 1) AS byte_idx
+          CROSS JOIN LATERAL substrate.cp_atom(get_byte(convert_to(sr.name, 'UTF8'), byte_idx)::int) AS cp_atom
+    ),
+    name_compositions AS (
+        SELECT rn, count(*)::int AS child_count,
+               blake3_hash(string_agg(child_hash, ''::bytea ORDER BY pos))::substrate.hash_value AS composition_hash,
+               array_agg(
+                   ST_MakePoint(
+                       substrate.bb_pack_hash_lo(substrate.bb_hash_lo(child_hash::substrate.hash_value)),
+                       substrate.bb_pack_ordinal_rle((pos - 1)::int, 1),
+                       substrate.bb_pack_hash_hi(substrate.bb_hash_hi(child_hash::substrate.hash_value)),
+                       substrate.bb_pack_metadata(0)
+                   ) ORDER BY pos
+               ) AS vertex_array
+          FROM name_chars GROUP BY rn
+    ),
+    name_built AS (
+        SELECT rn, composition_hash,
+               ST_SetSRID(ST_MakeLine(
+                   CASE WHEN child_count = 1 THEN ARRAY[vertex_array[1], vertex_array[1]] ELSE vertex_array END
+               ), 0) AS composition_geom
+          FROM name_compositions
+    ),
+    all_compositions AS (
+        SELECT composition_hash, composition_geom FROM cp_built
+        UNION
+        SELECT composition_hash, composition_geom FROM name_built
+    ),
+    insert_entities AS (
+        INSERT INTO substrate.entity (hash) SELECT DISTINCT composition_hash FROM all_compositions
+        ON CONFLICT (hash) DO NOTHING RETURNING hash
+    ),
+    insert_classes AS (
+        INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
+        SELECT DISTINCT composition_hash, v_text_composition_etype, v_unicode_provenance FROM all_compositions
+        ON CONFLICT (entity_hash, entity_type_id, provenance_id) DO NOTHING RETURNING 1
+    ),
+    insert_phys AS (
+        INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom)
+        SELECT DISTINCT ON (composition_hash) v_ingest_traj_phys, composition_hash, composition_hash, composition_geom
+          FROM all_compositions
+        ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING RETURNING entity_hash
+    ),
+    edge_specs AS (
+        SELECT
+            v_edge_type_id AS edge_type_id,
+            substrate.unicode_edge_hash(
+                v_edge_type_id, ARRAY[n.composition_hash, c.composition_hash]::substrate.hash_value[]
+            ) AS edge_hash,
+            n.composition_hash AS name_hash,
+            c.composition_hash AS cp_hash,
+            ST_MakeLine4D(ARRAY[
+                substrate.geometry4d_centroid(n.composition_geom),
+                substrate.geometry4d_centroid(c.composition_geom)
+            ]) AS edge_geom
+          FROM name_built n JOIN cp_built c ON c.rn = n.rn
+    ),
+    insert_edges AS (
+        INSERT INTO substrate.edge (edge_type_id, hash, geom, provenance_id)
+        SELECT edge_type_id, edge_hash, edge_geom, v_unicode_provenance FROM edge_specs
+        ON CONFLICT DO NOTHING RETURNING edge_type_id, hash
+    ),
+    insert_members AS (
+        INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+        SELECT es.edge_type_id, es.edge_hash, es.name_hash, v_source_role, 0 FROM edge_specs es
+        UNION ALL
+        SELECT es.edge_type_id, es.edge_hash, es.cp_hash, v_target_role, 1 FROM edge_specs es
+        ON CONFLICT DO NOTHING RETURNING 1
+    ),
+    insert_sig AS (
+        INSERT INTO substrate.edge_significance (
+            context_type_id, edge_type_id, edge_hash, attestation_type_id, mu, sigma, volatility, games
+        )
+        SELECT ctx.id, es.edge_type_id, es.edge_hash, v_positive_attest,
+               COALESCE(pea.initial_mu, v_provenance_mu * v_edge_semantic_weight * v_provenance_decay),
+               COALESCE(pea.initial_sigma, v_provenance_sigma),
+               0.06, 0
+          FROM edge_specs es
+          CROSS JOIN substrate.significance_context ctx
+          LEFT JOIN substrate.provenance_edge_authority pea
+            ON pea.provenance_id = v_unicode_provenance AND pea.edge_type_id = es.edge_type_id
+        ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO NOTHING RETURNING 1
+    ),
+    counts AS (SELECT (SELECT count(*) FROM insert_edges) AS edge_count)
+    SELECT edge_count INTO v_edges_inserted FROM counts;
+    RETURN v_edges_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_unicode_emoji_sequences_from_ext(BOOLEAN) IS
+    'Materialise text_composition entities for emoji codepoint sequences + their names + ingestion_trajectory physicality + has_emoji_sequence (or has_emoji_zwj_sequence when p_use_zwj=true) edges + per-arena positive_evidence significance. Pre-req: populate_codepoint_atoms.';
 
 -- ── sql/schema/functions/ucd_materialization_counts.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.ucd_materialization_counts()
@@ -7572,7 +9067,7 @@ AS $$
               FROM substrate.edge_significance es
               JOIN substrate.attestation_type at ON at.id = es.attestation_type_id
              WHERE es.edge_type_id IN (SELECT id FROM case_edge_types)
-               AND at.code = 'provenance_authority_corroboration'
+               AND at.code = 'positive_evidence'
         ) AS simple_case_edge_significance;
 $$;
 

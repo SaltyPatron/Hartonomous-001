@@ -70,6 +70,80 @@ internal static class UnicodeSql
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
+    public static async Task<long> PopulateUnicodeDecompositionEdgesAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeDecompositionEdgesFromExt);
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public static async Task<long> PopulateUnicodeFullCaseMappingEdgesAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeFullCaseMappingEdgesFromExt);
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public static async Task<long> PopulateUnicodeConfusablesAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeConfusablesFromExt);
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public static async Task<long> PopulateUnicodeStandardizedVariantsAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeStandardizedVariantsFromExt);
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public static async Task<long> PopulateUnicodeRadicalStrokeAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeRadicalStrokeFromExt);
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public static async Task<long> PopulateUnicodeNamedSequencesAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeNamedSequencesFromExt);
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public static async Task<long> PopulateUnicodeEmojiSequencesAsync(
+        NpgsqlConnection connection,
+        bool useZwj,
+        CancellationToken ct)
+    {
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.PopulateUnicodeEmojiSequencesFromExt,
+            new object?[] { useZwj });
+        command.CommandTimeout = 0;
+        object? value = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
     public static async Task<UcdMaterializationCounts> LoadMaterializationCountsAsync(
         NpgsqlConnection connection,
         CancellationToken ct)

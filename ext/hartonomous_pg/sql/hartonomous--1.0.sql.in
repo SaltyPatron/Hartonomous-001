@@ -1089,6 +1089,47 @@ CREATE FUNCTION substrate.ucd_codepoints_with_gc(gc_id int)
     AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_with_gc'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- ── (24b) Multi-codepoint sequence + cross-codepoint relation SRFs ──────
+-- Backed by pg_ucd_sequences_pg.c against the .py-emitted pre-gen tables.
+-- One row per entry in the embedded blob; substrate.populate_unicode_*_from_ext
+-- functions materialise text_composition entities + LINESTRINGZM physicality +
+-- typed edges under unicode_consortium provenance.
+
+CREATE FUNCTION substrate.ucd_named_sequences()
+    RETURNS TABLE (codepoint_sequence int[], name text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_named_sequences'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_emoji_sequences()
+    RETURNS TABLE (codepoint_sequence int[], name text, props text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_emoji_sequences'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_emoji_zwj_sequences()
+    RETURNS TABLE (codepoint_sequence int[], name text, props text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_emoji_zwj_sequences'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_standardized_variants()
+    RETURNS TABLE (base_codepoint int, variation_selector_codepoint int, description text, scope text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_standardized_variants'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_confusables()
+    RETURNS TABLE (source_codepoints int[], target_codepoints int[], confusable_class text)
+    AS 'MODULE_PATHNAME', 'pg_ucd_confusables'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_idna_mapping()
+    RETURNS TABLE (codepoint_lo int, codepoint_hi int, status text, mapping_codepoints int[])
+    AS 'MODULE_PATHNAME', 'pg_ucd_idna_mapping'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+CREATE FUNCTION substrate.ucd_cjk_radicals()
+    RETURNS TABLE (radical_number text, radical_form_codepoint int, unified_ideograph_codepoint int)
+    AS 'MODULE_PATHNAME', 'pg_ucd_cjk_radicals'
+    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
 -- ── (25) Bulk hash array helpers ─────────────────────────────────────────
 CREATE FUNCTION substrate.cp_hashes(cps int[]) RETURNS bytea[]
     AS 'MODULE_PATHNAME', 'pg_cp_hashes'
