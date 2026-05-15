@@ -52,7 +52,7 @@ protected static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes);  //
 protected static byte[] ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<byte[]> participantHashes);  // [4 bytes type | hashes] → ComputeHash()
 ```
 
-Content only. Placement (position, ordinal, filename, tensor name, model_source_id, source offset, line number) goes on `substrate.sequence.ordinal`, edges (`has_source`, `in_model`), model-source tables, or `provenance` — never in the hash.
+Content only. Placement (position, ordinal, filename, tensor name, model_source_id, source offset, line number) goes in the composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`), on typed edges (`has_source`, `in_model`, `edge_member.role_position`), on model-source tables, or on provenance — never in the hash. There is no `substrate.sequence` table.
 
 ## Compute facade
 
@@ -114,8 +114,8 @@ Every edge insert MUST populate `edge.geom` from participants' centroids in role
 - `substrate.physicality` — `(physicality_type_id, entity_hash, content_hash, geom geometry(GeometryZM))`. Partitioned by physicality_type_id.
 - `substrate.entity_significance` — `(context_type_id, entity_hash, mu, sigma, volatility, games)`. Partitioned by context_type_id.
 - `substrate.edge_significance` — `(context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games)`. Partitioned by context_type_id.
-- `substrate.sequence` — `(parent_hash, ordinal, child_hash, rle_count)`. Composition/reconstruction ordering.
-- Junction tables: compute exact list from `sql/schema/tables/junctions/`; Glicko-2 junction confidence currently appears on `entity_pos` and `pattern_deprel`.
+- Composition ordering: NOT a separate table. Lives in the composition's `LINESTRINGZM` physicality vertex stream — each vertex packs `(X = bb_pack_hash_lo(child.hash_bits_0_51), Y = bb_pack_ordinal_rle(ordinal, rle_count), Z = bb_pack_hash_hi(child.hash_bits_52_103), M = bb_pack_metadata(0))`. The geometry IS the indexed child manifest. Reverse-resolve via `substrate.entity_by_hash_prefix(BIGINT[], BIGINT[])` against the composite btree on `(hash_bits_0_51, hash_bits_52_103)`.
+- Junction tables: compute exact list from `sql/schema/tables/junctions/` (includes `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`, `provenance_modality`); Glicko-2 junction confidence currently appears on `entity_pos` and `pattern_deprel`.
 
 ## Source locations
 
@@ -136,18 +136,22 @@ Every edge insert MUST populate `edge.geom` from participants' centroids in role
 
 ## Build/test scripts
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/build/Dotnet.ps1` | .NET compilation |
-| `scripts/build/Native.ps1` | Native C/C++ build |
-| `scripts/build/PgExtension.ps1` | PostgreSQL extension build (Windows local PG) |
-| `scripts/docker/Build.ps1` | Docker layer build (`-Layer pgext` + `-Layer final` for changed extension) |
-| `scripts/docker/Up.ps1` / `Down.ps1` | PG container lifecycle |
-| `scripts/db/Bootstrap.ps1` | Apply canonical schema |
-| `scripts/db/Reset.ps1 -Force` | Drop + recreate + bootstrap |
-| `scripts/test/Dotnet.ps1` | Unit tests |
-| `scripts/test/Integration.ps1` | DB integration tests (requires Docker) |
-| `scripts/test/Native.ps1` | Native library tests |
+| Command | Purpose |
+|---------|---------|
+| `scripts/hart build all` | All builds in sequence |
+| `scripts/hart build dotnet` | .NET compilation |
+| `scripts/hart build native` | Native C/C++ build (libhartonomous via CMake) |
+| `scripts/hart build extension-sql` | Concatenate canonical SQL into the generated extension script + run the C-binding template |
+| `scripts/hart db bootstrap` | Apply canonical schema (installs `CREATE EXTENSION hartonomous` against native PG at `/usr/lib/postgresql/18`) |
+| `scripts/hart db reset` | Drop + recreate + bootstrap |
+| `scripts/hart test unit` | .NET unit tests |
+| `scripts/hart test integration` | DB integration tests |
+| `scripts/hart test native` | libhartonomous native tests |
+| `scripts/hart phase run` | Run phase orchestrator |
+| `scripts/hart phase status` | Phase progress against substrate state |
+| `scripts/hart seed all` | Seed ingestion across phases |
+
+All operations on Linux via the `scripts/hart` wrapper. No PowerShell scripts on this workstation. The substrate's prerequisite extensions (postgis, btree_gist, pg_trgm) come from `apt-get install postgresql-18-postgis-3` / `postgresql-contrib-18` — extension installs via `make install` against `/usr/lib/postgresql/18`, no Docker.
 
 ## Hard prohibitions
 

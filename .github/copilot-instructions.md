@@ -41,8 +41,8 @@ The user is solo-carrying a multi-team-sized project on a life-relevant deadline
 For non-trivial Hartonomous work, do not start from a single error message and do not trust cached migration-era summaries. First build a minimum context map:
 
 - Read the current file, the relevant `.github/instructions/*.instructions.md` file, and any matching `.claude/rules/*.md` rule already surfaced in context.
-- For schema, counts, type inventories, and table shape, use canonical `sql/schema/bootstrap.sql` plus the included files under `sql/schema/`. Runtime DB setup installs the generated `hartonomous` PostgreSQL extension; `sql/migrations.archive/` is audit history only.
-- For architecture claims, consult `docs/architecture.md`, `docs/specs/sql/infrastructure-vs-substrate.md`, `docs/specs/engine/inference.md`, and the semantic regression pack when semantics are involved.
+- For schema, counts, type inventories, and table shape, use canonical `sql/schema/bootstrap.sql` plus the included files under `sql/schema/`. Runtime DB setup installs the generated `hartonomous` PostgreSQL extension via `scripts/hart db bootstrap`; `sql/migrations.archive/` is audit history only.
+- For architecture claims, the normative sources are `docs/00-substrate-spec.md` (substrate model) and `docs/01-tensor-primitive-spec.md` (canonical tensor form). When semantics are involved, also consult `docs/specs/sql/infrastructure-vs-substrate.md` and `docs/specs/engine/inference.md`.
 - Keep an issue ledger while debugging: root cause, adjacent failure surfaces, verification gate, and residual risk. Fix the whole implicated surface, not merely the first stack trace.
 - Before finalizing, state the semantic gate you actually verified. Build success alone is not completion.
 
@@ -50,13 +50,14 @@ For non-trivial Hartonomous work, do not start from a single error message and d
 
 Hartonomous is an invention-specific substrate, not a generic knowledge graph, vector database, RAG stack, or approximate embedding system. These are non-negotiable:
 
-- **One entity table** (`substrate.entity`) for atoms and compositions only. Single column: `hash substrate.hash_value PRIMARY KEY`. There is no `id`, no `entity_type_id`, and no partitioning by type. Structural classifications live in `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)`.
-- **Separate n-ary edge substrate** (`substrate.edge` + `substrate.edge_member`) with role-ordered participants, trajectory geometry (`geom geometry(GeometryZM)`), and Glicko-2 edge significance. Edge identity is `(edge_type_id, hash)`. Edges are NOT entities.
-- **One universal physicality table** (`substrate.physicality`) for geometry across all modalities. It stores PostGIS `geometry(GeometryZM)` for atoms and compositions, partitioned by `physicality_type_id`, keyed by `(physicality_type_id, entity_hash, content_hash)`. Raw PostGIS `ST_Distance`, `ST_Centroid`, `ST_FrechetDistance`, and `ST_HausdorffDistance` are forbidden on substrate physicality because they drop dimensions; use `substrate.st_4d_*` / `substrate.st_s3_*` functions. `public.point4d` / `public.linestring4d` are internal native compute primitives, not substrate storage columns.
-- **Classification vocabularies** in reference tables (`pos`, `deprel`, `sense`, `language`, etc.) and junction tables (`entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, etc.). NOT in the entity or edge substrate.
-- **BLAKE3 identity hashes** cover content only, never placement metadata (position, filename, ordinal, tensor name). Placement lives on `substrate.sequence.ordinal`, edges (`has_source`, `in_model`), or `provenance`.
+- **One entity table** (`substrate.entity`) for atoms and compositions only. Single column: `hash substrate.hash_value PRIMARY KEY` plus `hash_bits_0_51` + `hash_bits_52_103` GENERATED columns for composition vertex reverse-resolve. There is no `id`, no `entity_type_id`, and no partitioning by type. Structural classifications live in `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)`.
+- **Entities vs content — two trees, one vocabulary**. Entities are the *building blocks* — reusable identities (`codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `synset`, `collation_element`, `language_name`, `model_architecture`, `tensor`, `tokenizer_model`). Content is the *trajectory through entities* (`text_composition`, `paragraph`, `document`, `audio_recording`, `audio_chunk`, `pixel_region`, `video_frame`). `whale` is one word_form entity referenced ~1500 times by Moby Dick's content trajectory; Moby Dick the document is content whose Merkle identity IS its walk through word_form entity hashes. Both live in `substrate.entity` by BLAKE3 hash. Conflating them ("everything is a composition") loses the load-bearing distinction.
+- **Separate n-ary edge substrate** (`substrate.edge` + `substrate.edge_member`) with role-ordered participants, trajectory geometry (`geom geometry(GeometryZM)`) — vertices are mantissa-packed identity-POINTZMs of participants in role order, same encoding as composition LINESTRINGZM — and Glicko-2 edge significance. Edge identity is `(edge_type_id, hash)`. Edges are NOT entities.
+- **One universal physicality table** (`substrate.physicality`) for geometry across all modalities. It stores PostGIS `geometry(GeometryZM)` for atoms and compositions, partitioned by `physicality_type_id`, keyed by `(physicality_type_id, entity_hash, content_hash)`. Composition LINESTRINGZM vertices are mantissa-packed: `(X = bb_pack_hash_lo(child.hash_bits_0_51), Y = bb_pack_ordinal_rle(ordinal, rle_count), Z = bb_pack_hash_hi(child.hash_bits_52_103), M = bb_pack_metadata(0))`. The geometry IS the indexed child manifest; reverse-resolve via `substrate.entity_by_hash_prefix`. Raw PostGIS `ST_Distance`, `ST_Centroid`, `ST_FrechetDistance`, `ST_HausdorffDistance` are forbidden on substrate physicality because they drop dimensions; use `substrate.st_4d_*` / `substrate.st_s3_*` functions. `public.point4d` / `public.linestring4d` are internal native compute primitives, not substrate storage columns.
+- **Classification vocabularies** in reference tables (`pos`, `deprel`, `sense`, `language`, etc.) and junction tables (`entity_pos`, `entity_language`, `entity_morph_feature`, `codepoint_property`, `provenance_modality`, etc.). NOT in the entity or edge substrate.
+- **BLAKE3 identity hashes** cover content only, never placement metadata (position, filename, ordinal, tensor name). Placement lives in the composition `LINESTRINGZM` physicality vertex Y mantissa via `bb_pack_ordinal_rle`, on typed edges (`has_source`, `in_model`, `edge_member.role_position`), on model-source tables, or on provenance. There is no `substrate.sequence` table.
 - **Inference** (`src/Hartonomous.Engine/`) traverses and reweights existing edges via Glicko-2 significance. It does NOT invent new knowledge edges. **Ingestion** (`src/Hartonomous.Decomposers/`) is deterministic — same input + same decomposer version = same substrate state.
-- **One centralized ingestion pipeline** (`src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs`) owns 10 per-kind bounded channels, per-kind drain tasks, chunk-amortized COPY→INSERT-SELECT into substrate core tables, producer-side dedup, backpressure, and the end-of-phase post-pass surface (`PopulateEdgeTrajectoriesAsync`, `PrimeAllSignificanceAsync`). Every decomposer — modality or seed — is a pure streaming producer that calls `IRecordSink.EmitAsync` and does NOT own batching, channels, transactions, or significance priming. No decomposer-private channels, no decomposer-phase-wide `ResolveEntityIdsAsync`, no two-pass accumulation of cross-batch join state. `NpgsqlIngestionPipeline.cs` is a legacy implementation kept for compatibility; `StreamingIngestionPipeline.cs` is the active path.
+- **One centralized ingestion pipeline** (`src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs`) owns 10 per-kind bounded channels, per-kind drain tasks, chunk-amortized COPY→INSERT-SELECT into substrate core tables, producer-side dedup, backpressure, and the end-of-phase post-pass surface (`PopulateEdgeTrajectoriesAsync`, `PrimeAllSignificanceAsync`). Every decomposer — modality or seed — is a pure streaming producer that calls `IRecordSink.EmitAsync` and does NOT own batching, channels, transactions, or significance priming. No decomposer-private channels, no decomposer-phase-wide `ResolveEntityIdsAsync`, no two-pass accumulation of cross-batch join state.
 - **Seed decomposers use core decomposers — they never bypass them.** Core (modality) decomposers: text, image, audio, video, telemetry, chess, DNA, medical, safetensors, etc. Seed decomposers: UCD/UCA, ISO 639, WordNet, OMW, UD, Wiktionary, Tatoeba. A Tatoeba sentence is a full text AST (codepoint → grapheme_cluster → morpheme → word_form → text_composition → paragraph) produced by the TEXT core decomposer; the Tatoeba seed decomposer hands the string to it, receives the text_composition hash, and attaches metadata edges (provenance, entity_language, translation_link, has_contributor). Same string in Tatoeba, in a WordNet example, in a Wiktionary citation, in a user prompt, and in a model output all collapse to ONE text_composition with ONE hash. Applies to every text-bearing content in every decomposer. No decomposer calls `ComputeHash(string)` on user-visible multi-character text to produce a `text_composition`-tier atom.
 
 ## Semantic regression cases
@@ -65,26 +66,41 @@ The 10 regression cases in `.claude/skills/hartonomous-semantic-eval/cases.md` c
 
 ## Exact counts
 
-Pre-v1 is bootstrap-only — canonical schema source is `sql/schema/bootstrap.sql`; `scripts/build/ExtensionSql.ps1` expands it into generated extension SQL, and `scripts/db/Bootstrap.ps1` installs `CREATE EXTENSION hartonomous`. `sql/migrations.archive/` is the historical record. Do not cite migration pair counts as authoritative. Counts must be recomputed from `sql/schema/` before use. As of the current canonical seeds: 12 phases in the Phase enum (`CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `ModelDecomp` → `Wiktionary` → `Tatoeba` → `TextDecomp` → `SignificanceField` → `InferenceEngine` → `Validation`); 54 entity types; 111 edge types; 7 edge roles; 14 physicality types including `embedding_firefly`; 10 starter significance arenas, open vocabulary; 10 provenances; 10 junction table files under `sql/schema/tables/junctions/`.
+Pre-v1 is bootstrap-only — canonical schema source is `sql/schema/bootstrap.sql`; `scripts/hart build extension-sql` expands it into generated extension SQL, and `scripts/hart db bootstrap` installs `CREATE EXTENSION hartonomous`. `sql/migrations.archive/` is audit history only. Do not cite migration pair counts as authoritative. Recompute counts from `sql/schema/` before use.
+
+As of the current canonical seeds (verified 2026-05-14 from `sql/schema/seed/`):
+- **12 phases**: `CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `Wiktionary` → `Tatoeba` → `TextDecomp` → `ModelDecomp` → `SignificanceField` → `InferenceEngine` → `Validation`
+- **23 entity types** (`entity_type.sql`) — phantom per-role-unit types removed per AP-25 (2026-05-08). Split by role: **entity-tier** building blocks (`codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `synset`, `collation_element`, `language_name`, `model_architecture`, `tensor`, `tokenizer_model`) vs **content-tier** trajectories (`text_composition`, `paragraph`, `document`, `audio_recording`, `audio_chunk`, `pixel_region`, `video_frame`).
+- **120 edge types** (`edge_type.sql`) — split by axis: entity↔entity (within building-block tree), entity↔content (bridges like `has_gloss`, `has_etymology`, `has_canonical_decomposition`, model artifact bindings), content↔content (Unicode named/emoji/ZWJ sequences, `translation_link`, `recording_of`), plus `has_source` from content to provenance. 13 of 17 Unicode edge types (98–112) are seeded-empty pending blob-side SRF exports.
+- **27 attestation types** (`attestation_type.sql`)
+- **7 edge roles**: `source`, `target`, `context`, `mediator`, `evidence`, `head`, `dependent`
+- **13 physicality types** (`physicality_type.sql`): `s3_position`, `hilbert_value`, `waveform`, `fft_spectrum`, `stft_spectrogram`, `pitch_contour`, `formant_trajectory`, `spectral_centroid`, `mfcc_frame`, `chromagram`, `svd_spectrum`, `weight_distribution`, `contour`
+- **10 significance arenas** (`significance_context.sql`), open vocabulary
+- **10 provenances** (`provenance.sql`)
+- **11 junction table files** under `sql/schema/tables/junctions/` (including `provenance_modality`)
 
 ## Repo entrypoints
 
-| Task | Script |
-|------|--------|
-| Build all | `scripts/build/All.ps1` |
-| Build .NET | `scripts/build/Dotnet.ps1` |
-| Build native | `scripts/build/Native.ps1` |
-| Test all | `scripts/test/All.ps1` |
-| Test .NET | `scripts/test/Dotnet.ps1` |
-| Test integration | `scripts/test/Integration.ps1` |
-| Test native | `scripts/test/Native.ps1` |
-| DB bootstrap canonical schema | `scripts/db/Bootstrap.ps1` |
-| DB reset | `scripts/db/Reset.ps1 -Force` |
-| DB create empty | `scripts/db/Create.ps1` |
-| Docker up | `scripts/docker/Up.ps1` |
-| Docker down | `scripts/docker/Down.ps1` |
-| Seed all | `scripts/seed/All.ps1` |
-| Run phases | `scripts/ops/Phases.ps1` |
+All operations via `scripts/hart <command>` on Linux. No PowerShell.
+
+| Task | Command |
+|------|---------|
+| Build all | `scripts/hart build all` |
+| Build .NET | `scripts/hart build dotnet` |
+| Build native | `scripts/hart build native` |
+| Build extension SQL | `scripts/hart build extension-sql` |
+| Test all | `scripts/hart test all` |
+| Test .NET unit | `scripts/hart test unit` |
+| Test integration | `scripts/hart test integration` |
+| Test native | `scripts/hart test native` |
+| DB bootstrap | `scripts/hart db bootstrap` |
+| DB reset | `scripts/hart db reset` |
+| DB create | `scripts/hart db create` |
+| Docker up | `scripts/hart docker up` |
+| Docker down | `scripts/hart docker down` |
+| Seed all | `scripts/hart seed all` |
+| Run phases | `scripts/hart phase run` |
+| Phase status | `scripts/hart phase status` |
 
 ## Key code locations
 
@@ -99,10 +115,19 @@ Pre-v1 is bootstrap-only — canonical schema source is `sql/schema/bootstrap.sq
 | Streaming pipeline | `src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs` |
 | Canonical schema | `sql/schema/bootstrap.sql` include manifest plus source files under `sql/schema/`; runtime install is generated extension SQL via `CREATE EXTENSION hartonomous` |
 
+## Data staging locations
+
+- **`/vault/Data/`** — corpora staged for ingestion. `Unicode/` (37GB, full Unicode mirror including all versions, `Public/emoji/`, `Public/idna/`, `ucd/`, `collation/`), `UCD/` (688MB, focused UCD subset), `Wiktionary/` (34GB, kaikki.org JSONL dumps + extract scripts), `omw/` (245MB, Open Multilingual WordNet for 100+ languages, with build scripts), `Wordnet/` (49MB, WordNet 3.0), `UD-Treebanks/` (4.3GB, ud-treebanks-v2.17), `Tatoeba/` (5.4GB, sentence pairs), `ISO639/` (7.6MB, language codes).
+- **`/vault/models/`** — HuggingFace-format models already migrated. Mix of flat-layout (`Florence-2-base/`, `Florence-2-large/`, `Grounding-DINO-Base/`, `RT-DETR-v1-R101/`, `Conditional-DETR-R50/`, `DETR-ResNet-101/`, `yolo11x/`) and HF cache layout (`models--Qwen--*`, `models--deepseek-ai--*`, `models--nvidia--*`, `models--facebook--*`, `models--ibm-granite--*`, `models--fishaudio--*`, `models--sentence-transformers--*`).
+- **`/data/models/hub/`** — HF cache root with models pending move to `/vault/models/`. Same naming convention.
+- **`/data/models/vLLM/`**, **`/data/models/qdrant/`** — runtime caches for separate stacks; not substrate ingestion sources.
+
+Coverage spans every tuple per `docs/01-tensor-primitive-spec.md`: text LLMs (DeepSeek-Coder, Qwen2.5/3-Coder, multiple sizes + AWQ), embedding (Qwen3-Embedding-4B, all-MiniLM-L6-v2), reranker (Qwen3-Reranker-4B, Qwen3-VL-Reranker-8B), multimodal vision-language (Florence-2-base/large, Qwen3-VL-Embedding-8B), pure vision detection (Grounding-DINO, RT-DETR, Conditional-DETR, DETR-ResNet, yolo11x), audio (canary-qwen-2.5b speech, sam-audio-large, fish-speech-1.5, music-flamingo-hf, granite-speech-3.3-8b).
+
 ## Supplementary instruction surfaces
 
 - Path-specific rules: `.github/instructions/hartonomous-{csharp,sql,native,docs}.instructions.md`
-- Claude-format rules: `.claude/rules/*.md` (5 files covering core, text/semantics, SQL/ingestion, native/determinism, docs/config)
+- Claude-format rules: `.claude/rules/*.md` (9 files: 00-core, 10-text-semantics, 15-substrate-trinity, 20-sql-ingestion, 25-physicality-4d, 30-native-determinism, 35-inference-godel, 40-docs-config, 45-anti-patterns)
 - Semantic regression pack: `.claude/skills/hartonomous-semantic-eval/` (SKILL.md, cases.md, rubric.md)
 - Agents: `.github/agents/` (plan, implement, review, semantic-auditor) with handoff chains
 - Prompts: `.github/prompts/semantic-eval.prompt.md`, `.github/prompts/finish-work.prompt.md`

@@ -260,7 +260,7 @@ public interface IIngestionBatch
     /// </summary>
     void AddFireflyPoint(
         EntityHandle parent,
-        Hash32 modelSourceId,
+        long modelSourceId,
         Point4D projection)
         => throw new NotSupportedException(
             "AddFireflyPoint is wired by the pipeline's IIngestionBatch implementation in S3. Test doubles can override.");

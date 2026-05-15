@@ -10,21 +10,21 @@ paths:
 
 ## The substrate's SQL layout — pre-v1 bootstrap-only
 
-There is no active migrations directory for current work. The canonical schema lives in `sql/schema/`. `sql/schema/bootstrap.sql` declares the build-time include order for the generated extension SQL. Runtime database setup is `CREATE EXTENSION hartonomous`; `scripts/build/ExtensionSql.ps1` concatenates the canonical schema files and the C-binding template into the extension script. The historical migration sequence (`0001` … `0064`) is preserved under `sql/migrations.archive/` for audit only — those files are not applied at boot.
+There is no active migrations directory for current work. The canonical schema lives in `sql/schema/`. `sql/schema/bootstrap.sql` declares the build-time include order for the generated extension SQL. Runtime database setup is `CREATE EXTENSION hartonomous`; `scripts/hart build extension-sql` concatenates the canonical schema files and the C-binding template into the extension script. The historical migration sequence (`0001` … `0064`) is preserved under `sql/migrations.archive/` for audit only — those files are not applied at boot.
 
 | Path | Content |
 |------|---------|
-| `sql/schema/bootstrap.sql` | Build-time include manifest. `scripts/build/ExtensionSql.ps1` expands this into the generated extension SQL installed by `CREATE EXTENSION hartonomous`. |
+| `sql/schema/bootstrap.sql` | Build-time include manifest. `scripts/hart build extension-sql` expands this into the generated extension SQL installed by `CREATE EXTENSION hartonomous`. |
 | `sql/schema/extensions/` | `CREATE EXTENSION` statements (postgis, btree_gist, pg_trgm, hartonomous). |
 | `sql/schema/schemas/` | `CREATE SCHEMA substrate, monitor`. |
 | `sql/schema/domains/` | Domain definitions: `hash_value` = BYTEA(32), `significance_mu`, `significance_sigma`, `significance_volatility`, `tier_number`, `rle_count`, `ordinal_position`, `code_value`. |
 | `sql/schema/types/` | Composite type definitions. |
-| `sql/schema/tables/core/` | `entity` (hash-only, not type-partitioned), `sequence`, `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `entity_model_source`. Edge / member / significance / physicality tables partition by their own type / context keys. |
+| `sql/schema/tables/core/` | `entity` (hash-only, not type-partitioned, with `hash_bits_0_51` + `hash_bits_52_103` GENERATED columns for composition vertex reverse-resolve), `edge`, `edge_member`, `physicality`, `entity_significance`, `edge_significance`, `entity_model_source`. There is NO `substrate.sequence` table — placement metadata lives in the composition `LINESTRINGZM` physicality vertex Y mantissa via `bb_pack_ordinal_rle`. Edge / member / significance / physicality tables partition by their own type / context keys. |
 | `sql/schema/tables/reference/` | Reference vocabulary: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `attestation_type`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `semantic_relation_type`, `general_category`, `script`, `block`, `break_property`, `language`, `tensor_role`, `architecture_class`. |
-| `sql/schema/tables/junctions/` | Junction tables: `entity_classification`, `entity_pos` (Glicko-2), `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel` (Glicko-2), `provenance_edge_authority`. |
+| `sql/schema/tables/junctions/` | Junction tables: `entity_classification`, `entity_pos` (Glicko-2), `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel` (Glicko-2), `provenance_edge_authority`, `provenance_modality`. |
 | `sql/schema/tables/monitor/` | Monitor schema: ingestion progress, phase status, comparison events, inference metrics. |
 | `sql/schema/indexes/` | One `CREATE INDEX` per file. Indexes included after tables exist and before functions. |
-| `sql/schema/functions/` | Named substrate functions — composition queries, 4D / S³ operators, Glicko-2 record_*, recompose_*, infer / complete / classify / rerank / embed_lookup, model inventory, etc. |
+| `sql/schema/functions/` | Named substrate functions — composition queries (`get_composition_children`, `composition_at`, `composition_range`, `composition_after`, `composition_before`, `composition_subtrajectory`, `composition_parents`), mantissa helpers (`bb_pack_*` / `bb_unpack_*`), 4D / S³ operators, Glicko-2 record_*, recompose_*, infer / complete / classify / rerank / embed_lookup, model inventory, etc. |
 | `sql/schema/procedures/` | Stored procedures (write-effecting bulk operations). |
 | `sql/schema/views/` | Substrate and monitor views. |
 | `sql/schema/seed/` | Phase 1 seed inserts for reference vocabulary. |
@@ -43,7 +43,7 @@ Per-row round-trips inside loops are prohibited (AP-2). One transaction per batc
 
 ## Streaming ingestion pipeline
 
-One `StreamingIngestionPipeline` (`src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs`) owns 10 bounded `Channel<TRecord>` (one per record kind: entity, entity_classification, edge, edge_member, junction, physicality, sequence, entity_significance, edge_significance, entity_model_source) and 10 per-kind drain tasks each holding a long-lived `NpgsqlConnection`. Decomposers emit into the `IRecordSink` producer surface; they do NOT own channels.
+One `StreamingIngestionPipeline` (`src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs`) owns bounded `Channel<TRecord>` per record kind (entity, entity_classification, edge, edge_member, junction, physicality, entity_significance, edge_significance, entity_model_source) and per-kind drain tasks each holding a long-lived `NpgsqlConnection`. The pipeline builds composition `LINESTRINGZM` geometry inline (`BuildCompositionGeometry`) from ordered child manifests via `MantissaPacking.PackHashLo` / `PackOrdinalRle` / `PackHashHi` / `PackMetadata` — the geometry IS the indexed child manifest, no separate sequence channel. Decomposers emit into the `IRecordSink` producer surface; they do NOT own channels.
 
 Each drain task drains within the same connection that COPYed:
 1. `TRUNCATE pg_temp.X_inflight`
@@ -54,9 +54,9 @@ before reading the next chunk. Temp tables auto-drop when the connection closes.
 
 There is no persistent staging schema. The removed-in-`0ce4e5e` staging-era artifacts (`substrate.staging_*` tables, `substrate.drain_staging_*_chunk` functions, `substrate.flush_*_from_staging.sql`, `BackgroundSignificancePrimer.cs`, `StagingFlushWorker.cs`) MUST NOT be reintroduced.
 
-Edge LINESTRINGZM geometry is built **inline** when all participants' POINTZM centroids are present in the batch centroid map. When participants span batches, `geom` is left NULL and backfilled by `PopulateEdgeTrajectoriesAsync` at end of phase. End-of-phase significance priming happens via `PrimeAllSignificanceAsync`, cross-producting against whatever arenas exist in `substrate.significance_context` at that moment (open vocabulary, no WHERE filter on context code — AP-1).
+Edge LINESTRINGZM geometry build + per-arena Glicko-2 priming are tied to **drain completion**, not to phase boundaries. Every `IIngestionPipeline.DrainPendingAsync` invocation atomically: waits for all channels quiescent, fires `substrate.populate_edge_trajectories` against any edges whose participants are now in `substrate.entity` (single bulk JOIN against the `(hash_bits_0_51, hash_bits_52_103)` composite-btree on `substrate.entity_by_hash_prefix`), then fires `substrate.prime_unprimed_edges_chunk` cross-producting against whatever arenas exist in `substrate.significance_context` (open vocabulary, no WHERE filter on context code — AP-1). After `DrainPendingAsync` returns, no edge sits with NULL geom and no arena has unprimed significance rows. The substrate is continuously queryable; phases are an orchestration convenience for the runner, not a substrate boundary. Live ingest (user prompts at runtime, mid-conversation uploads, single-source ingest interleaved with batch corpus ingest) hits the same drain path with the same atomic-on-drain semantics — no phase-end window where edges sit incomplete or arenas wait for priming.
 
-Bulk substrate-existence-check: decomposers MUST call `IIngestionPipeline.GetExisting{EntityHashes,EntityClassifications,Edges,Physicalities,SequenceRows}Async` ONCE per kind per chunk and emit only the diff. Blind emission relying on `ON CONFLICT DO NOTHING` to clean up produces the 30:1+ amplification observed in 2026-05-08 telemetry (AP-19).
+Bulk substrate-existence-check: decomposers MUST call `IIngestionPipeline.GetExisting{EntityHashes,EntityClassifications,Edges,Physicalities}Async` ONCE per kind per chunk and emit only the diff. Blind emission relying on `ON CONFLICT DO NOTHING` to clean up produces the 30:1+ amplification observed in 2026-05-08 telemetry (AP-19).
 
 ## Compute helpers in SQL and C
 
@@ -64,7 +64,7 @@ Bulk substrate-existence-check: decomposers MUST call `IIngestionPipeline.GetExi
 
 Glicko-2 update math is implemented in C as `hartonomous_glicko2_bulk_update` (`ext/libhartonomous/src/glicko_bulk.c`) and exposed as the SQL function `hartonomous.glicko2_bulk_update(...)` via `ext/hartonomous_pg/src/pg_glicko_bulk.c`. The SQL functions in `sql/schema/functions/record_*.sql` and any C# rating code (`Hartonomous.Core.Compute.Common.Glicko2`) call through to the canonical C implementation — no plpgsql or C# reimplementations of the formula.
 
-To re-apply schema after edits: `scripts/db/Reset.ps1 -Force` (drop + recreate + bootstrap). To bootstrap a fresh database: `hartonomous bootstrap` or `scripts/db/Bootstrap.ps1`.
+To re-apply schema after edits: `scripts/hart db reset` (drop + recreate + bootstrap). To bootstrap a fresh database: `scripts/hart db bootstrap`. All operations via `scripts/hart <command>` on Linux — no PowerShell scripts on this workstation.
 
 ## 4D operators on substrate physicality
 
@@ -98,7 +98,7 @@ Connection strings come from CLI arguments (highest precedence) and `HARTONOMOUS
 
 ## Schema separation
 
-- `substrate.*` — core tables (entity, edge, edge_member, sequence, physicality, entity_significance, edge_significance) plus reference and junction tables.
+- `substrate.*` — core tables (entity, edge, edge_member, physicality, entity_significance, edge_significance, entity_model_source) plus reference and junction tables. There is no `substrate.sequence` — composition child ordering lives in the `LINESTRINGZM` physicality vertex Y mantissa.
 - `monitor.*` — ingestion progress, phase status, inference metrics, substrate health views.
 
 ## Cross-references

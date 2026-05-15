@@ -34,11 +34,12 @@ The substrate vocabulary boils down to three concepts:
 
 | Concept | Storage | Examples |
 |---|---|---|
-| Atom | `substrate.entity` (leaf types) + atom metadata in junction tables (`codepoint_property`) | codepoint, codeword, pixel-value, audio-sample, model-architecture root |
-| Composition | `substrate.entity` (higher-tier classifications) + `substrate.sequence` for child ordering | grapheme_cluster, word_form, lemma, text_composition, paragraph, document, tensor, attention_pattern |
-| Relation | `substrate.edge` + `substrate.edge_member` | has_sense, has_lemma, aligned_to_synset, lexicalized_compound (type 37), in_model, co_occurrence, etc. |
+| Atom | `substrate.entity` (leaf types) + atom metadata in junction tables (`codepoint_property`) | codepoint, codeword, pixel-value, audio-sample |
+| Composition (entity-tier — building blocks) | `substrate.entity` + composition `LINESTRINGZM` physicality (mantissa-packed children via `bb_pack_*`; geometry IS the indexed child manifest) | grapheme_cluster, word_form, morpheme, lemma, synset, collation_element, language_name, model_architecture, tensor, tokenizer_model |
+| Composition (content-tier — trajectories through entities) | `substrate.entity` + composition `LINESTRINGZM` physicality walking through entity hash refs | text_composition, paragraph, document, audio_recording, audio_chunk, pixel_region, video_frame |
+| Relation | `substrate.edge` + `substrate.edge_member` | has_sense, has_lemma, aligned_to_synset, lexicalized_compound, in_model, co_occurrence, model_attention_pattern, model_concept_similarity, model_ffn_factor, has_gloss, has_source, etc. |
 
-Atoms are unicode codepoints with metadata (UCD properties, UCA collation weight, S³ position). Compositions are n-ary higher tiers — dynamically typed, evidenced via edges, ranked via significance. Relations are typed n-ary edges with role-ordered members and trajectory geometry.
+Atoms are unicode codepoints (and other modality-atoms) with metadata. Entity-tier compositions are the substrate's reusable vocabulary — `whale` is one word_form entity referenced from every trajectory that contains it. Content-tier compositions are trajectories — Moby Dick is a document whose Merkle identity IS its walk through word_form entity hashes. Relations are typed n-ary edges with role-ordered members and trajectory geometry. **Phantom per-role-unit entity types (attention_pattern, attention_head, ffn_neuron, etc.) were removed by the 2026-05-08 architectural correction; do not plan against them.**
 
 ## Substrate pillars
 
@@ -63,7 +64,7 @@ ComputeMerkleHash(byte[][])     → concat child hashes → Merkle.Hash()  // co
 ComputeEdgeHash(int, byte[][])  → [edgeTypeId | participant hashes] → ComputeHash()  // edge/relation
 ```
 
-Content only enters the hash. Position, ordinal, filename, tensor name, source offset live on `substrate.sequence.ordinal`, edges (`has_source`, `in_model`), model-source tables, or `provenance`.
+Content only enters the hash. Position, ordinal, filename, tensor name, source offset live in the composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`), on typed edges (`has_source`, `in_model`, `edge_member.role_position`), on model-source tables, or on provenance. There is no `substrate.sequence` table.
 
 ## Glicko-2 surfaces (rate four different things)
 

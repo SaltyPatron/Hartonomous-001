@@ -20,11 +20,16 @@
 -- application-fault matching across structurally-similar trajectories
 -- whose categorical labels differ).
 --
--- TODO (post-S3.D follow-on): split this single contour partition into
--- two physicality_types — entity_shape (atoms-as-vertices) and
--- content_trajectory (entities-as-vertices) — so per-partition CHECK
--- constraints can declare the per-tier axis-meaning conventions
--- separately.
+-- Split landed: physicality_entity_shape (id 15) carries real-coord canonical
+-- structural fingerprints for Fréchet shape matching; physicality_ingestion_trajectory
+-- (id 16) carries mantissa-packed identity-level child manifests for O(tier)
+-- reconstruction via substrate.entity_by_hash_prefix. This contour partition is
+-- LEGACY — retained while existing decomposers still emit
+-- AddPhysicalityLineString4d(parent, "contour", verts) — and is on a deprecation
+-- path. New decomposers route to AddEntityShape (entity_shape partition) for
+-- real-coord canonical shape, or AddIngestionTrajectory (ingestion_trajectory
+-- partition) for the mantissa-packed structural child manifest, depending on
+-- which substrate surface they're contributing to.
 CREATE TABLE substrate.physicality_contour
     PARTITION OF substrate.physicality FOR VALUES IN (13);
 ALTER TABLE substrate.physicality_contour

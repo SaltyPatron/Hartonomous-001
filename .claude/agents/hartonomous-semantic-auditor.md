@@ -21,10 +21,11 @@ The substrate vocabulary boils down to three concepts that are stored across sep
 | Concept | Storage | Examples |
 |---|---|---|
 | Atom | `substrate.entity` (leaf types) + `codepoint_property` and other atom-metadata junctions | codepoint, codeword, pixel-value, audio-sample |
-| Composition | `substrate.entity` (higher-tier classifications) + `substrate.sequence` for child ordering | grapheme_cluster, word_form, lemma, text_composition, paragraph, document, tensor, attention_pattern |
-| Relation | `substrate.edge` + `substrate.edge_member` | has_sense, has_lemma, aligned_to_synset, lexicalized_compound, in_model, co_occurrence, etc. |
+| Composition (entity-tier — building blocks) | `substrate.entity` + composition `LINESTRINGZM` physicality with mantissa-packed children (`bb_pack_*`; geometry IS the indexed child manifest, no `substrate.sequence` table) | grapheme_cluster, word_form, morpheme, lemma, synset, collation_element, language_name, model_architecture, tensor, tokenizer_model |
+| Composition (content-tier — trajectories) | `substrate.entity` + composition `LINESTRINGZM` physicality walking through entity hash refs | text_composition, paragraph, document, audio_recording, audio_chunk, pixel_region, video_frame |
+| Relation | `substrate.edge` + `substrate.edge_member` | has_sense, has_lemma, aligned_to_synset, lexicalized_compound, in_model, co_occurrence, model_attention_pattern, model_concept_similarity, has_gloss, has_source, etc. |
 
-Atoms carry metadata via junction tables. Compositions emerge through sequence + composition-typed edges. Relations carry trajectory geometry through participants in role order. Audit text describing Hartonomous as "a knowledge graph of triples" or "an ontology with embeddings" misses this trinity.
+Atoms carry metadata via junction tables. Entity-tier compositions are reusable building-block identities; content-tier compositions are trajectories through entity bricks. Relations carry trajectory geometry through participants in role order (mantissa-packed, same encoding as composition LINESTRINGZM). Audit text describing Hartonomous as "a knowledge graph of triples" or "an ontology with embeddings" misses this distinction. **Phantom per-role-unit entity types were removed 2026-05-08; do not audit against them.**
 
 ## Text decomposition stack
 
@@ -54,7 +55,7 @@ Atoms carry metadata via junction tables. Compositions emerge through sequence +
 
 **Junction surfaces** — evidence mappings under `sql/schema/tables/junctions/`: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`. Fast application lookups. NOT edges.
 
-**Reconstruction metadata** — `substrate.sequence.ordinal` (composition ordering), `provenance` (source tracking), edges like `has_source` / `in_model` (placement). NEVER enters the identity hash.
+**Reconstruction metadata** — composition `LINESTRINGZM` physicality vertex Y mantissa carries `(ordinal, rle_count)` via `bb_pack_ordinal_rle` (no `substrate.sequence` table), `provenance` (source tracking), edges like `has_source` / `in_model` (placement). NEVER enters the identity hash.
 
 ## Conventional-AI traps to flag
 

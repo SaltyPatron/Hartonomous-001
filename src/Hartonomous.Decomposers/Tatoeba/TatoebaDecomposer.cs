@@ -286,8 +286,18 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
             return; // Source or target sentence not seen in pass 1.
         }
 
-        EntityHandle src = batch.AddEntity(new Hash32(srcHash), "text_composition");
-        EntityHandle tgt = batch.AddEntity(new Hash32(tgtHash), "text_composition");
+        // P1i (AP-19 amplification fix): both endpoints are text_composition
+        // entities the prior pass already emitted into the substrate. Construct
+        // EntityHandle directly from the cached hashes rather than re-calling
+        // AddEntity, which would queue a redundant entity emission for the
+        // pipeline to flush + dedup via ON CONFLICT. With ~12M sentences and
+        // ~25M translation links, the redundant emissions amount to ~50M
+        // wasted COPY rows per full Tatoeba ingest (30:1+ amplification per
+        // 2026-05-08 telemetry). EntityHandle is a value type that just
+        // packages (hash, entityTypeCode); the edge_member emission below
+        // uses only the hash. No substrate state changes.
+        EntityHandle src = new EntityHandle(new Hash32(srcHash), "text_composition");
+        EntityHandle tgt = new EntityHandle(new Hash32(tgtHash), "text_composition");
 
         batch.AddEdge(EdgeTranslationLink, "tatoeba",
         [
@@ -323,7 +333,10 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
             batch.AddSignificance(audioEntity, "source_authority", TrustPriorMu);
             entityCount++;
 
-            EntityHandle sentEntity = batch.AddEntity(new Hash32(sentHash), "text_composition");
+            // P1i: same AP-19 fix as EmitLink — sentence text_composition was
+            // already emitted in pass 1 + cached in sentenceIdToHash. Construct
+            // EntityHandle directly rather than re-emitting via AddEntity.
+            EntityHandle sentEntity = new EntityHandle(new Hash32(sentHash), "text_composition");
 
             batch.AddEdge(EdgeRecordingOf, ProvenanceCode,
             [

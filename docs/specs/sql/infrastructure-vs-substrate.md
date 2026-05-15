@@ -133,7 +133,7 @@ The substrate holds **ingested digital content**, content-addressed, irreducible
 | `substrate.edge` + `substrate.edge_member` | Typed n-ary relations among entities, with role-ordered members and trajectory geometry. | Grows with attested relations. |
 | `substrate.physicality` | Geometric position and trajectory data for entities. One row per (entity, physicality_type). GiST-indexed. | Grows with entities that have geometry. |
 | `substrate.significance` | Per-entity and per-edge Glicko-2 ratings, scoped by significance context. | Grows with rated substrate objects. |
-| `substrate.sequence` | Ordered composition relationships (parent → ordinally-positioned children, with run-length encoding). | Grows with compositions. |
+| (composition ordering — NOT a separate table) | Ordered composition relationships live in the parent's `physicality_contour` LINESTRINGZM vertex stream. Each vertex mantissa-packs `(child.hash_bits_0_51, bb_pack_ordinal_rle(ordinal, rle_count), child.hash_bits_52_103, metadata)`. The geometry IS the indexed child manifest; reverse-resolve via `substrate.entity_by_hash_prefix`. There is no `substrate.sequence` table. | Grows with compositions (one LINESTRINGZM row per composition per content_hash realization). |
 
 **Properties**:
 - Content-addressed: every row's identity is BLAKE3 over content only.
@@ -245,7 +245,7 @@ Both POS exist, both are rated. The sentence is legal.
 
 ### Substrate-layer observation
 
-The sentence decomposes as a `text_composition` whose children — via `substrate.sequence` — include the `rake` word-form entity **at two distinct ordinal positions**. Because identity is content-only, it is the same entity ID referenced twice, not two entities.
+The sentence decomposes as a `text_composition` whose children — encoded as mantissa-packed vertices in the text_composition's LINESTRINGZM physicality — include the `rake` word-form entity **at two distinct ordinal positions** (two vertices whose X+Z mantissa halves resolve to the same `rake` hash via `substrate.entity_by_hash_prefix`, but whose Y mantissa carries different `bb_pack_ordinal_rle(ordinal, rle_count)` values). Because identity is content-only, it is the same entity referenced twice, not two entities.
 
 The sentence's syntactic parse (from UD decomposition) attaches one `rake` reference to a `VERB` token role and the other to a `NOUN` token role. The `substrate.edge` rows carrying `has_lemma` and dependency relations include both role attachments.
 

@@ -13,7 +13,7 @@ internal static class CliConfiguration
 
     internal static string DefaultConnectionString() =>
         Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
-        ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous;" +
+        ?? "Host=/var/run/postgresql;Port=5432;Database=hartonomous;" +
            "Include Error Detail=true;" +
            "Minimum Pool Size=8;Maximum Pool Size=32;Multiplexing=true;" +
            "Command Timeout=600;" +

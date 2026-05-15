@@ -157,22 +157,18 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
             }
 
             // Post-phase enrichment: single authority for these operations.
-            // Order is significant: trajectories must exist before significance
-            // priming can correctly compute costs over the edge graph.
-            //   0. Wait until all phase emissions are durable in substrate;
-            //      the post-passes read database state, not channel state.
-            //   1. Populate substrate.edge.geom for edges whose producer did
-            //      not attach inline LINESTRINGZM (cross-batch participants,
-            //      LINESTRING4D-physicality compositions, etc.).
-            //   2. Prime substrate.edge_significance for every arena in
-            //      substrate.significance_context (AP-1: cross-product, no filter).
+            // P1f: drain completion (not phase completion) is the post-pass
+            // trigger. DrainPendingAsync internally invokes
+            // PopulateEdgeTrajectoriesAsync + PrimeAllSignificanceAsync once
+            // all channels are quiescent, so edge.geom is non-null and per-arena
+            // Glicko priming has fired against every current arena before this
+            // returns. The substrate is continuously queryable; phases are an
+            // orchestration convenience for the runner, NOT a substrate
+            // boundary. Live ingest (user prompts at runtime, single-source
+            // mid-conversation uploads, etc.) hits the same drain path with
+            // the same atomic-on-drain semantics — no phase-end window where
+            // edges sit with NULL geom or arenas wait for priming.
             await _pipeline.DrainPendingAsync(ct);
-            PipelineStats stats = _pipeline.Stats;
-            if (stats.EdgesSubmitted > 0)
-            {
-                await _pipeline.PopulateEdgeTrajectoriesAsync(ct);
-                await _pipeline.PrimeAllSignificanceAsync(ct);
-            }
 
             _status[phase] = PhaseStatus.Completed;
             await PersistStatusAsync(phase, "completed", errorMessage: null, ct);

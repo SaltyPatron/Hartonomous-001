@@ -80,14 +80,13 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     ('tensor',              'model_weights'),
     ('model_architecture',  'model_weights'),
     ('tokenizer_model',     'model_weights');
-    -- NOTE: 'attention_pattern' was previously seeded here but is DEPRECATED by the
-    -- 2026-05-08 architectural correction (sql/schema/seed/entity_type.sql:59-98).
-    -- Per-role units of Track 2 transformation tensors (attention patterns, FFN
-    -- rows, etc.) manifest as typed attestation EDGES between existing word_form
-    -- content entities (model_attention_pattern per sql/schema/seed/edge_type.sql:84-90),
-    -- NOT as their own entity types. See AP-25 in .claude/rules/45-anti-patterns.md
-    -- and the canonical layer-type decomposer library at
-    -- docs/specs/decomposers/layer-type-library.md.
+    -- NOTE: 'attention_pattern' was previously seeded here but was REMOVED by the
+    -- 2026-05-08 architectural correction. entity_type.sql now has 23 real content
+    -- types; no phantom rows remain. Per-role units of Track 2 transformation tensors
+    -- (attention patterns, FFN rows, etc.) manifest as typed attestation EDGES between
+    -- existing word_form content entities (model_attention_pattern per
+    -- sql/schema/seed/edge_type.sql:84-90), NOT as their own entity types.
+    -- See AP-25 in .claude/rules/45-anti-patterns.md.
 
 COMMIT;
 ```

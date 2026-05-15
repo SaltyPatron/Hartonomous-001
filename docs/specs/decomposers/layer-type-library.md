@@ -12,7 +12,7 @@
 
 Decomposers organize by **tensor layer-type, not by downstream modality.** A vision transformer's patch attention is the same math as a text encoder's token attention; only the content entities the attestations bind change. A diffusion transformer's self-attention is the same math as an LLM's. Once the library exists, ingesting a new model is composition over layer-type decomposers + content decomposers + metadata decomposers, not bespoke code per architecture.
 
-This is the corrected factoring per the 2026-05-08 architectural correction (`sql/schema/seed/entity_type.sql:59-98`) and AP-26 in `.claude/rules/45-anti-patterns.md`. Modality factoring (per-modality decomposers like `TextModelDecomposer`, `VisionModelDecomposer`) is the wrong shape — modality is a downstream USE property; layer-type is what the tensor math actually IS.
+This is the corrected factoring per the 2026-05-08 architectural correction (phantom entity types removed from `sql/schema/seed/entity_type.sql`; 23 real content types remain) and AP-26 in `.claude/rules/45-anti-patterns.md`. Modality factoring (per-modality decomposers like `TextModelDecomposer`, `VisionModelDecomposer`) is the wrong shape — modality is a downstream USE property; layer-type is what the tensor math actually IS.
 
 ---
 

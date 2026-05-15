@@ -69,12 +69,19 @@
 -- @include schema/tables/reference/lexname.sql
 -- @include schema/tables/reference/edge_type.sql
 
+-- provenance_modality junction is created here (before its seed-time INSERT in
+-- Phase 6 seed/provenance.sql). The junction belongs in Phase 8 by topic but its
+-- seed data is appended to seed/provenance.sql; create the table early so the
+-- Phase-6 seed can populate it without a forward reference.
+-- @include schema/tables/junctions/provenance_modality.sql
+
 -- ── Phase 6: reference seed (entity_type before edge_type — FK code lookup) ─
 -- provenance_edge_authority seed is deferred to Phase 8b (after the
 -- junction table is created) since it INSERTs against substrate.provenance_edge_authority.
 -- @include schema/seed/entity_type.sql
 -- @include schema/seed/physicality_type.sql
 -- @include schema/seed/physicality_type_embedding_firefly.sql
+-- @include schema/seed/physicality_type_trajectories.sql
 -- @include schema/seed/edge_role.sql
 -- @include schema/seed/significance_context.sql
 -- @include schema/seed/attestation_type.sql
@@ -117,6 +124,8 @@
 -- @include schema/tables/core/physicality_audio.sql
 -- @include schema/tables/core/physicality_model.sql
 -- @include schema/tables/core/physicality_contour.sql
+-- @include schema/tables/core/physicality_entity_shape.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory.sql
 -- @include schema/tables/core/physicality_default.sql
 -- @include schema/tables/core/entity_significance.sql
 -- @include schema/tables/core/entity_significance_lexical.sql
@@ -163,7 +172,7 @@
 -- @include schema/tables/junctions/pattern_deprel.sql
 -- @include schema/tables/junctions/provenance_edge_authority.sql
 -- @include schema/tables/junctions/entity_classification.sql
--- @include schema/tables/junctions/provenance_modality.sql
+-- provenance_modality.sql moved to Phase 5b above (seed-time forward reference)
 
 -- ── Phase 8b: post-junction seed (depends on junction tables existing) ─
 -- @include schema/seed/provenance_edge_authority.sql

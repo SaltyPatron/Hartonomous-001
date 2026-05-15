@@ -29,7 +29,7 @@ public static byte[] ComputeMerkleHash(ReadOnlySpan<byte[]> childHashes) // conc
 protected static byte[] ComputeEdgeHash(int edgeTypeId, ReadOnlySpan<byte[]> participantHashes) // [4B type | hashes] → ComputeHash()
 ```
 
-Content only. Position/ordinal/filename/tensor name → `sequence`, edges, `provenance`. Natural-language text MUST go through `CanonicalTextDecomposer.Emit` — `ComputeAtomicStringHash` is for structured atomic identifiers only.
+Content only. Position/ordinal/filename/tensor name → composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`), edges (`has_source`, `in_model`, `edge_member.role_position`), or `provenance`. No `substrate.sequence` table. Natural-language text MUST go through `CanonicalTextDecomposer.Emit` — `ComputeAtomicStringHash` is for structured atomic identifiers only.
 
 ## Compute facade
 
@@ -63,7 +63,7 @@ public interface IDecomposer : IAsyncDisposable {
 | `substrate.physicality` | physicality_type_id, entity_hash, content_hash, geom | physicality_type_id |
 | `substrate.entity_significance` | context_type_id, entity_hash, mu, sigma, volatility, games | context_type_id |
 | `substrate.edge_significance` | context_type_id, edge_type_id, edge_hash, mu, sigma, volatility, games | context_type_id |
-| `substrate.sequence` | parent_hash, ordinal, child_hash, rle_count | not partitioned |
+| (composition ordering) | LIVES IN composition LINESTRINGZM physicality vertex Y mantissa via `bb_pack_ordinal_rle(ordinal, rle_count)`; NOT a separate table | n/a |
 
 ## Source locations
 

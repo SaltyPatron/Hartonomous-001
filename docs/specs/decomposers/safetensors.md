@@ -331,7 +331,7 @@ physicality: entity_id=qwen3b_layer0_qproj_weight, type='weight_distribution', g
 
 ### Extracted Semantic Edges (corrected per spec §III)
 
-Per-role units of Track 2 transformation tensors manifest as **typed attestation edges between existing content entities** (typically two `word_form` tokens), NOT as synthetic `attention_pattern` / `attention_head` / `ffn_neuron` / `embedding_position` / etc. entities. The phantom entity types listed in `sql/schema/seed/entity_type.sql:99-159` (rows 19-54 except 16-18) are deprecated by the 2026-05-08 architectural correction; new code emits attestation edges. See AP-25 in `.claude/rules/45-anti-patterns.md`.
+Per-role units of Track 2 transformation tensors manifest as **typed attestation edges between existing content entities** (typically two `word_form` tokens), NOT as synthetic `attention_pattern` / `attention_head` / `ffn_neuron` / `embedding_position` / etc. entities. The phantom entity types were removed from `sql/schema/seed/entity_type.sql` by the 2026-05-08 architectural correction (23 real content types remain); new code emits attestation edges. See AP-25 in `.claude/rules/45-anti-patterns.md`.
 
 ```
 // From attention weight analysis (the working pattern from TokenAttentionEdgePass.cs):

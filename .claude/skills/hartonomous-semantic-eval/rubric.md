@@ -15,7 +15,7 @@ A semantic explanation, plan, review, or implementation path passes only if it d
    - Physicality → `substrate.physicality` (POINTZM/LINESTRINGZM/MULTILINESTRINGZM, GiST-indexed)
    - Reference vocabulary → `pos`, `deprel`, `sense`, `language`, etc.
    - Junction surfaces → `entity_pos`, `entity_language`, `entity_morph_feature`, etc.
-   - Reconstruction metadata → `substrate.sequence.ordinal`, `provenance`, edges like `has_source` and `in_model`
+   - Reconstruction metadata → composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`; no `substrate.sequence` table), `provenance`, edges like `has_source` and `in_model`, `edge_member.role_position`
 
 4. **Preserves the distinction between infrastructure and source content.** Reference tables and junctions enable lookups; they are not the same as entity/edge substrate content.
 

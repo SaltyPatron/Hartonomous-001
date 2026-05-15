@@ -254,6 +254,339 @@ def parse_blocks(path):
     return out
 
 
+## NOTE: per-codepoint properties (bidi_mirroring, bidi_brackets, derived_age,
+## special_casing, arabic_shaping, name_aliases, script_extensions, indic_*,
+## etc.) live in `ucd.all.grouped.xml` (/vault/Data/Unicode/Public/{ver}/ucdxml/
+## ucd.all.grouped.zip). The dense Consortium-published XML carries every
+## per-codepoint property in one structured place. The C-side codegen
+## (`ext/libhartonomous/codegen/gen_ucd_grouped.c`) is the canonical XML
+## consumer — extend its property emission rather than adding .txt parsers
+## here. The parsers below are reserved for data NOT in the grouped XML:
+## multi-codepoint sequence files (NamedSequences, emoji-sequences,
+## emoji-zwj-sequences, StandardizedVariants), security/IDNA (UTS #39, UTS
+## #46), Unihan radical-stroke (CJKRadicals.txt), and UCA collation
+## (uca/allkeys.txt — already wired above).
+
+
+def parse_named_sequences(path):
+    """NamedSequences.txt — Unicode-Consortium-blessed multi-codepoint
+    named sequences.
+
+    Format: `<name> ; <codepoint_seq>` where codepoint_seq is whitespace-
+    separated hex codepoints. Returns List[Tuple[str, List[int]]].
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            name, cps_str = [p.strip() for p in line.split(";", 1)]
+            cps = [int(x, 16) for x in cps_str.split()]
+            if cps:
+                out.append((name, cps))
+    return out
+
+
+def parse_emoji_sequences(path):
+    """emoji-sequences.txt — basic emoji + emoji_keycap + emoji modifier +
+    emoji flag + RGI emoji tag sequences.
+
+    Format: `<codepoint_or_range> ; <property> ; <name>` where codepoint
+    may be a range `XXXX..YYYY` or a single hex value or a whitespace-
+    separated sequence. Returns List[Tuple[List[int], str, str]] of
+    (codepoint_sequence, property_class, display_name). Ranges expand
+    to individual sequences.
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 2:
+                continue
+            cps_field = parts[0]
+            prop = parts[1]
+            name = parts[2] if len(parts) >= 3 else ""
+            if ".." in cps_field:
+                lo_s, hi_s = cps_field.split("..")
+                lo_i, hi_i = int(lo_s, 16), int(hi_s, 16)
+                for cp in range(lo_i, hi_i + 1):
+                    out.append(([cp], prop, name))
+            else:
+                cps = [int(x, 16) for x in cps_field.split()]
+                if cps:
+                    out.append((cps, prop, name))
+    return out
+
+
+def parse_emoji_zwj_sequences(path):
+    """emoji-zwj-sequences.txt — RGI emoji ZWJ sequences (family emoji,
+    profession emoji, gender modifiers, etc.).
+
+    Format: `<codepoint_seq> ; <property> ; <name>`. Returns
+    List[Tuple[List[int], str, str]]. ZWJ sequences are always multi-
+    codepoint and include the U+200D ZWJ codepoint between joined
+    elements.
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 2:
+                continue
+            cps = [int(x, 16) for x in parts[0].split()]
+            prop = parts[1]
+            name = parts[2] if len(parts) >= 3 else ""
+            if cps:
+                out.append((cps, prop, name))
+    return out
+
+
+def parse_derived_age(path):
+    """DerivedAge.txt — per-codepoint Unicode version introduced (UAX #44
+    Derived Property: Age).
+
+    Format: `<codepoint_or_range> ; <version>`. Returns Dict[int, str]
+    mapping codepoint → version string like "1.1" or "17.0". Used for
+    cross-version disagreement tracking (P3g).
+    """
+    out = {}
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            rng, ver = [p.strip() for p in line.split(";", 1)]
+            if ".." in rng:
+                lo_s, hi_s = rng.split("..")
+                lo_i, hi_i = int(lo_s, 16), int(hi_s, 16)
+            else:
+                lo_i = hi_i = int(rng, 16)
+            for cp in range(lo_i, hi_i + 1):
+                out[cp] = ver
+    return out
+
+
+def parse_special_casing(path):
+    """SpecialCasing.txt — full case mappings including multi-codepoint
+    cases (ß → SS, etc.) and locale-conditional rules.
+
+    Format: `<cp> ; <lower_seq> ; <title_seq> ; <upper_seq> ; <condition?>`.
+    Returns List[Tuple[int, List[int], List[int], List[int], Optional[str]]]
+    of (codepoint, lower_seq, title_seq, upper_seq, condition_or_None).
+    Empty mapping fields map to the codepoint itself (caller decides).
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 4:
+                continue
+            cp = int(parts[0], 16)
+
+            def _seq(s):
+                return [int(x, 16) for x in s.split()] if s else []
+
+            lower = _seq(parts[1])
+            title = _seq(parts[2])
+            upper = _seq(parts[3])
+            condition = parts[4] if len(parts) >= 5 and parts[4] else None
+            out.append((cp, lower, title, upper, condition))
+    return out
+
+
+def parse_confusables(path):
+    """confusables.txt — UTS #39 Section 4 confusables data.
+
+    Format: `<source_cp_seq> ; <target_cp_seq> ; <ma_class>` where ma_class
+    is 'MA' (mixed-script any) or similar. Returns
+    List[Tuple[List[int], List[int], str]].
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 2:
+                continue
+            src = [int(x, 16) for x in parts[0].split()]
+            tgt = [int(x, 16) for x in parts[1].split()]
+            cls = parts[2] if len(parts) >= 3 else "MA"
+            if src and tgt:
+                out.append((src, tgt, cls))
+    return out
+
+
+def parse_idna_mapping(path):
+    """IdnaMappingTable.txt — UTS #46 IDNA mapping table.
+
+    Format: `<cp_or_range> ; <status> ; <mapping_or_empty>`. Status values:
+    'valid', 'mapped', 'disallowed', 'ignored', 'deviation', 'disallowed_STD3_valid',
+    'disallowed_STD3_mapped'. Returns List[Tuple[int, int, str, List[int]]] of
+    (cp_lo, cp_hi, status, mapping_cps).
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 2:
+                continue
+            rng = parts[0]
+            status = parts[1]
+            mapping = []
+            if len(parts) >= 3 and parts[2]:
+                mapping = [int(x, 16) for x in parts[2].split()]
+            if ".." in rng:
+                lo_s, hi_s = rng.split("..")
+                lo_i, hi_i = int(lo_s, 16), int(hi_s, 16)
+            else:
+                lo_i = hi_i = int(rng, 16)
+            out.append((lo_i, hi_i, status, mapping))
+    return out
+
+
+def parse_cjk_radicals(path):
+    """CJKRadicals.txt — Kangxi radical → CJK ideograph mappings.
+
+    Format: `<radical_number> ; <unified_ideograph_cp> ; <cjk_radical_cp>`.
+    Returns Dict[str, Tuple[int, int]] mapping radical number (e.g. "1",
+    "1'") to (unified_ideograph_cp, cjk_radical_cp).
+    """
+    out = {}
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 3:
+                continue
+            radical = parts[0]
+            unified = int(parts[1], 16) if parts[1] else 0
+            cjk_radical = int(parts[2], 16) if parts[2] else 0
+            out[radical] = (unified, cjk_radical)
+    return out
+
+
+def parse_arabic_shaping(path):
+    """ArabicShaping.txt — per-codepoint Arabic joining type + group.
+
+    Format: `<cp> ; <name> ; <joining_type> ; <joining_group>`. Returns
+    Dict[int, Tuple[str, str]] mapping codepoint → (joining_type,
+    joining_group).
+    """
+    out = {}
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 4:
+                continue
+            cp = int(parts[0], 16)
+            jt = parts[2]
+            jg = parts[3]
+            out[cp] = (jt, jg)
+    return out
+
+
+def parse_standardized_variants(path):
+    """StandardizedVariants.txt — Variation Selector sequences.
+
+    Format: `<base_cp> <vs_cp> ; <description> ; <scope?>`. Returns
+    List[Tuple[int, int, str, str]] of (base_cp, vs_cp, description, scope).
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 2:
+                continue
+            cps = [int(x, 16) for x in parts[0].split()]
+            if len(cps) != 2:
+                continue
+            desc = parts[1]
+            scope = parts[2] if len(parts) >= 3 else ""
+            out.append((cps[0], cps[1], desc, scope))
+    return out
+
+
+def parse_name_aliases(path):
+    """NameAliases.txt — per-codepoint name aliases.
+
+    Format: `<cp> ; <alias> ; <type>` where type ∈ {'correction',
+    'control', 'alternate', 'figment', 'abbreviation'}. Returns
+    List[Tuple[int, str, str]].
+    """
+    out = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            parts = [p.strip() for p in line.split(";")]
+            if len(parts) < 3:
+                continue
+            cp = int(parts[0], 16)
+            alias = parts[1]
+            atype = parts[2]
+            out.append((cp, alias, atype))
+    return out
+
+
+def parse_script_extensions(path):
+    """ScriptExtensions.txt — per-codepoint script extensions (UAX #24).
+
+    Format: `<cp_or_range> ; <script_codes>` (whitespace-separated script
+    codes). Returns Dict[int, List[str]] mapping codepoint → list of
+    script codes.
+    """
+    out = {}
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or ";" not in line:
+                continue
+            rng, scripts = [p.strip() for p in line.split(";", 1)]
+            codes = scripts.split()
+            if ".." in rng:
+                lo_s, hi_s = rng.split("..")
+                lo_i, hi_i = int(lo_s, 16), int(hi_s, 16)
+            else:
+                lo_i = hi_i = int(rng, 16)
+            for cp in range(lo_i, hi_i + 1):
+                out[cp] = codes
+    return out
+
+
+def parse_indic_categories(path, allowed=None):
+    """IndicSyllabicCategory.txt / IndicPositionalCategory.txt — both files
+    share parse_ranged_property's format.
+
+    This is a thin wrapper for clarity; delegates to parse_ranged_property.
+    Returns Dict[int, str] mapping codepoint → category value.
+    """
+    return parse_ranged_property(path, allowed=allowed)
+
+
 # ── Code emission helpers ────────────────────────────────────────────────
 def emit_uint8_array(name, vals):
     L = [f"const uint8_t {name}[{len(vals)}] = {{"]
@@ -671,6 +1004,300 @@ def emit_casing(out_dir, cp_upper, cp_lower, cp_title, cp_simple_fold,
     (out_dir / "pg_ucd_casing.c").write_text("".join(c), encoding="utf-8")
 
 
+def emit_named_sequences(out_dir, named_sequences):
+    """UCD NamedSequences.txt — Consortium-blessed multi-codepoint sequences.
+
+    Emits offset/length-keyed flat tables:
+      * uc_named_seq_cps[N]   — flat uint32_t array of codepoints across all sequences
+      * uc_named_seq_off[K]   — offset into uc_named_seq_cps for sequence K
+      * uc_named_seq_len[K]   — length in codepoints of sequence K
+      * uc_named_seq_name_off[K]   — offset into uc_named_seq_names blob
+      * uc_named_seq_name_len[K]   — length in bytes of name K (UTF-8)
+      * uc_named_seq_names[]  — flat UTF-8 byte blob of all names
+      * UC_NAMED_SEQ_COUNT    — total sequence count
+    """
+    cps_blob = []
+    names_blob = bytearray()
+    off, lens, name_off, name_len = [], [], [], []
+    for name, cps in named_sequences:
+        off.append(len(cps_blob))
+        lens.append(len(cps))
+        cps_blob.extend(cps)
+        nb = name.encode("utf-8")
+        name_off.append(len(names_blob))
+        name_len.append(len(nb))
+        names_blob.extend(nb)
+    h = ["/* GENERATED — UCD NamedSequences.txt. */\n",
+         "#ifndef PG_UCD_NAMED_SEQUENCES_H\n#define PG_UCD_NAMED_SEQUENCES_H\n",
+         "#include <stdint.h>\n\n",
+         f"#define UC_NAMED_SEQ_COUNT          {len(named_sequences)}\n",
+         f"#define UC_NAMED_SEQ_CPS_TOTAL      {len(cps_blob)}\n",
+         f"#define UC_NAMED_SEQ_NAMES_TOTAL    {len(names_blob)}\n\n",
+         "extern const uint32_t uc_named_seq_cps     [UC_NAMED_SEQ_CPS_TOTAL];\n",
+         "extern const uint32_t uc_named_seq_off     [UC_NAMED_SEQ_COUNT];\n",
+         "extern const uint8_t  uc_named_seq_len     [UC_NAMED_SEQ_COUNT];\n",
+         "extern const uint32_t uc_named_seq_name_off[UC_NAMED_SEQ_COUNT];\n",
+         "extern const uint16_t uc_named_seq_name_len[UC_NAMED_SEQ_COUNT];\n",
+         "extern const uint8_t  uc_named_seq_names   [UC_NAMED_SEQ_NAMES_TOTAL];\n",
+         "#endif\n"]
+    (out_dir / "pg_ucd_named_sequences.h").write_text("".join(h), encoding="utf-8")
+    c = ["/* GENERATED. */\n#include \"pg_ucd_named_sequences.h\"\n\n",
+         emit_uint32_array("uc_named_seq_cps", cps_blob), "\n\n",
+         emit_uint32_array("uc_named_seq_off", off), "\n\n",
+         emit_uint8_array("uc_named_seq_len", lens), "\n\n",
+         emit_uint32_array("uc_named_seq_name_off", name_off), "\n\n",
+         emit_byte_blob("uc_named_seq_name_len_data", b"", 0, 1).replace(
+             "uc_named_seq_name_len_data", "_unused_name_len_pad"), "\n",
+         "const uint16_t uc_named_seq_name_len[UC_NAMED_SEQ_COUNT] = {\n    ",
+         ", ".join(str(x) for x in name_len), "\n};\n\n",
+         emit_byte_blob("uc_named_seq_names", bytes(names_blob), len(names_blob), 1), "\n"]
+    (out_dir / "pg_ucd_named_sequences.c").write_text("".join(c), encoding="utf-8")
+
+
+def emit_emoji_sequences(out_dir, emoji_sequences, table_name_root):
+    """emoji-sequences.txt OR emoji-zwj-sequences.txt — RGI emoji sequences
+    with property class + display name.
+
+    `table_name_root` distinguishes the two tables ("emoji_seq" vs
+    "emoji_zwj_seq") so both can coexist in the same extension.
+    """
+    cps_blob = []
+    names_blob = bytearray()
+    props_blob = bytearray()
+    off, lens, name_off, name_len, prop_off, prop_len = [], [], [], [], [], []
+    for cps, prop, name in emoji_sequences:
+        off.append(len(cps_blob))
+        lens.append(len(cps))
+        cps_blob.extend(cps)
+        nb = name.encode("utf-8")
+        name_off.append(len(names_blob))
+        name_len.append(len(nb))
+        names_blob.extend(nb)
+        pb = prop.encode("utf-8")
+        prop_off.append(len(props_blob))
+        prop_len.append(len(pb))
+        props_blob.extend(pb)
+    pfx = f"uc_{table_name_root}"
+    macro_root = table_name_root.upper()
+    h = [f"/* GENERATED — UCD emoji sequences ({table_name_root}). */\n",
+         f"#ifndef PG_UCD_{macro_root}_H\n#define PG_UCD_{macro_root}_H\n",
+         "#include <stdint.h>\n\n",
+         f"#define UC_{macro_root}_COUNT       {len(emoji_sequences)}\n",
+         f"#define UC_{macro_root}_CPS_TOTAL   {len(cps_blob)}\n",
+         f"#define UC_{macro_root}_NAMES_TOTAL {len(names_blob)}\n",
+         f"#define UC_{macro_root}_PROPS_TOTAL {len(props_blob)}\n\n",
+         f"extern const uint32_t {pfx}_cps     [UC_{macro_root}_CPS_TOTAL];\n",
+         f"extern const uint32_t {pfx}_off     [UC_{macro_root}_COUNT];\n",
+         f"extern const uint8_t  {pfx}_len     [UC_{macro_root}_COUNT];\n",
+         f"extern const uint32_t {pfx}_name_off[UC_{macro_root}_COUNT];\n",
+         f"extern const uint16_t {pfx}_name_len[UC_{macro_root}_COUNT];\n",
+         f"extern const uint8_t  {pfx}_names   [UC_{macro_root}_NAMES_TOTAL];\n",
+         f"extern const uint32_t {pfx}_prop_off[UC_{macro_root}_COUNT];\n",
+         f"extern const uint8_t  {pfx}_prop_len[UC_{macro_root}_COUNT];\n",
+         f"extern const uint8_t  {pfx}_props   [UC_{macro_root}_PROPS_TOTAL];\n",
+         "#endif\n"]
+    (out_dir / f"pg_ucd_{table_name_root}.h").write_text("".join(h), encoding="utf-8")
+    c = [f"/* GENERATED. */\n#include \"pg_ucd_{table_name_root}.h\"\n\n",
+         emit_uint32_array(f"{pfx}_cps", cps_blob), "\n\n",
+         emit_uint32_array(f"{pfx}_off", off), "\n\n",
+         emit_uint8_array(f"{pfx}_len", lens), "\n\n",
+         emit_uint32_array(f"{pfx}_name_off", name_off), "\n\n",
+         f"const uint16_t {pfx}_name_len[UC_{macro_root}_COUNT] = {{\n    ",
+         ", ".join(str(x) for x in name_len), "\n};\n\n",
+         emit_byte_blob(f"{pfx}_names", bytes(names_blob), len(names_blob), 1), "\n\n",
+         emit_uint32_array(f"{pfx}_prop_off", prop_off), "\n\n",
+         emit_uint8_array(f"{pfx}_prop_len", prop_len), "\n\n",
+         emit_byte_blob(f"{pfx}_props", bytes(props_blob), len(props_blob), 1), "\n"]
+    (out_dir / f"pg_ucd_{table_name_root}.c").write_text("".join(c), encoding="utf-8")
+
+
+def emit_standardized_variants(out_dir, variants):
+    """StandardizedVariants.txt — variation selector sequences.
+
+    Each row: (base_cp, vs_cp, description, scope).
+    """
+    bases = [b for b, _v, _d, _s in variants]
+    vses  = [v for _b, v, _d, _s in variants]
+    descs_blob = bytearray()
+    scopes_blob = bytearray()
+    d_off, d_len, s_off, s_len = [], [], [], []
+    for _b, _v, desc, scope in variants:
+        db = desc.encode("utf-8")
+        d_off.append(len(descs_blob))
+        d_len.append(len(db))
+        descs_blob.extend(db)
+        sb = scope.encode("utf-8")
+        s_off.append(len(scopes_blob))
+        s_len.append(len(sb))
+        scopes_blob.extend(sb)
+    h = ["/* GENERATED — UCD StandardizedVariants.txt. */\n",
+         "#ifndef PG_UCD_STANDARDIZED_VARIANTS_H\n#define PG_UCD_STANDARDIZED_VARIANTS_H\n",
+         "#include <stdint.h>\n\n",
+         f"#define UC_STD_VAR_COUNT        {len(variants)}\n",
+         f"#define UC_STD_VAR_DESCS_TOTAL  {len(descs_blob)}\n",
+         f"#define UC_STD_VAR_SCOPES_TOTAL {len(scopes_blob)}\n\n",
+         "extern const uint32_t uc_std_var_base    [UC_STD_VAR_COUNT];\n",
+         "extern const uint32_t uc_std_var_vs      [UC_STD_VAR_COUNT];\n",
+         "extern const uint32_t uc_std_var_desc_off[UC_STD_VAR_COUNT];\n",
+         "extern const uint16_t uc_std_var_desc_len[UC_STD_VAR_COUNT];\n",
+         "extern const uint8_t  uc_std_var_descs   [UC_STD_VAR_DESCS_TOTAL];\n",
+         "extern const uint32_t uc_std_var_scope_off[UC_STD_VAR_COUNT];\n",
+         "extern const uint8_t  uc_std_var_scope_len[UC_STD_VAR_COUNT];\n",
+         "extern const uint8_t  uc_std_var_scopes   [UC_STD_VAR_SCOPES_TOTAL];\n",
+         "#endif\n"]
+    (out_dir / "pg_ucd_standardized_variants.h").write_text("".join(h), encoding="utf-8")
+    c = ["/* GENERATED. */\n#include \"pg_ucd_standardized_variants.h\"\n\n",
+         emit_uint32_array("uc_std_var_base", bases), "\n\n",
+         emit_uint32_array("uc_std_var_vs", vses), "\n\n",
+         emit_uint32_array("uc_std_var_desc_off", d_off), "\n\n",
+         "const uint16_t uc_std_var_desc_len[UC_STD_VAR_COUNT] = {\n    ",
+         ", ".join(str(x) for x in d_len), "\n};\n\n",
+         emit_byte_blob("uc_std_var_descs", bytes(descs_blob), len(descs_blob), 1), "\n\n",
+         emit_uint32_array("uc_std_var_scope_off", s_off), "\n\n",
+         emit_uint8_array("uc_std_var_scope_len", s_len), "\n\n",
+         emit_byte_blob("uc_std_var_scopes", bytes(scopes_blob), len(scopes_blob), 1), "\n"]
+    (out_dir / "pg_ucd_standardized_variants.c").write_text("".join(c), encoding="utf-8")
+
+
+def emit_confusables(out_dir, confusables):
+    """UTS #39 confusables.txt — source sequence → target sequence + class.
+
+    Each row: (source_cps, target_cps, class). For substrate use, class is
+    typically "MA" (mixed-script any).
+    """
+    src_blob, tgt_blob = [], []
+    src_off, src_len, tgt_off, tgt_len = [], [], [], []
+    cls_blob = bytearray()
+    cls_off, cls_len = [], []
+    for src, tgt, cls in confusables:
+        src_off.append(len(src_blob))
+        src_len.append(len(src))
+        src_blob.extend(src)
+        tgt_off.append(len(tgt_blob))
+        tgt_len.append(len(tgt))
+        tgt_blob.extend(tgt)
+        cb = cls.encode("utf-8")
+        cls_off.append(len(cls_blob))
+        cls_len.append(len(cb))
+        cls_blob.extend(cb)
+    h = ["/* GENERATED — UTS #39 confusables.txt. */\n",
+         "#ifndef PG_UCD_CONFUSABLES_H\n#define PG_UCD_CONFUSABLES_H\n",
+         "#include <stdint.h>\n\n",
+         f"#define UC_CONFUSABLES_COUNT     {len(confusables)}\n",
+         f"#define UC_CONFUSABLES_SRC_TOTAL {len(src_blob)}\n",
+         f"#define UC_CONFUSABLES_TGT_TOTAL {len(tgt_blob)}\n",
+         f"#define UC_CONFUSABLES_CLS_TOTAL {len(cls_blob)}\n\n",
+         "extern const uint32_t uc_conf_src_cps[UC_CONFUSABLES_SRC_TOTAL];\n",
+         "extern const uint32_t uc_conf_tgt_cps[UC_CONFUSABLES_TGT_TOTAL];\n",
+         "extern const uint32_t uc_conf_src_off[UC_CONFUSABLES_COUNT];\n",
+         "extern const uint8_t  uc_conf_src_len[UC_CONFUSABLES_COUNT];\n",
+         "extern const uint32_t uc_conf_tgt_off[UC_CONFUSABLES_COUNT];\n",
+         "extern const uint8_t  uc_conf_tgt_len[UC_CONFUSABLES_COUNT];\n",
+         "extern const uint32_t uc_conf_cls_off[UC_CONFUSABLES_COUNT];\n",
+         "extern const uint8_t  uc_conf_cls_len[UC_CONFUSABLES_COUNT];\n",
+         "extern const uint8_t  uc_conf_cls    [UC_CONFUSABLES_CLS_TOTAL];\n",
+         "#endif\n"]
+    (out_dir / "pg_ucd_confusables.h").write_text("".join(h), encoding="utf-8")
+    c = ["/* GENERATED. */\n#include \"pg_ucd_confusables.h\"\n\n",
+         emit_uint32_array("uc_conf_src_cps", src_blob), "\n\n",
+         emit_uint32_array("uc_conf_tgt_cps", tgt_blob), "\n\n",
+         emit_uint32_array("uc_conf_src_off", src_off), "\n\n",
+         emit_uint8_array("uc_conf_src_len", src_len), "\n\n",
+         emit_uint32_array("uc_conf_tgt_off", tgt_off), "\n\n",
+         emit_uint8_array("uc_conf_tgt_len", tgt_len), "\n\n",
+         emit_uint32_array("uc_conf_cls_off", cls_off), "\n\n",
+         emit_uint8_array("uc_conf_cls_len", cls_len), "\n\n",
+         emit_byte_blob("uc_conf_cls", bytes(cls_blob), len(cls_blob), 1), "\n"]
+    (out_dir / "pg_ucd_confusables.c").write_text("".join(c), encoding="utf-8")
+
+
+def emit_idna_mapping(out_dir, idna_rows):
+    """UTS #46 IdnaMappingTable.txt — per-codepoint-range status + optional mapping.
+
+    Each row: (cp_lo, cp_hi, status, mapping_cps). Stored as a range table
+    sorted by cp_lo; lookup is binary search.
+    """
+    lo_arr = [r[0] for r in idna_rows]
+    hi_arr = [r[1] for r in idna_rows]
+    status_blob = bytearray()
+    status_off, status_len = [], []
+    map_blob = []
+    map_off, map_len = [], []
+    for _lo, _hi, status, mapping in idna_rows:
+        sb = status.encode("utf-8")
+        status_off.append(len(status_blob))
+        status_len.append(len(sb))
+        status_blob.extend(sb)
+        map_off.append(len(map_blob))
+        map_len.append(len(mapping))
+        map_blob.extend(mapping)
+    h = ["/* GENERATED — UTS #46 IdnaMappingTable.txt. */\n",
+         "#ifndef PG_UCD_IDNA_MAPPING_H\n#define PG_UCD_IDNA_MAPPING_H\n",
+         "#include <stdint.h>\n\n",
+         f"#define UC_IDNA_COUNT            {len(idna_rows)}\n",
+         f"#define UC_IDNA_STATUS_TOTAL     {len(status_blob)}\n",
+         f"#define UC_IDNA_MAP_TOTAL        {len(map_blob)}\n\n",
+         "extern const uint32_t uc_idna_lo        [UC_IDNA_COUNT];\n",
+         "extern const uint32_t uc_idna_hi        [UC_IDNA_COUNT];\n",
+         "extern const uint32_t uc_idna_status_off[UC_IDNA_COUNT];\n",
+         "extern const uint8_t  uc_idna_status_len[UC_IDNA_COUNT];\n",
+         "extern const uint8_t  uc_idna_status    [UC_IDNA_STATUS_TOTAL];\n",
+         "extern const uint32_t uc_idna_map_off   [UC_IDNA_COUNT];\n",
+         "extern const uint8_t  uc_idna_map_len   [UC_IDNA_COUNT];\n",
+         "extern const uint32_t uc_idna_map       [UC_IDNA_MAP_TOTAL];\n",
+         "#endif\n"]
+    (out_dir / "pg_ucd_idna_mapping.h").write_text("".join(h), encoding="utf-8")
+    c = ["/* GENERATED. */\n#include \"pg_ucd_idna_mapping.h\"\n\n",
+         emit_uint32_array("uc_idna_lo", lo_arr), "\n\n",
+         emit_uint32_array("uc_idna_hi", hi_arr), "\n\n",
+         emit_uint32_array("uc_idna_status_off", status_off), "\n\n",
+         emit_uint8_array("uc_idna_status_len", status_len), "\n\n",
+         emit_byte_blob("uc_idna_status", bytes(status_blob), len(status_blob), 1), "\n\n",
+         emit_uint32_array("uc_idna_map_off", map_off), "\n\n",
+         emit_uint8_array("uc_idna_map_len", map_len), "\n\n",
+         emit_uint32_array("uc_idna_map", map_blob), "\n"]
+    (out_dir / "pg_ucd_idna_mapping.c").write_text("".join(c), encoding="utf-8")
+
+
+def emit_cjk_radicals(out_dir, radicals):
+    """CJKRadicals.txt — Kangxi radical → CJK ideograph mapping.
+
+    `radicals` is Dict[str, Tuple[int, int]] mapping radical number to
+    (unified_ideograph_cp, cjk_radical_cp).
+    """
+    items = sorted(radicals.items(), key=lambda kv: (kv[0].rstrip("'"), kv[0]))
+    nums_blob = bytearray()
+    num_off, num_len = [], []
+    unified = []
+    cjk_radical = []
+    for radical_str, (u_cp, r_cp) in items:
+        rb = radical_str.encode("utf-8")
+        num_off.append(len(nums_blob))
+        num_len.append(len(rb))
+        nums_blob.extend(rb)
+        unified.append(u_cp)
+        cjk_radical.append(r_cp)
+    h = ["/* GENERATED — UCD CJKRadicals.txt. */\n",
+         "#ifndef PG_UCD_CJK_RADICALS_H\n#define PG_UCD_CJK_RADICALS_H\n",
+         "#include <stdint.h>\n\n",
+         f"#define UC_CJK_RADICALS_COUNT     {len(items)}\n",
+         f"#define UC_CJK_RADICALS_NUMS_TOTAL {len(nums_blob)}\n\n",
+         "extern const uint32_t uc_cjk_radical_num_off[UC_CJK_RADICALS_COUNT];\n",
+         "extern const uint8_t  uc_cjk_radical_num_len[UC_CJK_RADICALS_COUNT];\n",
+         "extern const uint8_t  uc_cjk_radical_nums   [UC_CJK_RADICALS_NUMS_TOTAL];\n",
+         "extern const uint32_t uc_cjk_radical_unified[UC_CJK_RADICALS_COUNT];\n",
+         "extern const uint32_t uc_cjk_radical_radical[UC_CJK_RADICALS_COUNT];\n",
+         "#endif\n"]
+    (out_dir / "pg_ucd_cjk_radicals.h").write_text("".join(h), encoding="utf-8")
+    c = ["/* GENERATED. */\n#include \"pg_ucd_cjk_radicals.h\"\n\n",
+         emit_uint32_array("uc_cjk_radical_num_off", num_off), "\n\n",
+         emit_uint8_array("uc_cjk_radical_num_len", num_len), "\n\n",
+         emit_byte_blob("uc_cjk_radical_nums", bytes(nums_blob), len(nums_blob), 1), "\n\n",
+         emit_uint32_array("uc_cjk_radical_unified", unified), "\n\n",
+         emit_uint32_array("uc_cjk_radical_radical", cjk_radical), "\n"]
+    (out_dir / "pg_ucd_cjk_radicals.c").write_text("".join(c), encoding="utf-8")
+
+
 def emit_pictographic(out_dir, cp_picto):
     """extended_pictographic packed as a bitmap (1 bit/cp = ~140 KB)."""
     bitmap = bytearray((UNICODE_MAX + 7) // 8)
@@ -906,14 +1533,44 @@ def emit_umbrella(out_dir):
          "#include \"pg_ucd_inventory.h\"\n",
          "#include \"pg_ucd_tier1.h\"\n",
          "#include \"pg_ucd_atoms_blob.h\"\n",
+         "#include \"pg_ucd_named_sequences.h\"\n",
+         "#include \"pg_ucd_emoji_seq.h\"\n",
+         "#include \"pg_ucd_emoji_zwj_seq.h\"\n",
+         "#include \"pg_ucd_standardized_variants.h\"\n",
+         "#include \"pg_ucd_confusables.h\"\n",
+         "#include \"pg_ucd_idna_mapping.h\"\n",
+         "#include \"pg_ucd_cjk_radicals.h\"\n",
          "#endif\n"]
     (out_dir / "pg_ucd.h").write_text("".join(h), encoding="utf-8")
+
+
+def _default_ucd_root() -> str:
+    """Resolve a portable default --ucd-root.
+
+    Priority:
+      1. UCD_ROOT environment variable (highest — CI / explicit override).
+      2. /vault/Data/Unicode/Public/UCD/latest (the staged data location on
+         this Linux workstation).
+      3. D:/Models/UCD/Public/UCD/latest (historical Windows path; kept as
+         last-resort fallback so the script doesn't break on Windows hosts).
+
+    Returns the first path that exists, or the historical Windows path if
+    none exist so the existing error message ("UCD root not found") still
+    fires with a recognizable path.
+    """
+    env = os.environ.get("UCD_ROOT")
+    if env:
+        return env
+    linux_default = Path("/vault/Data/Unicode/Public/UCD/latest")
+    if linux_default.exists():
+        return str(linux_default)
+    return "D:/Models/UCD/Public/UCD/latest"
 
 
 # ── Main pipeline ──────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ucd-root", default="D:/Models/UCD/Public/UCD/latest")
+    ap.add_argument("--ucd-root", default=_default_ucd_root())
     ap.add_argument("--out", default=str(GEN_DIR))
     ap.add_argument("--blob-out", default=None,
                     help="Path for the portable binary blob. Default: <out>/hartonomous-ucd-17.0.0.bin")
@@ -995,6 +1652,36 @@ def main():
     print("[gen] parsing CaseFolding.txt..."); simple_fold, full_fold = parse_case_folding(ucd_root / "ucd" / "CaseFolding.txt")
     print("[gen] parsing UCA allkeys.txt..."); uca = parse_uca_allkeys(ucd_root / "uca" / "allkeys.txt")
     print("[gen] parsing EastAsianWidth.txt..."); eaw_map = parse_ranged_property(ucd_root / "ucd" / "EastAsianWidth.txt")
+    # Multi-codepoint UCD families (NOT in ucd.all.grouped.xml — XML covers
+    # per-codepoint properties only). Each maps to its own pg_ucd_*.{h,c}
+    # baked-table family; populate_unicode_*_from_ext PG functions read the
+    # SRFs the C-side wrappers expose, INSERT substrate.entity +
+    # substrate.edge content under unicode_consortium provenance.
+    print("[gen] parsing NamedSequences.txt..."); named_seqs = parse_named_sequences(ucd_root / "ucd" / "NamedSequences.txt")
+    emoji_dir = ucd_root / "emoji"
+    if not (emoji_dir / "emoji-sequences.txt").exists():
+        emoji_dir = ucd_root.parent / "emoji"  # fallback for layouts where emoji/ is sibling to ucd/
+    print("[gen] parsing emoji-sequences.txt..."); emoji_seqs = parse_emoji_sequences(emoji_dir / "emoji-sequences.txt")
+    print("[gen] parsing emoji-zwj-sequences.txt..."); zwj_seqs = parse_emoji_zwj_sequences(emoji_dir / "emoji-zwj-sequences.txt")
+    std_var_path = ucd_root / "ucd" / "StandardizedVariants.txt"
+    if not std_var_path.exists():
+        std_var_path = ucd_root / "ucd" / "emoji" / "emoji-variation-sequences.txt"
+    print("[gen] parsing StandardizedVariants.txt..."); std_variants = parse_standardized_variants(std_var_path) if std_var_path.exists() else []
+    security_dir = ucd_root.parent / "security"
+    if (security_dir / "confusables.txt").exists():
+        print("[gen] parsing confusables.txt..."); confusables = parse_confusables(security_dir / "confusables.txt")
+    else:
+        confusables = []
+    idna_dir = ucd_root.parent / "idna"
+    if (idna_dir / "IdnaMappingTable.txt").exists():
+        print("[gen] parsing IdnaMappingTable.txt..."); idna_rows = parse_idna_mapping(idna_dir / "IdnaMappingTable.txt")
+    else:
+        idna_rows = []
+    cjk_radicals_path = ucd_root / "ucd" / "CJKRadicals.txt"
+    if cjk_radicals_path.exists():
+        print("[gen] parsing CJKRadicals.txt..."); cjk_radicals = parse_cjk_radicals(cjk_radicals_path)
+    else:
+        cjk_radicals = {}
     print("[gen] parsing HangulSyllableType.txt..."); hsy_map = parse_ranged_property(ucd_root / "ucd" / "HangulSyllableType.txt")
     print("[gen] parsing DerivedNormalizationProps.txt..."); full_comp_exclusion = parse_codepoint_set_property(
         ucd_root / "ucd" / "DerivedNormalizationProps.txt", "Full_Composition_Exclusion")
@@ -1178,6 +1865,14 @@ def main():
     emit_decomp(out_dir, cp_decomp_type, cp_decomp_off, cp_decomp_len, decomp_data, composition_pairs)
     emit_fcf(out_dir, cp_fcf_off, cp_fcf_len, fcf_data)
     emit_uca(out_dir, cp_uca_off, cp_uca_len, uca_data)
+    # Multi-codepoint UCD families (not-in-XML).
+    emit_named_sequences(out_dir, named_seqs)
+    emit_emoji_sequences(out_dir, emoji_seqs, "emoji_seq")
+    emit_emoji_sequences(out_dir, zwj_seqs, "emoji_zwj_seq")
+    emit_standardized_variants(out_dir, std_variants)
+    emit_confusables(out_dir, confusables)
+    emit_idna_mapping(out_dir, idna_rows)
+    emit_cjk_radicals(out_dir, cjk_radicals)
     emit_names(out_dir, cp_name_off, cp_name_len, name_blob)
     emit_inventory(out_dir, GC, script_ids, blocks, block_ids, break_props)
     emit_tier1(out_dir)

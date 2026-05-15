@@ -171,6 +171,107 @@ internal sealed class IngestionBatch : IIngestionBatch
         _compositionChildren.Add(new CompositionChildEntry(parent, ordinal, child, rleCount));
     }
 
+    public void AddEntityShape(EntityHandle entity, ReadOnlySpan<Point4D> canonicalChildCentroids)
+    {
+        if (canonicalChildCentroids.Length < 1)
+        {
+            throw new ArgumentException(
+                "AddEntityShape requires at least one centroid.",
+                nameof(canonicalChildCentroids));
+        }
+
+        byte[] geometry;
+        Point4D centroid;
+        if (canonicalChildCentroids.Length == 1)
+        {
+            centroid = canonicalChildCentroids[0];
+            geometry = Geometry4dPayloadBuilder.Point(centroid);
+        }
+        else
+        {
+            if (!Point4D.TryMean(canonicalChildCentroids, out centroid))
+            {
+                throw new ArgumentException(
+                    "AddEntityShape: vertex span yielded no centroid.",
+                    nameof(canonicalChildCentroids));
+            }
+            geometry = Geometry4dPayloadBuilder.LineString(canonicalChildCentroids);
+        }
+
+        _physicalities.Add(new PhysicalityEntry(
+            entity,
+            "entity_shape",
+            geometry,
+            centroid));
+    }
+
+    public void AddIngestionTrajectory(EntityHandle parent, ReadOnlySpan<TrajectoryVertex> vertices)
+    {
+        if (vertices.Length < 1)
+        {
+            throw new ArgumentException(
+                "AddIngestionTrajectory requires at least one vertex.",
+                nameof(vertices));
+        }
+
+        Span<Point4D> packed = vertices.Length <= 64
+            ? stackalloc Point4D[vertices.Length]
+            : new Point4D[vertices.Length];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            TrajectoryVertex v = vertices[i];
+            packed[i] = new Point4D(
+                MantissaPacking.PackHashLo(v.ChildHashLo),
+                MantissaPacking.PackOrdinalRle(v.Ordinal, v.Rle),
+                MantissaPacking.PackHashHi(v.ChildHashHi),
+                MantissaPacking.PackMetadata(v.Metadata));
+        }
+
+        // Mean of packed vertices serves as the entity's "centroid" for
+        // downstream edge.geom inline construction. The value is not metric
+        // — it's the mean of mantissa-packed identity bits — but it is
+        // deterministic and consistent across runs, so edges constructed
+        // through this entity's centroid will land in the same
+        // structural-identity coordinate space as the ingestion_trajectory
+        // itself. GiST bbox queries against the ingestion_trajectory
+        // partition operate on the same coordinate space, so the centroid
+        // remains meaningful for those queries.
+        if (!Point4D.TryMean((ReadOnlySpan<Point4D>)packed, out Point4D centroid))
+        {
+            throw new ArgumentException(
+                "AddIngestionTrajectory: vertex span yielded no centroid.",
+                nameof(vertices));
+        }
+
+        byte[] geometry = Geometry4dPayloadBuilder.LineString((ReadOnlySpan<Point4D>)packed);
+
+        _physicalities.Add(new PhysicalityEntry(
+            parent,
+            "ingestion_trajectory",
+            geometry,
+            centroid));
+    }
+
+    public void AddFireflyPoint(EntityHandle parent, long modelSourceId, Point4D projection)
+    {
+        // Firefly POINTZM per (entity, ingested_model). Content-addressed
+        // via the projection bytes; per-model differentiation rides on the
+        // entity_model_source link added below. Two different models that
+        // happen to project an identical (x, y, z, m) tuple for the same
+        // word_form collide on content_hash by design — that's the rare
+        // case where two ingested models agree exactly on a token's 4D
+        // identity, which the substrate should not duplicate-record.
+        // Procrustes alignment per AP-35 keeps per-model bases
+        // commensurable so projections aren't accidentally identical.
+        byte[] geometry = Geometry4dPayloadBuilder.Point(projection);
+        _physicalities.Add(new PhysicalityEntry(
+            parent,
+            "embedding_firefly",
+            geometry,
+            projection));
+        _entityModelSources.Add(new EntityModelSourceEntry(parent, modelSourceId));
+    }
+
     public void AddSignificance(
         EntityHandle entity,
         string contextTypeCode,

@@ -25,10 +25,10 @@ Use this skill before planning, implementing, or reviewing work that can drift f
 - `src/Hartonomous.Core/Decomposition/BaseDecomposer.cs` — `ComputeHash()`, `ComputeMerkleHash()`, `ComputeEdgeHash()` (content-only identity).
 - `src/Hartonomous.Core/Compute/Common/Blake3.cs` — the only hash function.
 - `sql/schema/bootstrap.sql` and included files under `sql/schema/` — canonical schema, functions, procedures, views, and seed data.
-- `sql/schema/tables/core/` — entity, edge, edge_member, sequence, physicality, entity_significance, edge_significance.
+- `sql/schema/tables/core/` — entity (with hash_bits_0_51/_52_103 GENERATED columns for composition vertex reverse-resolve), edge, edge_member, physicality, entity_significance, edge_significance, entity_model_source. No `substrate.sequence` table — composition child ordering lives in the LINESTRINGZM physicality vertex Y mantissa via `bb_pack_ordinal_rle`.
 - `sql/schema/tables/junctions/` and `sql/schema/tables/reference/` — evidence/classification and lookup infrastructure.
 - `sql/schema/seed/attestation_type.sql` — the per-role attestation taxonomy (32 types, including 18 model_* types for per-role unit attestations).
-- `sql/schema/seed/entity_type.sql:59-98` — the 2026-05-08 architectural correction comment (the source-of-truth for which entity types are content vs phantom).
+- `sql/schema/seed/entity_type.sql` — 23 real content types (phantom types removed by 2026-05-08 correction; the file itself is the source-of-truth for what's content vs what was phantom).
 - `sql/schema/seed/edge_type.sql:84-90` — the token↔token attestation edge types (`model_concept_similarity`, `model_attention_pattern`, `model_ffn_factor`).
 - `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs` — the working template for layer-type decomposers (cases 11, 14).
 - [`docs/specs/decomposers/layer-type-library.md`](../../../docs/specs/decomposers/layer-type-library.md) — canonical layer-type decomposer library spec.

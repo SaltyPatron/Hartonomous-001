@@ -469,7 +469,7 @@ The cleanup work this spec enables, in order:
 
 - **Delete** 30 phantom edge_type rows from `sql/schema/seed/edge_type.sql` (enumerated in §IV).
 - **Delete** 9 over-granular attestation_type rows from `sql/schema/seed/attestation_type.sql` (enumerated in §IV).
-- **Delete** ~30 phantom entity_type rows from `sql/schema/seed/entity_type.sql:59-98` (the per-role-unit and per-tensor-analytics types).
+- **DONE** — ~30 phantom entity_type rows removed from `sql/schema/seed/entity_type.sql` (2026-05-08 correction applied; 23 real content types remain).
 - **Add** 5 new attestation_type rows: `model_local_kernel_evidence`, `model_codec_evidence`, `model_detection_class_attestation`, `model_detection_bbox_attestation`, `model_inference_state_evidence`.
 - **Add** 3 new edge_type rows: `model_spatial_pattern`, `model_cross_modal_pattern`, `model_detection_class`.
 - **Add** new entity_type rows for content modalities not yet present: `audio_chunk`, `pixel_region`, `visual_concept`, `object_query`, `codec_codevector` (verify which already exist).

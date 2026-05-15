@@ -16,7 +16,7 @@ Review from current repo truth, not old migration memory. For schema claims, ins
 
 ### Identity hash corruption
 - `ComputeHash()`: content bytes only. `ComputeMerkleHash()`: ordered child hashes. `ComputeEdgeHash()`: `(edgeTypeId, participantHashes)`.
-- Position, ordinal, filename, tensor name, source offset in hash = corrupted. These live on `substrate.sequence.ordinal`, `provenance`, edges (`has_source`, `in_model`).
+- Position, ordinal, filename, tensor name, source offset in hash = corrupted. These live in the composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`), in `provenance`, or on typed edges (`has_source`, `in_model`, `edge_member.role_position`). There is no `substrate.sequence` table.
 - Same content in two places = one entity with two edges, not two entities.
 
 ### Inference boundary

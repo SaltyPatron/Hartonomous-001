@@ -40,16 +40,23 @@ Identity:
 - Atomic-identifier hash for structured ID strings (`ComputeAtomicStringHash`) — never used on user-visible natural text
 - Edge hash from `(edge_type_id, role-ordered participant hashes)` (`ComputeEdgeHash`) — edges are identified separately, see II.2
 
-Placement metadata (position, ordinal, filename, tensor name, model_source_id, source offsets, line numbers) NEVER enters the hash. It lives on `substrate.sequence`, edges, model-source tables, or provenance. Same content in two places = one entity row with two edges.
+Placement metadata (position, ordinal, filename, tensor name, model_source_id, source offsets, line numbers) NEVER enters the hash. It lives in the composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle(ordinal, rle_count)`; the geometry IS the indexed child manifest), on typed edges (`has_source`, `in_model`, `edge_member.role_position`), on model-source tables, or on provenance. There is no `substrate.sequence` table. Same content in two places = one entity row referenced from two trajectories (or two `has_source` edges to different provenances).
 
-**Real entity types** (classify CONTENT). Defined in `sql/schema/seed/entity_type.sql`:
-- Text: `codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `text_composition`, `paragraph`, `document`, `synset`, `collation_element`, `language_name`
+**Real entity types** (classify CONTENT). Defined in `sql/schema/seed/entity_type.sql`. The 23 types split by role in the Merkle DAG:
+
+**Entity tier (building blocks — reusable identities referenced from many trajectories)**:
+- Text: `codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `synset`, `collation_element`, `language_name`
+- Model-side structural artifacts: `tensor`, `model_architecture`, `tokenizer_model`
+
+**Content tier (trajectories through entities — each content's Merkle identity IS its walk through entity hashes)**:
+- Text: `text_composition`, `paragraph`, `document`
 - Audio: `audio_recording`, `audio_chunk`
 - Image: `pixel_region`
 - Video: `video_frame`
-- Model-side structural artifacts: `tensor` (a safetensors entry — the file's own content), `model_architecture` (an architecture's content-addressed identity), `tokenizer_model` (a tokenizer instance)
 
-**Phantom entity types** (deprecated by the 2026-05-08 architectural correction in `sql/schema/seed/entity_type.sql:59-98`). These were artifacts of an earlier framing where every per-role unit of a model component became its own entity. They are NOT content; they are SABOTAGE candidates. They are seeded transitionally so existing code looking up these codes doesn't crash, but no new code should reference them and existing code that emits them is on the deprecation path. See §XII for the full list and removal sequence.
+Examples: `whale` is one `word_form` entity referenced ~1500 times by Moby Dick's `document` content trajectory; Moby Dick the document is content whose Merkle identity IS its walk through word_form / paragraph / chapter hashes. Both kinds of rows live in `substrate.entity` keyed by BLAKE3 hash, both can carry physicality (entity physicality = the brick's own internal structure; content physicality = the trajectory through entity bricks), both can be edge participants. Cross-source consensus accumulates on entity-tier edges (Glicko-2 attestation events on `model_attention_pattern` / `model_concept_similarity` / `model_ffn_factor` / `model_cross_modal_pattern` between word_forms / pixel_regions / audio_chunks); content-tier trajectories anchor to provenance via `has_source` edges. AI models contribute entity↔entity attestation edges; they do NOT contribute content trajectories.
+
+**Phantom entity types** (removed by the 2026-05-08 architectural correction). These were artifacts of an earlier framing where every per-role unit of a model component became its own entity. They are NOT content; they are SABOTAGE candidates. They have been fully removed from `sql/schema/seed/entity_type.sql` — 23 real content types remain. The phantom decomposer passes have also been replaced by layer-type tuple/primitive passes. See §XII for the full list; the removal steps described there are complete for entity types and decomposer passes.
 
 **Per-tensor analysis surfaces** (`sparsity_profile`, `weight_distribution`, `eigenvalue_spectrum`, `svd_spectrum`, `activation_range`, `layer_norm_scale`, `layer_similarity_pair`, `rope_freq_table`, `codec_codebook`, `vocab_coverage_profile`) are transitional. They properly migrate to physicality on the tensor entity rather than separate entities. See §X for the analytics-cache pattern.
 
@@ -99,7 +106,7 @@ Cross-references: [`docs/specs/sql/infrastructure-vs-substrate.md`](specs/sql/in
 
 **Every per-role unit of a Track 2 transformation tensor (each FFN row, each attention head's QK pattern, each MoE expert neuron, each LoRA rank component, each layer norm scale, etc.) MANIFESTS AS A TYPED ATTESTATION EDGE BETWEEN EXISTING CONTENT ENTITIES** — typically two `word_form` entities (the tokens the unit binds), or one token and a `visual_concept` for cross-modal models, or one token and a structural artifact for architecturally significant units.
 
-This is the architectural correction documented in `sql/schema/seed/entity_type.sql:59-98` (dated 2026-05-08). Per-role units are NEVER their own entity types. Synthetic per-role-unit entity types (`attention_head`, `ffn_neuron`, `embedding_position`, `attention_pattern`, etc. — see full phantom list in §XII) defeat content-addressed identity, prevent cross-model corroboration, and perpetuate the sabotage shape.
+This is the architectural correction applied 2026-05-08 (fully reflected in current `sql/schema/seed/entity_type.sql` — 23 real content types, phantom rows removed). Per-role units are NEVER their own entity types. Synthetic per-role-unit entity types (`attention_head`, `ffn_neuron`, `embedding_position`, `attention_pattern`, etc. — see full phantom list in §XII) defeat content-addressed identity, prevent cross-model corroboration, and perpetuate the sabotage shape.
 
 ### III.1 The mechanism
 
@@ -515,19 +522,19 @@ Current code that perpetuates the pre-correction shape and must be replaced befo
 
 ### XII.1 Phantom entity types
 
-Defined in `sql/schema/seed/entity_type.sql:99-159` (rows 19-54 except 16-18). Deprecated by the architectural correction at lines 59-98 of the same file.
+All phantom entity types below were removed from `sql/schema/seed/entity_type.sql` by the 2026-05-08 correction (entity_type.sql now has 23 real content types; no phantom rows remain).
 
 `attention_pattern`, `attention_head`, `attention_archetype`, `embedding_position`, `ffn_neuron`, `logit_projection`, `moe_route`, `moe_routing_profile`, `moe_expert_neuron`, `moe_route_direction`, `residual_direction`, `archetype`, `svd_rank_component`, `codec_codevector`, `codevector`, `audio_codec_filter`, `bbox_projection`, `class_projection`, `conformer_component`, `conv_filter`, `diffusion_component`, `lora_component`, `modality_basis_vector`, `object_query_slot`, `vision_feature_direction`.
 
-These are NOT content. They were artifacts of the pre-correction framing where every per-role unit became its own entity. Per-role units are attestation edges (§III). These rows remain seeded transitionally so existing code looking up these codes doesn't crash; no new code should reference them.
+These are NOT content. They were artifacts of the pre-correction framing where every per-role unit became its own entity. Per-role units are attestation edges (§III). No new code may reference or emit them.
 
 Per-tensor analysis surfaces (`sparsity_profile`, `weight_distribution`, `eigenvalue_spectrum`, `svd_spectrum`, `activation_range`, `layer_norm_scale`, `layer_similarity_pair`, `rope_freq_table`, `codec_codebook`, `vocab_coverage_profile`) are transitional — they should migrate to physicality on the tensor entity (one tensor with a `weight_distribution` physicality, etc.) rather than separate entities. They're listed separately because their migration path is "fold into tensor entity," not "delete entirely."
 
 ### XII.2 Phantom-emitting passes
 
-In `src/Hartonomous.Decomposers/Safetensors/Passes/`:
+All phantom-emitting passes have been removed from `src/Hartonomous.Decomposers/Safetensors/Passes/` and replaced by layer-type tuple/primitive passes (`AttentionBlockTuplePass`, `FfnTuplePass`, `EmbeddingLookupTuplePass`, `LoraDeltaTuplePass`, `NormalizationPrimitivePass`). Working template: `TokenAttentionEdgePass.cs`.
 
-`FfnNeuronPass`, `EmbeddingPositionPass`, `AttentionComponentPass`, `LogitHeadPass`, `AttentionArchetypePass`, `MoeRouteDirectionPass`, `MoeExpertNeuronPass`, `ObjectQueryPass`, `ClassHeadPass`, `BboxHeadPass`, `VisionFeaturePass`, `ModalityBasisPass`, `LoraComponentPass`, `ConvFilterPass`, `DiffusionComponentPass`, `ConformerComponentPass`, `AudioCodecFilterPass`, plus phantom portions of `MoERoutingStatsPass` and `CodecAnalysisPass`.
+For historical reference, the removed phantom passes were: `FfnNeuronPass`, `EmbeddingPositionPass`, `AttentionComponentPass`, `LogitHeadPass`, `AttentionArchetypePass`, `MoeRouteDirectionPass`, `MoeExpertNeuronPass`, `ObjectQueryPass`, `ClassHeadPass`, `BboxHeadPass`, `VisionFeaturePass`, `ModalityBasisPass`, `LoraComponentPass`, `ConvFilterPass`, `DiffusionComponentPass`, `ConformerComponentPass`, `AudioCodecFilterPass`, plus phantom portions of `MoERoutingStatsPass` and `CodecAnalysisPass`.
 
 Each of these is replaced by a layer-type decomposer in the `TokenAttentionEdgePass` shape (see §III.3 and §V).
 
@@ -543,21 +550,21 @@ All single-source phantom-scatter — replaced by synthesis from token-edge atte
 
 ### XII.4 Phantom edge types
 
-In `sql/schema/seed/edge_type.sql:110-128`: `has_attention_component`, `has_codec_filter`, `has_bbox_projection`, `has_class_projection`, `has_conformer_component`, `has_conv_filter`, `has_diffusion_component`, `has_lora_component`, `has_modality_basis`, `has_moe_neuron`, `has_route_direction`, `has_object_query`, `has_vision_feature`, plus `has_embedding_position`, `has_ffn_neuron`, `has_logit_projection`, `has_rank_component`, `has_moe_routing`, `encodes_archetype`. All `tensor → phantom-entity` binders. They have no purpose once the phantom entities are removed.
+`edge_type.sql` explicitly excludes phantom `tensor → phantom-entity` binder types (`has_attention_component`, `has_codec_filter`, `has_bbox_projection`, `has_conv_filter`, `has_lora_component`, `has_moe_neuron`, `has_ffn_neuron`, etc.) per its own header comment: "there is no has_\<phantom\> edge type pointing to a phantom entity." These types were never added to the seed or were removed before the 2026-05-08 correction was finalized. The stale line reference `edge_type.sql:110-128` no longer applies.
 
 ### XII.5 Removal sequence
 
 Phantom debt is removed in stages without breaking working code at any step:
 
-1. Implement layer-type decomposers per §V.2 / V.3 in `TokenAttentionEdgePass` shape, replacing phantom-emitting passes one role family at a time.
+1. **DONE** — Layer-type decomposers implemented in `TokenAttentionEdgePass` shape (tuple/primitive passes in `src/Hartonomous.Decomposers/Safetensors/Passes/`).
 2. Implement synthesis recomposer per §VI, replacing the phantom-scatter `AssembleTensorBytesAsync`.
-3. Once a phantom pass has no callers and the synthesis recomposer doesn't read its phantoms, delete the pass file.
-4. Once no pass references a `has_<phantom>` edge type, remove the edge type seed row.
-5. Once no edge type and no pass references a phantom entity type, remove the entity type seed row (handle the entity_model partition pinning on IDs 1-42 per the seed comment as a separate small migration).
+3. **DONE** — Phantom passes removed and replaced by tuple/primitive passes.
+4. **DONE** — No `has_<phantom>` edge types exist in `edge_type.sql`.
+5. **DONE** — Phantom entity types removed from `entity_type.sql` (23 real content types remain).
 
 Phantom debt does not block initial Build-a-bear shipping — the synthesis recomposer can read the corrected attestation-edge surface without the phantom paths existing. Phantom debt removal is technical-debt cleanup, not a blocker for the product.
 
-Cross-references: `sql/schema/seed/entity_type.sql:59-98` (the architectural correction comment that originated this list).
+Cross-references: `sql/schema/seed/entity_type.sql` (23 real content types as of 2026-05-08 correction; phantom rows removed).
 
 ---
 
@@ -630,7 +637,7 @@ This document supersedes prior overview docs where they conflict. When a future 
 | **Crystal ball** | The product surface where substrate state is queryable for mechanistic interpretability, bias/safety audit, capability tomography, etc. Same substrate; different consumer. |
 | **Firefly** | A POINTZM physicality in the 4D substrate jar, representing one model's embedding row for one token, attached to that token's content entity. Cross-model fireflies for the same species form a Voronoi cluster whose tightness IS the cross-model consensus. NOT inference. |
 | **Species** | A content entity treated as a class of fireflies — all the per-model fireflies for "King" are specimens of the King species. The species is the entity; specimens are the model-specific physicalities. |
-| **Phantom entity** | A pre-correction artifact: a per-role-unit-as-entity row in `substrate.entity` (e.g. `ffn_neuron`, `attention_head`). Deprecated by the 2026-05-08 architectural correction. Never to be created by new code; transitionally seeded so old lookups don't crash; on the deprecation removal path. |
+| **Phantom entity** | A pre-correction artifact: a per-role-unit-as-entity row in `substrate.entity` (e.g. `ffn_neuron`, `attention_head`). Removed by the 2026-05-08 architectural correction — `entity_type.sql` now has 23 real content types; no phantom rows remain. Never to be created by new code. |
 | **Cross-model corroboration** | The accumulation of multiple models' attestations as separate `attestation_type`-distinguished rating events on the same edge. Tightens Glicko sigma; refines mu toward consensus; the substrate's truth grows quantitatively with each ingested model. |
 
 ---

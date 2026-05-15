@@ -64,7 +64,24 @@ internal sealed partial class NormalizationPrimitivePass : IModelAnalysisPass
                     p + 3 < len ? flat[p + 3] : 0.0);
             }
 
-            session.Batch.AddPhysicalityLineString4d(t.Entity, "contour", verts.AsSpan());
+            // Tensor γ-scale is the tensor's own internal real-coord shape
+            // (per-feature scale values laid out as a LINESTRINGZM in
+            // contiguous 4-tuples). It is NOT a trajectory through other
+            // entities; it is the tensor entity's canonical structural
+            // fingerprint. Route to physicality_entity_shape (id 15) via
+            // AddEntityShape — distinct from the content_trajectory
+            // mantissa-packed surface that text/audio/image compositions
+            // emit into. Fréchet shape matching across tensors with
+            // similar γ-scale profiles becomes a structural-shape query
+            // against the entity_shape partition.
+            Hartonomous.Core.Geometry.Point4D[] shapeVerts =
+                new Hartonomous.Core.Geometry.Point4D[verts.Length];
+            for (int v = 0; v < verts.Length; v++)
+            {
+                (double x1, double x2, double x3, double x4) = verts[v];
+                shapeVerts[v] = new Hartonomous.Core.Geometry.Point4D(x1, x2, x3, x4);
+            }
+            session.Batch.AddEntityShape(t.Entity, shapeVerts.AsSpan());
             session.Batch.AddSignificance(
                 t.Entity, "model_trust", ModelDerivedTrustMu, "model_layer_norm_evidence");
             session.Batch.AddEntityModelSource(t.Entity, context.Source.ModelSourceId);

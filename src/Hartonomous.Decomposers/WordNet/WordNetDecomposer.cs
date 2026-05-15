@@ -283,7 +283,19 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         Hash32 synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
 
                         EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset");
-                        AddSynsetPhysicality(localBatch, synsetHandle, sortedMemberPhysicalityComponents);
+                        // No physicality emission for synsets — a synset is an
+                        // attested concept (a claim that these member lemmas
+                        // share one meaning), not a content trajectory with
+                        // canonical structural order. Its substrate presence
+                        // is captured by has_sense / hypernym / hyponym /
+                        // holonym / meronym / antonym / has_gloss / has_example
+                        // edges below, each firing per-arena Glicko events
+                        // against substrate.edge_significance from the
+                        // wordnet provenance. No mantissa-packed trajectory
+                        // because synset member-lemmas are a SET, not an
+                        // ordered sequence — imposing canonical hash-sort
+                        // order would store a structural shape with no
+                        // semantic meaning.
                         localBatch.AddSignificance(synsetHandle, "source_authority", TrustPriorMu);
                         System.Threading.Interlocked.Increment(ref entityCount);
 
@@ -509,31 +521,6 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
         {
             await refWriter.DisposeAsync();
         }
-    }
-
-    private static void AddSynsetPhysicality(
-        IIngestionBatch batch,
-        EntityHandle synsetHandle,
-        (Hash32 Hash, (double X, double Y, double Z, double M) Centroid)[] sortedMemberPhysicalityComponents)
-    {
-        if (sortedMemberPhysicalityComponents.Length == 0)
-        {
-            return;
-        }
-
-        int vertexCount = Math.Max(2, sortedMemberPhysicalityComponents.Length);
-        (double X1, double X2, double X3, double X4)[] vertices = new (double X1, double X2, double X3, double X4)[vertexCount];
-        for (int index = 0; index < sortedMemberPhysicalityComponents.Length; index++)
-        {
-            (double x, double y, double z, double m) = sortedMemberPhysicalityComponents[index].Centroid;
-            vertices[index] = (x, y, z, m);
-        }
-        if (sortedMemberPhysicalityComponents.Length == 1)
-        {
-            vertices[1] = vertices[0];
-        }
-
-        batch.AddPhysicalityLineString4d(synsetHandle, "contour", vertices.AsSpan());
     }
 
     /// <summary>

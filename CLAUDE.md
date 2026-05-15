@@ -47,10 +47,53 @@ Why: the user is solo-carrying a multi-team-sized project on a life-relevant dea
 - **Native extension**: `ext/libhartonomous/` (C/C++, CMake, BLAKE3 + S3 geometry)
 - **SQL**: canonical source files under `sql/schema/`; build-time extension SQL emitted to `ext/hartonomous_pg/sql/hartonomous--1.0.sql`; historical migrations live under `sql/migrations.archive/` for audit only
 - **Shared build config**: `Directory.Build.props` (solution-wide), `native-dll.targets` (native DLL copy rules)
+- **Data staging**: `/vault/Data/{Unicode,UCD,Wiktionary,UD-Treebanks,Wordnet,omw,Tatoeba,ISO639}` (corpora — ~80GB total). `/vault/models/` (HF-format models already migrated, mix of flat + cache layouts). `/data/models/hub/` (HF cache root, models still pending move). The substrate is built against this content floor; agents should know to look at the staging dirs before claiming "missing data."
+
+## Entities vs content — load-bearing distinction
+
+Two roles in the Merkle DAG, one `substrate.entity` table:
+
+- **Entities are building blocks** — reusable identities referenced by many trajectories. Entity-tier types: `codepoint`, `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `synset`, `collation_element`, `language_name`, `model_architecture`, `tensor`, `tokenizer_model`.
+- **Content is the trajectory through entities.** Content-tier types: `text_composition`, `paragraph`, `document`, `audio_recording`, `audio_chunk`, `pixel_region`, `video_frame`.
+
+`whale` is one word_form entity referenced ~1500 times by Moby Dick's document trajectory. Moby Dick the document is content whose Merkle identity IS its walk through word_form entity hashes. Both live in `substrate.entity` by BLAKE3 hash. Cross-source consensus accumulates on entity-tier edges (Glicko-2 attestation events); content-tier trajectories anchor to provenance via `has_source` edges. AI models contribute entity↔entity attestation edges (`model_attention_pattern`, `model_concept_similarity`, `model_ffn_factor`, `model_cross_modal_pattern`); they do not contribute content trajectories.
+
+Conflating entities and content ("everything is a composition") is the most common drift and fragments cross-source consensus. The corpora seed BOTH tiers (entity-tier vocabulary AND content-tier glosses/examples/sentences/definitions); AI models attest only on top of the entity-tier surface. Order of work: Unicode + WordNet/OMW/Wiktionary/UD/Tatoeba BEFORE AI models, so model attestations land on entities that already carry rich prior classifications and content bridges.
+
+## Unicode + ISO as the TEXT-tier lynchpin — not a universal reduction target
+
+The substrate's universal absorbent property is the universal SHAPE (mantissa-packed `LINESTRINGZM` content trajectories + typed edges between content-addressed entities), NOT atom-reduction across modalities. Per rule 15-substrate-trinity-and-layers.md: every tier-T composition's LINESTRINGZM walks through tier-(T−1) entity hash refs, bottoming out at the modality's own atom POINTZM with real content-derived coords. Per `sql/schema/seed/entity_type.sql`:
+
+- **Text atom = codepoint** (S³ position by UCA rank, UCD bitmask in M). Higher text entities: `grapheme_cluster`, `word_form`, `morpheme`, `lemma`, `synset`, `collation_element`, `language_name`. Content tier: `text_composition`, `paragraph`, `document`.
+- **Audio atom = audio sample value**. Higher audio entities: `audio_recording`, `audio_chunk`, `codec_codevector`.
+- **Image atom = pixel intensity**. Image entity tier: `pixel_region`, `visual_concept`, `object_query`.
+- **Video** decomposes through `video_frame`, which has its own `pixel_region` trajectory.
+- **AI model decomposition** lands tensor cells (post-dtype-decode losslessly, post-LTH-threshold, sign-preserving) as attestation edges between existing content entities. Per-role units (FFN row, attention QK pattern, MoE expert) are EDGES, not phantom entities.
+
+Cross-modal grounding is typed attestation EDGES between content entities of different modalities, each content-addressed in its OWN modality. CLIP/BLIP/Florence emit `model_cross_modal_alignment(word_form, pixel_region)`. Whisper emits between `word_form` and `audio_chunk`. Neither end reduces to the other. Reducing audio to "text encodings" or images to "binary blobs with text-tagged metadata" is lazy binary-blob storage smuggled in with text-flavored framing — banned.
+
+The substrate's vocabulary for what conventional ML calls "tokens" is `word_form` (or whichever entity_type applies: `morpheme` / `codepoint` / `grapheme_cluster`). Each model's tokenizer is model-source METADATA mapping content hashes ↔ per-model integer IDs, NOT substrate identity. Use the substrate vocabulary in substrate docs.
+
+Unicode + ISO is the foundation specifically FOR TEXT. It is the lynchpin because text is the cross-reference surface every text-handling source comes back to (model tokenizers handle text; OCR produces text; speech-to-text produces text; audio transcripts contain text; code's identifier leaves are `word_form` entities; rendered glyphs are images OF text content), NOT because audio / image / video reduce to it. Treating text's foundation as accumulated multi-source consensus rather than a static lookup table is what unlocks text's content-addressed cross-source identity surface:
+
+- **30 UCD versions** (1.1 through 17.0) under separate provenance, each codepoint accumulates per-version `(gc, sc, ccc, bc, ...)` attestation events under the `unicode_version_consensus` arena.
+- **IVD glyph variants** (adobe-japan1 + hanyo-denshi + krname + moji_joho + msarg) as `has_ideographic_variant` edges with image content trajectories.
+- **CJK Unihan readings** (Mandarin / Cantonese / Japanese / Vietnamese) as language-attested `unihan_reading` edges.
+- **L2 / IRG / WG2 working documents** (~16K Consortium docs) as content trajectories, `has_topic` edges back to discussed codepoints. Every Unicode claim has audit chain to specific proposal documents.
+- **UCA collation weights**, segmentation properties (UAX #14 / #29), normalization edges, casing edges, confusables (UTS #39), IDNA mappings (UTS #46), named sequences, emoji sequences, standardized variants.
+- **ISO 15924 scripts** + **CLDR locale data** + **ISO 639 / BCP47 language identity** cross-corroborate on shared `script_name` / `language_name` entities.
+
+Build-a-bear correctness for text-emitting models depends on Unicode normalization edges (otherwise NFD/NFC variants fragment `word_form` entities and per-pair attestation matrices fragment). Crystal Ball mech interp on text-handling models depends on Unicode-grounded `word_form` identity (otherwise different model tokenizers don't converge to shared `word_form` entities for the same content). Audio / image / video modalities have their OWN foundation build-outs on the same universal LINESTRINGZM shape — audio through `audio_recording` → `audio_chunk` → audio sample atoms; image through `pixel_region` → pixel intensity atoms; video through `video_frame` → `pixel_region` trajectory. Cross-modal grounding lands on typed edges BETWEEN modality-native content entities — not by squashing one modality into another's atoms.
+
+**XML-flat NOT grouped** for per-codepoint pre-gen. `ucd.all.flat.xml` is self-contained per-char; parser simplicity wins. `gen_ucd_flat.c` walks flat XML to emit all UAX #44 attributes.
+
+**Pre-gen ≠ substrate ingestion.** Pre-gen is build-time deterministic-math perf cache (codegen'd C arrays for O(1) client-side Unicode lookups via memory-mapped extension blob). Substrate-content ingestion is runtime population of substrate.* via populate functions. Two layers; don't conflate.
+
+Full scope is 37 GB / 23K files / 771 dirs across UCD + L2 + IRG + WG2 + Charts + IVD + reports + notes + history + CLDR. Investment is 100-160h, not a chore.
 
 ## Schema Source of Truth
 
-Pre-v1 Hartonomous is bootstrap-only. The canonical schema is the `sql/schema/bootstrap.sql` include manifest plus the files it includes under `sql/schema/`. Runtime database setup installs the generated PostgreSQL extension with `CREATE EXTENSION hartonomous`; `scripts/build/ExtensionSql.ps1` concatenates the canonical schema files and the C-binding template into the extension script.
+Pre-v1 Hartonomous is bootstrap-only. The canonical schema is the `sql/schema/bootstrap.sql` include manifest plus the files it includes under `sql/schema/`. Runtime database setup installs the generated PostgreSQL extension with `CREATE EXTENSION hartonomous`; `scripts/hart build extension-sql` concatenates the canonical schema files and the C-binding template into the extension script.
 
 Do not create or edit an active migrations directory for current work. The archived migrations are historical evidence, not the active apply path. When schema facts matter, inspect `sql/schema/` directly and recompute counts from the seed files.
 
@@ -139,7 +182,7 @@ Junction table names are validated against an allowlist. Never interpolate user-
 - P/Invoke declarations live in `Hartonomous.Core/Native/`.
 - Native DLL copy rules are centralized in `native-dll.targets` (imported by `Directory.Build.props`).
 - BLAKE3 is the only hash function. All content hashing goes through `Blake3Native.Blake3()`.
-- Entity hashes are computed over **content only** — never over position, ordinal, filename, tensor-name, line number, or any other placement metadata. Placement lives on edges (`has_source`, sequence position, `in_model`, etc.), never in the hash. Same content in two different places is one entity with two edges, not two entities.
+- Entity hashes are computed over **content only** — never over position, ordinal, filename, tensor-name, line number, or any other placement metadata. Placement lives in the composition `LINESTRINGZM` physicality vertex stream (Y mantissa = `bb_pack_ordinal_rle(ordinal, rle_count)`), on typed edges (`has_source`, `in_model`, `edge_member.role_position`), on model-source tables, or on provenance — never in identity. There is no `substrate.sequence` table; the geometry IS the indexed child manifest, reverse-resolved via `substrate.entity_by_hash_prefix` composite btree on `(hash_bits_0_51, hash_bits_52_103)`. Same content in two places = one entity referenced from two trajectories.
 
 ## Compute Facade
 

@@ -835,6 +835,19 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
             if (allDrained)
             {
+                // P1f: drain completion is the post-pass trigger, NOT phase
+                // completion. SequentialPhaseRunner no longer invokes the
+                // post-passes — the substrate is continuously queryable, no
+                // phase boundaries. Every DrainPendingAsync invocation
+                // guarantees edge.geom is non-null and significance is
+                // primed across all current arenas before returning. New
+                // edges still inserted with raw geom = NULL only briefly,
+                // closed by the immediately-following bulk geom build.
+                if (Interlocked.Read(ref _edgesEmitted) > 0)
+                {
+                    await PopulateEdgeTrajectoriesAsync(ct).ConfigureAwait(false);
+                    await PrimeAllSignificanceAsync(ct).ConfigureAwait(false);
+                }
                 return;
             }
 

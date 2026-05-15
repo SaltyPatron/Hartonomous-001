@@ -18,7 +18,7 @@ Valid producer output categories are:
 | Edge member | Attach role-ordered participants by `entity_hash`. |
 | Junction | Populate reference-layer evidence such as `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, or `pattern_deprel`. |
 | Physicality | Store `geometry(GeometryZM)` in `substrate.physicality`. |
-| Sequence | Store reconstruction order in `substrate.sequence(parent_hash, ordinal, child_hash, rle_count)`. |
+| (Sequence) | NOT a separate record kind. Composition child ordering is stored as part of the parent's `PhysicalityRecord` (LINESTRINGZM whose vertices mantissa-pack `(child.hash_bits_0_51, ordinal+rle, child.hash_bits_52_103, metadata)` via `bb_pack_*`). There is no `substrate.sequence` table. |
 | Entity significance | Prime content trust in a specific arena. |
 | Edge significance | Bulk primed by the phase-owned post-pass unless explicitly carried by a producer-supported override. |
 | Entity model source | Record model-source observations without changing entity identity. |

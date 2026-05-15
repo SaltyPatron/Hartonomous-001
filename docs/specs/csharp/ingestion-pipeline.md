@@ -83,7 +83,8 @@ A Tatoeba sentence is NOT a flat `tatoeba_sentence` atom that carries the raw st
 ┌───────────────────────────────────────────────────────────────────┐
 │  substrate.* (the actual substrate)                               │
 │    substrate.entity, substrate.edge, substrate.edge_member,        │
-│    substrate.physicality, substrate.sequence,                      │
+│    substrate.physicality (composition LINESTRINGZM IS the          │
+│      indexed child manifest — no substrate.sequence table),        │
 │    substrate.entity_significance, substrate.edge_significance,     │
 │    substrate.entity_model_source, substrate.entity_pos,            │
 │    substrate.entity_lexname, substrate.entity_language, ...        │
@@ -147,11 +148,11 @@ Eight discriminated-union subtypes of `IngestionRecord` (`Hartonomous.Core.Inges
 | `EdgeMemberRecord`           | `substrate.edge_member`          |
 | `JunctionRecord`             | `substrate.entity_pos` / `substrate.entity_lexname` / `substrate.entity_language` / `substrate.entity_morph_feature` / `substrate.model_architecture_class` / `substrate.tensor_tensor_role` / `substrate.pattern_deprel` (routed by `JunctionTable` discriminator) |
 | `PhysicalityRecord`          | `substrate.physicality`          |
-| `SequenceRecord`             | `substrate.sequence`             |
+| (removed — no `SequenceRecord`) | Composition child ordering is part of the parent's `PhysicalityRecord` (LINESTRINGZM vertex stream, mantissa-packed via `bb_pack_*`). |
 | `EntitySignificanceRecord`   | `substrate.entity_significance`  |
 | `EntityModelSourceRecord`    | `substrate.entity_model_source`  |
 
-`BaseDecomposer` exposes static helpers for emitting each kind: `EmitEntityAsync`, `EmitEdgeAsync` (computes `edge_hash` from role-ordered participant hashes), `EmitJunctionAsync`, `EmitPhysicalityAsync` (computes content hash from WKB), `EmitSequenceAsync`, `EmitEntitySignificanceAsync`, `EmitEntityModelSourceAsync`.
+`BaseDecomposer` exposes static helpers for emitting each kind: `EmitEntityAsync`, `EmitEdgeAsync` (computes `edge_hash` from role-ordered participant hashes), `EmitJunctionAsync`, `EmitPhysicalityAsync` (computes content hash from WKB; composition physicality builds the mantissa-packed LINESTRINGZM child manifest inline), `EmitEntitySignificanceAsync`, `EmitEntityModelSourceAsync`. There is no `EmitSequenceAsync` — composition ordering rides in the parent's physicality record.
 
 ---
 

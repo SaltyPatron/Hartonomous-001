@@ -1621,6 +1621,30 @@ COMMENT ON COLUMN substrate.edge_type.semantic_weight IS
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
+-- provenance_modality junction is created here (before its seed-time INSERT in
+-- Phase 6 seed/provenance.sql). The junction belongs in Phase 8 by topic but its
+-- seed data is appended to seed/provenance.sql; create the table early so the
+-- Phase-6 seed can populate it without a forward reference.
+
+-- ── sql/schema/tables/junctions/provenance_modality.sql ───────────────────────────────────────
+-- Junction: which modalities a provenance source is authoritative in.
+-- Replaces the prior substrate.provenance.modality_codes array column —
+-- proper relational shape with composite PK and bidirectional btree
+-- indexes (no array column, no 1NF violation, no FK-integrity bypass).
+CREATE TABLE substrate.provenance_modality (
+    provenance_id INT NOT NULL REFERENCES substrate.provenance(id) ON DELETE CASCADE,
+    modality_code substrate.modality_code NOT NULL,
+    PRIMARY KEY (provenance_id, modality_code)
+);
+
+CREATE INDEX provenance_modality_modality_idx
+    ON substrate.provenance_modality (modality_code);
+
+COMMENT ON TABLE substrate.provenance_modality IS
+    'Junction table: which modalities a provenance source is authoritative in. Replaces the prior modality_codes array column on substrate.provenance — proper relational shape (atomic columns, composite PK, FK to substrate.provenance(id), bidirectional indexes). Empty join = source authoritative for none / text default.';
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
 -- ── Phase 6: reference seed (entity_type before edge_type — FK code lookup) ─
 -- provenance_edge_authority seed is deferred to Phase 8b (after the
 -- junction table is created) since it INSERTs against substrate.provenance_edge_authority.
@@ -1700,6 +1724,42 @@ INSERT INTO substrate.physicality_type (code) VALUES
     ('embedding_firefly')
 ON CONFLICT (code) DO NOTHING;
 
+-- ── sql/schema/seed/physicality_type_trajectories.sql ───────────────────────────────────────
+-- Two-trajectory-per-entity additions reinstated from S3.A (ad1f0a4), corrected
+-- to the geometry(GeometryZM) model from S3.D chunk 1 (a9c4838).
+--
+-- The substrate's physicality has three primary roles per entity:
+--
+--   entity   — the building block's own identity / structure. Atoms get real
+--              content-derived POINTZM (existing partitions: s3_position for
+--              codepoints under UCA rank, hilbert_value, audio_*, etc.).
+--              Compositions get their canonical real-coord shape as a
+--              LINESTRINGZM (or MULTILINESTRINGZM) — physicality_entity_shape
+--              partition introduced here. Useful for Fréchet shape matching
+--              across decompositions (rhyme / shape-analogy / idiomaticity).
+--
+--   firefly  — per-model embedding-row POINTZM specimens attached to existing
+--              word_form entities (physicality_embedding_firefly partition,
+--              already seeded). MULTIPOINTZM aggregation per entity across
+--              ingested models for cross-model Voronoi consensus.
+--
+--   content  — content-tier composition's mantissa-packed LINESTRINGZM whose
+--              vertices encode (child.hash_bits_0_51, ordinal+rle,
+--              child.hash_bits_52_103, metadata) via substrate.bb_pack_*.
+--              physicality_ingestion_trajectory partition introduced here.
+--              The geometry IS the indexed child manifest at every tier —
+--              no separate substrate.sequence table. Reverse-resolve via
+--              substrate.entity_by_hash_prefix composite-btree lookup.
+--
+-- Auto-assigned ids follow the prior seed (1..13 from physicality_type.sql;
+-- 14 from physicality_type_embedding_firefly.sql), so these get 15 and 16.
+-- The partitions in tables/core/physicality_entity_shape.sql and
+-- physicality_ingestion_trajectory.sql FOR VALUES IN (15) / (16) match.
+INSERT INTO substrate.physicality_type (code) VALUES
+    ('entity_shape'),
+    ('ingestion_trajectory')
+ON CONFLICT (code) DO NOTHING;
+
 -- ── sql/schema/seed/edge_role.sql ───────────────────────────────────────
 INSERT INTO substrate.edge_role (code) VALUES
     ('source'), ('target'), ('context'), ('mediator'),
@@ -1722,107 +1782,51 @@ INSERT INTO substrate.significance_context (code) VALUES
     ('morphological_productivity');
 
 -- ── sql/schema/seed/attestation_type.sql ───────────────────────────────────────
--- Attestation types. Open vocabulary — runtime additions are expected.
+-- Attestation types — generic, sign-discriminating only.
 --
--- Glicko-2 score (per docs/01-tensor-primitive-spec.md §V) and per-event
--- weight stratify what KIND of evidence is being recorded. Sign-bearing
--- (positive vs negative) attestation lives in the score parameter (1=win,
--- 0=loss); per-event weight scales the magnitude of the rating update.
+-- P1d (2026-05-14 architectural correction): the prior 27 modality-specific
+-- rows (model_attention_qk_pattern, model_ffn_full_path, model_lm_head_projection,
+-- model_cross_modal_alignment, corpus_co_occurrence_window, lexical_curated_relation,
+-- etc.) pidgeonholed the universal substrate into a finite enumeration that
+-- had to be extended every time a new modality / model mechanism / source
+-- kind appeared. The (provenance × arena) tuple already discriminates
+-- evidence by source and by domain — adding a third discrimination axis was
+-- redundant AND broke the universal-substrate property because every new
+-- source would need an attestation_type extension.
 --
--- Per-event weight defaults reflect evidence density vs confidence:
---   corpus co-occurrence: 0.1  (high-volume, low-per-event-confidence)
---   curated lexical:      1.0  (hand-curated)
---   tuple-level model evidence: 0.5-0.6 (the spec §IV mapping)
---   inference outcomes:   1.5  (sparse ground-truth signal)
---   expert correction:    2.0  (highest single-event impact)
+-- The substrate's invention rule: every claim about content from every
+-- source is the same shape of evidence. ONE Glicko-2 attestation surface
+-- (substrate.edge_significance + substrate.entity_significance), with
+-- discrimination via:
+--   * provenance_id   — WHICH source attested (wordnet / wiktionary / ud /
+--                       tatoeba / each ingested AI model / user_session / etc.)
+--   * context_type_id — IN WHICH arena (lexical_disambiguation /
+--                       syntactic_role_fitness / domain-specific arenas / etc.)
+--   * score           — Glicko-2 win/loss/draw (1.0 / 0.0 / 0.5)
+--   * weight          — per-event weight magnitude (caller-controlled,
+--                       defaults below)
+--
+-- attestation_type now carries ONLY the sign-bearing discriminator. The
+-- column on substrate.edge_significance + substrate.entity_significance is
+-- on the removal path (P1e) — once IngestionBatch.AddSignificance and all
+-- decomposer callers stop threading it, the column will drop and these
+-- three rows become unused infrastructure.
+--
+-- AP-31 (sign is load-bearing): Glicko score = value > 0 ? 1.0 : 0.0;
+-- weight = Math.Abs(value). Caller emits positive_evidence with
+-- score=1 OR negative_evidence with score=0; neutral_evidence with
+-- score=0.5 widens sigma without moving mu (cross-source divergence /
+-- inconclusive signal).
 INSERT INTO substrate.attestation_type (code, description, default_event_weight) VALUES
-    -- Corpus / lexicon evidence
-    ('corpus_co_occurrence_window',
-     'Decomposer slid window of radius R over a parent text composition; per-pair weighted comparison event. Substrate analog of word2vec/GloVe statistics.',
-     0.1),
-    ('corpus_proximity_within_sentence',
-     'Same as corpus_co_occurrence_window but strictly within a sentence boundary.',
-     0.1),
-    ('lexical_curated_relation',
-     'Curated lexicon assertion (WordNet has_sense, Wiktionary etymology, OMW alignment, UD deprel labels). High per-event confidence.',
+    ('positive_evidence',
+     'Sign-positive attestation event. score=1.0 in Glicko-2 update. weight = caller-supplied magnitude (default 1.0).',
      1.0),
-    ('lexical_attested_translation',
-     'Bilingual lexicon entry or aligned-sentence translation pair (Tatoeba, OPUS).',
-     0.8),
-    -- Cross-source evidence
-    ('cross_model_divergence',
-     'Cross-model fireflies disagree; cell fragmented. Recorded with score=0.5 so sigma stays wide and the engine''s curiosity loop targets the gap.',
-     0.5),
-    -- Inference outcomes (Glicko Step-6 closed loop)
-    ('inference_outcome_accept',
-     'Inference Step 6: query path produced an answer the user/downstream-task accepted. Updates path edge_significance positively (score=1, high weight).',
-     1.5),
-    ('inference_outcome_reject',
-     'Inference Step 6: query path produced an answer that was rejected. Negative event on the path (score=0, high weight).',
-     1.5),
-    ('expert_correction',
-     'Human-in-loop override of an edge''s rating. Highest per-event weight; used sparingly for corrections that should dominate accumulated automatic evidence.',
-     2.0),
-    ('provenance_authority_corroboration',
-     'Multi-source assertion resolved through provenance_edge_authority. Used when several provenances of differing trust priors agree on an edge''s rating.',
-     0.8),
-    -- Tuple-level model evidence (per docs/01-tensor-primitive-spec.md §IV).
-    -- Each tuple shape produces its own attestation_type. Sign carried via
-    -- Glicko score, magnitude via per-event weight.
-    ('model_attention_qk_pattern',
-     'AttentionBlock tuple Q×K^T projection between two content entities (token, image_patch, audio_frame).',
-     0.6),
-    ('model_attention_vo_pattern',
-     'AttentionBlock tuple V·O^T projection between two content entities.',
-     0.5),
-    ('model_cross_modal_alignment',
-     'CrossAttentionBlock tuple Q^T·K projection where Q-side and K-side bind to different content-entity-types (text↔image, text↔audio, decoder-token↔encoder-token).',
-     0.5),
-    ('model_ffn_full_path',
-     'SwiGluFfn or BertFfn tuple full-path response: down(act(gate(x))⊙up(x)) or output(act(intermediate(x))) per content-entity pair.',
-     0.5),
-    ('model_input_embedding',
-     'EmbeddingLookup table: per-row firefly POINTZM position + cosine between vocab token rows.',
-     0.5),
-    ('model_embedding_proximity',
-     'Per-(model, token) firefly POINTZM position attestation on the word_form entity. Track-1 firefly geometry binding — entity_significance event recording where model M places token T in 4D space.',
-     0.4),
-    ('model_lm_head_projection',
-     'LM head Linear (lm_head slot in EmbeddingLookup-dual): residual direction → output token logit.',
-     0.5),
-    ('model_layer_norm_evidence',
-     'Normalization primitive γ/β contour stored as physicality on the tensor entity.',
-     0.3),
-    ('model_inference_state_evidence',
-     'BnState tuple running_mean/running_var/num_batches_tracked — derived inference-time state, not learned content. Lower per-event weight.',
-     0.2),
-    ('model_local_kernel_evidence',
-     'LocalKernel primitive (conv2d, conv1d, depthwise, pointwise) response between content-entity neighbors (pixel_region, audio_chunk).',
-     0.4),
-    ('model_position_embedding',
-     'Position embedding (absolute / RoPE / ALiBi / Swin relative-position-bias-table): positional bias contribution.',
-     0.3),
-    ('model_moe_router',
-     'MoeRouterBlock router: per-token routing strength alignment between tokens that route to the same expert.',
-     0.4),
-    ('model_moe_expert_response',
-     'MoeRouterBlock expert: per-expert FFN response between content-entity pairs the expert refines together.',
-     0.4),
-    ('model_lora_adapter_evidence',
-     'LoraDelta tuple: A·B low-rank update''s response on the same edges the base attests to. Stored alongside base attestations under a distinct attestation_type so synthesizers can choose to merge or keep separate.',
-     0.5),
-    ('model_codec_evidence',
-     'EmbeddingLookup VQ codebook: per-codeword position attestation on codec_codevector entities.',
-     0.4),
-    ('model_detection_class_attestation',
-     'DetectionHead class_proj: per-(object_query, visual_concept) class score.',
-     0.5),
-    ('model_detection_bbox_attestation',
-     'DetectionHead bbox_proj: per-object_query bbox parameter prediction recorded as physicality on the object_query entity.',
-     0.5),
-    ('model_quantization_variant_evidence',
-     'Same per-tuple evidence under a different quantization (FP8/AWQ/GPTQ/MXFP4). Lower per-event weight because lossy.',
-     0.3);
+    ('negative_evidence',
+     'Sign-negative attestation event. score=0.0 in Glicko-2 update. Used for anti-correlation, suppression, antipodal, antonym, rejection-of-inference-path. weight = caller-supplied magnitude.',
+     1.0),
+    ('neutral_evidence',
+     'Sign-neutral attestation event. score=0.5 in Glicko-2 update. Widens sigma without moving mu — cross-source divergence, inconclusive signal, multi-model disagreement. weight = caller-supplied magnitude.',
+     0.5);
 
 -- ── sql/schema/seed/tensor_role.sql ───────────────────────────────────────
 INSERT INTO substrate.tensor_role (code) VALUES
@@ -2606,15 +2610,106 @@ CREATE TABLE substrate.physicality_model
 -- application-fault matching across structurally-similar trajectories
 -- whose categorical labels differ).
 --
--- TODO (post-S3.D follow-on): split this single contour partition into
--- two physicality_types — entity_shape (atoms-as-vertices) and
--- content_trajectory (entities-as-vertices) — so per-partition CHECK
--- constraints can declare the per-tier axis-meaning conventions
--- separately.
+-- Split landed: physicality_entity_shape (id 15) carries real-coord canonical
+-- structural fingerprints for Fréchet shape matching; physicality_ingestion_trajectory
+-- (id 16) carries mantissa-packed identity-level child manifests for O(tier)
+-- reconstruction via substrate.entity_by_hash_prefix. This contour partition is
+-- LEGACY — retained while existing decomposers still emit
+-- AddPhysicalityLineString4d(parent, "contour", verts) — and is on a deprecation
+-- path. New decomposers route to AddEntityShape (entity_shape partition) for
+-- real-coord canonical shape, or AddIngestionTrajectory (ingestion_trajectory
+-- partition) for the mantissa-packed structural child manifest, depending on
+-- which substrate surface they're contributing to.
 CREATE TABLE substrate.physicality_contour
     PARTITION OF substrate.physicality FOR VALUES IN (13);
 ALTER TABLE substrate.physicality_contour
     ADD CONSTRAINT physicality_contour_linestringzm
+    CHECK (GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING')
+           AND ST_NDims(geom) = 4);
+
+-- ── sql/schema/tables/core/physicality_entity_shape.sql ───────────────────────────────────────
+-- Physicality type 15: entity_shape. The building block's own canonical
+-- structural fingerprint in real metric coordinates.
+--
+-- For atoms-with-internal-structure (tensor γ-scale shapes, codec codebook
+-- contours, etc. — entities whose physicality is their own real-coord
+-- internal shape rather than a trajectory through other entities), this is
+-- a LINESTRINGZM through the per-feature values laid out in the partition's
+-- declared axis convention.
+--
+-- For compositions (word_form, lemma, morpheme, grapheme_cluster, sentence
+-- shapes, document silhouettes, etc.), this is the canonical shape derived
+-- from the children's real-coord centroids in role / sequence order.
+-- POINTZM when a single canonical centroid suffices, LINESTRINGZM for
+-- one-segment shapes, MULTILINESTRINGZM for multi-tier or branching
+-- canonical fingerprints (e.g. a sentence's word-tier and grapheme-tier
+-- views packaged in one row).
+--
+-- Distinct from physicality_ingestion_trajectory (id 16): entity_shape
+-- vertices are REAL metric coordinates for Fréchet / Hausdorff shape
+-- matching (rhyme detection, idiomaticity divergence, frayed-edge surveys,
+-- application-fault pattern matching). ingestion_trajectory vertices are
+-- mantissa-packed identity-POINTZMs for O(tier) reconstruction via the
+-- entity_by_hash_prefix composite-btree. The two surfaces answer different
+-- queries; both can coexist on the same entity_hash with distinct
+-- physicality_type_id rows.
+CREATE TABLE substrate.physicality_entity_shape
+    PARTITION OF substrate.physicality FOR VALUES IN (15);
+ALTER TABLE substrate.physicality_entity_shape
+    ADD CONSTRAINT physicality_entity_shape_geom
+    CHECK (GeometryType(geom) IN ('POINT', 'LINESTRING', 'MULTILINESTRING')
+           AND ST_NDims(geom) = 4);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory.sql ───────────────────────────────────────
+-- Physicality type 16: ingestion_trajectory. The composition's recorded
+-- structural child manifest — mantissa-packed LINESTRINGZM whose vertices
+-- encode child entity hash prefixes via substrate.bb_pack_*.
+--
+-- Vertex encoding per docs/specs/sql/mantissa-exploitation.md:
+--
+--   X mantissa = bb_pack_hash_lo(child.hash_bits_0_51)   — bits 0..51 of child hash
+--   Y mantissa = bb_pack_ordinal_rle(ordinal, rle_count) — sequence position + run-length
+--   Z mantissa = bb_pack_hash_hi(child.hash_bits_52_103) — bits 52..103 of child hash
+--   M mantissa = bb_pack_metadata(0)                     — reserved metadata slot
+--
+-- Vertices are NOT metric coordinates. The geometry IS the indexed
+-- relational child manifest at this composition tier. Reverse-resolve a
+-- vertex to its child entity by unpacking (X, Z) into (hash_bits_0_51,
+-- hash_bits_52_103) and JOINing against substrate.entity's composite btree
+-- (entity_hash_prefix_idx). Single batched lookup recovers the entire
+-- child slice for a given parent — no per-child round-trip, no recursive
+-- CTE explosion.
+--
+-- LINESTRINGZM for single-segment trajectories (the common case: text
+-- compositions, audio chunks, ordered ASTs). MULTILINESTRINGZM for
+-- discontinuous / parallel / multi-tier compositions (footnote main +
+-- body interleaved, bilingual interlinear, multi-tier fingerprint views,
+-- branching choose-your-own-adventure trajectories).
+--
+-- Same children sequence on the same parent ⇒ same content_hash via
+-- BLAKE3(geom_bytes) ⇒ deduplicated via the (physicality_type_id,
+-- entity_hash, content_hash) composite PK. Per-source segmentation
+-- variation (different decomposer producing slightly different ordinal
+-- groupings of the same content) yields distinct content_hash rows on
+-- the same entity_hash — cross-source physicality realizations
+-- accumulate naturally.
+--
+-- GiST gist_geometry_ops_nd indexes this partition's geom by 4D bounding
+-- box. Query "find every composition referencing a given child entity"
+-- via geom && box4d(bb_pack_hash_lo(child.hash_bits_0_51), -inf,
+-- bb_pack_hash_hi(child.hash_bits_52_103), -inf, ...) — single GiST
+-- prune returns every trajectory containing the child at any ordinal.
+-- The 4D index IS the inverted index for "every place X appears." No
+-- recursive walk, no traversal — one indexed bbox query.
+--
+-- This is the substrate's load-bearing identity-level structural surface.
+-- Distinct from physicality_entity_shape (id 15) which carries real-coord
+-- canonical shape for Fréchet/Hausdorff matching. Both can coexist on the
+-- same entity_hash via separate physicality_type_id rows.
+CREATE TABLE substrate.physicality_ingestion_trajectory
+    PARTITION OF substrate.physicality FOR VALUES IN (16);
+ALTER TABLE substrate.physicality_ingestion_trajectory
+    ADD CONSTRAINT physicality_ingestion_trajectory_geom
     CHECK (GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING')
            AND ST_NDims(geom) = 4);
 
@@ -2937,24 +3032,9 @@ CREATE TABLE IF NOT EXISTS substrate.entity_classification (
 COMMENT ON TABLE substrate.entity_classification IS
     'Per-entity classification metadata. Content (entity_hash) is identity; classification (entity_type_id) is metadata. Multiple decomposers can independently assert classifications on the same content; provenance distinguishes them.';
 
--- ── sql/schema/tables/junctions/provenance_modality.sql ───────────────────────────────────────
--- Junction: which modalities a provenance source is authoritative in.
--- Replaces the prior substrate.provenance.modality_codes array column —
--- proper relational shape with composite PK and bidirectional btree
--- indexes (no array column, no 1NF violation, no FK-integrity bypass).
-CREATE TABLE substrate.provenance_modality (
-    provenance_id INT NOT NULL REFERENCES substrate.provenance(id) ON DELETE CASCADE,
-    modality_code substrate.modality_code NOT NULL,
-    PRIMARY KEY (provenance_id, modality_code)
-);
-
-CREATE INDEX provenance_modality_modality_idx
-    ON substrate.provenance_modality (modality_code);
-
-COMMENT ON TABLE substrate.provenance_modality IS
-    'Junction table: which modalities a provenance source is authoritative in. Replaces the prior modality_codes array column on substrate.provenance — proper relational shape (atomic columns, composite PK, FK to substrate.provenance(id), bidirectional indexes). Empty join = source authoritative for none / text default.';
-
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- provenance_modality.sql moved to Phase 5b above (seed-time forward reference)
 
 -- ── Phase 8b: post-junction seed (depends on junction tables existing) ─
 
@@ -3548,24 +3628,32 @@ COMMENT ON FUNCTION substrate.resolve_context_id(TEXT) IS
 -- ── sql/schema/functions/resolve_attestation_type_id.sql ───────────────────────────────────────
 -- substrate.resolve_attestation_type_id(p_code TEXT)
 --
--- Translate an attestation_type code to its INT id. Same shape as
--- resolve_context_id. AttestationType is open-vocabulary; new codes can be
--- added at runtime via INSERT. Code that hard-codes the 14 starter codes is
--- wrong (analogous to AP-1 for arenas).
+-- Translate an attestation_type code to its INT id. P1d (2026-05-14): the
+-- attestation_type vocabulary was collapsed from 27 modality-specific rows
+-- to 3 generic sign-discriminator rows (positive_evidence /
+-- negative_evidence / neutral_evidence). The (provenance × arena) tuple
+-- carries source + domain discrimination instead.
 --
--- Returns NULL when the code does not exist. Callers MUST handle NULL
--- (the C# pipeline raises InvalidOperationException with the unknown code).
+-- Unknown codes (legacy modality-specific codes from pre-P1d decomposer
+-- code that hasn't migrated yet — model_attention_qk_pattern,
+-- corpus_co_occurrence_window, provenance_authority_corroboration, etc.)
+-- resolve to 'positive_evidence' as a graceful fallback so the substrate
+-- keeps ingesting while the call-site migration to the unified surface
+-- (P1e) proceeds.
+--
+-- Returns the resolved id; never NULL post-P1d.
 CREATE OR REPLACE FUNCTION substrate.resolve_attestation_type_id(p_code TEXT)
 RETURNS INT
 LANGUAGE sql STABLE
 AS $$
-    SELECT id
-      FROM substrate.attestation_type
-     WHERE code = p_code;
+    SELECT COALESCE(
+        (SELECT id FROM substrate.attestation_type WHERE code = p_code),
+        (SELECT id FROM substrate.attestation_type WHERE code = 'positive_evidence')
+    );
 $$;
 
 COMMENT ON FUNCTION substrate.resolve_attestation_type_id(TEXT) IS
-    'Resolve an attestation_type.code to its INT id. Returns NULL if unknown. STABLE — safe to inline in larger queries.';
+    'Resolve an attestation_type.code to its INT id. Falls back to positive_evidence for legacy modality-specific codes that pre-date the P1d collapse to generic sign discriminators (positive_evidence / negative_evidence / neutral_evidence). STABLE — safe to inline in larger queries.';
 
 -- ── sql/schema/functions/resolve_entity_handles.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.resolve_entity_handles(BYTEA[], TEXT[]);

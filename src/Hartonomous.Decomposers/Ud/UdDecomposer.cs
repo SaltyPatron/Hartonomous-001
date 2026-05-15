@@ -224,8 +224,8 @@ public sealed partial class UdDecomposer : BaseDecomposer
         ref long entityCount,
         ref long edgeCount)
     {
-        List<(double X, double Y, double Z, double M)> sentVertices = new(sent.Tokens.Count);
         EntityHandle[] tokenHandles = new EntityHandle[sent.Tokens.Count];
+        Hash32[] tokenWordFormHashes = new Hash32[sent.Tokens.Count];
         Dictionary<string, int> tokenIdIndex = new(sent.Tokens.Count, StringComparer.Ordinal);
 
         int posWritten = 0;
@@ -252,6 +252,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
             // means the same surface form across UD/WordNet/Tatoeba/user
             // prompt collapses to ONE entity.
             tokenHandles[ti] = wfHandle;
+            tokenWordFormHashes[ti] = wfHandle.Hash;
             batch.AddSignificance(wfHandle, "source_authority", TrustPriorMu);
 
             // Lemma entity: Merkle hash (codepoints → grapheme clusters → lemma) for convergence
@@ -291,7 +292,6 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 }
             }
 
-            sentVertices.Add(wfCentroid);
         }
 
         // The sentence itself is user-visible text, so its root identity must
@@ -307,24 +307,25 @@ public sealed partial class UdDecomposer : BaseDecomposer
             langWritten++;
         }
 
-        // Token order is encoded by the sentence's LINESTRINGZM physicality
-        // (sentVertices below) — vertex index = token position. The
-        // sentence's Merkle hash also encodes order via the ordered list of
-        // child token hashes. No composition child metadata needed here.
-
-        if (sentVertices.Count >= 2)
+        // Sentence's structural-identity child manifest emits as a
+        // mantissa-packed LINESTRINGZM into the ingestion_trajectory
+        // physicality partition. Vertices reference the per-token word_form
+        // entities by 104-bit hash prefix encoded in (X, Z) mantissas, with
+        // (Y) carrying ordinal+RLE. substrate.get_composition_children /
+        // composition_at / recompose_text / entity_by_hash_prefix decode
+        // this geometry as the canonical child manifest — no separate
+        // substrate.sequence table, no real-coord trajectory; the geometry
+        // IS the indexed manifest.
+        if (sent.Tokens.Count >= 1)
         {
-            (double, double, double, double)[] arr = new (double, double, double, double)[sentVertices.Count];
-            for (int i = 0; i < sentVertices.Count; i++)
+            Hartonomous.Core.Ingestion.TrajectoryVertex[] verts =
+                new Hartonomous.Core.Ingestion.TrajectoryVertex[sent.Tokens.Count];
+            for (int i = 0; i < sent.Tokens.Count; i++)
             {
-                arr[i] = sentVertices[i];
+                verts[i] = Hartonomous.Core.Ingestion.TrajectoryVertex.FromHash(
+                    tokenWordFormHashes[i], ordinal: i + 1, rle: 1, metadata: 0L);
             }
-            batch.AddPhysicalityLineString4d(sentEntity, "contour", arr.AsSpan());
-        }
-        else if (sentVertices.Count == 1)
-        {
-            (double x, double y, double z, double m) = sentVertices[0];
-            batch.AddPhysicalityPoint4d(sentEntity, "s3_position", x, y, z, m);
+            batch.AddIngestionTrajectory(sentEntity, verts.AsSpan());
         }
 
         // Dependency edges: head != 0 and deprel != null.

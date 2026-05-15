@@ -27,11 +27,11 @@ description: Audit Hartonomous claims for semantic drift.
 
 **Physicality**: `substrate.physicality`. Universal PostGIS `geometry(GeometryZM)` storage, partitioned by `physicality_type_id`. Use `substrate.st_4d_*` / `substrate.st_s3_*`; raw `ST_Distance`, `ST_Centroid`, `ST_FrechetDistance`, and `ST_HausdorffDistance` are forbidden on substrate physicality. `public.point4d` / `public.linestring4d` are internal native compute primitives, not substrate storage columns.
 
-**Reference vocabulary**: current canonical seed files under `sql/schema/seed/`: `entity_type` (54), `edge_type` (111), `edge_role` (7), `physicality_type` (14 including `embedding_firefly`), `significance_context` (10 starter arenas, open vocabulary), `provenance` (10), plus POS/deprel/morph/sense/language/etc. NOT entities.
+**Reference vocabulary**: current canonical seed files under `sql/schema/seed/`. Counts must be recomputed from the seed files before citing — phantom entity types were removed 2026-05-08 (23 real content types remain, split by role: 11 entity-tier building blocks + 7 content-tier trajectory types + 5 cross-cutting like `tensor` / `model_architecture` / `tokenizer_model` / `collation_element` / `language_name`); `edge_type` count includes 13 seeded-but-empty Unicode rows (98–112) pending blob SRF exports; `physicality_type` is 13 in the base seed plus `embedding_firefly` from the firefly seed file. `significance_context` is 10 starter arenas (open vocabulary); `provenance` is ~10. Reference vocabularies are NOT entities.
 
 **Junction surfaces**: canonical files under `sql/schema/tables/junctions/`. Evidence and classification infrastructure, not edges. Glicko-2 junction confidence currently appears on `entity_pos` and `pattern_deprel`; edge/entity substrate trust lives separately on `edge_significance` and `entity_significance`.
 
-**Reconstruction metadata**: `substrate.sequence.ordinal`, `provenance`, edges `has_source`/`in_model`. Never in identity hash.
+**Reconstruction metadata**: composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`; no `substrate.sequence` table), `provenance`, edges `has_source`/`in_model`. Never in identity hash.
 
 ## Conventional-AI traps
 
