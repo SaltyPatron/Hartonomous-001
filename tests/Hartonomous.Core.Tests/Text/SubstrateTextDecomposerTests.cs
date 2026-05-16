@@ -31,6 +31,65 @@ public sealed class SubstrateTextDecomposerTests
     }
 
     [Fact]
+    public void EmitStatic_WordFormHash_DeterministicAcrossContextVariants()
+    {
+        if (!TryUseNativeTextDecomposer())
+        {
+            return;
+        }
+
+        TextDecomposeOptions options = new("user_session", "word_form", 50000.0);
+
+        Hash32 bare    = SubstrateTextDecomposer.EmitStatic(new RecordingBatch(), "he"u8, options).RootHash;
+        Hash32 trail   = SubstrateTextDecomposer.EmitStatic(new RecordingBatch(), "he "u8, options).RootHash;
+        Hash32 lead    = SubstrateTextDecomposer.EmitStatic(new RecordingBatch(), " he"u8, options).RootHash;
+        Hash32 newline = SubstrateTextDecomposer.EmitStatic(new RecordingBatch(), "he\n"u8, options).RootHash;
+
+        Assert.Equal(bare, trail);
+        Assert.Equal(bare, lead);
+        Assert.Equal(bare, newline);
+    }
+
+    [Fact]
+    public void EmitStatic_TextCompositionHash_DiffersAcrossContextVariants()
+    {
+        if (!TryUseNativeTextDecomposer())
+        {
+            return;
+        }
+
+        TextDecomposeOptions options = new("user_session", "text_composition", 50000.0);
+
+        Hash32 bare  = SubstrateTextDecomposer.EmitStatic(new RecordingBatch(), "he"u8, options).RootHash;
+        Hash32 trail = SubstrateTextDecomposer.EmitStatic(new RecordingBatch(), "he "u8, options).RootHash;
+
+        Assert.NotEqual(bare, trail);
+    }
+
+    [Fact]
+    public void EmitStatic_WordForm_StillEmitsPerWordRecords()
+    {
+        // After the kernel fix that branches root-hash selection per top_kind,
+        // make sure word_form requests STILL emit per-word entity records into
+        // the batch (the kernel's per-word emission loop is independent of
+        // root-hash selection). Decomposer passes that rely on EmitStatic
+        // populating the batch with per-word records (e.g. AttentionBlockTuplePass
+        // via the tokenizer-vocab loop) would silently fail if this regressed.
+        if (!TryUseNativeTextDecomposer())
+        {
+            return;
+        }
+
+        RecordingBatch batch = new();
+        TextDecomposeOptions options = new("user_session", "word_form", 50000.0);
+        TextDecomposeResult result = SubstrateTextDecomposer.EmitStatic(batch, "token0"u8, options);
+
+        Assert.NotEqual(default(Hash32), result.RootHash);
+        Assert.NotEmpty(batch.Entities);  // codepoint + grapheme + word_form entities all emitted
+        Assert.Contains(batch.Entities, e => e.Type == "word_form");
+    }
+
+    [Fact]
     public void UcdTablesReady_WhenNativeTextDecomposerUsable_ReturnsTrue()
     {
         if (!TryUseNativeTextDecomposer())

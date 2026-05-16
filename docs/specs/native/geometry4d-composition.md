@@ -122,6 +122,54 @@ The `substrate.physicality` row holding a centroid is **write-once-per-entity**.
 
 ---
 
+## Radial tiering — the substrate's hierarchical structure IS its geometry
+
+The arithmetic-mean centroid recursion, applied to codepoints projected onto the unit 4-sphere (the glome, S³) via Super-Fibonacci by UCA collation rank, produces a **natural geometric realization of the Merkle DAG depth as radial position in the 4-ball**. This is normative substrate behavior, not a downstream optimization.
+
+**The principle:**
+
+- **Atoms (codepoints)** project to the glome: `||centroid||₄d = 1` (on the unit hypersphere surface).
+- **Compositions** are arithmetic means of children's centroids. By Jensen's inequality + sphere convexity, the mean of N distinct points on the glome lies STRICTLY INSIDE the open unit 4-ball: `||centroid||₄d < 1`.
+- **Deeper compositions** average MORE children → mean gravitates further toward the origin. For Super-Fibonacci-distributed children (deliberately golden-angle-spread, not adjacent), the inward gravitation is FAST — even a 2-codepoint composition typically lands at radius ~0.15, not the 1/√2 ≈ 0.71 a naive iid-uniform analysis would predict.
+
+**Empirically (verified against the live UCD blob):**
+
+| Entity | `||centroid||₄d` | `tier_hint` = 1 - radius |
+|---|---|---|
+| atom 'A' (cp 65) | 1.000 | 0.000 |
+| 2-cp composition "he" (cps 104, 101) | 0.152 | 0.848 |
+| Larger compositions | → 0 | → 1 |
+
+**The substrate is content-self-organizing in 4D:**
+
+1. **Atoms on the outer shell, deep compositions at the core** — Merkle depth maps to radial position in the 4-ball.
+2. **Same angular direction, different radii = different tiers of the same conceptual cluster** — the codepoint 'c' and a document about cats both project into the "c-direction" but the document is at radius ~0 while the codepoint is at radius 1.
+3. **No spatial collision between parent and child** — parent's radius is strictly less than `min(children's radii) ≤ 1`. Parent is interior to the children's convex hull.
+4. **Homogeneous content stays near the surface; diverse content gravitates to origin** — single-character runs / repetitive content have centroids near the glome; cross-topic documents land near origin.
+
+**Substrate-native tier query (no classification join):**
+
+```sql
+-- "high-tier compositions in the 4D-region of interest"
+SELECT entity_hash
+  FROM substrate.entity
+ WHERE hilbert_index BETWEEN :region_lo AND :region_hi
+   AND substrate.entity_tier_hint(hash) > 0.7;
+```
+
+The `entity.centroid_x/y/z/m + hilbert_index` columns (maintained by `substrate.update_entity_centroid_from_physicality` trigger on `substrate.physicality` INSERT/UPDATE) make this O(1) per row — no JOIN to physicality, no LATERAL ST_4D_Centroid, no recomputation. The substrate's hierarchical structure is **directly measurable** from a single entity row via `substrate.entity_tier_hint(hash)`.
+
+**Implications for inference / synthesis:**
+
+- Query traversal can rank candidate edges by Glicko mu AND 4D centroid proximity simultaneously.
+- KnowledgeSelector BFS can prefer expansion toward higher-tier neighbors (deeper into a topical region) or surface-ward (toward atomic constituents) depending on recipe intent.
+- Build-a-bear synthesis can weight per-layer arena contributions by tier — early layers favor surface (atomic) signal; deep layers favor origin (abstraction) signal.
+- Polysemy / sense disambiguation has a geometric realization: different senses of the same surface land in different radial tiers because their content trajectories aggregate over different per-context entities.
+
+**Anti-pattern:** treating centroid as just an identifier or as decoration. The centroid IS the entity's position in the substrate's hierarchical geometric realization, and the radius IS the tier. Code that ignores this loses substrate-native tier query, semantic clustering, and the natural Voronoi cells the principle produces.
+
+---
+
 ## Frege's compositionality as a physical law
 
 Frege's compositionality principle:

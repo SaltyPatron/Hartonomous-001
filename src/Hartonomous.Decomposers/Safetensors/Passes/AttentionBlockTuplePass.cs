@@ -98,9 +98,15 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
             long[] qShape = TensorMemberMaterializer.EffectiveShape(q);
             long[] kShape = TensorMemberMaterializer.EffectiveShape(k);
             if (qShape.Length != 2 || kShape.Length != 2) { continue; }
-            if ((int)qShape[1] != hiddenDim || (int)kShape[1] != hiddenDim) { continue; }
-            int qCols = (int)qShape[0];
-            int kCols = (int)kShape[0];
+            // EffectiveShape returns the orientation the GEMM expects:
+            // qFlat row-major [hidden_input, dProj_output]. So shape[0]=hidden,
+            // shape[1]=dProj. Real HF safetensors are stored as [out, in]; the
+            // materializer transposes on read so qFlat lands in GEMM orientation.
+            // Per-head subdivision happens elsewhere; this pass treats Q as a
+            // single composite projection.
+            if ((int)qShape[0] != hiddenDim || (int)kShape[0] != hiddenDim) { continue; }
+            int qCols = (int)qShape[1];
+            int kCols = (int)kShape[1];
 
             if (qCols == kCols)
             {
@@ -115,9 +121,12 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
             if (v is not null && o is not null
                 && TensorMemberMaterializer.EffectiveShape(v) is { Length: 2 } vShape
                 && TensorMemberMaterializer.EffectiveShape(o) is { Length: 2 } oShape
-                && (int)vShape[1] == hiddenDim && (int)oShape[1] == hiddenDim)
+                && (int)vShape[0] == hiddenDim
+                && (int)oShape[1] == hiddenDim)
             {
-                int vCols = (int)vShape[0];
+                // V matches QK orientation [hidden, dProj]. O is [dProj_input, hidden_output]
+                // — the inverse-rotation projection. Substrate uses pre-transposed storage.
+                int vCols = (int)vShape[1];
                 int oRows = (int)oShape[0];
                 if (vCols == oRows)
                 {

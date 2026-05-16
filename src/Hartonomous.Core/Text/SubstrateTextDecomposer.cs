@@ -412,6 +412,23 @@ public sealed class SubstrateTextDecomposer
         }
     }
 
+    /// <summary>
+    /// Compute the 4D Hilbert curve index for a centroid. Returns null when
+    /// any coord is NaN (producer didn't populate centroid). Inline-pinned
+    /// stack-allocated 4-double buffer; one P/Invoke per call.
+    /// </summary>
+    public static unsafe long? ComputeHilbertIndex(double x, double y, double z, double m)
+    {
+        if (double.IsNaN(x) || double.IsNaN(y) || double.IsNaN(z) || double.IsNaN(m))
+        {
+            return null;
+        }
+        double* pt = stackalloc double[4];
+        pt[0] = x; pt[1] = y; pt[2] = z; pt[3] = m;
+        ulong h = TextDecomposeNative.HilbertIndex((IntPtr) pt, 16);
+        return unchecked((long) h);
+    }
+
     private sealed class EmitContext
     {
         public IIngestionBatch Batch { get; }
@@ -440,7 +457,14 @@ public sealed class SubstrateTextDecomposer
                     KindByHash[hash] = code;
                     if (ShouldEmitEntity(Options, code, hash))
                     {
-                        Batch.AddEntity(hash, code);
+                        // Native kernel populates record.CentroidX/Y/Z/M on entity
+                        // records (cp_c / gc_c / w_c / comp_c arrays). Pass to the
+                        // 7-arg AddEntity overload so the centroid + Hilbert land
+                        // on substrate.entity at INSERT time — no trigger, no
+                        // backfill, no reactive UPDATE.
+                        long? hilbert = SubstrateTextDecomposer.ComputeHilbertIndex(
+                            record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM);
+                        Batch.AddEntity(hash, code, record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM, hilbert);
                         EntityCount++;
                     }
                     break;
@@ -588,7 +612,12 @@ public sealed class SubstrateTextDecomposer
                     KindByHash[hash] = code;
                     if (ShouldEmitEntity(Options, code, hash))
                     {
-                        Records.Add(new EntityRecord(code, hash, Options.ProvenanceCode));
+                        long? hilbert = ComputeHilbertIndex(
+                            record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM);
+                        Records.Add(new EntityRecord(
+                            code, hash, Options.ProvenanceCode,
+                            record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM,
+                            hilbert));
                         EntityCount++;
                     }
                     break;

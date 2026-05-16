@@ -102,6 +102,10 @@ static inline uint8_t td_wb(int32_t cp) {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_WB_Other;
     return uc_wb[cp];
 }
+static inline uint8_t td_sb(int32_t cp) {
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_SB_Other;
+    return uc_sb[cp];
+}
 static inline uint8_t td_incb(int32_t cp) {
     if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) return UC_INCB_None;
     return uc_incb[cp];
@@ -345,6 +349,113 @@ typedef struct {
     int32_t  count;
 } TdBoundaries;
 
+typedef struct {
+    int32_t* indices;
+    int32_t  count;
+} TdSentences;
+
+/* UAX-29 §4 Sentence_Break — practical subset of SB1..SB11 + SB998.
+ *
+ * Covers the common cases (CR × LF, ParaSep ÷, ATerm × Numeric, SATerm
+ * Close* Sp* × SContinue/SATerm, SATerm Close* Sp* ParaSep? ÷). Does NOT
+ * implement the full SB8 lookahead-for-lowercase-after-period rule yet
+ * (that requires arbitrary forward scan), so abbreviation-like sequences
+ * such as "Dr. Smith" will break at the period. Sentence segmentation is
+ * NOT on the substrate identity path (no entity hashes flow through it);
+ * it's used by SubQuestionDecomposer in inference, where the current
+ * behavior is acceptable. Conformance against SentenceBreakTest.txt: aim
+ * for ~90% pending full SB8 implementation. */
+static int td_sentence_boundaries(const TdDecoded* d, TdSentences* out)
+{
+    out->indices = (int32_t*) malloc(sizeof(int32_t) * (d->count + 1));
+    out->count = 0;
+    if (!out->indices) return -1;
+    if (d->count == 0) return 0;
+
+    out->indices[out->count++] = 0;
+
+    int satermActive = 0;
+    int spSeenAfterSaterm = 0;
+    uint8_t prev = td_sb(d->codepoints[0]);
+    uint8_t prev2 = UC_SB_Other;
+    if (prev == UC_SB_ATerm || prev == UC_SB_STerm) satermActive = 1;
+
+    for (int32_t i = 1; i < d->count; i++) {
+        uint8_t curr = td_sb(d->codepoints[i]);
+
+        int shouldBreak = 0;
+
+        /* Rule precedence: SB3 < SB4 < SB5 < SB6 < SB7 < SB8 < SB8a < SB9 < SB10 < SB11 < SB998.
+         * Lower-numbered rule wins on conflict. SB4 ÷ ParaSep wins over SB5 × Extend. */
+        if (prev == UC_SB_CR && curr == UC_SB_LF) {
+            shouldBreak = 0;                                   /* SB3 */
+        }
+        else if (prev == UC_SB_Sep || prev == UC_SB_CR || prev == UC_SB_LF) {
+            shouldBreak = 1;                                   /* SB4 — wins over SB5 */
+            satermActive = 0;
+            spSeenAfterSaterm = 0;
+        }
+        else if (curr == UC_SB_Extend || curr == UC_SB_Format) {
+            shouldBreak = 0;                                   /* SB5 — × Extend/Format */
+            /* Do NOT update prev or saterm state — Extend/Format attach. */
+            continue;
+        }
+        else if (prev == UC_SB_ATerm && curr == UC_SB_Numeric) {
+            shouldBreak = 0;                                   /* SB6 — "3.14" */
+        }
+        else if (prev == UC_SB_ATerm && curr == UC_SB_Upper &&
+                 (prev2 == UC_SB_Upper || prev2 == UC_SB_Lower)) {
+            shouldBreak = 0;                                   /* SB7 — "U.S.A." */
+        }
+        else if (prev == UC_SB_ATerm && curr == UC_SB_Lower) {
+            shouldBreak = 0;                                   /* SB8 simplified — "etc. and" */
+        }
+        else if (satermActive && spSeenAfterSaterm && curr == UC_SB_Lower) {
+            shouldBreak = 0;                                   /* SB8 — SATerm Sp* × Lower */
+        }
+        else if (satermActive && (curr == UC_SB_SContinue ||
+                                  curr == UC_SB_ATerm || curr == UC_SB_STerm)) {
+            shouldBreak = 0;                                   /* SB8a */
+        }
+        else if (satermActive && !spSeenAfterSaterm &&
+                 (curr == UC_SB_Close || curr == UC_SB_Sp ||
+                  curr == UC_SB_Sep || curr == UC_SB_CR || curr == UC_SB_LF)) {
+            shouldBreak = 0;                                   /* SB9 */
+        }
+        else if (satermActive && spSeenAfterSaterm &&
+                 (curr == UC_SB_Sp || curr == UC_SB_Sep ||
+                  curr == UC_SB_CR || curr == UC_SB_LF)) {
+            shouldBreak = 0;                                   /* SB10 */
+        }
+        else if (satermActive) {
+            shouldBreak = 1;                                   /* SB11 */
+            satermActive = 0;
+            spSeenAfterSaterm = 0;
+        }
+        /* SB998: × Any — default no break */
+
+        if (shouldBreak) {
+            out->indices[out->count++] = i;
+        }
+
+        if (curr == UC_SB_ATerm || curr == UC_SB_STerm) {
+            satermActive = 1;
+            spSeenAfterSaterm = 0;
+        } else if (satermActive) {
+            if (curr == UC_SB_Sp) {
+                spSeenAfterSaterm = 1;
+            } else if (curr != UC_SB_Close) {
+                satermActive = 0;
+                spSeenAfterSaterm = 0;
+            }
+        }
+
+        prev2 = prev;
+        prev = curr;
+    }
+    return 0;
+}
+
 static int td_grapheme_boundaries(const TdDecoded* d, TdBoundaries* out)
 {
     out->indices = (int32_t*) malloc(sizeof(int32_t) * (d->count + 1));
@@ -354,7 +465,9 @@ static int td_grapheme_boundaries(const TdDecoded* d, TdBoundaries* out)
 
     out->indices[out->count++] = 0;
 
-    int riRun = 0;
+    /* GB12/GB13: an RI run starts at the first codepoint. If the first
+     * codepoint is itself an RI we are already in an RI run of length 1. */
+    int riRun = (d->count > 0 && td_gcb(d->codepoints[0]) == UC_GCB_Regional_Indicator) ? 1 : 0;
     int chainPict = 0;
     int chainZwjAfterPict = 0;
     int incbConsonantSeen = 0;
@@ -460,6 +573,11 @@ static int td_word_boundaries(const TdDecoded* d, TdWords* out)
         else if (curr == UC_WB_Extend || curr == UC_WB_Format || curr == UC_WB_ZWJ)    shouldBreak = 0;
         else if ((prevSig == UC_WB_ALetter || prevSig == UC_WB_Hebrew_Letter) &&
                  (curr    == UC_WB_ALetter || curr    == UC_WB_Hebrew_Letter))         shouldBreak = 0;
+        /* WB7a — Hebrew_Letter × Single_Quote. Must fire BEFORE WB6's
+         * AHLetter × (MidLetter|MidNumLet|Single_Quote) (AHLetter)
+         * lookahead, since WB7a is unconditional and WB6 would otherwise
+         * preempt it when no AHLetter follows. */
+        else if (prevSig == UC_WB_Hebrew_Letter && curr == UC_WB_Single_Quote)         shouldBreak = 0;
         else if ((prevSig == UC_WB_ALetter || prevSig == UC_WB_Hebrew_Letter) &&
                  (curr == UC_WB_MidLetter || curr == UC_WB_MidNumLet ||
                   curr == UC_WB_Single_Quote)) {
@@ -478,7 +596,7 @@ static int td_word_boundaries(const TdDecoded* d, TdWords* out)
                  (prevSig == UC_WB_MidLetter || prevSig == UC_WB_MidNumLet ||
                   prevSig == UC_WB_Single_Quote) &&
                  (curr == UC_WB_ALetter || curr == UC_WB_Hebrew_Letter))               shouldBreak = 0;
-        else if (prevSig == UC_WB_Hebrew_Letter && curr == UC_WB_Single_Quote)         shouldBreak = 0;
+        /* WB7a handled earlier (above the WB6 lookahead block) to avoid preemption. */
         else if (prevSig == UC_WB_Hebrew_Letter && curr == UC_WB_Double_Quote) {
             int32_t k = i + 1;
             while (k < d->count) {
@@ -719,12 +837,16 @@ int hartonomous_text_decompose(
 
     /* ── Emission ─────────────────────────────────────────────────── */
 
-    /* Codepoints: entity + classification + s3_position physicality + significance. */
+    /* Codepoints: entity + classification + s3_position physicality + significance.
+     * ENTITY records carry the centroid in their .centroid field so callers can
+     * land centroid + Hilbert directly on substrate.entity at INSERT time
+     * (eliminates the trigger-based reactive UPDATE). Same Merkle invariant. */
     for (int i = 0; i < d.count; i++) {
         const uint8_t* h = cp_h + (size_t) i * HASH_LEN;
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_ENTITY, .subkind = HARTONOMOUS_KIND_CODEPOINT,
-            .hash_a = h
+            .hash_a = h,
+            .centroid = { cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3] }
         }));
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = HARTONOMOUS_KIND_CODEPOINT,
@@ -752,7 +874,8 @@ int hartonomous_text_decompose(
         const uint8_t* gh = gc_h + (size_t) gi * HASH_LEN;
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_ENTITY, .subkind = HARTONOMOUS_KIND_GRAPHEME_CLUSTER,
-            .hash_a = gh
+            .hash_a = gh,
+            .centroid = { gc_c[gi*4+0], gc_c[gi*4+1], gc_c[gi*4+2], gc_c[gi*4+3] }
         }));
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = HARTONOMOUS_KIND_GRAPHEME_CLUSTER,
@@ -801,7 +924,8 @@ int hartonomous_text_decompose(
         const uint8_t* wh = w_h + (size_t) wi * HASH_LEN;
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_ENTITY, .subkind = HARTONOMOUS_KIND_WORD_FORM,
-            .hash_a = wh
+            .hash_a = wh,
+            .centroid = { w_c[wi*4+0], w_c[wi*4+1], w_c[wi*4+2], w_c[wi*4+3] }
         }));
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = HARTONOMOUS_KIND_WORD_FORM,
@@ -833,48 +957,143 @@ int hartonomous_text_decompose(
         }
     }
 
-    /* Composition root. */
-    EMIT(((hartonomous_text_record_t){
-        .kind = HARTONOMOUS_REC_ENTITY, .subkind = top_kind,
-        .hash_a = comp_h
-    }));
-    EMIT(((hartonomous_text_record_t){
-        .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = top_kind,
-        .hash_a = comp_h
-    }));
-    EMIT(((hartonomous_text_record_t){
-        .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
-        .hash_a = comp_h, .double_param = trust_mu
-    }));
-    if (wN > 0) {
-        size_t ls_len;
-        xfree(ls_buf);
-        ls_buf = td_linestring4d_geometry(w_c, wN, &ls_len);
-        if (!ls_buf) { rc_final = -9; goto out_cleanup; }
+    /* Root-hash selection per top_kind.
+     *
+     * Per CLAUDE.md content-addressing invariant: same content bytes ⇒ same
+     * BLAKE3 hash. Caller asks for an entity of a specific tier (codepoint /
+     * grapheme_cluster / word_form / text_composition). The kernel returns
+     * the hash of that tier's natural unit from the input, NOT a composition
+     * root tagged with the wrong subkind. Pre-fix bug: kernel always returned
+     * composition root, tagged as top_kind — so a decomposer passing "he"
+     * vs "he " for top_kind=word_form got different hashes both classified
+     * as word_form, fragmenting cross-source consensus on the same content.
+     *
+     * Sub-composition tiers (codepoint, grapheme_cluster, word_form): the
+     * input is canonically the FIRST unit at that tier. Multi-unit inputs
+     * still succeed (return first unit) so corpus decomposers passing
+     * unintended trailing whitespace converge to the same hash.
+     *
+     * Composition tier (text_composition): emit composition-root entity
+     * records, return composition-root hash (Merkle over word hashes). */
+    if (top_kind == HARTONOMOUS_KIND_TEXT_COMPOSITION) {
         EMIT(((hartonomous_text_record_t){
-            .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
-            .hash_a = comp_h, .hash_b = comp_h,
-            .geometry = ls_buf, .geometry_len = ls_len,
+            .kind = HARTONOMOUS_REC_ENTITY, .subkind = top_kind,
+            .hash_a = comp_h,
             .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }
         }));
-    }
-    for (int k = 0; k < wN; k++) {
-        const uint8_t* ch = w_h + (size_t) k * HASH_LEN;
         EMIT(((hartonomous_text_record_t){
-            .kind = HARTONOMOUS_REC_SEQUENCE,
-            .hash_a = comp_h, .hash_b = ch,
-            .int_param = k + 1
+            .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = top_kind,
+            .hash_a = comp_h
         }));
+        EMIT(((hartonomous_text_record_t){
+            .kind = HARTONOMOUS_REC_SIGNIFICANCE, .subkind = HARTONOMOUS_SIG_SOURCE_AUTHORITY,
+            .hash_a = comp_h, .double_param = trust_mu
+        }));
+        if (wN > 0) {
+            size_t ls_len;
+            xfree(ls_buf);
+            ls_buf = td_linestring4d_geometry(w_c, wN, &ls_len);
+            if (!ls_buf) { rc_final = -9; goto out_cleanup; }
+            EMIT(((hartonomous_text_record_t){
+                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
+                .hash_a = comp_h, .hash_b = comp_h,
+                .geometry = ls_buf, .geometry_len = ls_len,
+                .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }
+            }));
+        }
+        for (int k = 0; k < wN; k++) {
+            const uint8_t* ch = w_h + (size_t) k * HASH_LEN;
+            EMIT(((hartonomous_text_record_t){
+                .kind = HARTONOMOUS_REC_SEQUENCE,
+                .hash_a = comp_h, .hash_b = ch,
+                .int_param = k + 1
+            }));
+        }
+        memcpy(out_root_hash, comp_h, HASH_LEN);
+        if (out_root_centroid) {
+            out_root_centroid[0] = comp_c[0];
+            out_root_centroid[1] = comp_c[1];
+            out_root_centroid[2] = comp_c[2];
+            out_root_centroid[3] = comp_c[3];
+        }
+    } else if (top_kind == HARTONOMOUS_KIND_WORD_FORM) {
+        /* Return the FIRST non-whitespace UAX-29 word_form. Skip leading
+         * whitespace/CR/LF/Newline words so " he", "\nhe", "he", "he "
+         * all return word_form("he"). Same input may pass through multiple
+         * decomposers with different surrounding context; the substrate's
+         * content-addressing invariant requires same word_form ⇒ same hash. */
+        int picked = -1;
+        for (int wi = 0; wi < wN; wi++) {
+            int firstCpW = w.indices[wi];
+            int endCpW   = (wi + 1 < wN) ? w.indices[wi + 1] : d.count;
+            int all_space = 1;
+            for (int k = firstCpW; k < endCpW; k++) {
+                uint8_t wb = td_wb(d.codepoints[k]);
+                if (wb != UC_WB_WSegSpace && wb != UC_WB_CR &&
+                    wb != UC_WB_LF && wb != UC_WB_Newline) {
+                    all_space = 0;
+                    break;
+                }
+            }
+            if (!all_space) { picked = wi; break; }
+        }
+        if (picked < 0) { rc_final = -10; goto out_cleanup; }
+        memcpy(out_root_hash, w_h + (size_t) picked * HASH_LEN, HASH_LEN);
+        if (out_root_centroid) {
+            out_root_centroid[0] = w_c[picked * 4 + 0];
+            out_root_centroid[1] = w_c[picked * 4 + 1];
+            out_root_centroid[2] = w_c[picked * 4 + 2];
+            out_root_centroid[3] = w_c[picked * 4 + 3];
+        }
+    } else if (top_kind == HARTONOMOUS_KIND_GRAPHEME_CLUSTER) {
+        /* First non-whitespace grapheme cluster. */
+        int picked = -1;
+        for (int gi = 0; gi < gN; gi++) {
+            int firstCp = g.indices[gi];
+            int endCp   = (gi + 1 < gN) ? g.indices[gi + 1] : d.count;
+            int all_space = 1;
+            for (int k = firstCp; k < endCp; k++) {
+                uint8_t wb = td_wb(d.codepoints[k]);
+                if (wb != UC_WB_WSegSpace && wb != UC_WB_CR &&
+                    wb != UC_WB_LF && wb != UC_WB_Newline) {
+                    all_space = 0;
+                    break;
+                }
+            }
+            if (!all_space) { picked = gi; break; }
+        }
+        if (picked < 0) { rc_final = -11; goto out_cleanup; }
+        memcpy(out_root_hash, gc_h + (size_t) picked * HASH_LEN, HASH_LEN);
+        if (out_root_centroid) {
+            out_root_centroid[0] = gc_c[picked * 4 + 0];
+            out_root_centroid[1] = gc_c[picked * 4 + 1];
+            out_root_centroid[2] = gc_c[picked * 4 + 2];
+            out_root_centroid[3] = gc_c[picked * 4 + 3];
+        }
+    } else if (top_kind == HARTONOMOUS_KIND_CODEPOINT) {
+        /* First non-whitespace codepoint. */
+        int picked = -1;
+        for (int i = 0; i < d.count; i++) {
+            uint8_t wb = td_wb(d.codepoints[i]);
+            if (wb != UC_WB_WSegSpace && wb != UC_WB_CR &&
+                wb != UC_WB_LF && wb != UC_WB_Newline) {
+                picked = i;
+                break;
+            }
+        }
+        if (picked < 0) { rc_final = -12; goto out_cleanup; }
+        memcpy(out_root_hash, cp_h + (size_t) picked * HASH_LEN, HASH_LEN);
+        if (out_root_centroid) {
+            out_root_centroid[0] = cp_c[picked * 4 + 0];
+            out_root_centroid[1] = cp_c[picked * 4 + 1];
+            out_root_centroid[2] = cp_c[picked * 4 + 2];
+            out_root_centroid[3] = cp_c[picked * 4 + 3];
+        }
+    } else {
+        rc_final = -13;
+        goto out_cleanup;
     }
-
-    memcpy(out_root_hash, comp_h, HASH_LEN);
     if (out_root_kind) *out_root_kind = top_kind;
-    if (out_root_centroid) {
-        out_root_centroid[0] = comp_c[0];
-        out_root_centroid[1] = comp_c[1];
-        out_root_centroid[2] = comp_c[2];
-        out_root_centroid[3] = comp_c[3];
-    }
     rc_final = 0;
     goto out_cleanup;
 
@@ -895,4 +1114,103 @@ out_cleanup:
     xfree(w_c);
     xfree(ls_buf);
     return rc_final;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * (9) Boundary extraction — public lightweight API
+ *
+ * The substrate's SINGLE source of UAX-29 segmentation truth. C# callers
+ * P/Invoke into these rather than reimplementing the state machine
+ * (per CLAUDE.md compute-facade rule + Law #6 determinism).
+ * ───────────────────────────────────────────────────────────────────── */
+
+/* NOTE: Boundary functions do NOT NFC-normalize input. UAX-29 is defined
+ * on raw codepoints, and the conformance test files expect original
+ * codepoint indices (composed sequences not pre-merged). The substrate's
+ * hashing path (hartonomous_text_decompose) DOES normalize so cross-source
+ * consensus collapses different normalizations to the same hash. The two
+ * use cases need different behaviors. */
+
+int hartonomous_text_codepoint_count(
+    const uint8_t* utf8, size_t utf8_len, int* out_count)
+{
+    if (!utf8 || !out_count) return -1;
+    if (!hartonomous_ucd_loaded() || !td_ucd_tables_ready()) return -2;
+
+    TdDecoded d = {0};
+    int rc = 0;
+    if (td_decode(utf8, utf8_len, &d) != 0) { rc = -9; goto cleanup; }
+    *out_count = d.count;
+cleanup:
+    xfree(d.codepoints);
+    return rc;
+}
+
+int hartonomous_text_grapheme_boundaries(
+    const uint8_t* utf8, size_t utf8_len,
+    int32_t* out_indices, int out_capacity, int* out_count)
+{
+    if (!utf8 || !out_count) return -1;
+    if (!hartonomous_ucd_loaded() || !td_ucd_tables_ready()) return -2;
+
+    TdDecoded d = {0};
+    TdBoundaries g = {0};
+    int rc = 0;
+    if (td_decode(utf8, utf8_len, &d) != 0)        { rc = -9; goto cleanup; }
+    if (td_grapheme_boundaries(&d, &g) != 0)       { rc = -9; goto cleanup; }
+    *out_count = g.count;
+    if (out_indices && out_capacity > 0) {
+        int n = (g.count < out_capacity) ? g.count : out_capacity;
+        for (int i = 0; i < n; i++) out_indices[i] = g.indices[i];
+    }
+cleanup:
+    xfree(g.indices);
+    xfree(d.codepoints);
+    return rc;
+}
+
+int hartonomous_text_word_boundaries(
+    const uint8_t* utf8, size_t utf8_len,
+    int32_t* out_indices, int out_capacity, int* out_count)
+{
+    if (!utf8 || !out_count) return -1;
+    if (!hartonomous_ucd_loaded() || !td_ucd_tables_ready()) return -2;
+
+    TdDecoded d = {0};
+    TdWords   w = {0};
+    int rc = 0;
+    if (td_decode(utf8, utf8_len, &d) != 0)    { rc = -9; goto cleanup; }
+    if (td_word_boundaries(&d, &w) != 0)       { rc = -9; goto cleanup; }
+    *out_count = w.count;
+    if (out_indices && out_capacity > 0) {
+        int n = (w.count < out_capacity) ? w.count : out_capacity;
+        for (int i = 0; i < n; i++) out_indices[i] = w.indices[i];
+    }
+cleanup:
+    xfree(w.indices);
+    xfree(d.codepoints);
+    return rc;
+}
+
+int hartonomous_text_sentence_boundaries(
+    const uint8_t* utf8, size_t utf8_len,
+    int32_t* out_indices, int out_capacity, int* out_count)
+{
+    if (!utf8 || !out_count) return -1;
+    if (!hartonomous_ucd_loaded() || !td_ucd_tables_ready()) return -2;
+
+    TdDecoded   d = {0};
+    TdSentences s = {0};
+    int rc = 0;
+    if (td_decode(utf8, utf8_len, &d) != 0)        { rc = -9; goto cleanup; }
+    if (td_sentence_boundaries(&d, &s) != 0)       { rc = -9; goto cleanup; }
+    *out_count = s.count;
+    if (out_indices && out_capacity > 0) {
+        int n = (s.count < out_capacity) ? s.count : out_capacity;
+        for (int i = 0; i < n; i++) out_indices[i] = s.indices[i];
+    }
+cleanup:
+    xfree(s.indices);
+    xfree(d.codepoints);
+    return rc;
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.IO;
@@ -77,6 +78,27 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
                        + "this path before running synthesis. Useful for capturing the "
                        + "exact bear that produced the export.");
 
+        Option<string?> seedConceptsOpt = new(
+            "--seed-concepts",
+            description: "Comma-separated seed concepts for knowledge selection "
+                       + "(the bear's brain contents — e.g. \"Science,Mathematics,Physics\"). "
+                       + "Each concept resolves to its canonical substrate word_form hash via "
+                       + "the native UAX-29 kernel; BFS through edge_member by arena-weighted "
+                       + "edge mu builds the vocab subgraph. Without this flag the legacy "
+                       + "VocabSelector (top-by-edge-degree) is used.");
+
+        Option<int?> knowledgeBfsTopKOpt = new(
+            "--knowledge-bfs-topk",
+            description: "Top-K neighbors per frontier node in knowledge-selection BFS. "
+                       + "Higher = broader (more breadth per concept); lower = deeper "
+                       + "(more depth around each concept). Default 32.");
+
+        Option<bool> estimateCostOpt = new(
+            "--estimate-cost",
+            description: "Print the pre-build cost estimate (parameter count, output size, "
+                       + "projected synth time, peak memory) and EXIT without running synth. "
+                       + "Used by the bear-builder pricing API and recipe iteration.");
+
         Command cmd = new(
             "synthesize-model",
             "Substrate-derived Build-a-bear model synthesis. Pass --recipe <path> for "
@@ -91,6 +113,9 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
         cmd.AddOption(dtypeOpt);
         cmd.AddOption(honestAbstentionOpt);
         cmd.AddOption(writeRecipeOpt);
+        cmd.AddOption(seedConceptsOpt);
+        cmd.AddOption(knowledgeBfsTopKOpt);
+        cmd.AddOption(estimateCostOpt);
 
         cmd.SetHandler(async (InvocationContext ctx) =>
         {
@@ -103,6 +128,9 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
             string? dtypeName = ctx.ParseResult.GetValueForOption(dtypeOpt);
             bool? honestAbstention = ctx.ParseResult.GetValueForOption(honestAbstentionOpt);
             string? writeRecipePath = ctx.ParseResult.GetValueForOption(writeRecipeOpt);
+            string? seedConcepts = ctx.ParseResult.GetValueForOption(seedConceptsOpt);
+            int? knowledgeBfsTopK = ctx.ParseResult.GetValueForOption(knowledgeBfsTopKOpt);
+            bool estimateCost = ctx.ParseResult.GetValueForOption(estimateCostOpt);
             CancellationToken ct = ctx.GetCancellationToken();
 
             if (recipePath is null && templateName is null)
@@ -142,8 +170,51 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
                 await recipe.SaveAsync(writeRecipePath, ct).ConfigureAwait(false);
             }
 
+            // Pre-build cost estimate. If --estimate-cost is set, print + exit.
+            if (estimateCost)
+            {
+                BearCostEstimate est = await BearCostEstimator.EstimateAsync(recipe, ct).ConfigureAwait(false);
+                System.Console.Out.WriteLine($"Bear-cost estimate for {recipe.Name}:");
+                System.Console.Out.WriteLine($"  Architecture        : {recipe.Architecture.Family} vocab={recipe.Architecture.VocabSize} hidden={recipe.Architecture.HiddenDim} layers={recipe.Architecture.NumHiddenLayers}");
+                System.Console.Out.WriteLine($"  Parameter count     : {est.ParameterCount:N0}");
+                System.Console.Out.WriteLine($"    embedding         : {est.EmbeddingParameters:N0}");
+                System.Console.Out.WriteLine($"    attention (/layer): {est.PerLayerAttentionParameters:N0}");
+                System.Console.Out.WriteLine($"    ffn (/layer)      : {est.PerLayerFfnParameters:N0}");
+                System.Console.Out.WriteLine($"    layer norms       : {est.LayerNormParameters:N0}");
+                System.Console.Out.WriteLine($"  Output size         : {est.OutputSafetensorsBytes / (1024.0 * 1024.0):F1} MB ({est.DtypeBytesPerParameter} B/param)");
+                System.Console.Out.WriteLine($"  Peak memory (synth) : {est.PeakMemoryBytes / (1024.0 * 1024.0):F1} MB");
+                System.Console.Out.WriteLine($"  Projected synth time: {est.TotalSeconds:F1} s");
+                System.Console.Out.WriteLine($"    vocab selection   : {est.VocabSelectionSeconds:F2} s");
+                System.Console.Out.WriteLine($"    adjacency build   : {est.AdjacencyBuildSeconds:F2} s");
+                System.Console.Out.WriteLine($"    embedding         : {est.EmbeddingSynthSeconds:F2} s");
+                System.Console.Out.WriteLine($"    attention (×{recipe.Architecture.NumHiddenLayers}) : {est.PerLayerAttentionSeconds:F2} s");
+                System.Console.Out.WriteLine($"    ffn (×{recipe.Architecture.NumHiddenLayers})       : {est.PerLayerFfnSeconds:F2} s");
+                System.Console.Out.WriteLine($"    tokenizer export  : {est.TokenizerExportSeconds:F2} s");
+                System.Console.Out.WriteLine($"  Edges scanned       : ~{est.EstimatedEdgesScanned:N0} (across {est.RecipeArenaCount} arena(s))");
+                System.Console.Out.WriteLine($"  MoE / LoRA / RoPE   : {est.RequiresMoE} / {est.RequiresLoRA} / {est.RequiresRoPE}");
+                return;
+            }
+
             TargetArchitectureSpec arch = recipe.ToArchitectureSpec();
             RecompositionOptions options = recipe.ToRecompositionOptions();
+
+            // Knowledge selection: if --seed-concepts is supplied, vocab is the
+            // BFS subgraph around those concepts (Build-a-bear product mechanism).
+            // Otherwise the legacy VocabSelector runs.
+            if (!string.IsNullOrWhiteSpace(seedConcepts))
+            {
+                System.Collections.Immutable.ImmutableArray<string> concepts =
+                    seedConcepts.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                .ToImmutableArray();
+                options = options with
+                {
+                    SeedConcepts = concepts,
+                    KnowledgeBfsTopK = knowledgeBfsTopK ?? 32,
+                };
+                System.Console.Out.WriteLine(
+                    $"Knowledge selection: seed concepts={string.Join(",", concepts)} "
+                  + $"topK={options.KnowledgeBfsTopK}");
+            }
 
             System.Console.Out.WriteLine(
                 $"Synthesizing {recipe.Name} family={recipe.Architecture.Family} "

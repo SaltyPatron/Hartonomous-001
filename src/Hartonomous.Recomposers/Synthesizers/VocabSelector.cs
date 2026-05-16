@@ -6,85 +6,112 @@ using Npgsql;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// One row in the target model's vocabulary, sourced from the substrate.
-/// <see cref="EntityHash"/> is the BLAKE3 of the word_form's content bytes
-/// (canonical text decomposer output); <see cref="TokenText"/> is the
-/// surface form for tokenizer.json; <see cref="EdgeCount"/> is the
-/// substrate-measured prominence (used to rank for vocab selection); the
-/// 4D centroid (<see cref="CentroidX"/>..<see cref="CentroidM"/>) is the
-/// word_form's representative 4D position read out of the s3_position
-/// physicality partition.
-/// </summary>
-public sealed record VocabToken(
-    int Index,
-    byte[] EntityHash,
-    string TokenText,
-    long EdgeCount,
-    double CentroidX,
-    double CentroidY,
-    double CentroidZ,
-    double CentroidM);
-
-/// <summary>
 /// Selects the target model's vocabulary by querying the substrate for the
-/// top-N word_form entities ordered by outgoing edge count (a substrate-
-/// computed prominence proxy). Adds a deterministic ordering so re-runs
-/// produce the same vocab indices.
+/// top-N word_form entities ordered by cross-WF connectivity. Adds a
+/// deterministic ordering so re-runs produce the same vocab indices.
 /// </summary>
 public static class VocabSelector
 {
-    // Cross-word_form connectivity ranking. The substrate's universal-graph
-    // edges fall into two classes for a word_form: (a) word_form ↔ word_form
-    // (synonym, antonym, translation_of, derived, inflection_of, etym_*, UD
-    // deprel patterns, model attention patterns); (b) word_form ↔ other-entity
-    // (has_pos → pos, has_sense → synset, has_lemma → lemma, has_gloss →
-    // text_composition, has_pronunciation → text_composition).
+    // Per-entity-type vocab selection. For each entity_type in
+    // entityTypeQuotas, select top-N entities ranked by total edge
+    // participation count (universal connectivity, NOT cross-cohort-specific).
+    // Union the results into a single ranked vocab list. Classification
+    // cohorts (pos, morph_feature, deprel) typically include ALL entries
+    // since they're bounded-cardinality anchors.
     //
-    // Vocab selection MUST rank by cross-word_form connectivity — class (a)
-    // — because that's what populates the V×V adjacency matrix that
-    // Laplacian-eigenmap / Ritz-pair synthesis consumes. Ranking by total
-    // edge_count picks the/of/and (heavy class (b) — many glosses /
-    // pronunciations / examples) which have very few edges to OTHER
-    // word_forms.
-    //
-    // The query below counts cross-word_form edge participations: for each
-    // word_form, how many edges does it participate in whose OTHER
-    // participant(s) are also word_form? Ordered descending; deterministic
-    // tie-break by hash.
+    // The deeper architectural reframe: vocab is the substrate's entity
+    // graph slice, not just word_forms. Including pos/morph/synset/lang_name
+    // gives the model first-class classification anchors to attend to.
     private const string SelectVocabSql = @"
-WITH wf_entity AS (
-    SELECT ec.entity_hash AS hash
-      FROM substrate.entity_classification ec
-     WHERE ec.entity_type_id = (SELECT id FROM substrate.entity_type WHERE code = 'word_form')
+WITH params AS (
+    SELECT unnest(@type_codes::text[]) AS entity_type_code,
+           unnest(@type_quotas::int[]) AS quota
 ),
-cross_wf_degree AS (
-    SELECT em0.entity_hash AS hash, count(*) AS cross_wf_count
-      FROM substrate.edge_member em0
-      JOIN substrate.edge_member em1
-        ON em1.edge_type_id = em0.edge_type_id
-       AND em1.edge_hash = em0.edge_hash
-       AND em1.entity_hash <> em0.entity_hash
-      JOIN wf_entity wf0 ON wf0.hash = em0.entity_hash
-      JOIN wf_entity wf1 ON wf1.hash = em1.entity_hash
-     GROUP BY em0.entity_hash
+typed_entities AS (
+    SELECT ec.entity_hash AS hash, et.code AS type_code
+      FROM substrate.entity_classification ec
+      JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+     WHERE et.code IN (SELECT entity_type_code FROM params)
+),
+edge_degree AS (
+    SELECT em.entity_hash AS hash, count(*) AS deg
+      FROM substrate.edge_member em
+      JOIN typed_entities te ON te.hash = em.entity_hash
+     GROUP BY em.entity_hash
+),
+ranked AS (
+    SELECT te.hash,
+           te.type_code,
+           coalesce(ed.deg, 0)::bigint AS deg,
+           ROW_NUMBER() OVER (PARTITION BY te.type_code ORDER BY coalesce(ed.deg, 0) DESC, te.hash) AS rk
+      FROM typed_entities te
+      LEFT JOIN edge_degree ed ON ed.hash = te.hash
 )
-SELECT hash,
-       cross_wf_count
-  FROM cross_wf_degree
- ORDER BY cross_wf_count DESC, hash
- LIMIT @vocab_size";
+SELECT r.hash, r.deg
+  FROM ranked r
+  JOIN params p ON p.entity_type_code = r.type_code
+ WHERE r.rk <= p.quota
+ ORDER BY r.deg DESC, r.hash";
 
     public static async Task<IReadOnlyList<VocabToken>> SelectAsync(
         NpgsqlDataSource dataSource,
         int vocabSize,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyDictionary<string, int>? entityTypeQuotas = null)
     {
-        List<VocabToken> rows = new(vocabSize);
+        IReadOnlyDictionary<string, int> quotas =
+            entityTypeQuotas ?? VocabSelectionSection.DefaultEntityTypeQuotas;
+
+        // If caller passed an absolute vocab_size cap, scale quotas
+        // proportionally to honor it. Otherwise use quotas as-is.
+        int totalQuota = 0;
+        foreach (int q in quotas.Values)
+        {
+            totalQuota += q;
+        }
+        IReadOnlyDictionary<string, int> effectiveQuotas;
+        if (vocabSize > 0 && totalQuota > vocabSize)
+        {
+            double scale = (double)vocabSize / totalQuota;
+            Dictionary<string, int> scaled = new(quotas.Count, StringComparer.Ordinal);
+            foreach ((string k, int q) in quotas)
+            {
+                scaled[k] = Math.Max(1, (int)(q * scale));
+            }
+            effectiveQuotas = scaled;
+        }
+        else
+        {
+            effectiveQuotas = quotas;
+        }
+
+        string[] typeCodes = new string[effectiveQuotas.Count];
+        int[] typeQuotas = new int[effectiveQuotas.Count];
+        {
+            int i = 0;
+            foreach ((string k, int q) in effectiveQuotas)
+            {
+                typeCodes[i] = k;
+                typeQuotas[i] = q;
+                i++;
+            }
+        }
+
+        List<VocabToken> rows = new(vocabSize > 0 ? vocabSize : totalQuota);
 
         await using NpgsqlConnection conn = await dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
         await using NpgsqlCommand cmd = new(SelectVocabSql, conn);
-        cmd.CommandTimeout = 1800; // cross-WF degree query is a triple self-join over edge_member; allow up to 30 min
-        cmd.Parameters.AddWithValue("vocab_size", vocabSize);
+        cmd.CommandTimeout = 1800; // edge_member self-join can be expensive on full substrate
+        NpgsqlParameter typeCodesParam = new("type_codes", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text)
+        {
+            Value = typeCodes,
+        };
+        NpgsqlParameter typeQuotasParam = new("type_quotas", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer)
+        {
+            Value = typeQuotas,
+        };
+        cmd.Parameters.Add(typeCodesParam);
+        cmd.Parameters.Add(typeQuotasParam);
 
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         int idx = 0;

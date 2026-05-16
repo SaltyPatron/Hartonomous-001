@@ -929,51 +929,32 @@ static void flush_classifications(ClassList* L, int provenance_id)
 
 static void flush_physicalities(PhysList* L, SeqList* S)
 {
-    Oid types[8];
-    Datum vals[8];
+    Oid types[4];
+    Datum vals[4];
     int rc;
+    (void) S;  /* Sequence info is encoded in the LINESTRINGZM vertex Y mantissa via
+                * bb_pack_ordinal_rle (rule 15 substrate-trinity). substrate.physicality
+                * has 4 columns — no child_hashes/ordinal_starts/rle_counts arrays. The
+                * geometry IS the indexed child manifest. REC_SEQUENCE records the
+                * caller pushes into the SeqList are dropped here (geom already carries
+                * them). Pre-fix INSERT referenced 3 nonexistent array columns, which
+                * made every call to substrate.text_decompose error out. */
     if (L->count == 0) return;
     types[0] = INT4ARRAYOID;
     types[1] = BYTEAARRAYOID;
     types[2] = BYTEAARRAYOID;
     types[3] = BYTEAARRAYOID;
-    types[4] = BYTEAARRAYOID;
-    types[5] = INT4ARRAYOID;
-    types[6] = BYTEAARRAYOID;
-    types[7] = INT4ARRAYOID;
     vals[0] = PointerGetDatum(build_int4_array(L->phys_type_ids, L->count));
     vals[1] = PointerGetDatum(build_bytea_array(L->entity_hashes, L->count));
     vals[2] = PointerGetDatum(build_bytea_array(L->content_hashes, L->count));
     vals[3] = PointerGetDatum(build_bytea_array(L->geometries, L->count));
-    vals[4] = PointerGetDatum(build_bytea_array(S->parent_hashes, S->count));
-    vals[5] = PointerGetDatum(build_int4_array(S->ordinals, S->count));
-    vals[6] = PointerGetDatum(build_bytea_array(S->child_hashes, S->count));
-    vals[7] = PointerGetDatum(build_int4_array(S->rle_counts, S->count));
     rc = SPI_execute_with_args(
-        "WITH phys AS ("
-        "    SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, geometry_payload "
-        "      FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, geometry_payload) "
-        "     ORDER BY pt, eh, ch, geometry_payload"
-        "), child_rows AS ("
-        "    SELECT parent_hash, ordinal, child_hash, rle_count "
-        "      FROM unnest($5::bytea[], $6::int[], $7::bytea[], $8::int[]) AS u(parent_hash, ordinal, child_hash, rle_count)"
-        "), child_meta AS ("
-        "    SELECT parent_hash, "
-        "           array_agg(child_hash ORDER BY ordinal)::substrate.hash_value[] AS child_hashes, "
-        "           array_agg(ordinal ORDER BY ordinal)::int[] AS ordinal_starts, "
-        "           array_agg(rle_count ORDER BY ordinal)::int[] AS rle_counts "
-        "      FROM child_rows "
-        "     GROUP BY parent_hash"
-        ") "
-        "INSERT INTO substrate.physicality ("
-        "    physicality_type_id, entity_hash, content_hash, geom, "
-        "    child_hashes, ordinal_starts, rle_counts) "
-        "SELECT phys.pt, phys.eh, phys.ch, bytea_to_geometry4d(phys.geometry_payload), "
-        "       child_meta.child_hashes, child_meta.ordinal_starts, child_meta.rle_counts "
-        "  FROM phys "
-        "  LEFT JOIN child_meta ON child_meta.parent_hash = phys.eh "
+        "INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom) "
+        "SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, bytea_to_geometry4d(geometry_payload)::geometry "
+        "  FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, geometry_payload) "
+        " ORDER BY pt, eh, ch, geometry_payload "
         "ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING",
-        8, types, vals, NULL, false, 0);
+        4, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_physicalities: SPI_execute (%d)", rc);
 }
 

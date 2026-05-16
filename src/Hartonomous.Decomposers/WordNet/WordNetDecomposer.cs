@@ -282,7 +282,34 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         }
                         Hash32 synsetHash = ComputeMerkleHash(synsetContent.AsSpan());
 
-                        EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset");
+                        // Synset centroid = arithmetic mean of member-lemma
+                        // centroids (per Merkle composition rule). Lemmas were
+                        // emitted via EmitText (canonical text path) earlier in
+                        // this batch and carry centroids in
+                        // sortedMemberPhysicalityComponents. Gloss-text
+                        // centroids omitted for now (they're explanatory edges,
+                        // not constituent identity; would need IngestText to
+                        // return centroid alongside handle). Same Merkle
+                        // determinism: same content → same hash → same mean
+                        // centroid.
+                        double sumX = 0, sumY = 0, sumZ = 0, sumM = 0;
+                        int memberCount = sortedMemberPhysicalityComponents.Length;
+                        for (int i = 0; i < memberCount; i++)
+                        {
+                            sumX += sortedMemberPhysicalityComponents[i].Centroid.X;
+                            sumY += sortedMemberPhysicalityComponents[i].Centroid.Y;
+                            sumZ += sortedMemberPhysicalityComponents[i].Centroid.Z;
+                            sumM += sortedMemberPhysicalityComponents[i].Centroid.M;
+                        }
+                        double cx = memberCount > 0 ? sumX / memberCount : double.NaN;
+                        double cy = memberCount > 0 ? sumY / memberCount : double.NaN;
+                        double cz = memberCount > 0 ? sumZ / memberCount : double.NaN;
+                        double cm = memberCount > 0 ? sumM / memberCount : double.NaN;
+                        long? hilbert = memberCount > 0
+                            ? Hartonomous.Core.Text.SubstrateTextDecomposer.ComputeHilbertIndex(cx, cy, cz, cm)
+                            : null;
+
+                        EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset", cx, cy, cz, cm, hilbert);
                         // No physicality emission for synsets — a synset is an
                         // attested concept (a claim that these member lemmas
                         // share one meaning), not a content trajectory with

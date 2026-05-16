@@ -22,7 +22,9 @@ public sealed record RecompositionOptions(
     int LayerAssignmentSeed,
     double SignificanceFloor,
     int? EgonetHops,
-    bool HonestAbstention)
+    bool HonestAbstention,
+    ImmutableArray<string> SeedConcepts = default,
+    int KnowledgeBfsTopK = 32)
 {
     public static RecompositionOptions Default { get; } = new(
         ArenaWeights: ImmutableDictionary<string, double>.Empty,
@@ -33,7 +35,9 @@ public sealed record RecompositionOptions(
         LayerAssignmentSeed: 0,
         SignificanceFloor: 1500.0,
         EgonetHops: 2,
-        HonestAbstention: true);
+        HonestAbstention: true,
+        SeedConcepts: ImmutableArray<string>.Empty,
+        KnowledgeBfsTopK: 32);
 
     /// <summary>
     /// Distill what curated lexicons agree on. Ignores corpora, models,
@@ -104,11 +108,3 @@ public sealed record RecompositionOptions(
     };
 }
 
-public enum QuantizationTarget
-{
-    F32,
-    F16,
-    BF16,
-    Q8,
-    AwqQ4,
-}

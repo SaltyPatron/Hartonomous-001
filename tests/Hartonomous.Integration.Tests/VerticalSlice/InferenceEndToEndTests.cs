@@ -26,7 +26,7 @@ public sealed class InferenceEndToEndTests : IAsyncLifetime
 {
     private static string ConnectionString() =>
         Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
-        ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
+        ?? "Host=/var/run/postgresql;Username=ahart;Database=hartonomous";
 
     private NpgsqlDataSource _dataSource = null!;
     private NpgsqlReferenceDataReader _refReader = null!;

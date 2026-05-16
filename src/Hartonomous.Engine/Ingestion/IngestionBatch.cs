@@ -20,7 +20,17 @@ internal sealed class IngestionBatch : IIngestionBatch
     private readonly List<JunctionEntry> _junctions = [];
     private readonly List<PhysicalityEntry> _physicalities = [];
     private readonly List<CompositionChildEntry> _compositionChildren = [];
-    private readonly HashSet<(Hash32 ParentHash, int Ordinal, Hash32 ChildHash, int RleCount)> _compositionChildKeys = [];
+    // Dedup key must match the BuildCompositionMetadata invariant
+    // (one child per (parent, ordinal) slot). Including ChildHash/RleCount
+    // in the key would let two emissions claim the same slot with different
+    // children — the metadata builder then throws "overlaps at ordinal N".
+    // Per substrate spec: composition's LINESTRINGZM has one child vertex
+    // per ordinal; sequence semantics, not multi-set. First emission wins
+    // by content-addressed identity; subsequent conflicting emissions are
+    // spurious re-emission of the same parent's manifest from a different
+    // code path within the same batch.
+    private readonly HashSet<(Hash32 ParentHash, int Ordinal)> _compositionChildKeys = [];
+    private long _compositionChildConflicts;
     private readonly List<SignificanceEntry> _significances = [];
     private readonly List<EntityModelSourceEntry> _entityModelSources = [];
 
@@ -45,6 +55,19 @@ internal sealed class IngestionBatch : IIngestionBatch
     public EntityHandle AddEntity(Hash32 hash, string entityTypeCode)
     {
         _entities.Add(new EntityEntry(hash, entityTypeCode));
+        return new EntityHandle(hash, entityTypeCode);
+    }
+
+    public EntityHandle AddEntity(
+        Hash32 hash,
+        string entityTypeCode,
+        double centroidX,
+        double centroidY,
+        double centroidZ,
+        double centroidM,
+        long? hilbertIndex)
+    {
+        _entities.Add(new EntityEntry(hash, entityTypeCode, centroidX, centroidY, centroidZ, centroidM, hilbertIndex));
         return new EntityHandle(hash, entityTypeCode);
     }
 
@@ -164,12 +187,19 @@ internal sealed class IngestionBatch : IIngestionBatch
 
     public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
     {
-        if (!_compositionChildKeys.Add((parent.Hash, ordinal, child.Hash, rleCount)))
+        if (!_compositionChildKeys.Add((parent.Hash, ordinal)))
         {
+            // Conflicting re-emission of the same (parent, ordinal) slot.
+            // Composition metadata invariant requires exactly one child per
+            // ordinal — first emission wins, subsequent emissions dropped.
+            // Counter surfaces to the pipeline for triage visibility.
+            System.Threading.Interlocked.Increment(ref _compositionChildConflicts);
             return;
         }
         _compositionChildren.Add(new CompositionChildEntry(parent, ordinal, child, rleCount));
     }
+
+    public long CompositionChildConflicts => System.Threading.Interlocked.Read(ref _compositionChildConflicts);
 
     public void AddEntityShape(EntityHandle entity, ReadOnlySpan<Point4D> canonicalChildCentroids)
     {

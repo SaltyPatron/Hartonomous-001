@@ -124,4 +124,35 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         return map;
     }
 
+    public async Task<Dictionary<string, int>> LoadLanguageAliasMapAsync(CancellationToken ct)
+    {
+        // Substrate.language has 4 ISO-form columns: code (639-3), part1 (639-1),
+        // part2b (639-2/B), part2t (639-2/T). Read them all in one pass; build
+        // alias → canonical-id map. ~8k rows × ~2 populated forms each ≈ 16k entries.
+        Dictionary<string, int> map = new(16384, StringComparer.OrdinalIgnoreCase);
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
+        const string sql = "SELECT id, code, part1, part2b, part2t FROM substrate.language";
+        await using NpgsqlCommand cmd = new(sql, conn);
+        cmd.CommandTimeout = 60;
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            int id = reader.GetInt32(0);
+            AddNonNullAlias(map, reader, 1, id);  // code (NOT NULL)
+            AddNonNullAlias(map, reader, 2, id);  // part1 (nullable)
+            AddNonNullAlias(map, reader, 3, id);  // part2b (nullable)
+            AddNonNullAlias(map, reader, 4, id);  // part2t (nullable)
+        }
+        return map;
+    }
+
+    private static void AddNonNullAlias(Dictionary<string, int> map, NpgsqlDataReader reader, int ordinal, int id)
+    {
+        if (reader.IsDBNull(ordinal)) { return; }
+        string alias = reader.GetString(ordinal).Trim();
+        if (alias.Length == 0) { return; }
+        // First-write wins. The substrate.language seed is well-formed so any
+        // collision would indicate seed-data inconsistency worth investigating.
+        map.TryAdd(alias, id);
+    }
 }

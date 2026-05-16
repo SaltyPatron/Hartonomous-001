@@ -162,6 +162,22 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             Dictionary<string, int> posIdMap = await refWriter.LoadPosMapAsync(ct);
             Dictionary<string, int> langIdMap = await refWriter.LoadLanguageCodeMapAsync(ct);
 
+            // Build a BCP47 + ISO-639-form-aware resolver from the user filter
+            // and install it as the LanguageAllowed predicate. From this point
+            // on, every LanguageAllowed call (source-entry filter on line 273,
+            // translation-target filter on line 517-538) routes through the
+            // resolver instead of simple equality. Skips the 25× cross-lingual
+            // sprawl when the user picks a narrow set like {en, zh, ja, ko, es,
+            // it, fr, ru}; transparently passes through (always-true) when no
+            // filter is configured.
+            Dictionary<string, int> aliasMap = await refWriter.LoadLanguageAliasMapAsync(ct);
+            LanguageFilterResolver langResolver = LanguageFilterResolver.Create(LanguageFilter, aliasMap);
+            UseLanguageResolver(langResolver.IsAllowed);
+            if (langResolver.IsFiltered)
+            {
+                Log.LanguageFilterActive(Logger, langResolver.AllowedLanguageCount);
+            }
+
             long entryCount = 0;
             long entityCount = 0;
             long edgeCount = 0;
@@ -520,6 +536,17 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             {
                 continue;
             }
+            // Cross-lingual target filter: skip translations to languages the
+            // practitioner did not select. Eliminates phantom foreign-lemma
+            // entities (and their entity_language junctions + translation_of
+            // edges) that would otherwise sprawl the substrate by ~25× for a
+            // narrow-language ingest. LanguageAllowed handles BCP47 + ISO 639
+            // form normalization when UseLanguageResolver was wired up at
+            // decomposer startup; otherwise falls back to exact equality.
+            if (!LanguageAllowed(tr.LangCode))
+            {
+                continue;
+            }
             (EntityHandle foreignLemma, _, _) =
                 EmitText(batch, tr.Word, _codepointProperties, "lemma", TrustPriorMu);
             batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
@@ -697,5 +724,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         [LoggerMessage(Level = LogLevel.Information,
             Message = "wiktionary progress: {Pct:F2}% ({BytesRead:N0}/{TotalBytes:N0} bytes), {Entries:N0} parsed, checkpoint #{CheckpointNum}")]
         public static partial void Progress(ILogger logger, double pct, long bytesRead, long totalBytes, long entries, int checkpointNum);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Wiktionary language filter active: {AllowedCount} canonical language(s) in filter (BCP47 + ISO 639 form normalized via substrate.language alias map)")]
+        public static partial void LanguageFilterActive(ILogger logger, int allowedCount);
     }
 }

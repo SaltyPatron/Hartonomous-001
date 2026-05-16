@@ -10,6 +10,12 @@ public static class SentenceBoundaries
     /// <summary>
     /// Enumerate sentences as contiguous UTF-8 byte ranges. Every input byte is
     /// covered by exactly one sentence range.
+    ///
+    /// PRIMARY PATH: P/Invoke into the native UAX-29 kernel
+    /// (<see cref="Hartonomous.Core.Native.TextDecomposeNative.SentenceBoundaries"/>).
+    /// Falls back to the in-process C# state machine when the native UCD blob
+    /// is unavailable. Task #21 deprecates the C# fallback once native covers
+    /// the full SB1..SB11 surface (currently a practical subset).
     /// </summary>
     public static List<SentenceRange> Enumerate(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
     {
@@ -17,6 +23,11 @@ public static class SentenceBoundaries
         if (utf8.IsEmpty)
         {
             return sentences;
+        }
+
+        if (TryNativeEnumerate(utf8, out List<SentenceRange>? native))
+        {
+            return native!;
         }
 
         List<SbToken> tokens = CollectTokens(utf8, properties);
@@ -41,6 +52,75 @@ public static class SentenceBoundaries
             start = i;
         }
         return sentences;
+    }
+
+    /// <summary>
+    /// Calls the native UAX-29 sentence boundary kernel and materializes
+    /// per-sentence ranges in original-UTF-8 byte space. Returns false if
+    /// native isn't loadable (UCD blob missing).
+    /// </summary>
+    private static unsafe bool TryNativeEnumerate(ReadOnlySpan<byte> utf8, out List<SentenceRange>? ranges)
+    {
+        ranges = null;
+        if (utf8.IsEmpty)
+        {
+            return false;
+        }
+
+        try
+        {
+            Hartonomous.Core.Text.SubstrateTextDecomposer.EnsureUcdLoaded();
+        }
+        catch (InvalidOperationException)  // BOUNDARY: native UCD blob load. See WordBoundaries.TryNativeBoundaries.
+        {
+            return false;
+        }
+
+        byte[] buf = new byte[utf8.Length];
+        utf8.CopyTo(buf);
+
+        int[] cpBoundaries;
+        int sentenceCount;
+
+        fixed (byte* utf8Ptr = buf)
+        {
+            IntPtr utf8Ip = (IntPtr) utf8Ptr;
+            int rc = Hartonomous.Core.Native.TextDecomposeNative.SentenceBoundaries(
+                utf8Ip, (nuint) buf.Length, IntPtr.Zero, 0, out sentenceCount);
+            if (rc != 0) { return false; }
+
+            cpBoundaries = new int[Math.Max(sentenceCount, 1)];
+            fixed (int* outPtr = cpBoundaries)
+            {
+                int outCount;
+                rc = Hartonomous.Core.Native.TextDecomposeNative.SentenceBoundaries(
+                    utf8Ip, (nuint) buf.Length, (IntPtr) outPtr, cpBoundaries.Length, out outCount);
+                if (rc != 0) { return false; }
+                sentenceCount = outCount;
+            }
+        }
+
+        List<SentenceRange> result = new(sentenceCount);
+        int cursorBytes = 0;
+        int cursorCps = 0;
+        long sentenceByteStart = 0;
+
+        for (int i = 1; i <= sentenceCount; i++)
+        {
+            int targetCp = (i < sentenceCount) ? cpBoundaries[i] : -1;
+            while ((targetCp < 0 || cursorCps < targetCp) && cursorBytes < utf8.Length)
+            {
+                (int _, int consumed) = Utf8.DecodeOne(utf8.Slice(cursorBytes));
+                if (consumed <= 0 || cursorBytes + consumed > utf8.Length) { return false; }
+                cursorBytes += consumed;
+                cursorCps++;
+            }
+            if (targetCp >= 0 && cursorCps != targetCp) { return false; }
+            result.Add(new SentenceRange(sentenceByteStart, (int)(cursorBytes - sentenceByteStart)));
+            sentenceByteStart = cursorBytes;
+        }
+        ranges = result;
+        return true;
     }
 
     private readonly record struct SbToken(SentenceBreak Sb, long ByteOffset, int TotalByteLength);

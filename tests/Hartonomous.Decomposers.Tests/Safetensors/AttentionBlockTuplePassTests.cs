@@ -294,11 +294,18 @@ public sealed class AttentionBlockTuplePassTests
         // Pq[0] · Pk[1] is large (cosine ~ 1, not orthogonal). Other
         // rows get small uncorrelated values. The (0, 1) and (1, 0)
         // pairs survive the floor; everything else honestly abstains.
+        // Planted-signal magnitude must dominate the per-tensor adaptive noise
+        // floor (AP-33). Floor ≈ stddev of non-zero magnitudes; if planted
+        // signal is ~1.0 and noise is ~0.05, the floor sits around mid-scale
+        // and edges still get rejected. Use 50× ratio so rows 0+1 sit
+        // comfortably above the noise floor distribution.
+        const double signalMagnitude = 5.0;
+        const double noiseMagnitude  = 0.01;
         float[] m = new float[rows * cols];
         double[] sharedDir = new double[cols];
         for (int c = 0; c < cols; c++)
         {
-            sharedDir[c] = System.Math.Cos((c + 1) * 0.97);
+            sharedDir[c] = signalMagnitude * System.Math.Cos((c + 1) * 0.97);
         }
         for (int r = 0; r < rows; r++)
         {
@@ -306,13 +313,12 @@ public sealed class AttentionBlockTuplePassTests
             {
                 if (r == 0 || r == 1)
                 {
-                    // Strong shared direction + tiny jitter
                     double jitter = 0.01 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137);
                     m[r * cols + c] = (float)(sharedDir[c] + jitter);
                 }
                 else
                 {
-                    m[r * cols + c] = (float)(0.05 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137));
+                    m[r * cols + c] = (float)(noiseMagnitude * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137));
                 }
             }
         }

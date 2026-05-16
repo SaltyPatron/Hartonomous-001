@@ -259,5 +259,8 @@ public static class EdgeArenaRouter
         // Provenance / audit
         ["has_source"]               = Universal("source_authority"),
         ["in_model"]                 = Universal("source_authority"),
+
+        // Sequence-following bigram (Build-a-bear next-token prior)
+        ["often_follows"]            = Universal("sequence_following", "frequency_significance"),
     };
 }

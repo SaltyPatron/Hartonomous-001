@@ -56,4 +56,17 @@ public interface IReferenceDataReader
     Task<Dictionary<string, double>> LoadCodeDoubleMapAsync(
         string tableName, string valueColumn, int initialCapacity, CancellationToken ct);
 
+    /// <summary>
+    /// Load every ISO 639 form (<c>code</c> = 639-3, <c>part1</c> = 639-1,
+    /// <c>part2b</c> = 639-2/B, <c>part2t</c> = 639-2/T) from
+    /// <c>substrate.language</c> as a single alias → canonical-id map. Each
+    /// non-null form maps to the row's id; conflicts are first-write-wins (the
+    /// substrate.language seed is well-formed so conflicts shouldn't occur in
+    /// practice).
+    ///
+    /// Used by language-aware decomposers (Wiktionary translations, OMW
+    /// cross-lingual alignments, Tatoeba) to build a BCP47 + ISO-form-aware
+    /// filter via <c>Hartonomous.Decomposers.LanguageFilterResolver</c>.
+    /// </summary>
+    Task<Dictionary<string, int>> LoadLanguageAliasMapAsync(CancellationToken ct);
 }

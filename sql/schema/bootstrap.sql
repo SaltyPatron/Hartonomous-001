@@ -243,7 +243,10 @@
 -- @include schema/indexes/idx_substrate_health_code.sql
 -- @include schema/indexes/idx_substrate_health_recent.sql
 -- @include schema/indexes/idx_tensor_role.sql
--- @include schema/indexes/idx_entity_hash_prefix.sql
+-- @include schema/indexes/entity_hash_prefix_idx.sql
+-- @include schema/indexes/provenance_modality_modality_idx.sql
+-- @include schema/indexes/edge_member_entity_hash_idx.sql
+-- @include schema/indexes/entity_hilbert_idx.sql
 
 -- (Persistent staging deleted post-W2E refactor: substrate.staging_* tables and the
 --  drain_staging_*_chunk / drain_all_staging functions are gone. The
@@ -337,6 +340,25 @@
 -- @include schema/functions/composition_subtrajectory.sql
 -- @include schema/functions/composition_parents.sql
 -- @include schema/functions/recompose_text.sql
+-- @include schema/functions/recompose_text_bulk.sql
+-- @include schema/functions/populate_sequence_following_edges.sql
+-- @include schema/tables/derived/position_embedding_aggregate.sql
+-- @include schema/indexes/position_embedding_aggregate_ordinal_idx.sql
+-- @include schema/functions/update_position_embedding_aggregate_from_drain.sql
+-- @include schema/functions/backfill_position_embedding_aggregate.sql
+-- @include schema/functions/position_embedding_stats.sql
+-- @include schema/functions/per_arena_entity_significance_stats.sql
+-- @include schema/functions/select_synth_edges_for_ffn.sql
+-- @include schema/functions/select_knowledge_subgraph.sql
+-- The substrate.entity centroid + hilbert_index columns are populated at
+-- INSERT time by the C# producer (native text decomposer emits centroids in
+-- record.CentroidX/Y/Z/M; SubstrateTextDecomposer.OnRecord computes
+-- 4D Hilbert via TextDecomposeNative.HilbertIndex; AddEntity 7-arg overload
+-- threads them through IngestionBatch → StreamingIngestionPipeline →
+-- entity.copy.sql column list). No trigger, no backfill — same Merkle
+-- invariant (deterministic from hash) produces same centroid on first write.
+-- @include schema/functions/entity_tier_hint.sql
+-- @include schema/functions/entity_tier_hints.sql
 -- Significance machinery (prime_edge_significance_per_arena removed —
 -- it referenced substrate.staging_edge which no longer exists. The
 -- per-arena chunked primer below is what the C# pipeline calls from the

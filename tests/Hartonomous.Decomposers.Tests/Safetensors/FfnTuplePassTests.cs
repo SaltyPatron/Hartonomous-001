@@ -294,14 +294,16 @@ public sealed class FfnTuplePassTests
     private static float[] MakeMatrix(int rows, int cols, int seed)
     {
         // Planted-correlation test fixture (see AttentionBlockTuplePassTests).
-        // Rows 0 and 1 share a direction so the (0, 1)/(1, 0) pair survives
-        // the per-tensor adaptive noise floor (AP-33). Other rows are tiny
-        // and honestly abstain.
+        // Rows 0 and 1 share a direction at signalMagnitude (5×) while other
+        // rows sit at noiseMagnitude (0.01) — 500× ratio guarantees the
+        // planted pair survives the per-tensor adaptive noise floor (AP-33).
+        const double signalMagnitude = 5.0;
+        const double noiseMagnitude  = 0.01;
         float[] m = new float[rows * cols];
         double[] sharedDir = new double[cols];
         for (int c = 0; c < cols; c++)
         {
-            sharedDir[c] = System.Math.Cos((c + 1) * 0.97);
+            sharedDir[c] = signalMagnitude * System.Math.Cos((c + 1) * 0.97);
         }
         for (int r = 0; r < rows; r++)
         {
@@ -314,7 +316,7 @@ public sealed class FfnTuplePassTests
                 }
                 else
                 {
-                    m[r * cols + c] = (float)(0.05 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137));
+                    m[r * cols + c] = (float)(noiseMagnitude * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137));
                 }
             }
         }

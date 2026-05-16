@@ -212,7 +212,7 @@ def expected_sql_kinds(relative: str) -> set[str]:
     if relative.startswith("sql/schema/functions/"):
         return {"FUNCTION"}
     if relative.startswith("sql/schema/procedures/"):
-        return {"PROCEDURE"}
+        return {"PROCEDURE", "TRIGGER"}
     if relative.startswith("sql/schema/views/"):
         return {"VIEW"}
     if relative.startswith("sql/schema/schemas/"):

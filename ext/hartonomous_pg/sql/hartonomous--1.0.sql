@@ -1678,8 +1678,8 @@ CREATE TABLE substrate.provenance_modality (
     PRIMARY KEY (provenance_id, modality_code)
 );
 
-CREATE INDEX provenance_modality_modality_idx
-    ON substrate.provenance_modality (modality_code);
+-- Reverse-lookup index lives in sql/schema/indexes/provenance_modality_modality_idx.sql
+-- per "one primary CREATE object per file" discipline.
 
 COMMENT ON TABLE substrate.provenance_modality IS
     'Junction table: which modalities a provenance source is authoritative in. Replaces the prior modality_codes array column on substrate.provenance — proper relational shape (atomic columns, composite PK, FK to substrate.provenance(id), bidirectional indexes). Empty join = source authoritative for none / text default.';
@@ -1732,7 +1732,22 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     ('tokenizer_model',    'model_weights');
 
 -- ── sql/schema/seed/physicality_type.sql ───────────────────────────────────────
--- Physicality types: 13 rows, ids 1..13 must match partition declarations.
+-- Physicality types: 16 rows, ids 1..16 must match partition declarations.
+--
+-- Three primary roles per rule 25-physicality-4d:
+--   - ENTITY physicality: the brick's own internal structure.
+--       atoms = POINTZM with real content-derived coords (s3_position,
+--               hilbert_value, embedding_firefly, waveform sample, etc.)
+--       compositions = LINESTRINGZM through child centroids (entity_shape)
+--   - FIREFLY physicality: per-model embedding projection per token
+--       (embedding_firefly POINTZM in the 4D firefly jar)
+--   - CONTENT physicality: trajectory through entity bricks
+--       (ingestion_trajectory LINESTRINGZM whose vertices ARE child entity
+--        hash refs via mantissa packing — the indexed child manifest)
+--
+-- The "contour" role is the audio/spectral analogue of entity_shape
+-- (kept for waveform-class compositions). Tasks #18 (rename to make
+-- the role-distinction explicit) tracks future cleanup.
 INSERT INTO substrate.physicality_type (code) VALUES
     ('s3_position'),
     ('hilbert_value'),
@@ -1746,7 +1761,10 @@ INSERT INTO substrate.physicality_type (code) VALUES
     ('chromagram'),
     ('svd_spectrum'),
     ('weight_distribution'),
-    ('contour');
+    ('contour'),
+    ('embedding_firefly'),
+    ('entity_shape'),
+    ('ingestion_trajectory');
 
 -- ── sql/schema/seed/physicality_type_embedding_firefly.sql ───────────────────────────────────────
 -- V1 stage 0035 — physicality type extensions.
@@ -1820,7 +1838,11 @@ INSERT INTO substrate.significance_context (code) VALUES
     ('corroboration_strength'),
     ('frequency_significance'),
     ('attention_pattern_confidence'),
-    ('morphological_productivity');
+    ('morphological_productivity'),
+    -- Bigram next-token prior arena. Populated by
+    -- substrate.populate_sequence_following_edges from content trajectory
+    -- ordinals. Source of generative coherence at inference time.
+    ('sequence_following');
 
 -- ── sql/schema/seed/attestation_type.sql ───────────────────────────────────────
 -- Attestation types — generic, sign-discriminating only.
@@ -2237,7 +2259,12 @@ FROM (VALUES
     ('unihan_variant',           'unicode',       'codepoint',          'codepoint'),           -- 109
     ('unihan_reading',           'unicode',       'codepoint',          'text_composition'),    -- 110
     ('unihan_source',            'unicode',       'codepoint',          'text_composition'),    -- 111
-    ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition')     -- 112
+    ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition'),    -- 112
+    -- Sequence-following bigram (Build-a-bear next-token prior). Populated
+    -- by substrate.populate_sequence_following_edges from content trajectory
+    -- ordinals. Source role = preceding token; target role = following token.
+    -- Weighted by ln(1+freq) in sequence_following arena.
+    ('often_follows',            'sequence',      'word_form',          'word_form')            -- 113
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;
@@ -2257,13 +2284,13 @@ BEGIN
             ('substrate.entity_type',           23),
             ('substrate.physicality_type',      16),
             ('substrate.edge_role',              7),
-            ('substrate.significance_context',  10),
+            ('substrate.significance_context',  11),
             ('substrate.provenance',            11),
             ('substrate.bidi_class',            23),
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            120),
+            ('substrate.edge_type',            121),
             ('substrate.attestation_type',       3)
         ) AS t(table_name, expected)
     LOOP
@@ -2317,11 +2344,24 @@ END $$;
 -- live in the Phase 13 functions block. The two encodings are byte-for-byte
 -- equivalent: any change to bb_hash_lo / bb_hash_hi must mirror here.
 --
--- entity carries NO geometry column. The substrate's 4D realization for an
--- entity lives in substrate.physicality, partitioned by physicality_type_id
--- (s3_position for codepoint atoms, contour for compositions, etc.). The
--- prior Bite-A centroid_4d column on this table bypassed the partitioned
--- physicality store and is removed.
+-- entity carries the entity's own 4D centroid + Hilbert index as denormalized
+-- columns. This is a deterministic projection of the entity's physicality —
+-- atom POINTZM coords for codepoint atoms; mean-of-children-centroids for
+-- compositions (entity_shape / ingestion_trajectory partitions). Same content
+-- → same hash → same children → same centroid (Merkle invariant). The columns
+-- are maintained by a trigger on substrate.physicality AFTER INSERT/UPDATE
+-- (see substrate.update_entity_centroid_from_physicality). The embedding_firefly
+-- partition is excluded — fireflies are per-model decorations, not the entity's
+-- own identity-bearing centroid.
+--
+-- Why on the entity row: the centroid is referenced everywhere a parent walks
+-- its child manifest (composition LINESTRINGZM vertices are children's
+-- centroids). Joining substrate.physicality on every parent-walk would be a
+-- hot-path table lookup per vertex; storing on entity makes it O(1).
+--
+-- The substrate's 4D realization itself still lives in substrate.physicality,
+-- partitioned by physicality_type_id. These columns are denormalization for
+-- read speed, NOT a replacement for the physicality store.
 CREATE TABLE substrate.entity (
     hash substrate.hash_value PRIMARY KEY,
     hash_bits_0_51 BIGINT GENERATED ALWAYS AS (
@@ -2341,7 +2381,12 @@ CREATE TABLE substrate.entity (
         | (get_byte(hash, 10)::BIGINT << 28)
         | (get_byte(hash, 11)::BIGINT << 36)
         | (get_byte(hash, 12)::BIGINT << 44)
-    ) STORED
+    ) STORED,
+    centroid_x     DOUBLE PRECISION,
+    centroid_y     DOUBLE PRECISION,
+    centroid_z     DOUBLE PRECISION,
+    centroid_m     DOUBLE PRECISION,
+    hilbert_index  BIGINT
 );
 
 COMMENT ON TABLE substrate.entity IS
@@ -3516,7 +3561,7 @@ CREATE INDEX idx_substrate_health_recent ON monitor.substrate_health(recorded_at
 -- ── sql/schema/indexes/idx_tensor_role.sql ───────────────────────────────────────
 CREATE INDEX idx_tensor_role ON substrate.tensor_tensor_role(tensor_role_id, entity_hash);
 
--- ── sql/schema/indexes/idx_entity_hash_prefix.sql ───────────────────────────────────────
+-- ── sql/schema/indexes/entity_hash_prefix_idx.sql ───────────────────────────────────────
 -- Composite btree on (hash_bits_0_51, hash_bits_52_103). The read-side kernel
 -- of SubstrateTierWalker: substrate.entity_by_hash_prefix(BIGINT[], BIGINT[])
 -- resolves trajectory-vertex (X, Z) mantissa slices to full BLAKE3 hashes in
@@ -3525,6 +3570,49 @@ CREATE INDEX idx_tensor_role ON substrate.tensor_tensor_role(tensor_role_id, ent
 -- O(D)-tier-walks contract.
 CREATE INDEX IF NOT EXISTS entity_hash_prefix_idx
     ON substrate.entity USING btree (hash_bits_0_51, hash_bits_52_103);
+
+-- ── sql/schema/indexes/provenance_modality_modality_idx.sql ───────────────────────────────────────
+-- Reverse-lookup index on substrate.provenance_modality: given a modality_code,
+-- which provenance sources are authoritative? The composite PK
+-- (provenance_id, modality_code) already serves forward lookup; this gives the
+-- inverse without scanning the junction.
+CREATE INDEX provenance_modality_modality_idx
+    ON substrate.provenance_modality (modality_code);
+
+-- ── sql/schema/indexes/edge_member_entity_hash_idx.sql ───────────────────────────────────────
+-- Load-bearing index for the reverse-lookup pattern:
+-- "find all edges in which entity X participates."
+--
+-- Used by SubstrateAdjacencyBuilder's self-join (the synth's vocab × vocab
+-- adjacency query), VocabSelector's cross-WF degree count, FfnEdgeSlotSynthesizer's
+-- edge selection, and any inference traversal that starts from an entity hash
+-- and walks outward through its incident edges.
+--
+-- WITHOUT this index, those queries fall back to scanning the full edge_member
+-- table (~10M+ rows per substrate state) per source entity. Synth adjacency
+-- build measured at 30s for 256 vocab tokens via 134M-row scan — the
+-- bottleneck the index removes.
+--
+-- The PK (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+-- supports forward lookup (given an edge, find its members) but cannot
+-- service entity-first queries without this standalone index.
+CREATE INDEX IF NOT EXISTS edge_member_entity_hash_idx
+    ON substrate.edge_member (entity_hash);
+
+-- ── sql/schema/indexes/entity_hilbert_idx.sql ───────────────────────────────────────
+-- BTREE on substrate.entity.hilbert_index for log-N range scans by 4D
+-- spatial locality. The Hilbert curve preserves locality: adjacent
+-- hilbert values correspond to spatially-adjacent 4D points. Range
+-- queries `WHERE hilbert_index BETWEEN $a AND $b` scan a 4D-spatial
+-- box-like region.
+--
+-- Combined with the entity's radial tier (sqrt(x²+y²+z²+m²) — atoms ≈ 1,
+-- documents ≈ 0), Hilbert ordering gives both ANGULAR (semantic direction)
+-- and RADIAL (abstraction depth) locality in one B-tree scan.
+CREATE INDEX IF NOT EXISTS entity_hilbert_idx ON substrate.entity (hilbert_index);
+
+COMMENT ON INDEX substrate.entity_hilbert_idx IS
+    '4D Hilbert-curve ordering of substrate.entity centroids. Range scans cluster entities by 4D spatial proximity, which combines angular direction (semantic similarity at atom tier) AND radial tier (Merkle DAG depth — atoms on glome, documents at origin). Enables log-N spatial-locality queries without per-row geometry computation.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -5427,6 +5515,740 @@ $$;
 
 COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
     'Byte-for-byte text reconstruction via composition metadata on substrate.physicality. RLE-expanded. Hash-only signature.';
+
+-- ── sql/schema/functions/recompose_text_bulk.sql ───────────────────────────────────────
+-- Bulk text reconstruction: given an array of entity hashes, return the
+-- byte-for-byte recomposed text for each via the same walk that
+-- substrate.recompose_text performs single-target.
+-- Used by Build-a-bear tokenizer construction (TokenizerExporter) to
+-- materialize real UTF-8 surface forms for the vocab's word_form / lemma /
+-- text_composition entities in one round-trip instead of N.
+CREATE OR REPLACE FUNCTION substrate.recompose_text_bulk(
+    p_entity_hashes BYTEA[],
+    p_max_depth     INT DEFAULT 100000
+)
+RETURNS TABLE(entity_hash BYTEA, text_value TEXT)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $$
+    SELECT h, substrate.recompose_text(h, p_max_depth)
+      FROM unnest(p_entity_hashes) AS h;
+$$;
+
+COMMENT ON FUNCTION substrate.recompose_text_bulk(BYTEA[], INT) IS
+    'Bulk wrapper around substrate.recompose_text. Hash-only signature. Returns one row per input hash with its byte-for-byte recomposed text.';
+
+-- ── sql/schema/functions/populate_sequence_following_edges.sql ───────────────────────────────────────
+-- Bigram extraction from content trajectories → sequence_following arena
+-- edges. Walks substrate.text_composition / paragraph / document content
+-- entities, decodes their LINESTRINGZM child manifest via
+-- substrate.get_composition_children, and emits often_follows(A, B) edges
+-- weighted by global frequency.
+--
+-- Idempotent: ON CONFLICT DO NOTHING on edge insertion; edge_significance
+-- updated in place via record_attestations_bulk-equivalent INSERT-SELECT
+-- with sum aggregation.
+--
+-- Build-a-bear's next-token prior comes from this. Without it the
+-- synthesizer's per-layer adjacency captures classification + semantic +
+-- syntactic structure but not sequence-following — model knows "Hello"
+-- clusters with greetings but doesn't know "Hello" is followed by
+-- "world" / "how" / "," in real sentences.
+CREATE OR REPLACE FUNCTION substrate.populate_sequence_following_edges(
+    p_provenance_code TEXT DEFAULT 'tatoeba',
+    p_min_frequency   INT DEFAULT 2
+)
+RETURNS TABLE(edges_emitted BIGINT, pairs_observed BIGINT)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_provenance_id    INT;
+    v_edge_type_id     INT;
+    v_arena_id         INT;
+    v_pos_evidence_id  INT;
+    v_text_comp_type_id INT;
+    v_paragraph_type_id INT;
+    v_document_type_id  INT;
+    v_source_role_id   INT;
+    v_target_role_id   INT;
+    v_edges_emitted    BIGINT := 0;
+    v_pairs_observed   BIGINT := 0;
+BEGIN
+    SELECT id INTO v_provenance_id FROM substrate.provenance WHERE code = p_provenance_code;
+    IF v_provenance_id IS NULL THEN
+        RAISE EXCEPTION 'unknown provenance: %', p_provenance_code;
+    END IF;
+
+    SELECT id INTO v_edge_type_id FROM substrate.edge_type WHERE code = 'often_follows';
+    IF v_edge_type_id IS NULL THEN
+        RAISE EXCEPTION 'edge_type "often_follows" not seeded; add to seed/edge_type.sql';
+    END IF;
+
+    SELECT id INTO v_arena_id FROM substrate.significance_context WHERE code = 'sequence_following';
+    IF v_arena_id IS NULL THEN
+        RAISE EXCEPTION 'significance_context "sequence_following" not seeded';
+    END IF;
+
+    SELECT id INTO v_pos_evidence_id FROM substrate.attestation_type WHERE code = 'positive_evidence';
+
+    SELECT id INTO v_text_comp_type_id FROM substrate.entity_type WHERE code = 'text_composition';
+    SELECT id INTO v_paragraph_type_id FROM substrate.entity_type WHERE code = 'paragraph';
+    SELECT id INTO v_document_type_id  FROM substrate.entity_type WHERE code = 'document';
+
+    SELECT id INTO v_source_role_id FROM substrate.edge_role WHERE code = 'source';
+    SELECT id INTO v_target_role_id FROM substrate.edge_role WHERE code = 'target';
+
+    -- Pairs: aggregate (A, B) bigram frequency across all content
+    -- trajectories. The trajectory IS the ordered child manifest; consecutive
+    -- children at ordinal n and n+1 form a bigram.
+    DROP TABLE IF EXISTS pg_temp.bigram_freq;
+    CREATE TEMP TABLE pg_temp.bigram_freq AS
+    WITH content_entities AS (
+        SELECT DISTINCT ec.entity_hash
+          FROM substrate.entity_classification ec
+         WHERE ec.entity_type_id IN (v_text_comp_type_id, v_paragraph_type_id, v_document_type_id)
+    ),
+    ordered_children AS (
+        SELECT
+            ce.entity_hash AS parent_hash,
+            ch.ordinal,
+            ch.child_hash,
+            ROW_NUMBER() OVER (PARTITION BY ce.entity_hash ORDER BY ch.ordinal) AS rn
+          FROM content_entities ce,
+               LATERAL substrate.get_composition_children(ce.entity_hash) ch
+    ),
+    bigrams AS (
+        SELECT
+            a.child_hash AS source_hash,
+            b.child_hash AS target_hash
+          FROM ordered_children a
+          JOIN ordered_children b
+            ON b.parent_hash = a.parent_hash
+           AND b.rn = a.rn + 1
+         WHERE a.child_hash <> b.child_hash
+    )
+    SELECT
+        source_hash,
+        target_hash,
+        count(*)::BIGINT AS freq
+      FROM bigrams
+     GROUP BY source_hash, target_hash
+    HAVING count(*) >= p_min_frequency;
+
+    SELECT count(*) INTO v_pairs_observed FROM pg_temp.bigram_freq;
+
+    -- Compute edge hash per pair (BLAKE3 of edge_type_id + role-ordered
+    -- participant hashes). We use the substrate helper if present;
+    -- otherwise fall back to per-row hashing via the C extension.
+    DROP TABLE IF EXISTS pg_temp.bigram_edge;
+    CREATE TEMP TABLE pg_temp.bigram_edge AS
+    SELECT
+        bf.source_hash,
+        bf.target_hash,
+        hartonomous.blake3_edge_hash(v_edge_type_id::INT,
+            ARRAY[bf.source_hash, bf.target_hash]::BYTEA[]) AS edge_hash,
+        bf.freq
+      FROM pg_temp.bigram_freq bf;
+
+    -- Insert edges. ON CONFLICT skips already-existing identities.
+    INSERT INTO substrate.edge (edge_type_id, hash, provenance_id, geom)
+    SELECT v_edge_type_id, be.edge_hash, v_provenance_id, NULL
+      FROM pg_temp.bigram_edge be
+    ON CONFLICT (edge_type_id, hash) DO NOTHING;
+
+    -- Insert edge_members (source + target roles).
+    INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+    SELECT v_edge_type_id, be.edge_hash, be.source_hash, v_source_role_id, 0
+      FROM pg_temp.bigram_edge be
+    ON CONFLICT (edge_type_id, edge_hash, role_position) DO NOTHING;
+
+    INSERT INTO substrate.edge_member (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+    SELECT v_edge_type_id, be.edge_hash, be.target_hash, v_target_role_id, 1
+      FROM pg_temp.bigram_edge be
+    ON CONFLICT (edge_type_id, edge_hash, role_position) DO NOTHING;
+
+    -- Edge significance: mu calibrated to log(1 + freq) so high-frequency
+    -- bigrams dominate but no single super-frequent pair saturates.
+    -- Baseline 1500 + 100 × log(1 + freq) puts freq=1 at mu=1500, freq=10
+    -- at mu=1739, freq=1000 at mu=2191, freq=100000 at mu=2651.
+    INSERT INTO substrate.edge_significance
+        (context_type_id, edge_type_id, edge_hash, attestation_type_id, mu, sigma, volatility, games)
+    SELECT
+        v_arena_id,
+        v_edge_type_id,
+        be.edge_hash,
+        v_pos_evidence_id,
+        1500.0 + 100.0 * ln(1 + be.freq),
+        350.0,
+        0.06,
+        be.freq::INT
+      FROM pg_temp.bigram_edge be
+    ON CONFLICT (context_type_id, edge_type_id, edge_hash, attestation_type_id) DO UPDATE
+       SET mu = EXCLUDED.mu,
+           games = substrate.edge_significance.games + EXCLUDED.games;
+
+    GET DIAGNOSTICS v_edges_emitted = ROW_COUNT;
+
+    edges_emitted := v_edges_emitted;
+    pairs_observed := v_pairs_observed;
+    RETURN NEXT;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.populate_sequence_following_edges(TEXT, INT) IS
+    'Walks substrate text_composition / paragraph / document content trajectories, extracts adjacent (A, B) bigrams, aggregates frequency, emits often_follows edges in the sequence_following arena weighted by ln(1+freq). Build-a-bear next-token prior source.';
+
+-- ── sql/schema/tables/derived/position_embedding_aggregate.sql ───────────────────────────────────────
+-- Drain-time derived aggregate: per-ordinal-position word_form frequency
+-- across ALL content trajectories ingested into the substrate.
+--
+-- Maintained incrementally by substrate.update_position_embedding_aggregate_from_drain
+-- after each StreamingIngestionPipeline drain that emits new content-tier
+-- physicality (text_composition / paragraph / document trajectories). Per
+-- the AP-37 drain-as-state-change pattern: prompt ingestion IS a state
+-- change, so derived state must update incrementally — NOT a static view.
+--
+-- Consumed by Build-a-bear PositionEmbeddingSynthesizer to derive
+-- substrate-native positional embeddings. Replaces the per-synth
+-- substrate.position_embedding_stats() LATERAL walk (which was 4.3M
+-- get_composition_children calls = ~71 min single-threaded).
+--
+-- Query pattern at synth time:
+--   SELECT ordinal, child_hash, occurrences
+--     FROM substrate.position_embedding_aggregate
+--    WHERE ordinal < $max_position
+--    ORDER BY ordinal, occurrences DESC;
+-- → <100ms on indexed read vs 71 min per-row LATERAL walk.
+CREATE TABLE IF NOT EXISTS substrate.position_embedding_aggregate (
+    ordinal     INT     NOT NULL,
+    child_hash  BYTEA   NOT NULL,
+    occurrences BIGINT  NOT NULL DEFAULT 0,
+    PRIMARY KEY (ordinal, child_hash)
+);
+-- Centroid + Hilbert index belong on substrate.entity itself (one row per
+-- entity, used everywhere) — not denormalized into every derived aggregate.
+-- Per-entity centroid+hilbert is task #17; until that lands the synth's
+-- PositionEmbeddingSynthesizer mean-pools the substrate-derived hidden-dim
+-- embedding rows (which it already has) instead of reading 4D centroid
+-- coordinates from this aggregate.
+
+COMMENT ON TABLE substrate.position_embedding_aggregate IS
+    'Drain-maintained per-ordinal word_form frequency. Maintained incrementally by substrate.update_position_embedding_aggregate_from_drain per new content trajectory. Build-a-bear PositionEmbeddingSynthesizer reads from here in <100ms instead of the previous 71-min LATERAL walk.';
+
+-- ── sql/schema/indexes/position_embedding_aggregate_ordinal_idx.sql ───────────────────────────────────────
+-- Range-scan index on position_embedding_aggregate for synth queries that
+-- filter by ordinal < @max_position. The PK (ordinal, child_hash) already
+-- supports this via prefix, but a standalone ordinal index helps when
+-- queries also ORDER BY occurrences DESC within a position bucket.
+CREATE INDEX IF NOT EXISTS position_embedding_aggregate_ordinal_idx
+    ON substrate.position_embedding_aggregate (ordinal, occurrences DESC);
+
+-- ── sql/schema/functions/update_position_embedding_aggregate_from_drain.sql ───────────────────────────────────────
+-- Incremental drain-time update of the position_embedding_aggregate table.
+-- Called by StreamingIngestionPipeline's drain-completion post-pass with
+-- the array of parent-entity hashes that landed in this drain (filtered to
+-- content-tier types: text_composition / paragraph / document).
+--
+-- UPSERTs counts; new trajectories add to existing per-(ordinal, child_hash)
+-- buckets; same content seen N times across drains adds N occurrences.
+-- Per AP-37: idempotent at the row level (since content is content-addressed,
+-- same trajectory hash re-ingested is identical — but adding to count is
+-- correct semantically: each ingestion event IS a frequency observation).
+CREATE OR REPLACE FUNCTION substrate.update_position_embedding_aggregate_from_drain(
+    p_parent_hashes BYTEA[]
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_rows_upserted BIGINT := 0;
+BEGIN
+    IF p_parent_hashes IS NULL OR array_length(p_parent_hashes, 1) IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    -- Restrict to content-tier parents (text_composition / paragraph / document).
+    -- Word_form / lemma compositions ARE entity-tier (the brick's internal
+    -- structure) and should not contribute to position embedding statistics;
+    -- only content-tier trajectories carry meaningful positional ordering.
+    WITH eligible_parents AS (
+        SELECT DISTINCT ec.entity_hash
+          FROM unnest(p_parent_hashes) AS h(hash)
+          JOIN substrate.entity_classification ec
+            ON ec.entity_hash = h.hash
+         WHERE ec.entity_type_id IN (
+             SELECT id FROM substrate.entity_type
+              WHERE code IN ('text_composition', 'paragraph', 'document')
+         )
+    ),
+    new_observations AS (
+        SELECT
+            (ch.ordinal - 1)::INT AS ordinal,
+            ch.child_hash,
+            count(*)::BIGINT AS occurrences
+          FROM eligible_parents ep,
+               LATERAL substrate.get_composition_children(ep.entity_hash) ch
+         WHERE ch.ordinal >= 1
+           AND ch.ordinal <= 65535
+         GROUP BY ch.ordinal, ch.child_hash
+    )
+    INSERT INTO substrate.position_embedding_aggregate (ordinal, child_hash, occurrences)
+    SELECT ordinal, child_hash, occurrences
+      FROM new_observations
+    ON CONFLICT (ordinal, child_hash) DO UPDATE
+       SET occurrences = substrate.position_embedding_aggregate.occurrences + EXCLUDED.occurrences;
+
+    GET DIAGNOSTICS v_rows_upserted = ROW_COUNT;
+    RETURN v_rows_upserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.update_position_embedding_aggregate_from_drain(BYTEA[]) IS
+    'Incremental drain-time update of substrate.position_embedding_aggregate. Called per drain by StreamingIngestionPipeline with new content-trajectory parent hashes. UPSERTs per-(ordinal, child_hash) counts. AP-37 drain-as-state-change pattern.';
+
+-- ── sql/schema/functions/backfill_position_embedding_aggregate.sql ───────────────────────────────────────
+-- One-shot backfill: aggregate every existing content trajectory into
+-- substrate.position_embedding_aggregate. Used to bootstrap the aggregate
+-- on existing substrate state (or rebuild it after schema changes that
+-- alter the aggregate definition). After backfill, all future updates
+-- flow through substrate.update_position_embedding_aggregate_from_drain.
+--
+-- Idempotent via the UPSERT clause — running twice doubles counts, but
+-- with TRUNCATE first the effect is "reset + rebuild from scratch."
+CREATE OR REPLACE FUNCTION substrate.backfill_position_embedding_aggregate(
+    p_truncate_first BOOLEAN DEFAULT TRUE
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_rows_inserted BIGINT := 0;
+BEGIN
+    IF p_truncate_first THEN
+        TRUNCATE substrate.position_embedding_aggregate;
+    END IF;
+
+    -- Read every content trajectory's vertices directly from
+    -- substrate.physicality (ingestion_trajectory partition). Uses
+    -- ST_DumpPoints to unroll the LINESTRINGZM in one pass instead of
+    -- per-row LATERAL get_composition_children. Per-vertex mantissa
+    -- unpack is inline; child hash resolution via substrate.entity's
+    -- composite btree on the GENERATED hash_bits_0_51/52_103 columns
+    -- (entity_hash_prefix_idx). Single bulk aggregate over the partition.
+    --
+    -- Centroid coords + Hilbert index are baked into the aggregate at
+    -- write time (pre-gen pattern: don't recompute at read time). Synth
+    -- reads (ordinal, child_hash, occurrences, x, y, z, m, hilbert) in
+    -- one row vs needing a second substrate.physicality lookup per child.
+    WITH walked AS (
+        SELECT
+            (substrate.bb_unpack_ordinal(ST_Y(pt.geom)) - 1)::INT AS ordinal,
+            substrate.bb_unpack_hash_lo(ST_X(pt.geom)) AS hb_lo,
+            substrate.bb_unpack_hash_hi(ST_Z(pt.geom)) AS hb_hi
+          FROM substrate.physicality p
+          CROSS JOIN LATERAL ST_DumpPoints(p.geom) gd
+          CROSS JOIN LATERAL (SELECT gd.geom) pt
+          JOIN substrate.entity_classification ec ON ec.entity_hash = p.entity_hash
+          JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+         WHERE p.physicality_type_id = (
+             SELECT id FROM substrate.physicality_type WHERE code = 'ingestion_trajectory'
+         )
+           AND et.code IN ('text_composition', 'paragraph', 'document')
+           AND substrate.bb_unpack_ordinal(ST_Y(pt.geom)) >= 1
+           AND substrate.bb_unpack_ordinal(ST_Y(pt.geom)) <= 65535
+    ),
+    resolved AS (
+        SELECT
+            w.ordinal,
+            e.hash AS child_hash,
+            count(*)::BIGINT AS occurrences
+          FROM walked w
+          JOIN substrate.entity e
+            ON e.hash_bits_0_51 = w.hb_lo
+           AND e.hash_bits_52_103 = w.hb_hi
+         GROUP BY w.ordinal, e.hash
+    )
+    INSERT INTO substrate.position_embedding_aggregate (ordinal, child_hash, occurrences)
+    SELECT r.ordinal, r.child_hash, r.occurrences
+      FROM resolved r
+    ON CONFLICT (ordinal, child_hash) DO UPDATE
+       SET occurrences = substrate.position_embedding_aggregate.occurrences + EXCLUDED.occurrences;
+
+    GET DIAGNOSTICS v_rows_inserted = ROW_COUNT;
+    RETURN v_rows_inserted;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.backfill_position_embedding_aggregate(BOOLEAN) IS
+    'One-shot bulk rebuild of substrate.position_embedding_aggregate via direct ST_DumpPoints walk over the ingestion_trajectory partition. Uses entity_by_hash_prefix composite btree for child hash resolution. Replaces per-row LATERAL get_composition_children path (which was 71 min single-threaded for 4.3M trajectories).';
+
+-- ── sql/schema/functions/position_embedding_stats.sql ───────────────────────────────────────
+-- Per-position word_form frequency reader. Reads from the drain-maintained
+-- substrate.position_embedding_aggregate table — NOT a live aggregate over
+-- substrate.physicality. The aggregate is maintained incrementally by
+-- substrate.update_position_embedding_aggregate_from_drain (per-drain) and
+-- can be bulk-rebuilt by substrate.backfill_position_embedding_aggregate.
+--
+-- Returns (ordinal, child_hash, occurrences). C# PositionEmbeddingSynthesizer
+-- mean-pools these into per-position embedding vectors as a substrate-native
+-- replacement for learned positional embeddings.
+--
+-- Latency: <100ms on indexed PK + range scan vs the previous ~71-min
+-- LATERAL get_composition_children walk.
+CREATE OR REPLACE FUNCTION substrate.position_embedding_stats(
+    p_max_position INT DEFAULT 512,
+    p_top_n_per_pos INT DEFAULT 8192
+)
+RETURNS TABLE(ordinal INT, child_hash BYTEA, occurrences BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $$
+    WITH ranked AS (
+        SELECT
+            pea.ordinal,
+            pea.child_hash,
+            pea.occurrences,
+            ROW_NUMBER() OVER (PARTITION BY pea.ordinal ORDER BY pea.occurrences DESC, pea.child_hash) AS rk
+          FROM substrate.position_embedding_aggregate pea
+         WHERE pea.ordinal >= 0
+           AND pea.ordinal < p_max_position
+    )
+    SELECT ordinal, child_hash, occurrences
+      FROM ranked
+     WHERE rk <= p_top_n_per_pos
+     ORDER BY ordinal, occurrences DESC, child_hash;
+$$;
+
+COMMENT ON FUNCTION substrate.position_embedding_stats(INT, INT) IS
+    'Reader over substrate.position_embedding_aggregate. Top-N most-frequent child at each ordinal position. Sub-100ms on indexed read. Aggregate maintained incrementally by update_position_embedding_aggregate_from_drain per AP-37.';
+
+-- ── sql/schema/functions/per_arena_entity_significance_stats.sql ───────────────────────────────────────
+-- Per-arena distribution stats over entity_significance.mu.
+-- Used by LayerNormSynthesizer to derive per-layer γ (= 1/stddev) and
+-- β (= -mean/stddev) where each layer is assigned an arena. Without these
+-- derived values, conventional LayerNorm γ=1 β=0 lets variance compound
+-- layer-to-layer → softmax saturates → output collapses to repetition.
+--
+-- Returns one row per arena code with (mean_mu, stddev_mu, count). Caller
+-- restricts to entity_type subset (e.g. word_form only) via the optional
+-- p_entity_type_codes filter.
+CREATE OR REPLACE FUNCTION substrate.per_arena_entity_significance_stats(
+    p_entity_type_codes TEXT[] DEFAULT NULL
+)
+RETURNS TABLE(arena_code TEXT, mean_mu DOUBLE PRECISION, stddev_mu DOUBLE PRECISION, row_count BIGINT)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $$
+    WITH eligible AS (
+        SELECT es.context_type_id, es.mu
+          FROM substrate.entity_significance es
+         WHERE p_entity_type_codes IS NULL
+            OR EXISTS (
+                SELECT 1
+                  FROM substrate.entity_classification ec
+                  JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+                 WHERE ec.entity_hash = es.entity_hash
+                   AND et.code = ANY(p_entity_type_codes)
+            )
+    )
+    SELECT
+        sc.code AS arena_code,
+        avg(e.mu)::DOUBLE PRECISION AS mean_mu,
+        coalesce(stddev_pop(e.mu), 1.0)::DOUBLE PRECISION AS stddev_mu,
+        count(*)::BIGINT AS row_count
+      FROM eligible e
+      JOIN substrate.significance_context sc ON sc.id = e.context_type_id
+     GROUP BY sc.code
+     ORDER BY sc.code;
+$$;
+
+COMMENT ON FUNCTION substrate.per_arena_entity_significance_stats(TEXT[]) IS
+    'Per-arena mean and pop-stddev of entity_significance.mu. Used by LayerNormSynthesizer to derive per-layer γ/β. Optional entity_type filter restricts to e.g. word_form only.';
+
+-- ── sql/schema/functions/select_synth_edges_for_ffn.sql ───────────────────────────────────────
+-- Substrate edge selection for FFN slot construction.
+-- Each FFN intermediate row IS a substrate edge — key direction =
+-- E[source], value direction = E[target], magnitude weighted by arena mu.
+-- Returns top-N edges in the requested arena set where BOTH endpoints
+-- are in the passed-in vocab restriction. Scoring metric:
+--   mu_deviation × log(1 + games) × cross_cohort_bridge
+-- Cross-cohort bridge upweights edges whose endpoints are different
+-- entity_type cohorts (e.g. word_form ↔ pos), which are the load-bearing
+-- classification anchors the substrate's structural backbone provides.
+CREATE OR REPLACE FUNCTION substrate.select_synth_edges_for_ffn(
+    p_vocab_hashes BYTEA[],
+    p_arena_codes  TEXT[],
+    p_top_n        INT DEFAULT 1536
+)
+RETURNS TABLE(source_hash BYTEA, target_hash BYTEA, mu DOUBLE PRECISION, games INT, score DOUBLE PRECISION)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $$
+    WITH vocab(hash) AS (
+        SELECT unnest(p_vocab_hashes)
+    ),
+    eligible_edges AS (
+        SELECT
+            em_src.entity_hash AS source_hash,
+            em_tgt.entity_hash AS target_hash,
+            em_src.edge_type_id,
+            em_src.edge_hash,
+            ec_src.entity_type_id AS src_type_id,
+            ec_tgt.entity_type_id AS tgt_type_id
+          FROM substrate.edge_member em_src
+          JOIN substrate.edge_member em_tgt
+            ON em_tgt.edge_type_id = em_src.edge_type_id
+           AND em_tgt.edge_hash = em_src.edge_hash
+           AND em_tgt.role_position > em_src.role_position
+          JOIN vocab v_src ON v_src.hash = em_src.entity_hash
+          JOIN vocab v_tgt ON v_tgt.hash = em_tgt.entity_hash
+          JOIN substrate.entity_classification ec_src ON ec_src.entity_hash = em_src.entity_hash
+          JOIN substrate.entity_classification ec_tgt ON ec_tgt.entity_hash = em_tgt.entity_hash
+    ),
+    scored AS (
+        SELECT
+            ee.source_hash,
+            ee.target_hash,
+            es.mu,
+            es.games,
+            -- mu_deviation × log(1+games) × cohort_bridge
+            abs(es.mu - 1500.0) * ln(1 + greatest(es.games, 1))
+              * CASE WHEN ee.src_type_id <> ee.tgt_type_id THEN 1.5 ELSE 1.0 END
+              AS score
+          FROM eligible_edges ee
+          JOIN substrate.edge_significance es
+            ON es.edge_type_id = ee.edge_type_id
+           AND es.edge_hash = ee.edge_hash
+          JOIN substrate.significance_context sc ON sc.id = es.context_type_id
+         WHERE sc.code = ANY(p_arena_codes)
+           AND es.games > 0
+    ),
+    ranked AS (
+        SELECT
+            source_hash, target_hash, mu, games, score,
+            ROW_NUMBER() OVER (ORDER BY score DESC, source_hash, target_hash) AS rk
+          FROM scored
+    )
+    SELECT source_hash, target_hash, mu, games::INT AS games, score
+      FROM ranked
+     WHERE rk <= p_top_n;
+$$;
+
+COMMENT ON FUNCTION substrate.select_synth_edges_for_ffn(BYTEA[], TEXT[], INT) IS
+    'Top-N substrate edges per arena set for FFN-as-substrate-edges construction. Each returned row becomes one FFN intermediate slot: key = E[source], value = E[target]. Cohort-bridge bonus upweights cross-type edges (the substrate''s classification anchors).';
+
+-- ── sql/schema/functions/select_knowledge_subgraph.sql ───────────────────────────────────────
+-- substrate.select_knowledge_subgraph
+--
+-- Knowledge-selection vocab builder for Build-a-bear synthesis. Given a
+-- seed set of entity hashes (e.g. user-supplied concept names resolved
+-- via substrate.text_decompose) and a budget, BFS through substrate.edge_member
+-- weighted by edge significance mu (per-arena-weighted union) to grow a
+-- coherent subgraph of word_form entities the bear will know about.
+--
+-- Architectural intent (rule 35-inference-and-godel + AP-1 open arenas):
+--   Vocab = the bear's brain contents — concepts the user wants it to know.
+--   Domain-specific bears (medical, math, code) fall out trivially by varying
+--   the seed set. Generic bears seed with high-degree function words.
+--   MoE experts fall out per-seed-set (different seed = different expert).
+--
+-- Returns the BFS-discovered subgraph as (entity_hash, edge_count) rows
+-- ordered by discovery order (seeds first, then BFS layer 1, layer 2, ...).
+-- This ordering becomes the model's tokenizer index — vocab[0..N-1].
+--
+-- Parameters:
+--   p_seed_hashes      : Initial concept hashes (substrate.entity rows).
+--   p_arena_weights    : Per-arena weights as (code, weight) pairs.
+--   p_vocab_budget     : Target vocab size; BFS stops when reached.
+--   p_top_k_per_node   : Max neighbors to add per frontier node per iteration.
+--   p_entity_type      : Filter to this entity type (default 'word_form').
+--
+-- Notes:
+--   - Set-based BFS via recursive CTE — single query, no per-node round-trip.
+--   - Edge weight = SUM_over_arenas(es.mu * weight_for_arena).
+--   - Visited set is the result of the recursion; dedup is the WHERE NOT EXISTS guard.
+CREATE OR REPLACE FUNCTION substrate.select_knowledge_subgraph(
+    p_seed_hashes    BYTEA[],
+    p_arena_weights  TEXT[],         -- alternating: arena_code, weight, arena_code, weight, ...
+    p_arena_values   DOUBLE PRECISION[],
+    p_vocab_budget   INT,
+    p_top_k_per_node INT DEFAULT 32,
+    p_entity_type    TEXT DEFAULT 'word_form'
+)
+RETURNS TABLE (
+    entity_hash      BYTEA,
+    discovery_round  INT,
+    edge_count       BIGINT
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_entity_type_id INT;
+    v_round          INT := 0;
+    v_added          INT;
+BEGIN
+    SELECT id INTO STRICT v_entity_type_id
+      FROM substrate.entity_type WHERE code = p_entity_type;
+
+    -- Initialize visited set with seeds (round 0).
+    CREATE TEMP TABLE visited (
+        entity_hash     BYTEA PRIMARY KEY,
+        discovery_round INT NOT NULL,
+        edge_count      BIGINT NOT NULL DEFAULT 0
+    ) ON COMMIT DROP;
+
+    INSERT INTO visited (entity_hash, discovery_round, edge_count)
+    SELECT DISTINCT s.h, 0, 0
+      FROM unnest(p_seed_hashes) AS s(h)
+     WHERE EXISTS (
+         SELECT 1 FROM substrate.entity_classification ec
+          WHERE ec.entity_hash = s.h AND ec.entity_type_id = v_entity_type_id
+     );
+
+    -- Arena weight lookup table (small, in-memory).
+    CREATE TEMP TABLE arena_weight (
+        context_type_id INT PRIMARY KEY,
+        weight          DOUBLE PRECISION NOT NULL
+    ) ON COMMIT DROP;
+
+    INSERT INTO arena_weight (context_type_id, weight)
+    SELECT sc.id, COALESCE(w.weight, 1.0)
+      FROM substrate.significance_context sc
+      LEFT JOIN unnest(p_arena_weights, p_arena_values) AS w(arena, weight)
+        ON w.arena = sc.code;
+
+    -- BFS rounds. Each round picks top-K neighbors per current-frontier node
+    -- by weighted edge mu, adds them to visited, repeats until budget filled.
+    WHILE (SELECT count(*) FROM visited) < p_vocab_budget LOOP
+        v_round := v_round + 1;
+
+        WITH frontier AS (
+            SELECT v.entity_hash AS hash
+              FROM visited v
+             WHERE v.discovery_round = v_round - 1
+        ),
+        -- Find edges where one endpoint is in the frontier.
+        candidate_edges AS (
+            SELECT em_self.edge_type_id, em_self.edge_hash, em_self.entity_hash AS self_h
+              FROM frontier f
+              JOIN substrate.edge_member em_self ON em_self.entity_hash = f.hash
+        ),
+        -- For each candidate edge, the OTHER participant is a vocab candidate.
+        candidate_neighbors AS (
+            SELECT em_other.entity_hash AS neighbor,
+                   ce.edge_type_id,
+                   ce.edge_hash
+              FROM candidate_edges ce
+              JOIN substrate.edge_member em_other
+                ON em_other.edge_type_id = ce.edge_type_id
+               AND em_other.edge_hash    = ce.edge_hash
+               AND em_other.entity_hash != ce.self_h
+        ),
+        -- Score each neighbor by sum of weighted edge mu across arenas.
+        scored AS (
+            SELECT cn.neighbor,
+                   sum(es.mu * aw.weight) AS score,
+                   count(*) AS edge_count
+              FROM candidate_neighbors cn
+              JOIN substrate.edge_significance es
+                ON es.edge_type_id = cn.edge_type_id
+               AND es.edge_hash    = cn.edge_hash
+              JOIN arena_weight aw ON aw.context_type_id = es.context_type_id
+              JOIN substrate.entity_classification ec
+                ON ec.entity_hash    = cn.neighbor
+               AND ec.entity_type_id = v_entity_type_id
+             WHERE NOT EXISTS (SELECT 1 FROM visited v WHERE v.entity_hash = cn.neighbor)
+             GROUP BY cn.neighbor
+        ),
+        ranked AS (
+            SELECT neighbor, score, edge_count,
+                   ROW_NUMBER() OVER (ORDER BY score DESC, neighbor) AS rk
+              FROM scored
+        )
+        INSERT INTO visited (entity_hash, discovery_round, edge_count)
+        SELECT neighbor, v_round, edge_count
+          FROM ranked
+         WHERE rk <= LEAST(p_top_k_per_node, p_vocab_budget - (SELECT count(*)::INT FROM visited));
+
+        GET DIAGNOSTICS v_added = ROW_COUNT;
+        IF v_added = 0 THEN EXIT; END IF;  -- frontier exhausted
+        IF v_round >= 32 THEN EXIT; END IF;  -- max-depth safety
+    END LOOP;
+
+    RETURN QUERY
+    SELECT v.entity_hash, v.discovery_round, v.edge_count
+      FROM visited v
+     ORDER BY v.discovery_round, v.edge_count DESC, v.entity_hash;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.select_knowledge_subgraph(BYTEA[], TEXT[], DOUBLE PRECISION[], INT, INT, TEXT) IS
+    'Build-a-bear knowledge selection: BFS-expand a seed concept set through edge_member by arena-weighted edge mu. Vocab IS the bear''s brain contents. Domain-specific bears via seed-set variation; MoE experts per-seed-set.';
+
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- The substrate.entity centroid + hilbert_index columns are populated at
+-- INSERT time by the C# producer (native text decomposer emits centroids in
+-- record.CentroidX/Y/Z/M; SubstrateTextDecomposer.OnRecord computes
+-- 4D Hilbert via TextDecomposeNative.HilbertIndex; AddEntity 7-arg overload
+-- threads them through IngestionBatch → StreamingIngestionPipeline →
+-- entity.copy.sql column list). No trigger, no backfill — same Merkle
+-- invariant (deterministic from hash) produces same centroid on first write.
+
+-- ── sql/schema/functions/entity_tier_hint.sql ───────────────────────────────────────
+-- substrate.entity_tier_hint — derive an approximate Merkle DAG depth from
+-- the entity's stored 4D centroid radius. Atoms (codepoints) project to the
+-- unit 4-sphere (glome) — Super-Fibonacci by UCA collation rank produces
+-- ||p||₄d = 1 ± float noise. Compositions are arithmetic means of children's
+-- centroids, so by Jensen + sphere convexity, compositions land STRICTLY
+-- INSIDE the unit 4-ball. Mean of N points on the glome has expected norm
+-- ~1/√N — the more constituents, the closer to origin.
+--
+-- The tier hint is `1 - radius`: atoms ≈ 0, deep documents ≈ 1.
+-- Use for substrate-native "give me high-tier entities near angular X" queries
+-- without joining substrate.entity_classification.
+--
+-- Returns NULL if the entity has no stored centroid yet (e.g., pre-trigger
+-- inserts, or after backfill skipped the entity due to no identity physicality).
+CREATE OR REPLACE FUNCTION substrate.entity_tier_hint(p_hash substrate.hash_value)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT CASE
+             WHEN e.centroid_x IS NULL THEN NULL
+             ELSE 1.0 - sqrt(
+                 e.centroid_x * e.centroid_x +
+                 e.centroid_y * e.centroid_y +
+                 e.centroid_z * e.centroid_z +
+                 e.centroid_m * e.centroid_m)
+           END
+      FROM substrate.entity e
+     WHERE e.hash = p_hash;
+$$;
+
+COMMENT ON FUNCTION substrate.entity_tier_hint(substrate.hash_value) IS
+    'Approximate Merkle DAG depth derived from 4D centroid radius. Atoms (codepoints on the glome) → 0; deep compositions (documents near origin) → 1. Substrate-native tier query without joining entity_classification — the substrate''s hierarchical structure is realized geometrically via Super-Fibonacci S³ projection + arithmetic-mean centroid recursion. Bulk variant: substrate.entity_tier_hints(hash[]).';
+
+-- ── sql/schema/functions/entity_tier_hints.sql ───────────────────────────────────────
+-- substrate.entity_tier_hints — bulk variant of substrate.entity_tier_hint.
+-- Returns one row per hash with a stored centroid; NULL-centroid entities
+-- (pre-trigger insert, no identity physicality yet) are omitted from result.
+CREATE OR REPLACE FUNCTION substrate.entity_tier_hints(p_hashes substrate.hash_value[])
+RETURNS TABLE (entity_hash substrate.hash_value, tier_hint DOUBLE PRECISION)
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT e.hash,
+           1.0 - sqrt(
+               e.centroid_x * e.centroid_x +
+               e.centroid_y * e.centroid_y +
+               e.centroid_z * e.centroid_z +
+               e.centroid_m * e.centroid_m)
+      FROM substrate.entity e
+      JOIN unnest(p_hashes) AS u(h) ON u.h = e.hash
+     WHERE e.centroid_x IS NOT NULL;
+$$;
+
+COMMENT ON FUNCTION substrate.entity_tier_hints(substrate.hash_value[]) IS
+    'Bulk variant of substrate.entity_tier_hint. NULL-centroid entities (pre-trigger insert, no identity physicality) are omitted from result rows.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 

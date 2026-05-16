@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Analysis;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Engine;
@@ -93,7 +94,15 @@ public sealed class InterfaceShapeTests
     public void IIngestionBatch_HasAllMutators()
     {
         Type t = typeof(IIngestionBatch);
-        Assert.Equal(typeof(EntityHandle), Method(t, "AddEntity").ReturnType);
+        // Two AddEntity overloads: legacy 2-arg (hash, type) and 7-arg
+        // (hash, type, centroidX/Y/Z/M, hilbertIndex) for producer-side
+        // pre-computed centroid + Hilbert. Both return EntityHandle.
+        Assert.Equal(typeof(EntityHandle), Method(t, "AddEntity",
+            typeof(Hash32), typeof(string)).ReturnType);
+        Assert.Equal(typeof(EntityHandle), Method(t, "AddEntity",
+            typeof(Hash32), typeof(string),
+            typeof(double), typeof(double), typeof(double), typeof(double),
+            typeof(long?)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddEdge", typeof(string), typeof(string), typeof(ReadOnlySpan<EdgeMemberSpec>)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddEdge", typeof(string), typeof(string), typeof(ReadOnlySpan<EdgeMemberSpec>), typeof(ReadOnlySpan<EdgeSignificanceSpec>)).ReturnType);
         Assert.Equal(typeof(void), Method(t, "AddJunction").ReturnType);

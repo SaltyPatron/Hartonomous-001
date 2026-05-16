@@ -31,11 +31,24 @@
 -- live in the Phase 13 functions block. The two encodings are byte-for-byte
 -- equivalent: any change to bb_hash_lo / bb_hash_hi must mirror here.
 --
--- entity carries NO geometry column. The substrate's 4D realization for an
--- entity lives in substrate.physicality, partitioned by physicality_type_id
--- (s3_position for codepoint atoms, contour for compositions, etc.). The
--- prior Bite-A centroid_4d column on this table bypassed the partitioned
--- physicality store and is removed.
+-- entity carries the entity's own 4D centroid + Hilbert index as denormalized
+-- columns. This is a deterministic projection of the entity's physicality —
+-- atom POINTZM coords for codepoint atoms; mean-of-children-centroids for
+-- compositions (entity_shape / ingestion_trajectory partitions). Same content
+-- → same hash → same children → same centroid (Merkle invariant). The columns
+-- are maintained by a trigger on substrate.physicality AFTER INSERT/UPDATE
+-- (see substrate.update_entity_centroid_from_physicality). The embedding_firefly
+-- partition is excluded — fireflies are per-model decorations, not the entity's
+-- own identity-bearing centroid.
+--
+-- Why on the entity row: the centroid is referenced everywhere a parent walks
+-- its child manifest (composition LINESTRINGZM vertices are children's
+-- centroids). Joining substrate.physicality on every parent-walk would be a
+-- hot-path table lookup per vertex; storing on entity makes it O(1).
+--
+-- The substrate's 4D realization itself still lives in substrate.physicality,
+-- partitioned by physicality_type_id. These columns are denormalization for
+-- read speed, NOT a replacement for the physicality store.
 CREATE TABLE substrate.entity (
     hash substrate.hash_value PRIMARY KEY,
     hash_bits_0_51 BIGINT GENERATED ALWAYS AS (
@@ -55,7 +68,12 @@ CREATE TABLE substrate.entity (
         | (get_byte(hash, 10)::BIGINT << 28)
         | (get_byte(hash, 11)::BIGINT << 36)
         | (get_byte(hash, 12)::BIGINT << 44)
-    ) STORED
+    ) STORED,
+    centroid_x     DOUBLE PRECISION,
+    centroid_y     DOUBLE PRECISION,
+    centroid_z     DOUBLE PRECISION,
+    centroid_m     DOUBLE PRECISION,
+    hilbert_index  BIGINT
 );
 
 COMMENT ON TABLE substrate.entity IS

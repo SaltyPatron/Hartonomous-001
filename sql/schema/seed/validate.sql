@@ -12,13 +12,13 @@ BEGIN
             ('substrate.entity_type',           23),
             ('substrate.physicality_type',      16),
             ('substrate.edge_role',              7),
-            ('substrate.significance_context',  10),
+            ('substrate.significance_context',  11),
             ('substrate.provenance',            11),
             ('substrate.bidi_class',            23),
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            120),
+            ('substrate.edge_type',            121),
             ('substrate.attestation_type',       3)
         ) AS t(table_name, expected)
     LOOP

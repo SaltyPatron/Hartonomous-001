@@ -30,17 +30,7 @@ namespace Hartonomous.Recomposers.Synthesizers;
 /// in vocab (role_position 0 + 1 self-join on substrate.edge_member),
 /// JOIN substrate.edge_significance per arena.
 /// </summary>
-public sealed class SubstrateAdjacency
-{
-    public required int N { get; init; }
-    public required long Nnz { get; init; }
-    public required long[] RowPtr { get; init; }
-    public required long[] ColIdx { get; init; }
-    public required double[] Values { get; init; }
-    public required double[] RowL1 { get; init; }
-    public required long NonIsolatedNodes { get; init; }
-}
-
+// SubstrateAdjacency class lives in SubstrateAdjacency.cs (one-type-per-file).
 public static class SubstrateAdjacencyBuilder
 {
     public static async Task<SubstrateAdjacency> BuildAsync(

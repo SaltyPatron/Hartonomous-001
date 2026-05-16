@@ -188,5 +188,65 @@ public static partial class TextDecomposeNative
         IntPtr outRootHash,
         out int outRootKind,
         IntPtr outRootCentroid);
+
+    /// <summary>
+    /// Lightweight UAX-29 codepoint count for a UTF-8 buffer. NFC-normalized
+    /// internally. Returns 0 on success; -1 null arg; -2 UCD not loaded.
+    /// </summary>
+    [DllImport(Library, EntryPoint = "hartonomous_text_codepoint_count",
+        CallingConvention = CallingConvention.Cdecl)]
+    public static extern int CodepointCount(
+        IntPtr utf8,
+        nuint  utf8Len,
+        out int outCount);
+
+    /// <summary>
+    /// UAX-29 grapheme cluster boundaries. <c>outIndices</c> is a caller-owned
+    /// int32 buffer; the function writes up to <c>outCapacity</c> entries and
+    /// always sets <c>outCount</c> to the actual boundary count (re-call with a
+    /// larger buffer if outCount &gt; outCapacity). Returns 0 on success; -1
+    /// null arg; -2 UCD not loaded; -9 allocation failure.
+    /// </summary>
+    [DllImport(Library, EntryPoint = "hartonomous_text_grapheme_boundaries",
+        CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GraphemeBoundaries(
+        IntPtr utf8,
+        nuint  utf8Len,
+        IntPtr outIndices,
+        int    outCapacity,
+        out int outCount);
+
+    /// <summary>
+    /// UAX-29 word boundaries. Convention identical to <see cref="GraphemeBoundaries"/>.
+    /// </summary>
+    [DllImport(Library, EntryPoint = "hartonomous_text_word_boundaries",
+        CallingConvention = CallingConvention.Cdecl)]
+    public static extern int WordBoundaries(
+        IntPtr utf8,
+        nuint  utf8Len,
+        IntPtr outIndices,
+        int    outCapacity,
+        out int outCount);
+
+    /// <summary>
+    /// UAX-29 sentence boundaries. Currently STUBBED in native (returns -3);
+    /// C# fallback handles the algorithm pending native implementation.
+    /// </summary>
+    [DllImport(Library, EntryPoint = "hartonomous_text_sentence_boundaries",
+        CallingConvention = CallingConvention.Cdecl)]
+    public static extern int SentenceBoundaries(
+        IntPtr utf8,
+        nuint  utf8Len,
+        IntPtr outIndices,
+        int    outCapacity,
+        out int outCount);
+
+    /// <summary>
+    /// 4D Hilbert curve index for a point (x, y, z, m). order = bit depth per
+    /// axis; 16 → BIGINT-safe 64-bit index. Deterministic function of input.
+    /// </summary>
+    [DllImport("hartonomous", EntryPoint = "hartonomous_hilbert_index",
+        CallingConvention = CallingConvention.Cdecl)]
+    public static extern ulong HilbertIndex(IntPtr point4d, int order);
 #pragma warning restore CA1401
 }

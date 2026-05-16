@@ -192,7 +192,12 @@ FROM (VALUES
     ('unihan_variant',           'unicode',       'codepoint',          'codepoint'),           -- 109
     ('unihan_reading',           'unicode',       'codepoint',          'text_composition'),    -- 110
     ('unihan_source',            'unicode',       'codepoint',          'text_composition'),    -- 111
-    ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition')     -- 112
+    ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition'),    -- 112
+    -- Sequence-following bigram (Build-a-bear next-token prior). Populated
+    -- by substrate.populate_sequence_following_edges from content trajectory
+    -- ordinals. Source role = preceding token; target role = following token.
+    -- Weighted by ln(1+freq) in sequence_following arena.
+    ('often_follows',            'sequence',      'word_form',          'word_form')            -- 113
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;

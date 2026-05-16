@@ -58,6 +58,17 @@ internal abstract class BaseReferenceTableWriter
     public Task<Dictionary<string, int>> LoadLanguageCodeMapAsync(CancellationToken ct) =>
         LoadCodeMapAsync("substrate.language", 8000, ct);
 
+    /// <summary>
+    /// Loads every ISO 639 form (code = 639-3, part1 = 639-1, part2b = 639-2/B,
+    /// part2t = 639-2/T) as a single alias → canonical-id Dictionary. Consumed
+    /// by <see cref="Hartonomous.Decomposers.LanguageFilterResolver"/> to build
+    /// a BCP47 + ISO-form-aware allow-set. ~16k entries (~2k languages × ~4 forms
+    /// per row when all four are populated, but most rows only have code +
+    /// part2t so the average is ~2 entries/row).
+    /// </summary>
+    public Task<Dictionary<string, int>> LoadLanguageAliasMapAsync(CancellationToken ct) =>
+        _reader.LoadLanguageAliasMapAsync(ct);
+
     public Task<Dictionary<string, int>> LoadPosMapAsync(CancellationToken ct) =>
         LoadCodeMapAsync("substrate.pos", 24, ct);
 

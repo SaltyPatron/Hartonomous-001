@@ -425,7 +425,14 @@ public abstract partial class BaseDecomposer : IDecomposer
         foreach (Rune rune in surfaceForm.EnumerateRunes())
         {
             Hash32 cpHash = HashCodepoint(rune.Value);
-            EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
+            // Codepoint centroid is deterministic: Super-Fibonacci S³ projection
+            // by UCA collation rank, baked into the UCD blob (huc_cp_centroid).
+            // Pass through the 7-arg AddEntity overload so substrate.entity gets
+            // centroid + Hilbert on first write — no trigger, no backfill.
+            (double cx, double cy, double cz, double cm) =
+                Hartonomous.Core.Compute.Common.PhysicalityEmitter.CodepointS3Position(rune.Value);
+            long? hilbert = Hartonomous.Core.Text.SubstrateTextDecomposer.ComputeHilbertIndex(cx, cy, cz, cm);
+            EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint", cx, cy, cz, cm, hilbert);
             position++;
         }
     }
@@ -731,15 +738,55 @@ public abstract partial class BaseDecomposer : IDecomposer
     }
 
     /// <summary>
-    /// Per-decomposer ISO 639-3 allowlist resolved from <see cref="DecomposerConfig.LanguageFilter"/>.
+    /// Optional ISO-639/BCP47-aware resolver. When set, <see cref="LanguageAllowed"/>
+    /// delegates to it for canonical-id-based filtering across all ISO forms
+    /// (639-1 / 639-2/B / 639-2/T / 639-3) AND BCP47 dialect prefixes
+    /// (e.g. "en" filter matches "en-US" code; "zh" filter expands to known
+    /// macrolanguage members "cmn" / "yue" / "wuu" / ...).
+    ///
+    /// Decomposers that want this behavior call
+    /// <see cref="UseLanguageResolver"/> in their startup before any
+    /// <see cref="LanguageAllowed"/> calls (typically inside
+    /// <c>DecomposeCoreAsync</c> right after loading reference data).
+    /// Decomposers that do NOT call this method keep the simple
+    /// case-insensitive equality fallback for backward compatibility.
+    /// </summary>
+    private Func<string?, bool>? _languageAllowedOverride;
+
+    /// <summary>
+    /// Inject an ISO-639/BCP47-aware language allow-predicate built from a
+    /// resolver (typically <c>Hartonomous.Decomposers.LanguageFilterResolver</c>).
+    /// Subsequent <see cref="LanguageAllowed"/> calls delegate to the predicate
+    /// instead of the simple equality fallback. Must be called once at startup;
+    /// not thread-safe with concurrent emit traffic.
+    /// </summary>
+    protected void UseLanguageResolver(Func<string?, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        _languageAllowedOverride = predicate;
+    }
+
+    /// <summary>
+    /// Per-decomposer ISO 639 allowlist resolved from <see cref="DecomposerConfig.LanguageFilter"/>.
     /// Returns true when <paramref name="languageCode"/> is in the filter, or when no filter is set
     /// (<c>null</c> = unfiltered). Multi-language seed sources (UD, OMW, Wiktionary, Tatoeba) call
     /// this at the source boundary (per-row, per-file, per-treebank, per-JSONL-entry) to bound
     /// ingestion volume per tier — T0 = English only, T1 = next batch, etc. Outbound cross-lingual
     /// edges whose target language is not allowed are dropped to avoid phantom hash-only entities.
+    ///
+    /// If <see cref="UseLanguageResolver"/> was called this delegates to the
+    /// injected predicate (canonical-id-based, BCP47 + ISO 639 form aware).
+    /// Otherwise falls back to case-insensitive exact equality against the
+    /// configured filter strings.
     /// </summary>
     protected bool LanguageAllowed(string? languageCode)
     {
+        Func<string?, bool>? predicate = _languageAllowedOverride;
+        if (predicate is not null)
+        {
+            return predicate(languageCode);
+        }
+
         if (_config.LanguageFilter is null)
         {
             return true;

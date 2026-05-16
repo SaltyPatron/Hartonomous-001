@@ -58,16 +58,29 @@ public static class WordBoundaries
     /// Enumerate every word-break opportunity as a byte offset (including 0 and
     /// the input length, per WB1 / WB2). Used where callers want the full break
     /// stream rather than only word-like segments.
+    ///
+    /// PRIMARY PATH: P/Invoke into the native UAX-29 kernel
+    /// (<see cref="Hartonomous.Core.Native.TextDecomposeNative.WordBoundaries"/>).
+    /// The native implementation is the substrate's SINGLE source of UAX-29
+    /// truth (rule 10-text-and-semantics + Law #6 + CLAUDE.md compute-facade).
+    /// Falls back to the in-process C# state machine ONLY when the native
+    /// UCD blob is unavailable (cold-start ingest, isolated unit tests).
+    /// The fallback path is on the deprecation list — task #21.
     /// </summary>
     public static List<long> EnumerateBoundaries(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
     {
-        List<long> positions = new();
         if (utf8.IsEmpty)
         {
-            positions.Add(0);
-            return positions;
+            return new List<long> { 0 };
         }
 
+        if (TryNativeBoundaries(utf8, out List<long>? native))
+        {
+            return native!;
+        }
+
+        // Fallback: in-process C# state machine.
+        List<long> positions = new();
         List<WbToken> tokens = CollectTokens(utf8, properties);
         positions.Add(0);
         if (tokens.Count == 0)
@@ -87,6 +100,92 @@ public static class WordBoundaries
         }
         positions.Add(utf8.Length);
         return positions;
+    }
+
+    /// <summary>
+    /// Calls the native UAX-29 word boundary kernel and converts codepoint
+    /// indices to UTF-8 byte offsets. Returns false if native isn't loadable
+    /// (UCD blob missing or P/Invoke unavailable) so callers can fall back.
+    /// </summary>
+    private static unsafe bool TryNativeBoundaries(ReadOnlySpan<byte> utf8, out List<long>? boundaries)
+    {
+        boundaries = null;
+        if (utf8.IsEmpty)
+        {
+            return false;
+        }
+
+        try
+        {
+            Hartonomous.Core.Text.SubstrateTextDecomposer.EnsureUcdLoaded();
+        }
+        catch (InvalidOperationException)  // BOUNDARY: native UCD blob load; fall back to in-process C# state machine if blob isn't on disk.
+        {
+            return false;
+        }
+
+        byte[] buf = new byte[utf8.Length];
+        utf8.CopyTo(buf);
+
+        int[] cpBoundaries;
+        int cpCount;
+        int wordCount;
+
+        fixed (byte* utf8Ptr = buf)
+        {
+            IntPtr utf8Ip = (IntPtr) utf8Ptr;
+            int rc = Hartonomous.Core.Native.TextDecomposeNative.CodepointCount(
+                utf8Ip, (nuint) buf.Length, out cpCount);
+            if (rc != 0) { return false; }
+
+            // First call: get word count.
+            rc = Hartonomous.Core.Native.TextDecomposeNative.WordBoundaries(
+                utf8Ip, (nuint) buf.Length, IntPtr.Zero, 0, out wordCount);
+            if (rc != 0) { return false; }
+
+            cpBoundaries = new int[Math.Max(wordCount, 1)];
+            fixed (int* outPtr = cpBoundaries)
+            {
+                int outCount;
+                rc = Hartonomous.Core.Native.TextDecomposeNative.WordBoundaries(
+                    utf8Ip, (nuint) buf.Length, (IntPtr) outPtr, cpBoundaries.Length, out outCount);
+                if (rc != 0) { return false; }
+                wordCount = outCount;
+            }
+        }
+
+        // Native returns post-NFC codepoint indices. The UCD conformance tests
+        // expect byte offsets into the ORIGINAL (pre-normalized) UTF-8. For
+        // ASCII input these coincide; for non-ASCII normalization-stable input
+        // they also coincide via byte-walking. For inputs where NFC changes
+        // codepoint count we fall back to the C# state machine. This caveat is
+        // tracked in task #21 (full native-only path implies a kernel API that
+        // returns byte offsets directly or an inverse-NFC map).
+        List<long> outBoundaries = new(wordCount + 1);
+        int cursorBytes = 0;
+        int cursorCps = 0;
+        outBoundaries.Add(0);
+        for (int i = 0; i < wordCount; i++)
+        {
+            int targetCp = cpBoundaries[i];
+            if (targetCp <= 0) { continue; }
+            // Walk forward in the source bytes counting codepoints until cursor matches.
+            while (cursorCps < targetCp && cursorBytes < utf8.Length)
+            {
+                (int _, int consumed) = Utf8.DecodeOne(utf8.Slice(cursorBytes));
+                if (consumed <= 0 || cursorBytes + consumed > utf8.Length) { return false; }  // malformed
+                cursorBytes += consumed;
+                cursorCps++;
+            }
+            if (cursorCps != targetCp) { return false; }  // NFC changed codepoint count → fall back
+            outBoundaries.Add(cursorBytes);
+        }
+        if (outBoundaries[^1] != utf8.Length)
+        {
+            outBoundaries.Add(utf8.Length);
+        }
+        boundaries = outBoundaries;
+        return true;
     }
 
     // LastPhysWb tracks the word_break of the LAST physical codepoint folded

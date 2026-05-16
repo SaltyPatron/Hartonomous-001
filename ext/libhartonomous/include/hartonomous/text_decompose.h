@@ -127,6 +127,54 @@ HARTONOMOUS_API int hartonomous_text_decompose(
     double out_root_centroid[4]
 );
 
+/* ── Boundary extraction (lightweight, no record emission) ─────
+ *
+ * Run UAX-29 / UAX-14 segmentation on UTF-8 input. Return per-segment
+ * START codepoint indices in `out_indices`. Final index `count` is the
+ * codepoint count (one past the last segment start) — same convention as
+ * the UCD test files.
+ *
+ * Caller-owned buffer; size required ≤ codepoint_count + 1. Pass
+ * `out_capacity` to bound writes; the function returns the *required*
+ * count even if the buffer is too small (callers can retry with a larger
+ * buffer). Returns 0 on success, -1 on null arg, -2 on UCD not loaded.
+ *
+ * These functions are the substrate's SINGLE source of UAX-29 segmentation
+ * truth. Per Law #6 / compute-facade rule, C# callers must P/Invoke into
+ * these rather than reimplementing the state machine. */
+
+HARTONOMOUS_API int hartonomous_text_grapheme_boundaries(
+    const uint8_t* utf8,
+    size_t utf8_len,
+    int32_t* out_indices,
+    int out_capacity,
+    int* out_count
+);
+
+HARTONOMOUS_API int hartonomous_text_word_boundaries(
+    const uint8_t* utf8,
+    size_t utf8_len,
+    int32_t* out_indices,
+    int out_capacity,
+    int* out_count
+);
+
+HARTONOMOUS_API int hartonomous_text_sentence_boundaries(
+    const uint8_t* utf8,
+    size_t utf8_len,
+    int32_t* out_indices,
+    int out_capacity,
+    int* out_count
+);
+
+/* Codepoint count for a UTF-8 buffer (NFC-normalized internally). Useful
+ * for sizing boundary buffers. Returns -1 on null arg, -2 on UCD not loaded. */
+HARTONOMOUS_API int hartonomous_text_codepoint_count(
+    const uint8_t* utf8,
+    size_t utf8_len,
+    int* out_count
+);
+
 #ifdef __cplusplus
 }
 #endif

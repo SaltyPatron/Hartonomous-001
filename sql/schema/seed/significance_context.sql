@@ -11,4 +11,8 @@ INSERT INTO substrate.significance_context (code) VALUES
     ('corroboration_strength'),
     ('frequency_significance'),
     ('attention_pattern_confidence'),
-    ('morphological_productivity');
+    ('morphological_productivity'),
+    -- Bigram next-token prior arena. Populated by
+    -- substrate.populate_sequence_following_edges from content trajectory
+    -- ordinals. Source of generative coherence at inference time.
+    ('sequence_following');

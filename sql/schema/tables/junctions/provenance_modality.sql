@@ -8,8 +8,8 @@ CREATE TABLE substrate.provenance_modality (
     PRIMARY KEY (provenance_id, modality_code)
 );
 
-CREATE INDEX provenance_modality_modality_idx
-    ON substrate.provenance_modality (modality_code);
+-- Reverse-lookup index lives in sql/schema/indexes/provenance_modality_modality_idx.sql
+-- per "one primary CREATE object per file" discipline.
 
 COMMENT ON TABLE substrate.provenance_modality IS
     'Junction table: which modalities a provenance source is authoritative in. Replaces the prior modality_codes array column on substrate.provenance — proper relational shape (atomic columns, composite PK, FK to substrate.provenance(id), bidirectional indexes). Empty join = source authoritative for none / text default.';

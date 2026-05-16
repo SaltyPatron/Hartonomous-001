@@ -165,13 +165,28 @@ public static class AttentionSynthesizer
         }
 
         // W_O reconstructs the hidden vector from concatenated head outputs.
-        // For an eigenmap embedding-derived QKV, the natural choice is the
-        // transpose of the stacked W_V matrix scaled to unit-Frobenius — but
-        // pragmatically we initialize W_O to identity scaled by 1/numHeads
-        // (each head contributes a scaled copy of input back to residual).
-        for (int i = 0; i < hiddenDim; i++)
+        // For an eigenmap-derived attention, W_V[h] projects hidden → head_dim
+        // along the Ritz basis. The natural inverse is W_V transposed: each
+        // head's output contribution to hidden position i is W_V[h, i, d] —
+        // mapped into W_O via W_O[i, h*head_dim+d] = W_V[h, d, i].
+        //
+        // This makes W_O share the same substrate-derived sparsity as Q/K/V
+        // (~18% density at typical Ritz pair counts), versus the previous
+        // diagonal-identity init that produced 0.26% density and effectively
+        // zeroed attention output. Fixes the W_O dead-weight bug observed in
+        // /tmp/test-substrate-v5 (encoder.layer.*.attention.output.dense.weight
+        // had density=0.0026 / mean|·|=0.0002 — output was structurally muted).
+        for (int h = 0; h < numHeads; h++)
         {
-            wo[(long)i * hiddenDim + i] = (float)(1.0 / numHeads);
+            for (int d = 0; d < headDim; d++)
+            {
+                long vRowBase = ((long)h * headDim + d) * hiddenDim;
+                for (int i = 0; i < hiddenDim; i++)
+                {
+                    // W_V[h] row (h*head_dim + d) value at hidden col i → W_O[i, h*head_dim+d]
+                    wo[(long)i * hiddenDim + h * headDim + d] = wv[vRowBase + i];
+                }
+            }
         }
 
         return new AttentionMatrices
@@ -188,17 +203,4 @@ public static class AttentionSynthesizer
         };
     }
 
-}
-
-public sealed class AttentionMatrices
-{
-    public required int HiddenDim { get; init; }
-    public required int NumHeads { get; init; }
-    public required int HeadDim { get; init; }
-    public required float[] Wq { get; init; }   // [numHeads × headDim, hiddenDim] row-major
-    public required float[] Wk { get; init; }   // [numHeads × headDim, hiddenDim]
-    public required float[] Wv { get; init; }   // [numHeads × headDim, hiddenDim]
-    public required float[] Wo { get; init; }   // [hiddenDim, hiddenDim]
-    public required bool DerivedFromSubstrate { get; init; }
-    public required int RitzPairsUsed { get; init; }
 }

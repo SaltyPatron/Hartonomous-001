@@ -16,4 +16,9 @@ namespace Hartonomous.Core.Ingestion;
 public sealed record EntityRecord(
     string EntityTypeCode,
     Hash32 Hash,
-    string ProvenanceCode) : IngestionRecord;
+    string ProvenanceCode,
+    double CentroidX = double.NaN,
+    double CentroidY = double.NaN,
+    double CentroidZ = double.NaN,
+    double CentroidM = double.NaN,
+    long? HilbertIndex = null) : IngestionRecord;

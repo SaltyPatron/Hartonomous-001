@@ -96,5 +96,159 @@
     "text_contains": "SentenceBoundaries.Enumerate",
     "classification": "allowed-prompt-planning-only",
     "reason": "SubQuestionDecomposer uses sentence boundaries only to split an interactive prompt into planning units; substrate text identity and persistence remain owned by native text decomposition."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Substrate/SubstrateTierWalker.cs",
+    "text_contains": "for (int depth = 1; depth <= maxDepth",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "SubstrateTierWalker descends a composition's child manifest one tier at a time up to maxDepth (caller-supplied bound). Per-tier SPI bulk-fetch via substrate.get_composition_children; not RBAR."
+  },
+  {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Substrate/SubstrateTierWalker.cs",
+    "text_contains": "foreach (EntityHandle parent in currentTier",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "Per-tier parent enumeration drives the bounded child-manifest fetch; the loop terminates when the tier is empty."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Engine/Substrate/SubstrateTierWalker.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Both NpgsqlCommand instantiations in SubstrateTierWalker call named substrate-side SRFs (substrate.get_composition_children and substrate.recompose_text). The inline string IS the function-call boundary, not constructed user SQL; parameters are bound via NpgsqlParameter."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Substrate/SubstrateTierWalker.cs",
+    "text_contains": "SELECT child_hash FROM substrate.get_composition_children",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls a named substrate function; the inline string IS the function-call boundary, not constructed SQL."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Substrate/SubstrateTierWalker.cs",
+    "text_contains": "SELECT substrate.recompose_text",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls a named substrate function; the inline string IS the function-call boundary, not constructed SQL."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/SubstrateAdjacencyBuilder.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(Sql, conn)",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Build-a-bear synthesis emits per-recipe dynamic queries (variable arena set, variable vocab bytea[]); the query is a single bulk SELECT, parameterized via NpgsqlParameter for both bytea[] and text[]. No RBAR, no user-string concatenation."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/VocabSelector.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(SelectVocabSql, conn)",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Vocab selection is a single bulk SELECT with a parameterized LIMIT; parameter is integer, no string interpolation. Synth-time query, not ingestion-pipeline RBAR."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/VocabSelector.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(LoadCentroidsSql, conn)",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Centroid lookup is a single bulk SELECT against a parameterized bytea[] hash set; substrate.physicality query bound to the resolved vocab."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/geometry4d_to_geometryzm.sql",
+    "text_contains": "FOR i IN 1..n LOOP",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "Per-vertex unpack of a native LINESTRING4D into a PostGIS LINESTRINGZM; n is the input geometry's vertex count, bounded by the input. No row IO, no recursion."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/geometry4d_to_geometryzm.sql",
+    "text_contains": "END LOOP;",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "Termination of the per-vertex unpack loop; same justification as the FOR opener."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/FfnEdgeSlotSynthesizer.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Build-a-bear FFN-as-edges synth calls substrate.select_synth_edges_for_ffn with parameterized vocab/arena set; single bulk SELECT, named substrate function, no string interpolation."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/KnowledgeSelector.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Knowledge-selection BFS calls substrate.select_knowledge_subgraph with parameterized seed hashes + arena weights; single bulk SELECT, named substrate function, no string interpolation."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/LayerNormSynthesizer.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Build-a-bear LayerNorm γ/β derivation calls substrate.per_arena_entity_significance_stats with parameterized arena codes; single bulk SELECT against a named substrate function."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/PositionEmbeddingSynthesizer.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Position embedding synthesis reads substrate.position_embedding_aggregate by ordinal range; single bulk SELECT, no string interpolation."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/TokenizerExporter.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Tokenizer surface resolution calls substrate.recompose_text_bulk with parameterized vocab hash array; single bulk SELECT, named substrate function."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/FfnEdgeSlotSynthesizer.cs",
+    "text_contains": "\"SELECT source_hash, target_hash, mu, games, score \"",
+    "classification": "allowed-substrate-boundary",
+    "reason": "SELECT-from-substrate-function call site; the inline string IS the function-call boundary, not constructed SQL. Parameterized."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/KnowledgeSelector.cs",
+    "text_contains": "\"SELECT entity_hash, discovery_round, edge_count \"",
+    "classification": "allowed-substrate-boundary",
+    "reason": "SELECT-from-substrate-function call site (substrate.select_knowledge_subgraph). The inline string IS the function-call boundary."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/LayerNormSynthesizer.cs",
+    "text_contains": "\"SELECT arena_code, mean_mu, stddev_mu, row_count \"",
+    "classification": "allowed-substrate-boundary",
+    "reason": "SELECT-from-substrate-function call site (substrate.per_arena_entity_significance_stats). The inline string IS the function-call boundary."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/PositionEmbeddingSynthesizer.cs",
+    "text_contains": "\"SELECT ordinal, child_hash, occurrences \"",
+    "classification": "allowed-substrate-boundary",
+    "reason": "SELECT against substrate.position_embedding_aggregate (drain-maintained derived table); single parameterized bulk SELECT."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/TokenizerExporter.cs",
+    "text_contains": "\"SELECT encode(entity_hash, 'hex'), text_value \"",
+    "classification": "allowed-substrate-boundary",
+    "reason": "SELECT-from-substrate-function call site (substrate.recompose_text_bulk). The inline string IS the function-call boundary."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/select_knowledge_subgraph.sql",
+    "text_contains": "WHILE (SELECT count(*) FROM visited) < p_vocab_budget LOOP",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Knowledge BFS expands the visited set one round per iteration; each iteration is a single bulk INSERT-SELECT against substrate.edge_member. Bounded by v_round >= 32 safety cap AND by p_vocab_budget. No per-row SQL."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/select_knowledge_subgraph.sql",
+    "text_contains": "END LOOP;",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Termination of the BFS expansion loop; same justification as the WHILE opener."
   }
 ]

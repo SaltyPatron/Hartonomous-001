@@ -1,27 +1,80 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Npgsql;
 
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
 /// Emit a HuggingFace-compatible <c>tokenizer.json</c> backed by the
-/// substrate's selected vocab. V1 writes a minimal WordLevel-style tokenizer
-/// keyed on each token's content-hash placeholder text so that
-/// transformers can load the model end-to-end; V2 (follow-up) will resolve
-/// each VocabToken's actual surface form via substrate.recompose_text() and
-/// emit a real BPE/Unigram tokenizer.
+/// substrate's selected vocab with REAL surface forms.
+///
+/// Construction:
+///   1. Call <c>substrate.recompose_text_bulk</c> with all vocab hashes →
+///      byte-for-byte UTF-8 surface form per entity (recursive composition
+///      walk to codepoint leaves).
+///   2. Reserve 5 special-token slots (PAD/UNK/CLS/SEP/MASK) at the start
+///      of the vocab map.
+///   3. Emit WordLevel tokenizer.json with vocab map keyed on actual
+///      surface form strings → token id. This makes "Hello" tokenize to
+///      the substrate's hello word_form (if it's in vocab) instead of UNK.
+///
+/// Collision handling:
+///   Two entities with the same surface form (e.g. the codepoint U+0041
+///   "A" and the word_form "A") are possible. Substrate identity is
+///   content-addressed by hash, but tokenizer.json keys are surface-form
+///   strings. First-write wins; subsequent collisions are dropped with a
+///   counter for telemetry.
+///
+/// Empty-surface handling:
+///   Tokens whose recompose_text returns empty (e.g. classification
+///   entities like POS that aren't text-decomposable) get a synthetic
+///   sentinel form: "&lt;type:hex(hash[0..8])&gt;". These don't collide
+///   with user-text and serve as classification anchors the model can
+///   attend to without polluting the lexical surface.
 /// </summary>
 public static class TokenizerExporter
 {
     public static async Task WriteAsync(
         IReadOnlyList<VocabToken> vocab,
+        NpgsqlDataSource dataSource,
         string outputDir,
         CancellationToken ct)
     {
+        IReadOnlyDictionary<string, string> hashHexToSurface =
+            await ResolveSurfaceFormsAsync(vocab, dataSource, ct).ConfigureAwait(false);
+
+        Dictionary<string, int> vocabMap = new(StringComparer.Ordinal);
+        const int specialTokenOffset = 5;
+        long surfaceCollisions = 0;
+        long emptySurfaceFallbacks = 0;
+
+        for (int i = 0; i < vocab.Count; i++)
+        {
+            VocabToken t = vocab[i];
+            string hashHex = Convert.ToHexString(t.EntityHash);
+            string? surface = hashHexToSurface.TryGetValue(hashHex, out string? s) ? s : null;
+            if (string.IsNullOrEmpty(surface))
+            {
+                surface = $"<wf_{hashHex[..16].ToLowerInvariant()}>";
+                emptySurfaceFallbacks++;
+            }
+
+            int tokenId = i + specialTokenOffset;
+            if (!vocabMap.TryAdd(surface, tokenId))
+            {
+                surfaceCollisions++;
+            }
+        }
+
+        Console.Out.WriteLine(
+            $"TokenizerExporter: vocab={vocab.Count} surfaces_resolved={hashHexToSurface.Count} "
+            + $"empty_fallbacks={emptySurfaceFallbacks} surface_collisions={surfaceCollisions} "
+            + $"final_vocab_keys={vocabMap.Count}");
+
         using MemoryStream ms = new();
         JsonWriterOptions opts = new() { Indented = true };
         using (Utf8JsonWriter w = new(ms, opts))
@@ -31,7 +84,6 @@ public static class TokenizerExporter
             w.WriteNumber("truncation", default(int?) ?? 512);
             w.WriteNull("padding");
 
-            // Reserved special tokens at the bottom of the vocab.
             w.WriteStartArray("added_tokens");
             WriteSpecialToken(w, 0, "[PAD]");
             WriteSpecialToken(w, 1, "[UNK]");
@@ -52,17 +104,14 @@ public static class TokenizerExporter
             w.WriteString("type", "WordLevel");
             w.WriteString("unk_token", "[UNK]");
             w.WriteStartObject("vocab");
-            // Reserved indices for special tokens.
             w.WriteNumber("[PAD]", 0);
             w.WriteNumber("[UNK]", 1);
             w.WriteNumber("[CLS]", 2);
             w.WriteNumber("[SEP]", 3);
             w.WriteNumber("[MASK]", 4);
-            // Substrate-selected vocab starts at index 5 (offset by special tokens).
-            const int specialTokenOffset = 5;
-            for (int i = 0; i < vocab.Count; i++)
+            foreach ((string surface, int tokenId) in vocabMap)
             {
-                w.WriteNumber(vocab[i].TokenText, i + specialTokenOffset);
+                w.WriteNumber(surface, tokenId);
             }
             w.WriteEndObject(); // vocab
             w.WriteEndObject(); // model
@@ -73,7 +122,6 @@ public static class TokenizerExporter
         string tokenizerPath = Path.Combine(outputDir, "tokenizer.json");
         await File.WriteAllBytesAsync(tokenizerPath, ms.ToArray(), ct).ConfigureAwait(false);
 
-        // Also write a minimal tokenizer_config.json for transformers loaders.
         string tokenizerConfig = """
         {
           "model_max_length": 512,
@@ -90,6 +138,41 @@ public static class TokenizerExporter
         """;
         await File.WriteAllTextAsync(Path.Combine(outputDir, "tokenizer_config.json"),
             tokenizerConfig, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyDictionary<string, string>> ResolveSurfaceFormsAsync(
+        IReadOnlyList<VocabToken> vocab,
+        NpgsqlDataSource dataSource,
+        CancellationToken ct)
+    {
+        byte[][] hashes = new byte[vocab.Count][];
+        for (int i = 0; i < vocab.Count; i++)
+        {
+            hashes[i] = vocab[i].EntityHash;
+        }
+
+        Dictionary<string, string> result = new(StringComparer.Ordinal);
+
+        await using NpgsqlConnection conn = await dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new(
+            "SELECT encode(entity_hash, 'hex'), text_value "
+            + "FROM substrate.recompose_text_bulk(@hashes, 100000)",
+            conn);
+        cmd.CommandTimeout = 600;
+        NpgsqlParameter hashesParam = new("hashes", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Bytea)
+        {
+            Value = hashes,
+        };
+        cmd.Parameters.Add(hashesParam);
+
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string hashHex = reader.GetString(0).ToUpperInvariant();
+            string surface = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            result[hashHex] = surface;
+        }
+        return result;
     }
 
     private static void WriteSpecialToken(Utf8JsonWriter w, int id, string content)

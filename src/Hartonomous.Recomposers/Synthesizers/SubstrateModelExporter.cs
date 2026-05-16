@@ -53,10 +53,29 @@ public static class SubstrateModelExporter
 
         Directory.CreateDirectory(outputDir);
 
-        // 1. Pick vocab.
-        IReadOnlyList<VocabToken> vocab = await VocabSelector.SelectAsync(
-            dataSource, arch.VocabSize, ct).ConfigureAwait(false);
-        Console.Out.WriteLine($"VocabSelector: {vocab.Count} word_form entities selected.");
+        // 1. Pick vocab. If the recipe supplies seed concepts, use the
+        //    knowledge-selection BFS (the Build-a-bear product mechanism —
+        //    domain-targeted vocab from user-chosen concepts). Otherwise
+        //    fall back to the legacy top-by-edge-degree VocabSelector.
+        IReadOnlyList<VocabToken> vocab;
+        if (!options.SeedConcepts.IsDefaultOrEmpty)
+        {
+            // Recipe arena weights drive the BFS edge weighting. Empty weights
+            // means equal-weight across all arenas in significance_context.
+            Dictionary<string, double> arenaWeights = options.ArenaWeights.IsEmpty
+                ? new Dictionary<string, double>(StringComparer.Ordinal)
+                : new Dictionary<string, double>(options.ArenaWeights, StringComparer.Ordinal);
+            vocab = await KnowledgeSelector.SelectFromConceptsAsync(
+                dataSource, options.SeedConcepts, arenaWeights,
+                arch.VocabSize, options.KnowledgeBfsTopK, ct).ConfigureAwait(false);
+            Console.Out.WriteLine($"KnowledgeSelector: seeds={options.SeedConcepts.Length} → vocab={vocab.Count} (BFS over arena-weighted edge_member)");
+        }
+        else
+        {
+            vocab = await VocabSelector.SelectAsync(
+                dataSource, arch.VocabSize, ct).ConfigureAwait(false);
+            Console.Out.WriteLine($"VocabSelector (legacy top-by-edge-degree): {vocab.Count} word_form entities selected.");
+        }
 
         // 2. Build substrate adjacency over selected vocab.
         SubstrateAdjacency adj = await SubstrateAdjacencyBuilder.BuildAsync(
@@ -72,9 +91,9 @@ public static class SubstrateModelExporter
         Dictionary<string, TensorData> tensors = new(StringComparer.Ordinal);
         int substrateAttentionLayers = 0;
         int substrateFfnLayers = 0;
-        BuildTensorSet(
-            arch, options, embedTokens, embeddingF32, adj,
-            tensors, ref substrateAttentionLayers, ref substrateFfnLayers);
+        (substrateAttentionLayers, substrateFfnLayers) = await BuildTensorSetAsync(
+            dataSource, vocab, arch, options, embedTokens, embeddingF32, adj,
+            tensors, ct).ConfigureAwait(false);
 
         Console.Out.WriteLine(
             $"Per-layer synth: attention substrate-derived={substrateAttentionLayers}/{arch.NumHiddenLayers}, "
@@ -103,21 +122,24 @@ public static class SubstrateModelExporter
 
         // 6. Companion files.
         await ConfigEmitter.WriteAsync(arch, options, outputDir, ct).ConfigureAwait(false);
-        await TokenizerExporter.WriteAsync(vocab, outputDir, ct).ConfigureAwait(false);
+        await TokenizerExporter.WriteAsync(vocab, dataSource, outputDir, ct).ConfigureAwait(false);
         await WriteAuditAsync(arch, options, vocab.Count, adj,
             substrateAttentionLayers, substrateFfnLayers, outputDir, ct).ConfigureAwait(false);
     }
 
-    private static void BuildTensorSet(
+    private static async Task<(int attnLayers, int ffnLayers)> BuildTensorSetAsync(
+        NpgsqlDataSource dataSource,
+        IReadOnlyList<VocabToken> vocab,
         TargetArchitectureSpec arch,
         RecompositionOptions options,
         TensorData embedTokens,
         float[] embeddingF32,
         SubstrateAdjacency adj,
         Dictionary<string, TensorData> tensors,
-        ref int substrateAttentionLayers,
-        ref int substrateFfnLayers)
+        CancellationToken ct)
     {
+        int substrateAttentionLayers = 0;
+        int substrateFfnLayers = 0;
         QuantizationTarget dt = options.OutputDtype;
         bool isLlama = arch.Architecture.Contains("Llama", StringComparison.OrdinalIgnoreCase);
 
@@ -136,6 +158,32 @@ public static class SubstrateModelExporter
                 arch.InitializerRange, options.LayerAssignmentSeed, dt);
         }
 
+        // Load substrate-derived LayerNorm stats per arena. Replaces the
+        // scaffold γ=1/β=0 init in EmitLayerTensors. Without per-arena LN,
+        // activation variance compounds layer-to-layer → softmax saturates →
+        // attention collapses to argmax → output degenerates to repetition.
+        // Substrate-native γ = 1/stddev(mu in arena), β = -mean/stddev.
+        HashSet<string> allArenas = new(StringComparer.Ordinal);
+        for (int li = 0; li < arch.NumHiddenLayers; li++)
+        {
+            foreach (string a in SynthesisSection.DefaultLayerArenaChain[li % SynthesisSection.DefaultLayerArenaChain.Count])
+            {
+                allArenas.Add(a);
+            }
+        }
+        IReadOnlyDictionary<string, LayerNormStats> layerNormStats;
+        try
+        {
+            layerNormStats = await LayerNormSynthesizer.LoadStatsAsync(
+                dataSource, allArenas.ToArray(), ct).ConfigureAwait(false);
+            Console.Out.WriteLine($"  LayerNormStats: {layerNormStats.Count} arenas loaded for substrate-derived γ/β");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)  // BOUNDARY: substrate stats are an optional enrichment; missing per_arena_entity_significance_stats function (older extension) falls back to scaffold γ=1/β=0 init.
+        {
+            Console.Out.WriteLine($"  LayerNormStats: skipped ({ex.GetType().Name}); keeping scaffold γ=1/β=0");
+            layerNormStats = new Dictionary<string, LayerNormStats>(StringComparer.Ordinal);
+        }
+
         for (int layer = 0; layer < arch.NumHiddenLayers; layer++)
         {
             int hidden = arch.HiddenDim;
@@ -143,12 +191,25 @@ public static class SubstrateModelExporter
             int numHeads = arch.NumAttentionHeads;
             int headDim = arch.EffectiveHeadDim;
 
+            // Per-layer arena assignment is the right design (each transformer
+            // layer reads a different substrate adjacency built from its
+            // assigned arena), but the adjacency-build SQL is inline-C# today
+            // (AP-2 violation) and slow at v>256. Pending: extract to substrate
+            // SQL function `substrate.build_synth_adjacency_csr(vocab, arenas,
+            // include_indirect)` with C/C++ kernel offload for SIMD/AVX/MKL
+            // performance. Until then, fall back to ONE global adjacency
+            // shared across all layers.
+            IReadOnlyList<string> layerArena =
+                SynthesisSection.DefaultLayerArenaChain[layer % SynthesisSection.DefaultLayerArenaChain.Count];
+            Console.Out.WriteLine($"  layer {layer}: arena={string.Join(",", layerArena)} (using global adj pending substrate-side function)");
+            SubstrateAdjacency layerAdj = adj;
+
             // Attention.
             AttentionMatrices attn;
-            if (numHeads * headDim == hidden)
+            if (numHeads * headDim == hidden && layerAdj.Nnz > 0)
             {
                 attn = AttentionSynthesizer.Synthesize(
-                    adj, embeddingF32, hidden, numHeads, headDim, layer, options);
+                    layerAdj, embeddingF32, hidden, numHeads, headDim, layer, options);
             }
             else
             {
@@ -167,30 +228,61 @@ public static class SubstrateModelExporter
                 substrateAttentionLayers++;
             }
 
-            // FFN.
+            // FFN-as-substrate-edges: each slot IS a concrete substrate edge.
+            // Key direction = E[source], value direction = E[target],
+            // weighted by signed sqrt(|mu-1500|/100). Inspectable + sparse-
+            // by-construction. Falls back to Ritz-pair construction if the
+            // edge-slot SQL function isn't installed (older extension).
             bool useSwiGlu = isLlama;
-            FfnMatrices ffn = FfnSynthesizer.Synthesize(
-                adj, embeddingF32, hidden, interSize, layer, useSwiGlu, options);
+            FfnMatrices ffn;
+            try
+            {
+                ffn = await FfnEdgeSlotSynthesizer.SynthesizeAsync(
+                    dataSource, vocab, embeddingF32, layerArena, hidden, interSize,
+                    layer, useSwiGlu, options, ct).ConfigureAwait(false);
+            }
+            catch (Npgsql.PostgresException pe) when (pe.SqlState == "42883")  // BOUNDARY: substrate.select_synth_edges_for_ffn not installed (older extension); fall back to Ritz-pair FFN.
+            {
+                ffn = layerAdj.Nnz > 0
+                    ? FfnSynthesizer.Synthesize(layerAdj, embeddingF32, hidden, interSize, layer, useSwiGlu, options)
+                    : new FfnMatrices
+                    {
+                        HiddenDim = hidden, IntermediateDim = interSize,
+                        GateProj = useSwiGlu ? new float[(long)interSize * hidden] : null,
+                        UpProj = new float[(long)interSize * hidden],
+                        DownProj = new float[(long)hidden * interSize],
+                        UseSwiGlu = useSwiGlu, DerivedFromSubstrate = false, RitzSlotsUsed = 0,
+                    };
+            }
             if (ffn.DerivedFromSubstrate)
             {
                 substrateFfnLayers++;
             }
 
-            // Emit per architecture naming.
-            EmitLayerTensors(arch, options, layer, attn, ffn, tensors, dt);
+            // Emit per architecture naming. Pass per-layer arena's LN stats
+            // (use the layer's *primary* arena — first entry in the recipe chain).
+            string layerPrimaryArena = layerArena.Count > 0 ? layerArena[0] : "source_authority";
+            EmitLayerTensors(arch, options, layer, attn, ffn, tensors, dt, layerNormStats, layerPrimaryArena);
         }
+
+        // The embeddings/output-projection LayerNorm reads the recipe's
+        // PRIMARY arena (first entry in the chain) for substrate-derived γ/β.
+        string primaryArena = SynthesisSection.DefaultLayerArenaChain[0][0];
 
         if (isLlama)
         {
-            tensors["model.norm.weight"] = ScaffoldSynthesizer.Ones(
-                "model.norm.weight", new[] { arch.HiddenDim }, dt);
+            tensors["model.norm.weight"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.GammaFor(primaryArena, arch.HiddenDim, layerNormStats),
+                new[] { arch.HiddenDim }, dt);
         }
         else
         {
-            tensors["embeddings.LayerNorm.weight"] = ScaffoldSynthesizer.Ones(
-                "embeddings.LayerNorm.weight", new[] { arch.HiddenDim }, dt);
-            tensors["embeddings.LayerNorm.bias"] = ScaffoldSynthesizer.Zeros(
-                "embeddings.LayerNorm.bias", new[] { arch.HiddenDim }, dt);
+            tensors["embeddings.LayerNorm.weight"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.GammaFor(primaryArena, arch.HiddenDim, layerNormStats),
+                new[] { arch.HiddenDim }, dt);
+            tensors["embeddings.LayerNorm.bias"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.BetaFor(primaryArena, arch.HiddenDim, layerNormStats),
+                new[] { arch.HiddenDim }, dt);
             tensors["embeddings.position_embeddings.weight"] = ScaffoldSynthesizer.Initializer(
                 "embeddings.position_embeddings.weight",
                 new[] { arch.MaxPositionEmbeddings, arch.HiddenDim },
@@ -199,7 +291,32 @@ public static class SubstrateModelExporter
                 "embeddings.token_type_embeddings.weight",
                 new[] { 2, arch.HiddenDim },
                 arch.InitializerRange, options.LayerAssignmentSeed, dt);
+
+            // Substrate-derived position embeddings replace the deterministic
+            // init when content trajectory ordinals provide signal. The query
+            // is heavy (walks every text_composition's child manifest); if it
+            // fails for any reason, fall back to the deterministic init that
+            // was already written above. Position embeddings are improveable
+            // post-hoc by recipe iteration; not gating the mechanism test.
+            try
+            {
+                TensorData posEmbed = await PositionEmbeddingSynthesizer.SynthesizeAsync(
+                    dataSource, vocab, embeddingF32, arch.HiddenDim,
+                    arch.MaxPositionEmbeddings, options, ct).ConfigureAwait(false);
+                tensors["embeddings.position_embeddings.weight"] = posEmbed;
+                Console.Out.WriteLine("  PositionEmbedding: substrate-derived");
+            }
+            // BOUNDARY: position embedding is an optional enrichment over the
+            // deterministic init already written above. Any failure (missing
+            // function, query timeout, type mismatch, null row) is non-fatal
+            // for the mechanism gate — log the cause and continue.
+            catch (Exception ex) when (ex is not OperationCanceledException)  // BOUNDARY: position embedding is an optional enrichment over deterministic init; any failure (missing function, query timeout, null rows) is non-fatal.
+            {
+                Console.Out.WriteLine($"  PositionEmbedding: skipped ({ex.GetType().Name}: {ex.Message}); keeping deterministic init");
+            }
         }
+
+        return (substrateAttentionLayers, substrateFfnLayers);
     }
 
     private static void EmitLayerTensors(
@@ -209,7 +326,9 @@ public static class SubstrateModelExporter
         AttentionMatrices attn,
         FfnMatrices ffn,
         Dictionary<string, TensorData> tensors,
-        QuantizationTarget dt)
+        QuantizationTarget dt,
+        IReadOnlyDictionary<string, LayerNormStats> layerNormStats,
+        string layerArena)
     {
         int hidden = arch.HiddenDim;
         int interSize = arch.IntermediateSize;
@@ -260,10 +379,12 @@ public static class SubstrateModelExporter
                 attn.Wo, new[] { hidden, hidden }, dt);
             tensors[$"{p}.attention.output.dense.bias"] = ScaffoldSynthesizer.Zeros(
                 $"{p}.attention.output.dense.bias", new[] { hidden }, dt);
-            tensors[$"{p}.attention.output.LayerNorm.weight"] = ScaffoldSynthesizer.Ones(
-                $"{p}.attention.output.LayerNorm.weight", new[] { hidden }, dt);
-            tensors[$"{p}.attention.output.LayerNorm.bias"] = ScaffoldSynthesizer.Zeros(
-                $"{p}.attention.output.LayerNorm.bias", new[] { hidden }, dt);
+            tensors[$"{p}.attention.output.LayerNorm.weight"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.GammaFor(layerArena, hidden, layerNormStats),
+                new[] { hidden }, dt);
+            tensors[$"{p}.attention.output.LayerNorm.bias"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.BetaFor(layerArena, hidden, layerNormStats),
+                new[] { hidden }, dt);
 
             tensors[$"{p}.intermediate.dense.weight"] = TensorPacker.PackF32(
                 ffn.UpProj, new[] { interSize, hidden }, dt);
@@ -273,10 +394,12 @@ public static class SubstrateModelExporter
                 ffn.DownProj, new[] { hidden, interSize }, dt);
             tensors[$"{p}.output.dense.bias"] = ScaffoldSynthesizer.Zeros(
                 $"{p}.output.dense.bias", new[] { hidden }, dt);
-            tensors[$"{p}.output.LayerNorm.weight"] = ScaffoldSynthesizer.Ones(
-                $"{p}.output.LayerNorm.weight", new[] { hidden }, dt);
-            tensors[$"{p}.output.LayerNorm.bias"] = ScaffoldSynthesizer.Zeros(
-                $"{p}.output.LayerNorm.bias", new[] { hidden }, dt);
+            tensors[$"{p}.output.LayerNorm.weight"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.GammaFor(layerArena, hidden, layerNormStats),
+                new[] { hidden }, dt);
+            tensors[$"{p}.output.LayerNorm.bias"] = TensorPacker.PackF32(
+                LayerNormSynthesizer.BetaFor(layerArena, hidden, layerNormStats),
+                new[] { hidden }, dt);
         }
     }
 

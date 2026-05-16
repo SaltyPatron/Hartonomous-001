@@ -3,48 +3,6 @@ using System.IO;
 
 namespace Hartonomous.Decomposers.Iso639;
 
-/// <summary>
-/// One ISO 639-2 record (Library of Congress alpha-3 + alpha-2 + English/French names).
-/// </summary>
-/// <param name="Alpha3Bibliographic">Three-letter bibliographic code (the historical / French-derived one for languages with bibliographic vs terminologic split; otherwise same as terminologic).</param>
-/// <param name="Alpha3Terminologic">Three-letter terminologic code (the linguistic preference; null when same as bibliographic).</param>
-/// <param name="Alpha2">Two-letter ISO 639-1 code; null when none exists.</param>
-/// <param name="EnglishName">English name (may contain semicolons for multi-name entries).</param>
-/// <param name="FrenchName">French name (may contain semicolons for multi-name entries).</param>
-internal sealed record Iso6392Record(
-    string Alpha3Bibliographic,
-    string? Alpha3Terminologic,
-    string? Alpha2,
-    string EnglishName,
-    string FrenchName);
-
-/// <summary>
-/// One IANA BCP47 language-subtag-registry record. The registry has Type ∈
-/// {language, extlang, script, region, variant, grandfathered, redundant};
-/// this DTO covers the load-bearing language + script + region types.
-/// </summary>
-/// <param name="Type">"language" / "extlang" / "script" / "region" / "variant" / "grandfathered" / "redundant".</param>
-/// <param name="Subtag">The canonical subtag (e.g. "en", "Latn", "US", "1996").</param>
-/// <param name="Descriptions">Description lines (a registry record may have multiple Description: lines).</param>
-/// <param name="Added">ISO-8601 date the subtag was added to the registry.</param>
-/// <param name="SuppressScript">"Suppress-Script" subtag if present (e.g. "Latn" for "en" — script is implicit).</param>
-/// <param name="Scope">"Scope" value if present ("macrolanguage" / "collection" / "private-use" / "special").</param>
-/// <param name="Macrolanguage">"Macrolanguage" code if present (the parent macrolanguage).</param>
-/// <param name="DeprecatedDate">"Deprecated" date if present (subtag is deprecated as of this date).</param>
-/// <param name="PreferredValue">"Preferred-Value" if present (the canonical replacement when deprecated).</param>
-/// <param name="Prefix">Prefix subtag list if Type = extlang/variant.</param>
-internal sealed record Bcp47Record(
-    string Type,
-    string Subtag,
-    List<string> Descriptions,
-    string? Added,
-    string? SuppressScript,
-    string? Scope,
-    string? Macrolanguage,
-    string? DeprecatedDate,
-    string? PreferredValue,
-    List<string> Prefix);
-
 internal static class Iso639Parser
 {
     /// <summary>

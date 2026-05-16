@@ -27,7 +27,7 @@ public sealed class RoundTripFixture : IAsyncLifetime
     public RoundTripFixture()
     {
         ConnectionString = Environment.GetEnvironmentVariable("HARTONOMOUS_DB")
-            ?? "Host=localhost;Port=5433;Username=hartonomous;Password=hartonomous;Database=hartonomous";
+            ?? "Host=/var/run/postgresql;Username=ahart;Database=hartonomous";
         ModelsRoot = Environment.GetEnvironmentVariable("HARTONOMOUS_MODELS_ROOT")
             ?? "/vault/Data";
     }

@@ -95,6 +95,14 @@ public static class GraphemeClusters
     /// Enumerate extended grapheme clusters over <paramref name="utf8"/> and
     /// materialize them into a list. Ill-formed UTF-8 bytes are treated as
     /// single-byte U+FFFD substitutions per Unicode best practice.
+    ///
+    /// PRIMARY PATH: P/Invoke into the native UAX-29 kernel
+    /// (<see cref="Hartonomous.Core.Native.TextDecomposeNative.GraphemeBoundaries"/>).
+    /// The native implementation is the substrate's SINGLE source of UAX-29
+    /// truth (rule 10-text-and-semantics + Law #6 + CLAUDE.md compute-facade).
+    /// Native passes UAX-29 conformance (UCD GraphemeBreakTest.txt).
+    /// Falls back to the in-process C# state machine ONLY when the native
+    /// UCD blob is unavailable. Fallback is on the deprecation path (task #21).
     /// </summary>
     public static List<GraphemeRange> Enumerate(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
     {
@@ -102,6 +110,11 @@ public static class GraphemeClusters
         if (utf8.IsEmpty)
         {
             return result;
+        }
+
+        if (TryNativeEnumerate(utf8, out List<GraphemeRange>? native))
+        {
+            return native!;
         }
 
         long clusterByteStart = 0;
@@ -166,6 +179,83 @@ public static class GraphemeClusters
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Calls the native UAX-29 grapheme boundary kernel and materializes
+    /// per-grapheme ranges in original-UTF-8 byte space. Returns false if
+    /// native isn't loadable.
+    /// </summary>
+    private static unsafe bool TryNativeEnumerate(ReadOnlySpan<byte> utf8, out List<GraphemeRange>? ranges)
+    {
+        ranges = null;
+        if (utf8.IsEmpty)
+        {
+            return false;
+        }
+
+        try
+        {
+            Hartonomous.Core.Text.SubstrateTextDecomposer.EnsureUcdLoaded();
+        }
+        catch (InvalidOperationException)  // BOUNDARY: native UCD blob load. See WordBoundaries.TryNativeBoundaries.
+        {
+            return false;
+        }
+
+        byte[] buf = new byte[utf8.Length];
+        utf8.CopyTo(buf);
+
+        int[] cpBoundaries;
+        int graphemeCount;
+
+        fixed (byte* utf8Ptr = buf)
+        {
+            IntPtr utf8Ip = (IntPtr) utf8Ptr;
+            int rc = Hartonomous.Core.Native.TextDecomposeNative.GraphemeBoundaries(
+                utf8Ip, (nuint) buf.Length, IntPtr.Zero, 0, out graphemeCount);
+            if (rc != 0) { return false; }
+
+            cpBoundaries = new int[Math.Max(graphemeCount, 1)];
+            fixed (int* outPtr = cpBoundaries)
+            {
+                int outCount;
+                rc = Hartonomous.Core.Native.TextDecomposeNative.GraphemeBoundaries(
+                    utf8Ip, (nuint) buf.Length, (IntPtr) outPtr, cpBoundaries.Length, out outCount);
+                if (rc != 0) { return false; }
+                graphemeCount = outCount;
+            }
+        }
+
+        // Walk source bytes; for each native codepoint boundary, materialize a GraphemeRange
+        // from the previous boundary to this one.
+        List<GraphemeRange> result = new(graphemeCount);
+        int cursorBytes = 0;
+        int cursorCps = 0;
+        long clusterByteStart = 0;
+        long clusterCpStart = 0;
+
+        for (int i = 1; i <= graphemeCount; i++)
+        {
+            int targetCp = (i < graphemeCount) ? cpBoundaries[i] : -1;  // -1 = end-of-input
+            while ((targetCp < 0 || cursorCps < targetCp) && cursorBytes < utf8.Length)
+            {
+                (int _, int consumed) = Utf8.DecodeOne(utf8.Slice(cursorBytes));
+                if (consumed <= 0 || cursorBytes + consumed > utf8.Length) { return false; }
+                cursorBytes += consumed;
+                cursorCps++;
+            }
+            if (targetCp >= 0 && cursorCps != targetCp) { return false; }
+            result.Add(new GraphemeRange(
+                clusterByteStart,
+                clusterCpStart,
+                (int)(cursorBytes - clusterByteStart),
+                (int)(cursorCps - clusterCpStart)));
+            clusterByteStart = cursorBytes;
+            clusterCpStart = cursorCps;
+        }
+        ranges = result;
+        return true;
     }
 
     /// <summary>

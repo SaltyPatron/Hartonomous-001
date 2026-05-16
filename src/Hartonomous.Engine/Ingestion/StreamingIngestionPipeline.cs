@@ -549,7 +549,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         HashSet<Hash32> parentsWithPhysicality = new();
         foreach (EntityEntry e in b.Entities)
         {
-            records.Add(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance));
+            records.Add(new EntityRecord(
+                e.EntityTypeCode, e.Hash, batchProvenance,
+                e.CentroidX, e.CentroidY, e.CentroidZ, e.CentroidM,
+                e.HilbertIndex));
         }
 
         foreach (PhysicalityEntry p in b.Physicalities)
@@ -1895,6 +1898,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             {
                 writer.StartRow();
                 writer.Write(rec.Hash.ToByteArray(), NpgsqlDbType.Bytea);
+                // Producer-side computed centroid + Hilbert. Native text decomposer
+                // emits them on RecEntity records (cp_c / gc_c / w_c / comp_c
+                // arrays in text_decompose.c); SubstrateTextDecomposer.OnRecord
+                // surfaces them via EntityRecord. NaN sentinels mean "producer did
+                // not compute" — written as NULL to the temp table.
+                if (double.IsNaN(rec.CentroidX)) { writer.WriteNull(); } else { writer.Write(rec.CentroidX, NpgsqlDbType.Double); }
+                if (double.IsNaN(rec.CentroidY)) { writer.WriteNull(); } else { writer.Write(rec.CentroidY, NpgsqlDbType.Double); }
+                if (double.IsNaN(rec.CentroidZ)) { writer.WriteNull(); } else { writer.Write(rec.CentroidZ, NpgsqlDbType.Double); }
+                if (double.IsNaN(rec.CentroidM)) { writer.WriteNull(); } else { writer.Write(rec.CentroidM, NpgsqlDbType.Double); }
+                if (rec.HilbertIndex is long h) { writer.Write(h, NpgsqlDbType.Bigint); } else { writer.WriteNull(); }
                 Interlocked.Increment(ref _entitiesEmitted);
                 return ValueTask.CompletedTask;
             },

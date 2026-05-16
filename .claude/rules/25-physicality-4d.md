@@ -68,6 +68,21 @@ Every centroid is **write-once-per-entity** in `substrate.physicality`. Recomput
 
 If you find yourself recomputing a centroid in a hot path, either the write-path missed populating it, or the memoization contract is being violated. Read it from `substrate.physicality`, don't recompute.
 
+`substrate.entity` carries denormalized `centroid_x/y/z/m + hilbert_index` columns maintained by the `substrate.update_entity_centroid_from_physicality` trigger AFTER INSERT/UPDATE on `substrate.physicality`. These are O(1) reads per entity row — no physicality JOIN, no LATERAL ST_4D_Centroid. The `embedding_firefly` partition is EXCLUDED from the trigger because fireflies are per-model decorations on existing entities, NOT entity identity. The columns are deterministic by Merkle invariant (same hash → same children → same centroid).
+
+## Radial tiering — substrate hierarchy IS its 4D geometry
+
+Codepoints project to the unit 4-sphere (the glome, S³) via Super-Fibonacci by UCA collation rank: every atom has `||centroid||₄d = 1`. Arithmetic-mean centroid recursion places compositions STRICTLY INSIDE the open 4-ball: every composition has `||centroid||₄d < 1`. Deeper Merkle DAG depth → more children averaged → mean gravitates further toward the origin. Super-Fibonacci's deliberate golden-angle spread of consecutive ranks means even 2-codepoint compositions land near origin (verified: "he" centroid radius ≈ 0.15).
+
+Consequences (normative):
+
+- **Tier maps to radius**: `tier_hint = 1 - ||centroid||₄d` is the substrate-native Merkle depth indicator (`substrate.entity_tier_hint(hash)`). Atoms → 0; documents → 1.
+- **Parent and child cannot collide spatially**: parent radius < min(children radii) ≤ 1, so parent is strictly interior to the children's convex hull on the glome.
+- **Homogeneous content stays near the surface; diverse content gravitates to origin** — single-character runs near radius 1; cross-topic documents near radius 0.
+- **Tier-aware query without classification JOIN**: `WHERE substrate.entity_tier_hint(hash) > 0.7` returns deep compositions. Combine with `hilbert_index BETWEEN $a AND $b` for angular + radial spatial-locality range scan.
+
+The substrate is content-self-organizing in 4D. Code that ignores the radial-tier principle loses substrate-native tier query, semantic clustering, and the natural Voronoi cells the principle produces. Full derivation in `docs/specs/native/geometry4d-composition.md`.
+
 ## Forbidden 2D operators on substrate physicality
 
 | Forbidden | Why | Use instead |
