@@ -86,7 +86,7 @@ internal sealed class IngestionBatch : IIngestionBatch
         EntityHandle entity,
         int referenceId,
         double? mu = null,
-        string attestationTypeCode = "lexical_curated_relation")
+        string attestationTypeCode = "positive_evidence")
     {
         _junctions.Add(new JunctionEntry(junctionTable, entity, referenceId, mu, attestationTypeCode));
     }
@@ -276,7 +276,7 @@ internal sealed class IngestionBatch : IIngestionBatch
         EntityHandle entity,
         string contextTypeCode,
         double initialMu,
-        string attestationTypeCode = "provenance_authority_corroboration")
+        string attestationTypeCode = "positive_evidence")
     {
         _significances.Add(new SignificanceEntry(entity, contextTypeCode, initialMu, attestationTypeCode));
     }

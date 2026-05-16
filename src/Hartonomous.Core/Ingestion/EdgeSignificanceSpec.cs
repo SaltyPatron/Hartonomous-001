@@ -5,7 +5,7 @@ namespace Hartonomous.Core.Ingestion;
 /// triple, emitted alongside an edge by a decomposer that has computed a
 /// calibrated prior from the source data (e.g. FfnEdgeDecompositionPass
 /// derives a per-edge mu from the signed weight scaled by the tensor's mean
-/// magnitude under attestation_type=model_ffn_full_path).
+/// magnitude under attestation_type=positive_evidence).
 ///
 /// When present, the pipeline writes this mu to substrate.edge_significance
 /// for the matching (arena, attestation_type) instead of the provenance.initial_mu

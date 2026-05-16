@@ -230,7 +230,9 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                     [
                         new EdgeMemberSpec(refHandle, "source", 0),
                         new EdgeMemberSpec(altHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_alternate_name"));
                     edgeCount++;
                 }
             }
@@ -249,7 +251,9 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 [
                     new EdgeMemberSpec(MakeHandle(macroHash), "source", 0),
                     new EdgeMemberSpec(MakeHandle(indivHash), "target", 1),
-                ]);
+                ],
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("macrolanguage_contains"));
                 edgeCount++;
             }
 
@@ -276,7 +280,9 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 [
                     new EdgeMemberSpec(retiredHandle, "source", 0),
                     new EdgeMemberSpec(MakeHandle(successorHash), "target", 1),
-                ]);
+                ],
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("superseded_by"));
                 edgeCount++;
             }
 
@@ -327,7 +333,9 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                             [
                                 new EdgeMemberSpec(anchorHandle, "source", 0),
                                 new EdgeMemberSpec(engHandle, "target", 1),
-                            ]);
+                            ],
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor("has_alternate_name"));
                             iso6392Edges++;
                         }
                     }
@@ -341,7 +349,9 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                         [
                             new EdgeMemberSpec(anchorHandle, "source", 0),
                             new EdgeMemberSpec(frHandle, "target", 1),
-                        ]);
+                        ],
+                        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                        EdgeArenaRouter.EventsFor("has_alternate_name"));
                         iso6392Edges++;
                     }
 

@@ -1932,6 +1932,7 @@ INSERT INTO substrate.provenance
 VALUES
     ('unicode_consortium',     'authoritative_standard', 100000,  50, NULL,                1.00),
     ('sil_international',      'authoritative_standard', 100000,  50, NULL,                1.00),
+    ('library_of_congress',    'authoritative_standard', 100000,  50, NULL,                1.00),
     ('princeton_wordnet',      'academic_curated',        90000, 100, NULL,                1.00),
     ('omwn_consortium',        'academic_consortium',     85000, 100, 'princeton_wordnet', 0.92),
     ('universaldependencies',  'academic_consortium',     85000, 100, NULL,                1.00),
@@ -1949,6 +1950,7 @@ SELECT p.id, m.modality_code
       VALUES
         ('unicode_consortium',     'text'::substrate.modality_code),
         ('sil_international',      'text'::substrate.modality_code),
+        ('library_of_congress',    'text'::substrate.modality_code),
         ('princeton_wordnet',      'text'::substrate.modality_code),
         ('omwn_consortium',        'text'::substrate.modality_code),
         ('universaldependencies',  'text'::substrate.modality_code),
@@ -2256,7 +2258,7 @@ BEGIN
             ('substrate.physicality_type',      16),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
-            ('substrate.provenance',            10),
+            ('substrate.provenance',            11),
             ('substrate.bidi_class',            23),
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
@@ -2359,7 +2361,7 @@ COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
 CREATE TABLE substrate.edge (
     edge_type_id  INT  NOT NULL REFERENCES substrate.edge_type(id),
     hash          substrate.hash_value NOT NULL,
-    geom          geometry4d,
+    geom          geometry(GeometryZM),
     provenance_id INT  NOT NULL REFERENCES substrate.provenance(id),
     PRIMARY KEY (edge_type_id, hash)
 ) PARTITION BY LIST (edge_type_id);
@@ -3673,32 +3675,31 @@ COMMENT ON FUNCTION substrate.resolve_context_id(TEXT) IS
 -- ── sql/schema/functions/resolve_attestation_type_id.sql ───────────────────────────────────────
 -- substrate.resolve_attestation_type_id(p_code TEXT)
 --
--- Translate an attestation_type code to its INT id. P1d (2026-05-14): the
--- attestation_type vocabulary was collapsed from 27 modality-specific rows
--- to 3 generic sign-discriminator rows (positive_evidence /
--- negative_evidence / neutral_evidence). The (provenance × arena) tuple
--- carries source + domain discrimination instead.
+-- Translate an attestation_type code to its INT id. After the P1d collapse
+-- the vocabulary is exactly three rows — positive_evidence,
+-- negative_evidence, neutral_evidence. Unknown codes raise. The SQL +
+-- C# emission sites have been migrated to use the canonical three-row
+-- vocabulary; a hard-fail here surfaces any regression instead of silently
+-- recoding evidence under a default sign.
 --
--- Unknown codes (legacy modality-specific codes from pre-P1d decomposer
--- code that hasn't migrated yet — model_attention_qk_pattern,
--- corpus_co_occurrence_window, provenance_authority_corroboration, etc.)
--- resolve to 'positive_evidence' as a graceful fallback so the substrate
--- keeps ingesting while the call-site migration to the unified surface
--- (P1e) proceeds.
---
--- Returns the resolved id; never NULL post-P1d.
+-- Returns the resolved id; raises EXCEPTION on unknown code.
 CREATE OR REPLACE FUNCTION substrate.resolve_attestation_type_id(p_code TEXT)
 RETURNS INT
-LANGUAGE sql STABLE
+LANGUAGE plpgsql STABLE
 AS $$
-    SELECT COALESCE(
-        (SELECT id FROM substrate.attestation_type WHERE code = p_code),
-        (SELECT id FROM substrate.attestation_type WHERE code = 'positive_evidence')
-    );
+DECLARE
+    v_id INT;
+BEGIN
+    SELECT id INTO v_id FROM substrate.attestation_type WHERE code = p_code;
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'unknown attestation_type code: % (expected positive_evidence / negative_evidence / neutral_evidence per P1d)', p_code;
+    END IF;
+    RETURN v_id;
+END;
 $$;
 
 COMMENT ON FUNCTION substrate.resolve_attestation_type_id(TEXT) IS
-    'Resolve an attestation_type.code to its INT id. Falls back to positive_evidence for legacy modality-specific codes that pre-date the P1d collapse to generic sign discriminators (positive_evidence / negative_evidence / neutral_evidence). STABLE — safe to inline in larger queries.';
+    'Resolve an attestation_type.code to its INT id. Raises EXCEPTION on unknown code — the substrate''s 3-row vocabulary (positive_evidence / negative_evidence / neutral_evidence per P1d) is the only valid input. No graceful fallback (anti-band-aid).';
 
 -- ── sql/schema/functions/resolve_entity_handles.sql ───────────────────────────────────────
 DROP FUNCTION IF EXISTS substrate.resolve_entity_handles(BYTEA[], TEXT[]);
@@ -4457,6 +4458,86 @@ $$;
 
 COMMENT ON FUNCTION substrate.geometry4d_centroid(geometry) IS
     'Vertex-mean centroid of a real-coord 4D GeometryZM. NOT for composition LINESTRINGZM (those carry mantissa-packed identity bits, not metric coords). Composition representative POINTZMs are derived inline from entity.hash_bits_* via bb_pack_hash_lo/hi when needed; not stored.';
+
+-- ── sql/schema/functions/geometry4d_to_geometryzm.sql ───────────────────────────────────────
+-- substrate.geometry4d_to_geometryzm(geometry4d)
+--
+-- Convert a legacy custom-type geometry4d value to a PostGIS-native
+-- geometry(GeometryZM). The native physicality column (geometry(GeometryZM))
+-- migration moved BACK to native PostGIS storage; the C# emitter still
+-- produces the custom bytea payload that decodes to geometry4d via
+-- bytea_to_geometry4d. This function bridges the encoded payload to the
+-- native column type so physicality.drain.sql can INSERT into the
+-- post-migration column.
+--
+-- Dispatch on ST_TypeTag4D — 1 = POINT4D, 2 = LINESTRING4D. Other tags
+-- (POLYGON/MULTI*/COLLECTION) are not currently produced by the C#
+-- payload builder; they raise.
+--
+-- Extends naturally as the C# payload-builder gains more subtype support.
+CREATE OR REPLACE FUNCTION substrate.geometry4d_to_geometryzm(g geometry4d)
+RETURNS geometry
+LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+DECLARE
+    tag INT;
+    p   point4d;
+    ls  linestring4d;
+    n   INT;
+    i   INT;
+    coords DOUBLE PRECISION[];
+    pts    geometry[];
+BEGIN
+    tag := ST_TypeTag4D(g);
+    IF tag = 1 THEN
+        p := g::point4d;
+        coords := point4d_to_array(p);
+        RETURN ST_MakePoint(coords[1], coords[2], coords[3], coords[4]);
+    ELSIF tag = 2 THEN
+        ls := g::linestring4d;
+        n  := npoints(ls);
+        pts := ARRAY[]::geometry[];
+        FOR i IN 1..n LOOP
+            coords := point4d_to_array(point_n(ls, i));
+            pts := array_append(
+                pts,
+                ST_MakePoint(coords[1], coords[2], coords[3], coords[4])
+            );
+        END LOOP;
+        RETURN ST_MakeLine(pts);
+    ELSE
+        RAISE EXCEPTION 'geometry4d_to_geometryzm: unsupported geometry4d type tag % (only POINT4D=1 and LINESTRING4D=2 are produced by the C# payload builder)', tag;
+    END IF;
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.geometry4d_to_geometryzm(geometry4d) IS
+    'Convert legacy custom-type geometry4d (POINT4D or LINESTRING4D produced by the C# Geometry4dPayloadBuilder) to PostGIS-native geometry(GeometryZM). Bridges the C# emitter''s payload format to the post-migration substrate.physicality.geom column type.';
+
+-- ── sql/schema/functions/geometryzm_centroid_point.sql ───────────────────────────────────────
+-- substrate.geometryzm_centroid_point(geometry) RETURNS geometry
+--
+-- Return the centroid of a geometry(GeometryZM) as a POINTZM in the same
+-- 4-coordinate space (X, Y, Z, M). Uses the existing
+-- substrate.geometry4d_centroid which dispatches on subtype and returns a
+-- point4d, then projects back to PostGIS-native POINTZM. Used by edge.geom
+-- builders that need a POINTZM-per-participant for ST_MakeLine.
+CREATE OR REPLACE FUNCTION substrate.geometryzm_centroid_point(g geometry)
+RETURNS geometry
+LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+DECLARE
+    p point4d;
+    coords DOUBLE PRECISION[];
+BEGIN
+    p := substrate.geometry4d_centroid(g);
+    coords := point4d_to_array(p);
+    RETURN ST_MakePoint(coords[1], coords[2], coords[3], coords[4]);
+END;
+$$;
+
+COMMENT ON FUNCTION substrate.geometryzm_centroid_point(geometry) IS
+    'Centroid of a geometry(GeometryZM) as a POINTZM (native PostGIS). Wraps substrate.geometry4d_centroid + ST_MakePoint to keep edge.geom builders inside the native geometry type system after the geometry4d → geometry(GeometryZM) migration on substrate.edge.geom.';
 
 -- ── sql/schema/functions/populate_edge_trajectories.sql ───────────────────────────────────────
 -- Populate edge trajectories from participant identity-POINTZMs in role
@@ -5394,7 +5475,7 @@ COMMENT ON FUNCTION substrate.reset_arena_priming_state() IS
 --   σ₀ = COALESCE(pea.initial_sigma, p.initial_sigma)
 --
 -- attestation_type: priming attestation lands as
--- 'provenance_authority_corroboration' — the substrate's record that THIS
+-- 'positive_evidence' — the substrate's record that THIS
 -- provenance asserts THIS edge with THIS prior. Other attestation types
 -- (corpus_co_occurrence_window, model_attention_pattern, etc.) accumulate
 -- separately via the streaming pipeline's significance-events drain.
@@ -5413,10 +5494,10 @@ DECLARE
     v_attestation_type_id   INT;
 BEGIN
     v_attestation_type_id :=
-        substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+        substrate.resolve_attestation_type_id('positive_evidence');
     IF v_attestation_type_id IS NULL THEN
         RAISE EXCEPTION
-            'attestation_type "provenance_authority_corroboration" not seeded; cannot prime';
+            'attestation_type "positive_evidence" not seeded; cannot prime';
     END IF;
 
     INSERT INTO substrate.arena_priming_state (context_type_id)
@@ -5512,7 +5593,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.prime_unprimed_edges_chunk(INT, INT) IS
-    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index. Primes under attestation_type=provenance_authority_corroboration; other attestation types accumulate via the pipeline''s significance-events drain.';
+    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index. Primes under attestation_type=positive_evidence; other attestation types accumulate via the pipeline''s significance-events drain.';
 
 -- ── sql/schema/functions/prune_significance.sql ───────────────────────────────────────
 -- substrate.prune_significance(
@@ -6500,7 +6581,7 @@ CREATE OR REPLACE FUNCTION substrate.initialize_edge_significance(
     p_edge_type_code        TEXT,
     p_edge_hash             BYTEA,
     p_initial_mu            DOUBLE PRECISION,
-    p_attestation_type_code TEXT DEFAULT 'provenance_authority_corroboration'
+    p_attestation_type_code TEXT DEFAULT 'positive_evidence'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
@@ -6538,14 +6619,14 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.initialize_edge_significance(TEXT, TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
-    'Initialize or reset the mu value for one edge_significance row addressed by (arena, edge handle, attestation_type). Default attestation_type is provenance_authority_corroboration — the kind of evidence that ingestion-time priming represents. Preserves sigma, volatility, and games on existing rows.';
+    'Initialize or reset the mu value for one edge_significance row addressed by (arena, edge handle, attestation_type). Default attestation_type is positive_evidence — the kind of evidence that ingestion-time priming represents. Preserves sigma, volatility, and games on existing rows.';
 
 -- ── sql/schema/functions/initialize_entity_significance.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.initialize_entity_significance(
     p_context_code          TEXT,
     p_entity_hash           BYTEA,
     p_initial_mu            DOUBLE PRECISION,
-    p_attestation_type_code TEXT DEFAULT 'provenance_authority_corroboration'
+    p_attestation_type_code TEXT DEFAULT 'positive_evidence'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
@@ -6575,7 +6656,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.initialize_entity_significance(TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
-    'Initialize or reset the mu value for one entity_significance row addressed by (arena, entity, attestation_type). Default attestation_type is provenance_authority_corroboration — ingestion-time priming. Preserves sigma, volatility, and games on existing rows.';
+    'Initialize or reset the mu value for one entity_significance row addressed by (arena, entity, attestation_type). Default attestation_type is positive_evidence — ingestion-time priming. Preserves sigma, volatility, and games on existing rows.';
 
 -- ── sql/schema/functions/blended_edge_mu.sql ───────────────────────────────────────
 -- substrate.blended_edge_mu(
@@ -6955,9 +7036,9 @@ BEGIN
     -- Resolve attestation_type_id ONCE outside the SELECT below — invoking
     -- substrate.resolve_attestation_type_id() per row across 1.1M codepoints
     -- is gratuitous function-call overhead (single-threaded in one backend).
-    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    v_attestation_type_id := substrate.resolve_attestation_type_id('positive_evidence');
     IF v_attestation_type_id IS NULL THEN
-        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'attestation_type code=''positive_evidence'' missing — bootstrap not applied?';
     END IF;
 
     -- Warm up the composite tupdesc cache before plpgsql plans the SRF.
@@ -6989,7 +7070,7 @@ BEGIN
 
     -- 4. Source-authority significance prior. UCD codepoint atoms come
     -- from the embedded Unicode 17.0.0 tables; the kind of evidence is
-    -- provenance_authority_corroboration (Unicode Consortium asserts these
+    -- positive_evidence (Unicode Consortium asserts these
     -- codepoints exist with this initial mu).
     INSERT INTO substrate.entity_significance (
         context_type_id, entity_hash, attestation_type_id,
@@ -7069,9 +7150,9 @@ BEGIN
         RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
     END IF;
 
-    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    v_attestation_type_id := substrate.resolve_attestation_type_id('positive_evidence');
     IF v_attestation_type_id IS NULL THEN
-        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'attestation_type code=''positive_evidence'' missing — bootstrap not applied?';
     END IF;
 
     INSERT INTO substrate.entity (hash)
@@ -7474,9 +7555,9 @@ BEGIN
             provenance.initial_sigma AS provenance_initial_sigma,
             provenance.derivation_decay,
             et.semantic_weight,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(source_physicality.geom),
-                substrate.geometry4d_centroid(target_physicality.geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(source_physicality.geom),
+                substrate.geometryzm_centroid_point(target_physicality.geom)
             ]) AS geom
         FROM edge_specs
         JOIN substrate.edge_type et ON et.code = edge_specs.edge_code
@@ -7740,9 +7821,9 @@ BEGIN
             ) AS edge_hash,
             cr.source_hash      AS pos0_hash,
             cr.composition_hash AS pos1_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(src_phys.geom),
-                substrate.geometry4d_centroid(cr.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(src_phys.geom),
+                substrate.geometryzm_centroid_point(cr.composition_geom)
             ]) AS edge_geom
           FROM composition_rows cr
           JOIN substrate.physicality src_phys
@@ -7764,9 +7845,9 @@ BEGIN
             ) AS edge_hash,
             cr.composition_hash AS pos0_hash,
             cr.source_hash      AS pos1_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(cr.composition_geom),
-                substrate.geometry4d_centroid(src_phys.geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(cr.composition_geom),
+                substrate.geometryzm_centroid_point(src_phys.geom)
             ]) AS edge_geom
           FROM composition_rows cr
           JOIN substrate.physicality src_phys
@@ -7956,9 +8037,9 @@ BEGIN
             ) AS edge_hash,
             cr.source_hash,
             cr.composition_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(src_phys.geom),
-                substrate.geometry4d_centroid(cr.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(src_phys.geom),
+                substrate.geometryzm_centroid_point(cr.composition_geom)
             ]) AS edge_geom
           FROM composition_rows cr
           JOIN substrate.physicality src_phys
@@ -8191,9 +8272,9 @@ BEGIN
             ) AS edge_hash,
             s.composition_hash AS source_hash,
             t.composition_hash AS target_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(s.composition_geom),
-                substrate.geometry4d_centroid(t.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(s.composition_geom),
+                substrate.geometryzm_centroid_point(t.composition_geom)
             ]) AS edge_geom
           FROM src_built s
           JOIN tgt_built t ON t.rn = s.rn
@@ -8357,9 +8438,9 @@ BEGIN
             ) AS edge_hash,
             cr.base_hash,
             cr.composition_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(src_phys.geom),
-                substrate.geometry4d_centroid(cr.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(src_phys.geom),
+                substrate.geometryzm_centroid_point(cr.composition_geom)
             ]) AS edge_geom
           FROM composition_rows cr
           JOIN substrate.physicality src_phys
@@ -8554,9 +8635,9 @@ BEGIN
             ) AS edge_hash,
             cr.unified_hash,
             cr.composition_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(src_phys.geom),
-                substrate.geometry4d_centroid(cr.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(src_phys.geom),
+                substrate.geometryzm_centroid_point(cr.composition_geom)
             ]) AS edge_geom
           FROM composition_rows cr
           JOIN substrate.physicality src_phys
@@ -8777,9 +8858,9 @@ BEGIN
             ) AS edge_hash,
             n.composition_hash AS name_hash,
             c.composition_hash AS cp_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(n.composition_geom),
-                substrate.geometry4d_centroid(c.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(n.composition_geom),
+                substrate.geometryzm_centroid_point(c.composition_geom)
             ]) AS edge_geom
           FROM name_built n
           JOIN cp_built c ON c.rn = n.rn
@@ -8974,9 +9055,9 @@ BEGIN
             ) AS edge_hash,
             n.composition_hash AS name_hash,
             c.composition_hash AS cp_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(n.composition_geom),
-                substrate.geometry4d_centroid(c.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(n.composition_geom),
+                substrate.geometryzm_centroid_point(c.composition_geom)
             ]) AS edge_geom
           FROM name_built n JOIN cp_built c ON c.rn = n.rn
     ),

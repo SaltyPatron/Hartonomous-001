@@ -83,7 +83,7 @@ internal sealed partial class NormalizationPrimitivePass : IModelAnalysisPass
             }
             session.Batch.AddEntityShape(t.Entity, shapeVerts.AsSpan());
             session.Batch.AddSignificance(
-                t.Entity, "model_trust", ModelDerivedTrustMu, "model_layer_norm_evidence");
+                t.Entity, "model_trust", ModelDerivedTrustMu, "positive_evidence");
             session.Batch.AddEntityModelSource(t.Entity, context.Source.ModelSourceId);
 
             emitted++;

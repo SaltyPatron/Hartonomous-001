@@ -5,7 +5,7 @@
 CREATE TABLE substrate.edge (
     edge_type_id  INT  NOT NULL REFERENCES substrate.edge_type(id),
     hash          substrate.hash_value NOT NULL,
-    geom          geometry4d,
+    geom          geometry(GeometryZM),
     provenance_id INT  NOT NULL REFERENCES substrate.provenance(id),
     PRIMARY KEY (edge_type_id, hash)
 ) PARTITION BY LIST (edge_type_id);

@@ -267,7 +267,9 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 [
                     new EdgeMemberSpec(wfHandle, "source", 0),
                     new EdgeMemberSpec(lemmaEntity, "target", 1),
-                ]);
+                ],
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_lemma"));
                 edgeCount++;
             }
 
@@ -349,7 +351,9 @@ public sealed partial class UdDecomposer : BaseDecomposer
             [
                 new EdgeMemberSpec(tokenHandles[ti], "dependent", 0),
                 new EdgeMemberSpec(tokenHandles[headIdx], "head", 1),
-            ]);
+            ],
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor(tok.Deprel));
             edgeCount++;
         }
 

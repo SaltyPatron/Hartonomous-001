@@ -24,8 +24,8 @@ namespace Hartonomous.Engine.Godel;
 /// </summary>
 public sealed partial class OutcomeRecorder
 {
-    private const string AcceptAttestationTypeCode = "inference_outcome_accept";
-    private const string RejectAttestationTypeCode = "inference_outcome_reject";
+    private const string AcceptAttestationTypeCode = "positive_evidence";
+    private const string RejectAttestationTypeCode = "negative_evidence";
 
     private readonly NpgsqlDataSource _dataSource;
     private readonly ILogger<OutcomeRecorder> _logger;

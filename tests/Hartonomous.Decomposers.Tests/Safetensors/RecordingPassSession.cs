@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Decomposers.Safetensors.Passes;
 
@@ -103,6 +104,36 @@ internal sealed class RecordingBatch : IIngestionBatch
             copy[i] = (vertices[i].X1, vertices[i].X2, vertices[i].X3, vertices[i].X4);
         }
         PhysLines.Add((entity, physicalityTypeCode, copy));
+    }
+
+    public void AddEntityShape(EntityHandle entity, ReadOnlySpan<Point4D> canonicalChildCentroids)
+    {
+        (double X, double Y, double Z, double M)[] copy = new (double, double, double, double)[canonicalChildCentroids.Length];
+        for (int i = 0; i < canonicalChildCentroids.Length; i++)
+        {
+            Point4D p = canonicalChildCentroids[i];
+            copy[i] = (p.X, p.Y, p.Z, p.M);
+        }
+        PhysLines.Add((entity, "contour", copy));
+    }
+
+    public void AddIngestionTrajectory(EntityHandle entity, ReadOnlySpan<TrajectoryVertex> vertices)
+    {
+        (double X, double Y, double Z, double M)[] copy = new (double, double, double, double)[vertices.Length];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            TrajectoryVertex v = vertices[i];
+            copy[i] = (v.ChildHashLo, v.Ordinal, v.ChildHashHi, v.Metadata);
+        }
+        PhysLines.Add((entity, "ingestion_trajectory", copy));
+    }
+
+    public void AddIngestionMultiTrajectory(EntityHandle entity, IReadOnlyList<ReadOnlyMemory<TrajectoryVertex>> subTrajectories)
+    {
+        foreach (ReadOnlyMemory<TrajectoryVertex> seg in subTrajectories)
+        {
+            AddIngestionTrajectory(entity, seg.Span);
+        }
     }
 
     public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)

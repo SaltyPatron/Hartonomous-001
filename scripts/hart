@@ -23,6 +23,8 @@ Usage:
   scripts/hart phase  [list|status|run] [args...]
   scripts/hart seed   [all|validate|PHASE] [args...]
   scripts/hart ops    status
+  scripts/hart cli    <subcommand> [args...]   # passthrough to Hartonomous.Cli
+  scripts/hart synthesize-model [args...]      # shorthand for: cli synthesize-model
 
 Examples:
   scripts/hart build dotnet --no-restore
@@ -198,6 +200,14 @@ case "$cmd" in
             status) run scripts/linux/ops-status.sh "$@" ;;
             *) printf 'ERROR: unknown ops action: %s\n\n' "$sub" >&2; usage >&2; exit 64 ;;
         esac
+        ;;
+
+    cli)
+        run scripts/linux/cli.sh "$@"
+        ;;
+
+    synthesize-model|export-model|query|recall|complete|godel|health|status-cli|quote|classify|embed-lookup|rerank|catalog-donors|bootstrap|audit-walk|compare-model|query-substrate|session)
+        run scripts/linux/cli.sh "$cmd" "$@"
         ;;
 
     *)

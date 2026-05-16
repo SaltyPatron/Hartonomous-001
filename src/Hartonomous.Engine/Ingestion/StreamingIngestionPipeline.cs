@@ -55,7 +55,7 @@ namespace Hartonomous.Engine.Ingestion;
 public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestionPipeline, IAsyncDisposable
 {
     private const string SourceAuthorityContext = "source_authority";
-    private const string ProvenanceAuthorityAttestation = "provenance_authority_corroboration";
+    private const string ProvenanceAuthorityAttestation = "positive_evidence";
     private const double ProvenanceAuthorityEventWeight = 0.8;
 
     /// <summary>
@@ -688,7 +688,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             records.Add(new JunctionRecord(
                 j.JunctionTable, j.Entity.Hash,
                 j.ReferenceId,
-                j.AttestationTypeCode ?? "lexical_curated_relation",
+                j.AttestationTypeCode ?? "positive_evidence",
                 j.Mu));
         }
 
@@ -696,7 +696,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         {
             records.Add(new EntitySignificanceRecord(
                 sig.ContextTypeCode,
-                sig.AttestationTypeCode ?? "provenance_authority_corroboration",
+                sig.AttestationTypeCode ?? "positive_evidence",
                 sig.Entity.Hash,
                 sig.InitialMu));
         }
@@ -1507,7 +1507,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private async ValueTask EmitEdgeSignificanceAsync(EdgeSignificanceRecord r, CancellationToken ct)
     {
         // Dedup key includes attestation_type for the same reason as the
-        // entity-side: corpus_co_occurrence_window vs lexical_curated_relation
+        // entity-side: positive_evidence vs positive_evidence
         // vs model_attention_pattern attestations on the same edge are
         // distinct rating rows, not duplicates.
         Hash32 key = ComposeKey(r.ContextTypeCode, r.AttestationTypeCode, r.EdgeTypeCode, r.EdgeHash);

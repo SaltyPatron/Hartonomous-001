@@ -24,7 +24,7 @@ namespace Hartonomous.Core.Decomposition;
 ///      round-trip).
 ///   3. Emits only the missing edges + their members + per-arena
 ///      <see cref="EdgeSignificanceSpec"/> with
-///      <c>attestation_type=corpus_co_occurrence_window</c> and weight =
+///      <c>attestation_type=positive_evidence</c> and weight =
 ///      1/distance × parent_significance_factor (default 1.0).
 ///
 /// Glicko-2 rating events still fire for ALL pairs (not just missing) — the
@@ -39,7 +39,7 @@ public static class WindowedCoOccurrence
 {
     public const int DefaultRadius = 5;
     public const string CoOccurrenceEdgeType = "co_occurrence";
-    public const string AttestationType = "corpus_co_occurrence_window";
+    public const string AttestationType = "positive_evidence";
 
     /// <summary>
     /// Emit windowed co-occurrence edges + Glicko-2 events for one parent's

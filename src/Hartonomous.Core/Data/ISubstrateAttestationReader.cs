@@ -39,8 +39,8 @@ public interface ISubstrateAttestationReader
     /// </summary>
     /// <param name="edgeTypeCode">e.g. "model_attention_pattern",
     /// "model_concept_similarity", "model_ffn_factor".</param>
-    /// <param name="attestationTypeCode">e.g. "model_attention_qk_pattern",
-    /// "model_input_embedding".</param>
+    /// <param name="attestationTypeCode">e.g. "positive_evidence",
+    /// "positive_evidence".</param>
     /// <param name="arenaCodes">Arenas to consult. Per-arena mu is returned
     /// for each. NULL = include every arena present on the edge.</param>
     /// <param name="sourceModelIds">When non-null, restrict to attestations

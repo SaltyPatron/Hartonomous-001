@@ -72,8 +72,12 @@ public sealed class FfnTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e => Assert.Equal("model_ffn_factor", e.EdgeTypeCode));
+            // Post-AP-38: AttestationTypeCode is sign-only. SwiGLU vs BERT vs MoE
+            // discrimination is via SlotCode + TupleCode; arena routing
+            // (model_trust + semantic_relevance) is via ContextTypeCode.
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_ffn_full_path"));
+                Assert.Contains(e.RatingEvents, s => s.SlotCode == "Gate,Up,Down"
+                    && s.AttestationTypeCode == "positive_evidence"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -122,7 +126,8 @@ public sealed class FfnTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_ffn_full_path"));
+                Assert.Contains(e.RatingEvents, s => s.SlotCode == "Intermediate,Output"
+                    && s.AttestationTypeCode == "positive_evidence"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -174,8 +179,12 @@ public sealed class FfnTuplePassTests
             await pass.RunAsync(ctx, session, CancellationToken.None);
 
             Assert.NotEmpty(session.Batch.Edges);
+            // MoE expert tuple: TupleCode == "MoeRouterBlock"; ExpertIndex set;
+            // arena = model_trust / semantic_relevance.
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_moe_expert_response"));
+                Assert.Contains(e.RatingEvents, s => s.TupleCode == "MoeRouterBlock"
+                    && s.ExpertIndex == 0
+                    && s.AttestationTypeCode == "positive_evidence"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -284,12 +293,29 @@ public sealed class FfnTuplePassTests
 
     private static float[] MakeMatrix(int rows, int cols, int seed)
     {
+        // Planted-correlation test fixture (see AttentionBlockTuplePassTests).
+        // Rows 0 and 1 share a direction so the (0, 1)/(1, 0) pair survives
+        // the per-tensor adaptive noise floor (AP-33). Other rows are tiny
+        // and honestly abstain.
         float[] m = new float[rows * cols];
+        double[] sharedDir = new double[cols];
+        for (int c = 0; c < cols; c++)
+        {
+            sharedDir[c] = System.Math.Cos((c + 1) * 0.97);
+        }
         for (int r = 0; r < rows; r++)
         {
             for (int c = 0; c < cols; c++)
             {
-                m[r * cols + c] = (float)System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137);
+                if (r == 0 || r == 1)
+                {
+                    double jitter = 0.01 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137);
+                    m[r * cols + c] = (float)(sharedDir[c] + jitter);
+                }
+                else
+                {
+                    m[r * cols + c] = (float)(0.05 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137));
+                }
             }
         }
         return m;

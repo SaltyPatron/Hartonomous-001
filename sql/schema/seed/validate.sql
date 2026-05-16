@@ -13,7 +13,7 @@ BEGIN
             ('substrate.physicality_type',      16),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  10),
-            ('substrate.provenance',            10),
+            ('substrate.provenance',            11),
             ('substrate.bidi_class',            23),
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),

@@ -303,7 +303,9 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         [
             new EdgeMemberSpec(src, "source", 0),
             new EdgeMemberSpec(tgt, "target", 1),
-        ]);
+        ],
+        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+        EdgeArenaRouter.EventsFor(EdgeTranslationLink));
         edgeCount++;
     }
 
@@ -342,7 +344,9 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
             [
                 new EdgeMemberSpec(audioEntity, "source", 0),
                 new EdgeMemberSpec(sentEntity, "target", 1),
-            ]);
+            ],
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor(EdgeRecordingOf));
             edgeCount++;
 
             if (!string.IsNullOrEmpty(row.Contributor))
@@ -354,7 +358,9 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
                 [
                     new EdgeMemberSpec(audioEntity, "source", 0),
                     new EdgeMemberSpec(contribEntity, "target", 1),
-                ]);
+                ],
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor(EdgeHasContributor));
                 edgeCount++;
             }
         }

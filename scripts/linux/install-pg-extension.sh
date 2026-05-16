@@ -6,6 +6,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 mode=copy
 native_only=false
 user_prefix=""
+target_db="${HARTONOMOUS_DB_NAME:-hartonomous}"
+db_host="${HARTONOMOUS_DB_HOST:-/var/run/postgresql}"
 
 while (($#)); do
     case "$1" in
@@ -31,13 +33,17 @@ while (($#)); do
             user_prefix="${2:?missing prefix}"
             shift 2
             ;;
+        --target-db)
+            target_db="${2:?missing target database name}"
+            shift 2
+            ;;
         --native-only)
             native_only=true
             shift
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/linux/install-pg-extension.sh [--copy|--symlink|--user[-prefix DIR]|--mode copy|symlink] [--native-only]
+Usage: scripts/linux/install-pg-extension.sh [--copy|--symlink|--user[-prefix DIR]|--mode copy|symlink] [--target-db NAME] [--native-only]
 
 Install Hartonomous PostgreSQL runtime artifacts into PostgreSQL's system
 directories OR into a user-local prefix that requires no sudo.
@@ -48,18 +54,25 @@ Modes:
   symlink  Dev loop. Creates system-directory symlinks back to this checkout.
            Faster, but the extension then follows mutable files in the repo.
   user     Per-user install into $HOME/.local/pg-hartonomous/ (or
-           $HARTONOMOUS_USER_PREFIX). No sudo required. After install,
-           connect with:
-             PGOPTIONS="-c extension_control_path=<prefix>/share:\$system
-                        -c dynamic_library_path=<prefix>/lib:\$libdir"
-           or set those GUCs in the connection string options= parameter.
-           Also rewrites the extension .so's runpath via chrpath / patchelf
-           when present, so libhartonomous.so resolves from <prefix>/lib.
+           $HARTONOMOUS_USER_PREFIX). No sudo required. After --user install:
+             1. The .so / .control / .sql files land in <prefix>/lib and
+                <prefix>/share/extension.
+             2. The extension .so runpath is rewritten via chrpath/patchelf
+                so libhartonomous.so resolves from <prefix>/lib.
+             3. PostgreSQL's per-database GUCs extension_control_path +
+                dynamic_library_path are set on the target database (default
+                hartonomous; override with --target-db NAME or
+                HARTONOMOUS_DB_NAME env). This is what removes the need to
+                pass PGOPTIONS at every connect — any client connecting to
+                the target database picks up the user-prefix paths
+                automatically.
 
 Environment:
   HARTONOMOUS_PG_CONFIG     Override pg_config path.
   HARTONOMOUS_SUDO          Override sudo command, e.g. "doas" or "sudo -n".
   HARTONOMOUS_USER_PREFIX   Override default --user prefix.
+  HARTONOMOUS_DB_NAME       Override default target database (hartonomous).
+  HARTONOMOUS_DB_HOST       Override psql host (default /var/run/postgresql).
 USAGE
             exit 0
             ;;
@@ -91,9 +104,28 @@ extension_so="$(realpath ext/hartonomous_pg/hartonomous.so 2>/dev/null || true)"
 control_file="$(realpath ext/hartonomous_pg/hartonomous.control)"
 sql_file="$(realpath ext/hartonomous_pg/sql/hartonomous--1.0.sql)"
 
+# Returns 0 (success) when the install can write to $path WITHOUT sudo —
+# i.e. no privilege escalation needed. Returns 1 when we must escalate.
+#
+# Three cases qualify as "no sudo":
+#   1. Path exists and is directly writable (we own it, or our group has w).
+#   2. Path doesn't exist and parent dir is writable.
+#   3. Path exists, NOT directly writable, BUT parent dir is writable —
+#      `install` replaces via unlink + create, which only needs dir-write.
+#      This case covers the common "file is root:root 755 in a group-775
+#      dir we belong to" layout: ahart can replace the file via the dir
+#      without owning it.
+#
+# Name predates the rewrite; semantics are "can write unprivileged".
 needs_privilege() {
     local path="$1"
-    [[ -e "$path" && -w "$path" ]] || [[ ! -e "$path" && -w "$(dirname "$path")" ]]
+    if [[ -e "$path" && -w "$path" ]]; then
+        return 0
+    fi
+    if [[ -w "$(dirname "$path")" ]]; then
+        return 0
+    fi
+    return 1
 }
 
 sudo_cmd=()
@@ -211,16 +243,35 @@ else
 fi
 
 if [[ "$mode" == user ]]; then
+    # Configure the target database's per-database GUCs so any connection
+    # automatically picks up the user-prefix paths. This removes the need
+    # for PGOPTIONS / connection-string options= at every connect.
+    info "Configuring per-database extension_control_path + dynamic_library_path on database \"$target_db\" (host=$db_host)"
+    if ! psql -h "$db_host" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$target_db'" 2>/dev/null | grep -q '^1$'; then
+        info "Database \"$target_db\" does not exist yet; creating it"
+        psql -h "$db_host" -d postgres -c "CREATE DATABASE $target_db" >/dev/null
+    fi
+    psql -h "$db_host" -d postgres -v ON_ERROR_STOP=1 <<SQL
+ALTER DATABASE $target_db SET extension_control_path = '$user_prefix/share:\$system';
+ALTER DATABASE $target_db SET dynamic_library_path = '$user_prefix/lib:\$libdir';
+SQL
+    info "Verifying GUCs on database \"$target_db\""
+    psql -h "$db_host" -d "$target_db" -c "SHOW extension_control_path; SHOW dynamic_library_path;" 2>&1 | sed 's/^/    /'
+
     echo
-    info "User-local install complete. Connect via:"
+    info "User-local install complete."
+    info "Database \"$target_db\" is configured — no PGOPTIONS needed at connect time."
     cat <<EOF
 
-    PGOPTIONS="-c extension_control_path=$user_prefix/share:\\\$system -c dynamic_library_path=$user_prefix/lib:\\\$libdir" \\
-        psql -h /var/run/postgresql -d hartonomous
+  Connect directly:
 
-  Or set the connection string options for Hartonomous.Cli:
+    psql -h $db_host -d $target_db
+    scripts/hart phase run --phase UcdUca
 
-    Host=/var/run/postgresql;Database=hartonomous;options=-c%20extension_control_path=$user_prefix/share:\\\$system%20-c%20dynamic_library_path=$user_prefix/lib:\\\$libdir
+  (If you need to connect from a database OTHER than \"$target_db\", or to
+  override at one connect, you can still pass:
+     PGOPTIONS="-c extension_control_path=$user_prefix/share:\\\$system -c dynamic_library_path=$user_prefix/lib:\\\$libdir"
+   but the default-database path no longer requires it.)
 
 EOF
 fi

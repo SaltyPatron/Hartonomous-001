@@ -1,5 +1,14 @@
 * text=auto
 
+# Pre-gen artifacts that exceed GitHub's 100MB per-file inline limit.
+# Track via git LFS — install once with `sudo apt install git-lfs && git lfs install`.
+# Existing history that contains these files inline needs `git lfs migrate import`
+# before they will push to GitHub:
+#   git lfs migrate import --include="ext/hartonomous_pg/src/generated/hartonomous-ucd-17.0.0.bundle.tar.zst"
+ext/hartonomous_pg/src/generated/hartonomous-ucd-17.0.0.bundle.tar.zst filter=lfs diff=lfs merge=lfs -text
+ext/hartonomous_pg/src/generated/hartonomous-ucd-17.0.0.reverse.bin filter=lfs diff=lfs merge=lfs -text
+ext/hartonomous_pg/src/generated/blocks/**/*.bin filter=lfs diff=lfs merge=lfs -text
+
 # Shell scripts must always have LF endings even when checked out on Windows.
 *.sh        text eol=lf
 *.bash      text eol=lf

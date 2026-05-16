@@ -2,7 +2,7 @@ CREATE OR REPLACE FUNCTION substrate.initialize_entity_significance(
     p_context_code          TEXT,
     p_entity_hash           BYTEA,
     p_initial_mu            DOUBLE PRECISION,
-    p_attestation_type_code TEXT DEFAULT 'provenance_authority_corroboration'
+    p_attestation_type_code TEXT DEFAULT 'positive_evidence'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
@@ -32,4 +32,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.initialize_entity_significance(TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
-    'Initialize or reset the mu value for one entity_significance row addressed by (arena, entity, attestation_type). Default attestation_type is provenance_authority_corroboration — ingestion-time priming. Preserves sigma, volatility, and games on existing rows.';
+    'Initialize or reset the mu value for one entity_significance row addressed by (arena, entity, attestation_type). Default attestation_type is positive_evidence — ingestion-time priming. Preserves sigma, volatility, and games on existing rows.';

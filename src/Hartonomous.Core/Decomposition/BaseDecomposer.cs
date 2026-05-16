@@ -15,7 +15,7 @@ namespace Hartonomous.Core.Decomposition;
 public abstract partial class BaseDecomposer : IDecomposer
 {
     private const string SourceAuthorityContext = "source_authority";
-    private const string ProvenanceAuthorityAttestation = "provenance_authority_corroboration";
+    private const string ProvenanceAuthorityAttestation = "positive_evidence";
     private const double ProvenanceAuthorityEventWeight = 0.8;
 
     private readonly DecomposerConfig _config;
@@ -214,7 +214,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// for Glicko-bearing junctions (entity_pos and pattern_deprel).
     /// AttestationTypeCode stratifies the rating row for Glicko-bearing
     /// junctions; non-Glicko junctions ignore it. Default
-    /// 'lexical_curated_relation' matches the dominant ingestion-time call
+    /// 'positive_evidence' matches the dominant ingestion-time call
     /// shape (lexicons assert POS / deprel classifications); model-derived
     /// junctions should pass 'model_attention_pattern' or similar.
     /// </summary>
@@ -225,7 +225,7 @@ public abstract partial class BaseDecomposer : IDecomposer
         int referenceId,
         double? mu,
         CancellationToken ct,
-        string attestationTypeCode = "lexical_curated_relation")
+        string attestationTypeCode = "positive_evidence")
         => sink.EmitAsync(new JunctionRecord(
             junctionTable, entity.Hash, referenceId, attestationTypeCode, mu), ct);
 
@@ -278,7 +278,7 @@ public abstract partial class BaseDecomposer : IDecomposer
     /// <summary>
     /// Emit one entity_significance row with an initial Mu, stratified by
     /// attestation_type. Sigma, volatility, games default at the substrate
-    /// side. Default attestation_type 'provenance_authority_corroboration'
+    /// side. Default attestation_type 'positive_evidence'
     /// matches ingestion-time priming where the source's authority is the
     /// kind of evidence being recorded.
     /// </summary>
@@ -288,7 +288,7 @@ public abstract partial class BaseDecomposer : IDecomposer
         string contextTypeCode,
         double initialMu,
         CancellationToken ct,
-        string attestationTypeCode = "provenance_authority_corroboration")
+        string attestationTypeCode = "positive_evidence")
         => sink.EmitAsync(new EntitySignificanceRecord(
             contextTypeCode, attestationTypeCode, entity.Hash, initialMu), ct);
 

@@ -17,7 +17,7 @@ namespace Hartonomous.Decomposers.Safetensors.Passes;
 /// Computes the composed adaptation effect ΔW = B·A, projects against the
 /// model's input embedding, and emits per-token-pair attestations on
 /// <c>model_concept_similarity</c> edges with attestation_type
-/// <c>model_lora_adapter_evidence</c>.
+/// <c>positive_evidence</c>.
 ///
 /// The base linear (q_proj, k_proj, ffn_down, etc.) ALSO produces its own
 /// attestation via the AttentionBlock / Ffn TuplePass — the LoRA delta
@@ -164,8 +164,8 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
 
                     EdgeSignificanceSpec[] sig =
                     [
-                        new EdgeSignificanceSpec("model_trust", "model_lora_adapter_evidence", mu),
-                        new EdgeSignificanceSpec("semantic_relevance", "model_lora_adapter_evidence", mu),
+                        new EdgeSignificanceSpec("model_trust", "positive_evidence", mu),
+                        new EdgeSignificanceSpec("semantic_relevance", "positive_evidence", mu),
                     ];
 
                     session.Batch.AddEdge("model_concept_similarity", context.ProvenanceCode,

@@ -98,7 +98,7 @@ public interface IIngestionBatch
     /// FK to substrate.entity(hash) through entity_hash.
     ///
     /// AttestationTypeCode stratifies Glicko-bearing junctions (entity_pos,
-    /// pattern_deprel) per kind of evidence. Default lexical_curated_relation
+    /// pattern_deprel) per kind of evidence. Default positive_evidence
     /// matches the dominant ingestion path (POS/deprel curators); model
     /// decomposers should pass model_attention_pattern or similar.
     /// Non-Glicko junctions ignore the value at the drain boundary.
@@ -108,7 +108,7 @@ public interface IIngestionBatch
         EntityHandle entity,
         int referenceId,
         double? mu = null,
-        string attestationTypeCode = "lexical_curated_relation");
+        string attestationTypeCode = "positive_evidence");
 
     /// <summary>
     /// Append a physicality row with a native geometry4d payload.
@@ -268,7 +268,7 @@ public interface IIngestionBatch
     /// <summary>
     /// Append an entity-significance prime row in the given arena, stratified
     /// by attestation_type. Default attestation_type
-    /// 'provenance_authority_corroboration' matches ingestion-time priming
+    /// 'positive_evidence' matches ingestion-time priming
     /// where the source's authority is the kind of evidence. Edge
     /// significance is primed in bulk by a separate substrate procedure, not
     /// per-batch.
@@ -277,7 +277,7 @@ public interface IIngestionBatch
         EntityHandle entity,
         string contextTypeCode,
         double initialMu,
-        string attestationTypeCode = "provenance_authority_corroboration");
+        string attestationTypeCode = "positive_evidence");
 
     /// <summary>
     /// Record that <paramref name="entity"/> was observed in the given

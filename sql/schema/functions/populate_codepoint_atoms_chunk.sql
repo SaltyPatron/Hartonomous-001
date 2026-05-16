@@ -56,9 +56,9 @@ BEGIN
         RAISE EXCEPTION 'significance_context code=''source_authority'' missing — bootstrap not applied?';
     END IF;
 
-    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    v_attestation_type_id := substrate.resolve_attestation_type_id('positive_evidence');
     IF v_attestation_type_id IS NULL THEN
-        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'attestation_type code=''positive_evidence'' missing — bootstrap not applied?';
     END IF;
 
     INSERT INTO substrate.entity (hash)

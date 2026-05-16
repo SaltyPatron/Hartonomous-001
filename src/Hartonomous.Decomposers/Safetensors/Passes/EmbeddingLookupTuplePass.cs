@@ -146,7 +146,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 if (!vocabHashes.TryGetValue(row, out Hash32 wordHash)) { continue; }
                 EntityHandle wordForm = new(wordHash, "word_form");
                 session.Batch.AddPhysicalityPoint4d(wordForm, "embedding_firefly", x[row], y[row], z[row], magnitude[row]);
-                session.Batch.AddSignificance(wordForm, "model_trust", ModelDerivedTrustMu, "model_embedding_proximity");
+                session.Batch.AddSignificance(wordForm, "model_trust", ModelDerivedTrustMu, "positive_evidence");
                 session.Batch.AddEntityModelSource(wordForm, context.Source.ModelSourceId);
                 fireflies++;
                 if (fireflies % FlushThreshold == 0)
@@ -271,11 +271,19 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                                 b = new EntityHandle(hashT.Value, "word_form");
                             }
 
-                            double score = SigmoidLocal(cos / CosineTemperature);
+                            // AP-31 sign-bearing emission. Antipodal embedding
+                            // pairs (cos ≈ −1, antonyms) emit negative_evidence
+                            // with weight=|cos|; aligned pairs emit
+                            // positive_evidence. Sub-floor pairs were already
+                            // filtered above by `Math.Abs(cos) < NoiseFloor`.
+                            double absCos = Math.Abs(cos);
+                            double score = cos > 0 ? 1.0 : 0.0;
+                            string signCode = cos > 0 ? "positive_evidence" : "negative_evidence";
+
                             EdgeRatingEvent[] events =
                             [
                                 new EdgeRatingEvent(
-                                    "model_trust", "model_input_embedding", score, 1.0,
+                                    "model_trust", signCode, score, absCos,
                                     ModelSourceId: context.Source.ModelSourceId,
                                     TensorHash: table.Entity.Hash,
                                     PackageTensorHash: table.PackageTensorEntity?.Hash,
@@ -288,7 +296,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                                     HeadIndex: t.HeadIndex,
                                     ExpertIndex: t.ExpertIndex),
                                 new EdgeRatingEvent(
-                                    "semantic_relevance", "model_input_embedding", score, 1.0,
+                                    "semantic_relevance", signCode, score, absCos,
                                     ModelSourceId: context.Source.ModelSourceId,
                                     TensorHash: table.Entity.Hash,
                                     PackageTensorHash: table.PackageTensorEntity?.Hash,

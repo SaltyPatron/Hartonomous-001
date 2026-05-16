@@ -14,7 +14,7 @@ namespace Hartonomous.Core.Ingestion;
 /// pattern_deprel) — the new PK column stratifies the rating per kind of
 /// evidence (lexical curators vs model attention patterns vs corpus
 /// statistics). For non-Glicko junctions the field is ignored at the drain
-/// boundary; pass any valid code (e.g. lexical_curated_relation).
+/// boundary; pass any valid code (e.g. positive_evidence).
 ///
 /// Mu is non-null only for Glicko-bearing junctions; the drain path
 /// COALESCEs to the default for missing values.

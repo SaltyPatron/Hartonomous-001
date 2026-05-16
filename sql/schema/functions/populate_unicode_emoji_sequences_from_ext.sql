@@ -141,9 +141,9 @@ BEGIN
             ) AS edge_hash,
             n.composition_hash AS name_hash,
             c.composition_hash AS cp_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(n.composition_geom),
-                substrate.geometry4d_centroid(c.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(n.composition_geom),
+                substrate.geometryzm_centroid_point(c.composition_geom)
             ]) AS edge_geom
           FROM name_built n JOIN cp_built c ON c.rn = n.rn
     ),

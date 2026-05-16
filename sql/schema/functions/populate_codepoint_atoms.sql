@@ -75,9 +75,9 @@ BEGIN
     -- Resolve attestation_type_id ONCE outside the SELECT below — invoking
     -- substrate.resolve_attestation_type_id() per row across 1.1M codepoints
     -- is gratuitous function-call overhead (single-threaded in one backend).
-    v_attestation_type_id := substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+    v_attestation_type_id := substrate.resolve_attestation_type_id('positive_evidence');
     IF v_attestation_type_id IS NULL THEN
-        RAISE EXCEPTION 'attestation_type code=''provenance_authority_corroboration'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'attestation_type code=''positive_evidence'' missing — bootstrap not applied?';
     END IF;
 
     -- Warm up the composite tupdesc cache before plpgsql plans the SRF.
@@ -109,7 +109,7 @@ BEGIN
 
     -- 4. Source-authority significance prior. UCD codepoint atoms come
     -- from the embedded Unicode 17.0.0 tables; the kind of evidence is
-    -- provenance_authority_corroboration (Unicode Consortium asserts these
+    -- positive_evidence (Unicode Consortium asserts these
     -- codepoints exist with this initial mu).
     INSERT INTO substrate.entity_significance (
         context_type_id, entity_hash, attestation_type_id,

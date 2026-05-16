@@ -33,14 +33,14 @@ public interface IAttestationEmitter
     /// <summary>
     /// The substrate <c>edge_type</c> code edges emitted by this emitter
     /// carry (e.g. <c>"model_attention_pattern"</c>,
-    /// <c>"model_ffn_full_path"</c>, <c>"model_concept_similarity"</c>).
+    /// <c>"positive_evidence"</c>, <c>"model_concept_similarity"</c>).
     /// </summary>
     string EdgeTypeCode { get; }
 
     /// <summary>
     /// The substrate <c>attestation_type</c> code Glicko events fire under
-    /// (e.g. <c>"model_attention_qk_pattern"</c>,
-    /// <c>"model_ffn_full_path"</c>).
+    /// (e.g. <c>"positive_evidence"</c>,
+    /// <c>"positive_evidence"</c>).
     /// </summary>
     string AttestationTypeCode { get; }
 

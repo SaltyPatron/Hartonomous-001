@@ -306,6 +306,8 @@
 -- @include schema/functions/frechet_4d_geom.sql
 -- @include schema/functions/hausdorff_4d_geom.sql
 -- @include schema/functions/geometry4d_centroid.sql
+-- @include schema/functions/geometry4d_to_geometryzm.sql
+-- @include schema/functions/geometryzm_centroid_point.sql
 -- @include schema/functions/populate_edge_trajectories.sql
 -- @include schema/functions/count_missing_edge_trajectories.sql
 -- @include schema/functions/physicality_linestring4d.sql

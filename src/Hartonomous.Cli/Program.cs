@@ -32,6 +32,7 @@ internal static class Program
         builder.Services.AddSingleton<AuditWalkCommand>();
         builder.Services.AddSingleton<HealthCommand>();
         builder.Services.AddSingleton<ExportModelCommand>();
+        builder.Services.AddSingleton<SynthesizeModelCommand>();
         builder.Services.AddSingleton<PhasesCommand>();
         builder.Services.AddSingleton<SessionCommand>();
         builder.Services.AddSingleton<StatusCommand>();
@@ -50,6 +51,7 @@ internal static class Program
         root.AddCommand(sp.GetRequiredService<GodelCommand>().Build());
         root.AddCommand(sp.GetRequiredService<RecallCommand>().Build());
         root.AddCommand(sp.GetRequiredService<ExportModelCommand>().Build());
+        root.AddCommand(sp.GetRequiredService<SynthesizeModelCommand>().Build());
         root.AddCommand(CompareModelCommand.Build());
         root.AddCommand(sp.GetRequiredService<QuerySubstrateCommand>().Build());
         root.AddCommand(sp.GetRequiredService<AuditWalkCommand>().Build());

@@ -496,7 +496,7 @@ public sealed class SubstrateTextDecomposer
                         TextDecomposeNative.SigSourceAuthority => "source_authority",
                         _                                       => "source_authority",
                     };
-                    const string attestationTypeCode = "provenance_authority_corroboration";
+                    const string attestationTypeCode = "positive_evidence";
                     if (ShouldEmitSignificance(Options, ctxCode, attestationTypeCode, entHash))
                     {
                         Batch.AddSignificance(eh, ctxCode, record.DoubleParam, attestationTypeCode);
@@ -633,9 +633,9 @@ public sealed class SubstrateTextDecomposer
                         _                                       => "source_authority",
                     };
                     // Native text_decompose ships source_authority priors —
-                    // attestation_type 'provenance_authority_corroboration'
+                    // attestation_type 'positive_evidence'
                     // is the canonical match for ingestion-time priming.
-                    const string attestationTypeCode = "provenance_authority_corroboration";
+                    const string attestationTypeCode = "positive_evidence";
                     if (ShouldEmitSignificance(Options, ctxCode, attestationTypeCode, entHash))
                     {
                         Records.Add(new EntitySignificanceRecord(

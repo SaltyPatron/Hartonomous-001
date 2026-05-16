@@ -320,7 +320,9 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                             [
                                 new EdgeMemberSpec(memberHandles[i], "source", 0),
                                 new EdgeMemberSpec(synsetHandle,     "target", 1),
-                            ]);
+                            ],
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor("has_sense"));
                             Bump("has_sense");
                             localBatch.AddJunction("entity_language", memberHandles[i], engLangId);
                         }
@@ -331,7 +333,9 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                             [
                                 new EdgeMemberSpec(synsetHandle, "source", 0),
                                 new EdgeMemberSpec(textHandle,   "target", 1),
-                            ]);
+                            ],
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor(edgeType));
                             Bump(edgeType);
                         }
 
@@ -403,7 +407,9 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                     [
                         new EdgeMemberSpec(srcHandle,    "source", 0),
                         new EdgeMemberSpec(targetHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor(relationCode));
                     Bump(relationCode);
                     pointerCount++;
                 }
@@ -450,7 +456,9 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                                 new EdgeMemberSpec(lemmaHandle, "source",  0),
                                 new EdgeMemberSpec(frameDoc,    "target",  1),
                                 new EdgeMemberSpec(srcHandle,   "context", 2),
-                            ]);
+                            ],
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor("has_frame"));
                             Bump("has_frame");
                             frameEdgeCount++;
                         }
@@ -499,7 +507,9 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                     [
                         new EdgeMemberSpec(inflectedHandle, "source", 0),
                         new EdgeMemberSpec(baseHandle,      "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("inflection_of"));
                     Bump("inflection_of");
                 }
                 if (batch.EntityCount >= BatchSize || batch.EdgeCount >= BatchSize)

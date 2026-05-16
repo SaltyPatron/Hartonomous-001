@@ -123,7 +123,9 @@ public sealed partial class OmwDecomposer : TextIngestingDecomposer
                         [
                             new EdgeMemberSpec(lemmaHandle, "source", 0),
                             new EdgeMemberSpec(synsetHandle, "target", 1),
-                        ]);
+                        ],
+                        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                        EdgeArenaRouter.EventsFor("aligned_to_synset"));
                         edgeCount++;
                     }
                 }

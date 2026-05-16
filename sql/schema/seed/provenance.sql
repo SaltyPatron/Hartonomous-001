@@ -15,6 +15,7 @@ INSERT INTO substrate.provenance
 VALUES
     ('unicode_consortium',     'authoritative_standard', 100000,  50, NULL,                1.00),
     ('sil_international',      'authoritative_standard', 100000,  50, NULL,                1.00),
+    ('library_of_congress',    'authoritative_standard', 100000,  50, NULL,                1.00),
     ('princeton_wordnet',      'academic_curated',        90000, 100, NULL,                1.00),
     ('omwn_consortium',        'academic_consortium',     85000, 100, 'princeton_wordnet', 0.92),
     ('universaldependencies',  'academic_consortium',     85000, 100, NULL,                1.00),
@@ -32,6 +33,7 @@ SELECT p.id, m.modality_code
       VALUES
         ('unicode_consortium',     'text'::substrate.modality_code),
         ('sil_international',      'text'::substrate.modality_code),
+        ('library_of_congress',    'text'::substrate.modality_code),
         ('princeton_wordnet',      'text'::substrate.modality_code),
         ('omwn_consortium',        'text'::substrate.modality_code),
         ('universaldependencies',  'text'::substrate.modality_code),

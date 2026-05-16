@@ -18,7 +18,7 @@
 --   σ₀ = COALESCE(pea.initial_sigma, p.initial_sigma)
 --
 -- attestation_type: priming attestation lands as
--- 'provenance_authority_corroboration' — the substrate's record that THIS
+-- 'positive_evidence' — the substrate's record that THIS
 -- provenance asserts THIS edge with THIS prior. Other attestation types
 -- (corpus_co_occurrence_window, model_attention_pattern, etc.) accumulate
 -- separately via the streaming pipeline's significance-events drain.
@@ -37,10 +37,10 @@ DECLARE
     v_attestation_type_id   INT;
 BEGIN
     v_attestation_type_id :=
-        substrate.resolve_attestation_type_id('provenance_authority_corroboration');
+        substrate.resolve_attestation_type_id('positive_evidence');
     IF v_attestation_type_id IS NULL THEN
         RAISE EXCEPTION
-            'attestation_type "provenance_authority_corroboration" not seeded; cannot prime';
+            'attestation_type "positive_evidence" not seeded; cannot prime';
     END IF;
 
     INSERT INTO substrate.arena_priming_state (context_type_id)
@@ -136,4 +136,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.prime_unprimed_edges_chunk(INT, INT) IS
-    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index. Primes under attestation_type=provenance_authority_corroboration; other attestation types accumulate via the pipeline''s significance-events drain.';
+    'Per-arena significance primer chunk. Returns rows scanned so callers continue through conflict-only chunks; uses a watermark forward scan over substrate.edge PK index. Primes under attestation_type=positive_evidence; other attestation types accumulate via the pipeline''s significance-events drain.';

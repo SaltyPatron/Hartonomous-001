@@ -110,9 +110,9 @@ BEGIN
             ) AS edge_hash,
             cr.base_hash,
             cr.composition_hash,
-            ST_MakeLine4D(ARRAY[
-                substrate.geometry4d_centroid(src_phys.geom),
-                substrate.geometry4d_centroid(cr.composition_geom)
+            ST_MakeLine(ARRAY[
+                substrate.geometryzm_centroid_point(src_phys.geom),
+                substrate.geometryzm_centroid_point(cr.composition_geom)
             ]) AS edge_geom
           FROM composition_rows cr
           JOIN substrate.physicality src_phys

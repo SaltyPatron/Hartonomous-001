@@ -59,11 +59,15 @@ public sealed class AttentionBlockTuplePassTests
             // top-K-per-side filter further reduces; expect at least 1 edge).
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e => Assert.Equal("model_attention_pattern", e.EdgeTypeCode));
+            // Post-AP-38: AttestationTypeCode is sign-only (positive/negative_evidence).
+            // Q/K vs V/O domain discrimination is via SlotCode on the rating event;
+            // arena routing is via ContextTypeCode (model_trust + attention_pattern_confidence).
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.RatingEvents, s => s.AttestationTypeCode == "model_attention_qk_pattern"));
+                Assert.Contains(e.RatingEvents, s => s.SlotCode == "Q,K"
+                    && s.ContextTypeCode == "attention_pattern_confidence"));
             // No VO attestations (V/O not provided)
             Assert.DoesNotContain(session.Batch.Edges, e =>
-                e.RatingEvents.Any(s => s.AttestationTypeCode == "model_attention_vo_pattern"));
+                e.RatingEvents.Any(s => s.SlotCode == "V,O"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -118,9 +122,9 @@ public sealed class AttentionBlockTuplePassTests
             await pass.RunAsync(ctx, session, CancellationToken.None);
 
             Assert.Contains(session.Batch.Edges, e =>
-                e.RatingEvents.Any(s => s.AttestationTypeCode == "model_attention_qk_pattern"));
+                e.RatingEvents.Any(s => s.SlotCode == "Q,K"));
             Assert.Contains(session.Batch.Edges, e =>
-                e.RatingEvents.Any(s => s.AttestationTypeCode == "model_attention_vo_pattern"));
+                e.RatingEvents.Any(s => s.SlotCode == "V,O"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -277,14 +281,39 @@ public sealed class AttentionBlockTuplePassTests
 
     private static float[] MakeMatrix(int rows, int cols, int seed)
     {
-        // Deterministic synthetic data with non-trivial variation across rows
-        // so the projection-against-embedding produces non-uniform norms.
+        // Planted-correlation test fixture for the per-tensor adaptive
+        // noise floor (AP-33 threshold-only LTH discrimination).
+        //
+        // Random Sin(...) values uniformly distributed produce pair-score
+        // values ~stddev, which is exactly the noise floor — so honest
+        // abstention drops every candidate. To unit-test the emission
+        // path we need ONE outlier pair clearly above the floor.
+        //
+        // Construction: rows 0 and 1 share the SAME direction (a single
+        // shared codebook vector + tiny seed-modulated jitter), so
+        // Pq[0] · Pk[1] is large (cosine ~ 1, not orthogonal). Other
+        // rows get small uncorrelated values. The (0, 1) and (1, 0)
+        // pairs survive the floor; everything else honestly abstains.
         float[] m = new float[rows * cols];
+        double[] sharedDir = new double[cols];
+        for (int c = 0; c < cols; c++)
+        {
+            sharedDir[c] = System.Math.Cos((c + 1) * 0.97);
+        }
         for (int r = 0; r < rows; r++)
         {
             for (int c = 0; c < cols; c++)
             {
-                m[r * cols + c] = (float)System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137);
+                if (r == 0 || r == 1)
+                {
+                    // Strong shared direction + tiny jitter
+                    double jitter = 0.01 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137);
+                    m[r * cols + c] = (float)(sharedDir[c] + jitter);
+                }
+                else
+                {
+                    m[r * cols + c] = (float)(0.05 * System.Math.Sin((seed + 1) * (r + 1) * (c + 1) * 0.137));
+                }
             }
         }
         return m;

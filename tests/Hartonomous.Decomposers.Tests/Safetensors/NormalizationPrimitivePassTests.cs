@@ -37,12 +37,13 @@ public sealed class NormalizationPrimitivePassTests
         Assert.Equal((1.0, 2.0, 3.0, 4.0), line.Vertices[0]);
         Assert.Equal((5.0, 6.0, 7.0, 8.0), line.Vertices[1]);
 
-        // One entity_significance with attestation_type=model_layer_norm_evidence
+        // One entity_significance — sign-bearing positive_evidence per AP-38.
+        // Domain discrimination is via (provenance × arena), not attestation_type.
         Assert.Single(session.Batch.Significances);
         var sig = session.Batch.Significances[0];
         Assert.Equal(handle.Entity, sig.Entity);
         Assert.Equal("model_trust", sig.Arena);
-        Assert.Equal("model_layer_norm_evidence", sig.AttestationType);
+        Assert.Equal("positive_evidence", sig.AttestationType);
 
         // One entity_model_source linkage
         Assert.Single(session.Batch.ModelSources);

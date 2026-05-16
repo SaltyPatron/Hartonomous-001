@@ -3,7 +3,7 @@ CREATE OR REPLACE FUNCTION substrate.initialize_edge_significance(
     p_edge_type_code        TEXT,
     p_edge_hash             BYTEA,
     p_initial_mu            DOUBLE PRECISION,
-    p_attestation_type_code TEXT DEFAULT 'provenance_authority_corroboration'
+    p_attestation_type_code TEXT DEFAULT 'positive_evidence'
 )
 RETURNS VOID
 LANGUAGE plpgsql VOLATILE
@@ -41,4 +41,4 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION substrate.initialize_edge_significance(TEXT, TEXT, BYTEA, DOUBLE PRECISION, TEXT) IS
-    'Initialize or reset the mu value for one edge_significance row addressed by (arena, edge handle, attestation_type). Default attestation_type is provenance_authority_corroboration — the kind of evidence that ingestion-time priming represents. Preserves sigma, volatility, and games on existing rows.';
+    'Initialize or reset the mu value for one edge_significance row addressed by (arena, edge handle, attestation_type). Default attestation_type is positive_evidence — the kind of evidence that ingestion-time priming represents. Preserves sigma, volatility, and games on existing rows.';

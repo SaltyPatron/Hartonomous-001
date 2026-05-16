@@ -11,7 +11,7 @@ namespace Hartonomous.Core.Compute.Common;
 /// Per docs/specs/recomposers/algorithms/ffn-kv-inversion.md Approach 1
 /// (direct KV-memory construction + thin SVD compression — preferred over
 /// Approach 2 per-dim Levenberg-Marquardt). Each attestation
-/// <c>(input_token, output_token, strength, attestation_type=model_ffn_full_path)</c>
+/// <c>(input_token, output_token, strength, attestation_type=positive_evidence)</c>
 /// becomes a constraint on the composed FFN path
 /// <c>output_token^T · W_down · σ(W_gate · input_token) ⊙ (W_up · input_token) = strength</c>.
 /// The exact closed-form construction:

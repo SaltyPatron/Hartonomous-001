@@ -68,8 +68,11 @@ public sealed class LoraDeltaTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e => Assert.Equal("model_concept_similarity", e.EdgeTypeCode));
+            // Post-AP-38: AttestationTypeCode is sign-only; LoRA adapter evidence
+            // is encoded via (provenance × arena) — model_trust + semantic_relevance.
             Assert.All(session.Batch.Edges, e =>
-                Assert.Contains(e.Significance, s => s.AttestationTypeCode == "model_lora_adapter_evidence"));
+                Assert.Contains(e.Significance, s => s.ContextTypeCode == "model_trust"
+                    && s.AttestationTypeCode == "positive_evidence"));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }

@@ -18,7 +18,7 @@ namespace Hartonomous.Decomposers.Safetensors.Passes;
 /// events on <c>model_attention_pattern</c> edges between word_form entities.
 ///
 /// Each per-pair projection value IS one Glicko contest in the
-/// model_attention_qk_pattern arena. Mapping: <c>score = sigmoid(value /
+/// positive_evidence arena. Mapping: <c>score = sigmoid(value /
 /// temperature); weight = 1.0</c>. Continuous score in [0,1] encodes both
 /// sign (above/below 0.5) and magnitude (distance from 0.5). Glicko-2
 /// absorbs the per-event scale via its variance estimator; no per-row
@@ -109,7 +109,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
                 edgesEmitted += await EmitChunkedQK(
                     session, context, usable, vocabHashByIdx,
                     embed, qFlat, kFlat, vocabSize, hiddenDim, qCols,
-                    "model_attention_qk_pattern", t, "Q,K", ct);
+                    "positive_evidence", t, "Q,K", ct);
             }
 
             if (v is not null && o is not null
@@ -126,7 +126,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
                     edgesEmitted += await EmitChunkedVO(
                         session, context, usable, vocabHashByIdx,
                         embed, vFlat, oFlat, vocabSize, hiddenDim, vCols, oRows,
-                        "model_attention_vo_pattern", t, "V,O", ct);
+                        "positive_evidence", t, "V,O", ct);
                 }
             }
 
@@ -307,12 +307,24 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
 
                         EntityHandle aH = new(aHash.Value, "word_form");
                         EntityHandle bH = new(bHash.Value, "word_form");
-                        double score = Sigmoid(signed / temperature);
+
+                        // AP-31 sign-bearing emission: Glicko score = 1.0 for
+                        // forward-direction observations (signed > 0), 0.0 for
+                        // antipodal (signed < 0). Weight = |signed| carries the
+                        // magnitude. attestation_type sign carries the row
+                        // discriminator. The prior Sigmoid(signed/T) + constant
+                        // weight=1.0 collapsed sign + magnitude into a continuous
+                        // score with no axis discrimination — losing the
+                        // distinction between tight-positive and tight-negative
+                        // consensus states.
+                        double absSigned = Math.Abs(signed);
+                        double score = signed > 0 ? 1.0 : 0.0;
+                        string signCode = signed > 0 ? "positive_evidence" : "negative_evidence";
 
                         EdgeRatingEvent[] events =
                         [
                             new EdgeRatingEvent(
-                                "model_trust", attestationTypeCode, score, 1.0,
+                                "model_trust", signCode, score, absSigned,
                                 ModelSourceId: context.Source.ModelSourceId,
                                 TupleCode: tuple.Tuple.ToString(),
                                 SlotCode: slotCode,
@@ -321,7 +333,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
                                 HeadIndex: tuple.HeadIndex,
                                 ExpertIndex: tuple.ExpertIndex),
                             new EdgeRatingEvent(
-                                "attention_pattern_confidence", attestationTypeCode, score, 1.0,
+                                "attention_pattern_confidence", signCode, score, absSigned,
                                 ModelSourceId: context.Source.ModelSourceId,
                                 TupleCode: tuple.Tuple.ToString(),
                                 SlotCode: slotCode,

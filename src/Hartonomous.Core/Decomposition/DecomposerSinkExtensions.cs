@@ -39,11 +39,11 @@ public static class DecomposerSinkExtensions
     /// The <c>attestation_type</c> code default-rated edges fire Glicko
     /// events under. Same as <see cref="BaseDecomposer"/>.
     /// </summary>
-    private const string ProvenanceAuthorityAttestation = "provenance_authority_corroboration";
+    private const string ProvenanceAuthorityAttestation = "positive_evidence";
 
     /// <summary>
     /// Per-event Glicko weight applied to the bundled
-    /// <c>provenance_authority_corroboration</c> rating event that fires
+    /// <c>positive_evidence</c> rating event that fires
     /// alongside every default edge emission.
     /// </summary>
     private const double ProvenanceAuthorityEventWeight = 0.8;
@@ -71,7 +71,7 @@ public static class DecomposerSinkExtensions
     /// computation in <c>substrate.edge</c>). Members are emitted as
     /// separate <see cref="EdgeMemberRecord"/>s; a bundled
     /// <see cref="EdgeRatingEventRecord"/> fires the
-    /// <c>provenance_authority_corroboration</c> Glicko event on the
+    /// <c>positive_evidence</c> Glicko event on the
     /// <c>source_authority</c> arena so the edge's initial mu reflects the
     /// provenance prior.
     /// </summary>
@@ -155,7 +155,7 @@ public static class DecomposerSinkExtensions
         int referenceId,
         double? mu,
         CancellationToken ct,
-        string attestationTypeCode = "lexical_curated_relation")
+        string attestationTypeCode = "positive_evidence")
         => sink.EmitAsync(new JunctionRecord(
             junctionTable, entity.Hash, referenceId, attestationTypeCode, mu), ct);
 
@@ -194,7 +194,7 @@ public static class DecomposerSinkExtensions
         string contextTypeCode,
         double initialMu,
         CancellationToken ct,
-        string attestationTypeCode = "provenance_authority_corroboration")
+        string attestationTypeCode = "positive_evidence")
         => sink.EmitAsync(new EntitySignificanceRecord(
             contextTypeCode, attestationTypeCode, entity.Hash, initialMu), ct);
 

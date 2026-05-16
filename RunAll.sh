@@ -22,6 +22,7 @@ skip_seed=false
 skip_status=false
 with_model=false
 with_tests=false
+with_synth=false
 tee_stdout=false
 dry_run=false
 codegen_force=true
@@ -30,6 +31,12 @@ install_mode="${HARTONOMOUS_RUNALL_INSTALL_MODE:-copy}"
 source_root=""
 model_source=""
 ucd_root=""
+synth_template="${HARTONOMOUS_RUNALL_SYNTH_TEMPLATE:-minilm-base}"
+synth_vocab_size="${HARTONOMOUS_RUNALL_SYNTH_VOCAB:-256}"
+synth_output="${HARTONOMOUS_RUNALL_SYNTH_OUTPUT:-}"  # default set after RUN_DIR resolves
+synth_dtype="${HARTONOMOUS_RUNALL_SYNTH_DTYPE:-f32}"
+synth_blend="${HARTONOMOUS_RUNALL_SYNTH_BLEND:-}"
+synth_recipe=""
 
 usage() {
         sed 's/^|//' <<'USAGE'
@@ -38,9 +45,23 @@ usage() {
 |Usage:
 |  ./RunAll.sh [options]
 |
-|Default flow:
+|Default flow (system install):
 |  preflight -> clean -> codegen unicode --force -> build native/sql/dotnet/pg-extension
-|  -> db reset --force -> seed phases --no-build -> seed validate -> ops status
+|  -> install pg-extension -> db reset --force -> seed phases --no-build
+|  -> seed validate -> ops status [-> synthesize-model when --with-synth]
+|
+|Permission model:
+|  System install writes to /usr/lib/postgresql/18/lib + /usr/share/postgresql/18/extension.
+|  Those dirs are mode 775 group postgres-extensions in this layout. If your user
+|  is in the postgres-extensions group, NO sudo is needed — install-pg-extension
+|  detects parent-dir writability and skips sudo. The only sudo prompts are the
+|  delete and the actual install when group membership is absent.
+|
+|  --user mode writes everything under ~/.local/pg-hartonomous/ and bakes
+|  per-database GUCs (extension_control_path + dynamic_library_path) so no
+|  system-dir write is ever attempted. NOTE: db reset drops the database,
+|  which also drops the per-database GUCs; --user mode in RunAll re-runs
+|  install pg-extension AFTER db reset to re-bake them before CREATE EXTENSION.
 |
 |Each top-level build/reset/seed phase writes its own log under logs/runall/<run-id>/.
 |
@@ -52,7 +73,17 @@ usage() {
 |  --ucd-root PATH        UCD root passed to scripts/hart codegen unicode.
 |  --with-model           Include the ModelDecomp seed phase.
 |  --with-tests           Also run native/unit tests after build and smoke/integration around DB work.
-|  --install-mode MODE    PG extension install mode: copy or symlink. Default: copy.
+|  --with-synth           After validate, run scripts/hart synthesize-model and verify the export.
+|  --install-mode MODE    PG extension install mode: copy | symlink | user. Default: copy.
+|  --user                 Shorthand for --install-mode user.
+|  --synth-template NAME  Synthesis template: minilm-base | bert-base | llama-small | llama-1b
+|                         | llama-3b | qwen-7b | mistral-7b. Default: minilm-base.
+|  --synth-vocab-size N   Override synthesis vocab size. Default: 256.
+|  --synth-dtype DT       Synthesis output dtype (f32 | f16 | bf16). Default: f32.
+|  --synth-blend NAME     Recipe blend (default | encyclopedic | conversational | practitioner
+|                         | grammar-tutor).
+|  --synth-recipe PATH    Use a custom recipe JSON instead of --synth-template.
+|  --synth-output PATH    Synthesis output dir. Default: logs/runall/<run-id>/synth/.
 |  --log-root PATH        Parent log directory. Default: logs/runall.
 |  --run-id ID            Stable run id. Default: UTC timestamp.
 |  --tee                  Stream stdout as well as stderr while logging.
@@ -76,6 +107,8 @@ usage() {
 |  ./RunAll.sh --source /vault/Data --with-model
 |  ./RunAll.sh --skip-codegen --skip-clean --source /vault/Data
 |  ./RunAll.sh --install-mode symlink --with-tests
+|  ./RunAll.sh --user --with-synth                                # user-mode + auto-export
+|  ./RunAll.sh --with-synth --synth-template llama-small --synth-vocab-size 512
 USAGE
 }
 
@@ -176,7 +209,15 @@ while (($#)); do
         --ucd-root) ucd_root="${2:?missing UCD root}"; shift 2 ;;
         --with-model) with_model=true; shift ;;
         --with-tests) with_tests=true; shift ;;
+        --with-synth) with_synth=true; shift ;;
         --install-mode) install_mode="${2:?missing install mode}"; shift 2 ;;
+        --user) install_mode="user"; shift ;;
+        --synth-template) synth_template="${2:?missing template}"; shift 2 ;;
+        --synth-vocab-size) synth_vocab_size="${2:?missing vocab size}"; shift 2 ;;
+        --synth-dtype) synth_dtype="${2:?missing dtype}"; shift 2 ;;
+        --synth-blend) synth_blend="${2:?missing blend}"; shift 2 ;;
+        --synth-recipe) synth_recipe="${2:?missing recipe path}"; shift 2 ;;
+        --synth-output) synth_output="${2:?missing synth output path}"; shift 2 ;;
         --log-root) LOG_ROOT="${2:?missing log root}"; RUN_DIR="$LOG_ROOT/$RUN_ID"; SUMMARY="$RUN_DIR/summary.tsv"; shift 2 ;;
         --run-id) RUN_ID="${2:?missing run id}"; RUN_DIR="$LOG_ROOT/$RUN_ID"; SUMMARY="$RUN_DIR/summary.tsv"; shift 2 ;;
         --tee) tee_stdout=true; shift ;;
@@ -196,9 +237,11 @@ while (($#)); do
 done
 
 case "$install_mode" in
-    copy|symlink) ;;
-    *) die "invalid --install-mode: $install_mode" ;;
+    copy|symlink|user) ;;
+    *) die "invalid --install-mode: $install_mode (expected copy|symlink|user)" ;;
 esac
+
+[[ -n "$synth_output" ]] || synth_output="$RUN_DIR/synth"
 
 write_run_metadata
 
@@ -232,6 +275,9 @@ if [[ "$skip_build" == false ]]; then
     run_step build-native "$HART" "${native_args[@]}"
     run_step build-extension-sql "$HART" build extension-sql
     run_step build-dotnet "$HART" build dotnet
+    # build pg-extension internally calls install pg-extension --mode <install_mode>
+    # so for system mode this is build + install; for user mode this is build +
+    # user-prefix install + per-DB GUC bake.
     run_step build-pg-extension "$HART" "${pg_extension_args[@]}"
 
     if [[ "$with_tests" == true ]]; then
@@ -241,7 +287,21 @@ if [[ "$skip_build" == false ]]; then
 fi
 
 if [[ "$skip_db_reset" == false ]]; then
-    run_step db-reset "$HART" db reset --force
+    if [[ "$install_mode" == user ]]; then
+        # db reset drops the database, which drops the per-database
+        # extension_control_path + dynamic_library_path GUCs that --user
+        # mode set. If we let db-reset's default bootstrap run CREATE
+        # EXTENSION, it fails because the new DB has no GUCs and the
+        # extension isn't in the system search path. Split it:
+        #   1. db reset --no-bootstrap   — drop + recreate empty DB
+        #   2. install pg-extension --user — re-bake GUCs on the new DB
+        #   3. db bootstrap              — CREATE EXTENSION hartonomous
+        run_step db-reset "$HART" db reset --force --no-bootstrap
+        run_step reinstall-pg-extension-user "$HART" install pg-extension --user
+        run_step db-bootstrap "$HART" db bootstrap
+    else
+        run_step db-reset "$HART" db reset --force
+    fi
 
     if [[ "$with_tests" == true ]]; then
         run_step test-smoke "$HART" test smoke --no-build
@@ -283,5 +343,61 @@ if [[ "$skip_status" == false ]]; then
     run_step ops-status "$HART" ops status
 fi
 
+if [[ "$with_synth" == true ]]; then
+    mkdir -p "$synth_output"
+    synth_args=(synthesize-model --output "$synth_output" --dtype "$synth_dtype")
+    if [[ -n "$synth_recipe" ]]; then
+        synth_args+=(--recipe "$synth_recipe")
+    else
+        synth_args+=(--template "$synth_template")
+    fi
+    [[ -n "$synth_vocab_size" ]] && synth_args+=(--vocab-size "$synth_vocab_size")
+    [[ -n "$synth_blend" ]] && synth_args+=(--blend "$synth_blend")
+
+    run_step synthesize-model "$HART" "${synth_args[@]}"
+
+    # Verify the exported package is HF-shape-correct.
+    if command -v python3 >/dev/null 2>&1; then
+        run_step verify-safetensors python3 -c "
+import sys, json, os
+from safetensors import safe_open
+out = '$synth_output'
+need = ['model.safetensors', 'config.json', 'tokenizer.json', 'tokenizer_config.json', 'hartonomous_audit.json']
+for f in need:
+    p = os.path.join(out, f)
+    if not os.path.exists(p):
+        print(f'MISSING: {p}', file=sys.stderr); sys.exit(1)
+with open(os.path.join(out, 'config.json')) as f:
+    cfg = json.load(f)
+print(f\"config.architectures: {cfg.get('architectures')}\")
+print(f\"config.vocab_size:    {cfg.get('vocab_size')}\")
+print(f\"config.hidden_size:   {cfg.get('hidden_size')}\")
+with safe_open(os.path.join(out, 'model.safetensors'), framework='numpy') as f:
+    keys = list(f.keys())
+    print(f'tensor count: {len(keys)}')
+    # Inspect the substrate-derived embedding and one attention/FFN slice.
+    embed_key = next((k for k in keys if 'embed' in k.lower() and 'weight' in k), None)
+    if embed_key:
+        t = f.get_tensor(embed_key)
+        print(f'embedding {embed_key}: shape={list(t.shape)} mean={float(t.mean()):.4f} std={float(t.std()):.4f}')
+    attn_key = next((k for k in keys if 'attention' in k and 'query' in k and 'weight' in k), None) \
+            or next((k for k in keys if 'q_proj.weight' in k), None)
+    if attn_key:
+        t = f.get_tensor(attn_key)
+        print(f'attention {attn_key}: shape={list(t.shape)} std={float(t.std()):.4f}')
+    ffn_key = next((k for k in keys if ('intermediate' in k or 'up_proj' in k) and 'weight' in k), None)
+    if ffn_key:
+        t = f.get_tensor(ffn_key)
+        print(f'ffn {ffn_key}: shape={list(t.shape)} std={float(t.std()):.4f}')
+print('safetensors export verified.')
+"
+    else
+        info "python3 not on PATH; skipping verify-safetensors step"
+    fi
+fi
+
 info "RunAll completed"
 info "Summary: $SUMMARY"
+if [[ "$with_synth" == true ]]; then
+    info "Synth output: $synth_output"
+fi

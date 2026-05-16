@@ -7,6 +7,13 @@ install_check=false
 clean=false
 install_mode=copy
 
+validate_install_mode() {
+    case "$1" in
+        copy|symlink|user) return 0 ;;
+        *) die "invalid install mode: $1 (expected copy|symlink|user)" ;;
+    esac
+}
+
 while (($#)); do
     case "$1" in
         --install-check)
@@ -25,14 +32,19 @@ while (($#)); do
             install_mode=symlink
             shift
             ;;
+        --user)
+            install_mode=user
+            shift
+            ;;
         --install-mode|--mode)
             install_mode="${2:?missing install mode}"
             shift 2
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/linux/build-pg-extension.sh [--install-check] [--clean] [--copy|--symlink|--install-mode copy|symlink]
-Build and install the PostgreSQL extension into the local PostgreSQL returned by pg_config. Consumes committed generated Unicode extension assets; does not regenerate them.
+Usage: scripts/linux/build-pg-extension.sh [--install-check] [--clean] [--copy|--symlink|--user|--install-mode copy|symlink|user]
+Build and install the PostgreSQL extension. --copy / --symlink install into the local PostgreSQL returned by pg_config (system mode; needs postgres-extensions group membership OR sudo). --user installs under ~/.local/pg-hartonomous and bakes per-database GUCs.
+Consumes committed generated Unicode extension assets; does not regenerate them.
 USAGE
             exit 0
             ;;
@@ -41,6 +53,8 @@ USAGE
             ;;
     esac
 done
+
+validate_install_mode "$install_mode"
 
 scripts/linux/build-extension-sql.sh
 generated_unicode_tables_present || die "generated Unicode extension assets missing; run explicit codegen with scripts/hart codegen unicode --ucd-root PATH"

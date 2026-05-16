@@ -116,7 +116,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             gate = FindMember(t, TupleSlot.Gate);
             if (down is null || up is null || gate is null) { return (null, string.Empty); }
             isSwiGlu = true;
-            attestation = "model_ffn_full_path";
+            attestation = "positive_evidence";
         }
         else if (t.Tuple == ArchetypeTuple.BertFfn)
         {
@@ -124,7 +124,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             down = FindMember(t, TupleSlot.Output);
             if (down is null || up is null) { return (null, string.Empty); }
             isSwiGlu = false;
-            attestation = "model_ffn_full_path";
+            attestation = "positive_evidence";
         }
         else if (t.Tuple == ArchetypeTuple.MoeRouterBlock && t.ExpertIndex.HasValue)
         {
@@ -133,7 +133,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
             gate = FindMember(t, TupleSlot.ExpertGate);
             if (down is null || up is null) { return (null, string.Empty); }
             isSwiGlu = gate is not null;
-            attestation = "model_moe_expert_response";
+            attestation = "positive_evidence";
         }
         else
         {
@@ -320,11 +320,15 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                             bH = new EntityHandle(aHash.Value, "word_form");
                         }
 
-                        double score = Sigmoid(signed / temperature);
+                        // AP-31 sign-bearing emission.
+                        double absSigned = Math.Abs(signed);
+                        double score = signed > 0 ? 1.0 : 0.0;
+                        string signCode = signed > 0 ? "positive_evidence" : "negative_evidence";
+
                         EdgeRatingEvent[] events =
                         [
                             new EdgeRatingEvent(
-                                "model_trust", attestationTypeCode, score, 1.0,
+                                "model_trust", signCode, score, absSigned,
                                 ModelSourceId: context.Source.ModelSourceId,
                                 TupleCode: tuple.Tuple.ToString(),
                                 SlotCode: fn.IsSwiGlu ? "Gate,Up,Down" : "Intermediate,Output",
@@ -333,7 +337,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                 HeadIndex: tuple.HeadIndex,
                                 ExpertIndex: tuple.ExpertIndex),
                             new EdgeRatingEvent(
-                                "semantic_relevance", attestationTypeCode, score, 1.0,
+                                "semantic_relevance", signCode, score, absSigned,
                                 ModelSourceId: context.Source.ModelSourceId,
                                 TupleCode: tuple.Tuple.ToString(),
                                 SlotCode: fn.IsSwiGlu ? "Gate,Up,Down" : "Intermediate,Output",
