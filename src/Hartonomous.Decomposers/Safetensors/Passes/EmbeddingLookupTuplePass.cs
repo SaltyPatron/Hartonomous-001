@@ -145,7 +145,7 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 ct.ThrowIfCancellationRequested();
                 if (!vocabHashes.TryGetValue(row, out Hash32 wordHash)) { continue; }
                 EntityHandle wordForm = new(wordHash, "word_form");
-                session.Batch.AddPhysicalityPoint4d(wordForm, "embedding_firefly", x[row], y[row], z[row], magnitude[row]);
+                session.Batch.AddPhysicalityPoint4d(wordForm, "firefly", x[row], y[row], z[row], magnitude[row]);
                 session.Batch.AddSignificance(wordForm, "model_trust", ModelDerivedTrustMu, "positive_evidence");
                 session.Batch.AddEntityModelSource(wordForm, context.Source.ModelSourceId);
                 fireflies++;

@@ -6,7 +6,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
       JOIN substrate.entity_model_source ems ON ems.entity_hash = p.entity_hash
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
      WHERE ems.model_source_id = p_model_source_id
-       AND pt.code = 'embedding_firefly'
+       AND pt.code = 'firefly'
      ORDER BY p.entity_hash ASC;
 $f$;
 

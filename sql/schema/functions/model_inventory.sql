@@ -107,18 +107,18 @@ AS $$
 
     UNION ALL
 
-    -- Firefly count: Track 1 embedding_firefly physicalities on any
-    -- substrate entity reachable from this model via entity_model_source.
-    -- The substrate mechanic is universal — fireflies attach to whatever
-    -- content-addressed entity the Laplacian-eigenmap projection landed on,
-    -- regardless of classification (word_form / bpe_token / codepoint /
-    -- pixel_region / audio_chunk / video_frame / lemma / synset / etc.).
-    -- The query is modality- and language-agnostic by design.
-    SELECT 'embedding_firefly_count'::text,
+    -- Firefly count: firefly POINTZM physicalities on any substrate entity
+    -- reachable from this model via entity_model_source. The substrate
+    -- mechanic is universal — fireflies attach to whatever content-
+    -- addressed entity the Procrustes/Laplacian projection from the
+    -- model's N-dim embedding row landed on, regardless of classification
+    -- (word_form / codepoint / pixel_region / audio_chunk / video_frame /
+    -- lemma / synset / etc.). Modality- and language-agnostic by design.
+    SELECT 'firefly_count'::text,
            count(*)::bigint,
            NULL::text
       FROM substrate.physicality p
-      JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+      JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'firefly'
       JOIN substrate.entity_model_source ems_entity
         ON ems_entity.entity_hash = p.entity_hash
       JOIN substrate.entity_model_source ems_arch

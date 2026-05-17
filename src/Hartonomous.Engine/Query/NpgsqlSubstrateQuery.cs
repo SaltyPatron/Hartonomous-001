@@ -116,7 +116,7 @@ public sealed class NpgsqlSubstrateQuery : ISubstrateQuery
         }
 
         // Pull supplied vocabulary entity hashes; the query returns those
-        // word_form handles only when they carry embedding_firefly physicality.
+        // word_form handles only when they carry firefly physicality.
         byte[][] bpeHashes = new byte[bpeTokens.Count][];
         for (int i = 0; i < bpeTokens.Count; i++)
         {

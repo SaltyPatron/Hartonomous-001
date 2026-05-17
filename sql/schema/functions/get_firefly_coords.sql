@@ -32,7 +32,7 @@ AS $$
         ON pt.id = p.physicality_type_id
      WHERE p.entity_hash = ANY(p_bpe_token_entity_hashes)
        AND ems.model_source_id = p_model_source_id
-       AND pt.code = 'embedding_firefly'
+       AND pt.code = 'firefly'
      ORDER BY p.entity_hash ASC;
 $$;
 

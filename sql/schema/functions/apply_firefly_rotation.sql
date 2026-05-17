@@ -1,10 +1,10 @@
 -- substrate.apply_firefly_rotation(p_model_source_id, R 3x3)
 --
--- Rotate every embedding_firefly POINTZM physicality of a given
--- model_source by a 3×3 orthogonal matrix R, leaving the M coordinate
--- (L2 magnitude) untouched. Run after EmbeddingFireflyPass for non-anchor
--- models. R must be orthogonal (det = +1); the caller is responsible —
--- Procrustes (Kabsch) returns such an R.
+-- Rotate every firefly POINTZM physicality of a given model_source by a
+-- 3×3 orthogonal matrix R, leaving the M coordinate (L2 magnitude)
+-- untouched. Run after EmbeddingFireflyPass for non-anchor models. R must
+-- be orthogonal (det = +1); the caller is responsible — Procrustes
+-- (Kabsch) returns such an R.
 --
 -- PostGIS-native geom: builds the rotated point via ST_MakePoint(x, y, z, m)
 -- — returns geometry(POINTZM). The original (X, Y, Z) extracted via
@@ -37,11 +37,11 @@ AS $$
          WHERE p.entity_hash         = ems.entity_hash
            AND ems.model_source_id   = p_model_source_id
            AND p.physicality_type_id = pt.id
-           AND pt.code               = 'embedding_firefly'
+           AND pt.code               = 'firefly'
         RETURNING 1
     )
     SELECT count(*)::BIGINT FROM updated;
 $$;
 
 COMMENT ON FUNCTION substrate.apply_firefly_rotation(INT, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8) IS
-    'Rotate every embedding_firefly POINTZM of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
+    'Rotate every firefly POINTZM of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';

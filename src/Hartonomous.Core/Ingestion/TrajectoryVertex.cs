@@ -5,7 +5,7 @@ using Hartonomous.Core.Compute.Common;
 namespace Hartonomous.Core.Ingestion;
 
 /// <summary>
-/// One mantissa-packed vertex of an <c>ingestion_trajectory</c> LINESTRINGZM /
+/// One mantissa-packed vertex of an <c>content</c> LINESTRINGZM /
 /// MULTILINESTRINGZM. Each vertex carries 4 × 52-bit payloads (the explicit
 /// mantissa of an IEEE-754 double; the 53rd bit is the implicit leading one
 /// that the fixed exponent supplies) = 208 usable bits of structured data,

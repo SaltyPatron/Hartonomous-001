@@ -58,7 +58,7 @@ BEGIN
         FROM edge_specs
         JOIN substrate.edge_type et ON et.code = edge_specs.edge_code
         JOIN substrate.provenance provenance ON provenance.code = 'unicode_consortium'
-        JOIN substrate.physicality_type s3_type ON s3_type.code = 's3_position'
+        JOIN substrate.physicality_type s3_type ON s3_type.code = 'entity'
         JOIN substrate.physicality source_physicality
           ON source_physicality.physicality_type_id = s3_type.id
          AND source_physicality.entity_hash = edge_specs.source_hash

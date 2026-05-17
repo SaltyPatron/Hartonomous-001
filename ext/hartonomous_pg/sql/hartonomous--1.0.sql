@@ -1732,92 +1732,81 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     ('tokenizer_model',    'model_weights');
 
 -- ── sql/schema/seed/physicality_type.sql ───────────────────────────────────────
--- Physicality types: 16 rows, ids 1..16 must match partition declarations.
+-- Physicality types: exactly 3 rows.
 --
--- Three primary roles per rule 25-physicality-4d:
---   - ENTITY physicality: the brick's own internal structure.
---       atoms = POINTZM with real content-derived coords (s3_position,
---               hilbert_value, embedding_firefly, waveform sample, etc.)
---       compositions = LINESTRINGZM through child centroids (entity_shape)
---   - FIREFLY physicality: per-model embedding projection per token
---       (embedding_firefly POINTZM in the 4D firefly jar)
---   - CONTENT physicality: trajectory through entity bricks
---       (ingestion_trajectory LINESTRINGZM whose vertices ARE child entity
---        hash refs via mantissa packing — the indexed child manifest)
+-- Per rule 25-physicality-4d, the substrate has three physicality roles
+-- and only three. Geometry SHAPE (POINT vs LINESTRING vs MULTILINESTRING
+-- vs POLYGON, all ZM) carries the within-role structural distinction
+-- the old per-modality codes (s3_position, waveform, contour, etc.) were
+-- redundantly encoding. Modality lives on the entity_type of the entity
+-- the physicality attaches to, NOT on physicality_type.
 --
--- The "contour" role is the audio/spectral analogue of entity_shape
--- (kept for waveform-class compositions). Tasks #18 (rename to make
--- the role-distinction explicit) tracks future cleanup.
+--   entity  (id 1) — the building block's own structure.
+--                    atoms = POINTZM with real content-derived coords
+--                            (codepoint Super-Fibonacci S^3 by UCA rank,
+--                             audio sample value, pixel intensity, tensor
+--                             cell, etc.).
+--                    compositions = LINESTRINGZM through child centroids
+--                            (word_form = LINESTRING through codepoint
+--                             POINTZMs; grapheme_cluster, lemma, morpheme
+--                             all live here). MULTILINESTRINGZM for
+--                             branching shapes.
+--
+--   firefly (id 2) — per-model embedding-row POINTZM specimens attached
+--                    to existing word_form entities. MULTIPOINTZM aggregate
+--                    per entity across ingested models for cross-model
+--                    Voronoi consensus.
+--
+--   content (id 3) — content-tier composition's mantissa-packed
+--                    LINESTRINGZM whose vertices ARE child entity hash
+--                    refs via substrate.bb_pack_*. text_composition,
+--                    paragraph, document, audio_chunk, pixel_region,
+--                    video_frame all carry this. The geometry IS the
+--                    indexed child manifest. Reverse-resolve via
+--                    substrate.entity_by_hash_prefix composite-btree.
 INSERT INTO substrate.physicality_type (code) VALUES
-    ('s3_position'),
-    ('hilbert_value'),
-    ('waveform'),
-    ('fft_spectrum'),
-    ('stft_spectrogram'),
-    ('pitch_contour'),
-    ('formant_trajectory'),
-    ('spectral_centroid'),
-    ('mfcc_frame'),
-    ('chromagram'),
-    ('svd_spectrum'),
-    ('weight_distribution'),
-    ('contour'),
-    ('embedding_firefly'),
-    ('entity_shape'),
-    ('ingestion_trajectory');
-
--- ── sql/schema/seed/physicality_type_embedding_firefly.sql ───────────────────────────────────────
--- V1 stage 0035 — physicality type extensions.
---
--- KEEP: embedding_firefly. The existing EmbeddingFireflyPass calls
--- AddPhysicalityPoint4d(token_entity, "embedding_firefly", ...) and that
--- physicality_type was missing from the seed, leaving every firefly
--- insert dangling on a non-existent type_id. This is the load-bearing
--- addition.
---
--- REMOVED: firefly_consensus_traj, embedding_native, firefly_at_*_tier.
--- None are emitted by any pass. Adding them registers vocabulary the
--- substrate doesn't use. Bring them back when the matching pass exists.
-
-INSERT INTO substrate.physicality_type (code) VALUES
-    ('embedding_firefly')
-ON CONFLICT (code) DO NOTHING;
+    ('entity'),
+    ('firefly'),
+    ('content');
 
 -- ── sql/schema/seed/physicality_type_trajectories.sql ───────────────────────────────────────
--- Two-trajectory-per-entity additions reinstated from S3.A (ad1f0a4), corrected
--- to the geometry(GeometryZM) model from S3.D chunk 1 (a9c4838).
+-- Additional physicality_type rows for the two-trajectory composition model.
 --
--- The substrate's physicality has three primary roles per entity:
+-- The base seed (sql/schema/seed/physicality_type.sql) declares three primary
+-- roles: entity / firefly / content. Compositions emit BOTH a real-coord
+-- canonical-shape geometry (entity_shape, id 15) AND a mantissa-packed
+-- ingestion trajectory (ingestion_trajectory, id 16). The two roles answer
+-- distinct queries:
 --
---   entity   — the building block's own identity / structure. Atoms get real
---              content-derived POINTZM (existing partitions: s3_position for
---              codepoints under UCA rank, hilbert_value, audio_*, etc.).
---              Compositions get their canonical real-coord shape as a
---              LINESTRINGZM (or MULTILINESTRINGZM) — physicality_entity_shape
---              partition introduced here. Useful for Fréchet shape matching
---              across decompositions (rhyme / shape-analogy / idiomaticity).
+--   entity_shape          — Fréchet / Hausdorff structural-similarity matching
+--                           ("is this thing structurally like that thing?").
+--                           Vertices are children's identity POINTZM centroids
+--                           in real metric space. POINTZM for atoms at modality
+--                           anchor coords; LINESTRINGZM (or MULTILINESTRINGZM
+--                           for branching shapes) for compositions through
+--                           children's real-coord centroids.
 --
---   firefly  — per-model embedding-row POINTZM specimens attached to existing
---              word_form entities (physicality_embedding_firefly partition,
---              already seeded). MULTIPOINTZM aggregation per entity across
---              ingested models for cross-model Voronoi consensus.
+--   ingestion_trajectory  — recomposition recipe. Vertices encode child
+--                           identity bits via bb_pack_hash_lo / bb_pack_hash_hi
+--                           / bb_pack_ordinal_rle / bb_pack_metadata.
+--                           Reverse-resolve via substrate.entity_by_hash_prefix
+--                           composite-btree on (hash_bits_0_51, hash_bits_52_103).
+--                           LINESTRINGZM, or MULTILINESTRINGZM for branching /
+--                           parallel / multi-tier content.
 --
---   content  — content-tier composition's mantissa-packed LINESTRINGZM whose
---              vertices encode (child.hash_bits_0_51, ordinal+rle,
---              child.hash_bits_52_103, metadata) via substrate.bb_pack_*.
---              physicality_ingestion_trajectory partition introduced here.
---              The geometry IS the indexed child manifest at every tier —
---              no separate substrate.sequence table. Reverse-resolve via
---              substrate.entity_by_hash_prefix composite-btree lookup.
---
--- Auto-assigned ids follow the prior seed (1..13 from physicality_type.sql;
--- 14 from physicality_type_embedding_firefly.sql), so these get 15 and 16.
--- The partitions in tables/core/physicality_entity_shape.sql and
--- physicality_ingestion_trajectory.sql FOR VALUES IN (15) / (16) match.
-INSERT INTO substrate.physicality_type (code) VALUES
-    ('entity_shape'),
-    ('ingestion_trajectory')
-ON CONFLICT (code) DO NOTHING;
+-- IDs are explicit (15, 16) to match downstream verification gates and the
+-- decomposer routing in IngestionBatch.AddEntityShape / AddIngestionTrajectory.
+-- The sequence is advanced past 16 so future SERIAL inserts pick up at the
+-- next available id without collision.
+INSERT INTO substrate.physicality_type (id, code) VALUES
+    (15, 'entity_shape'),
+    (16, 'ingestion_trajectory');
+
+SELECT setval(
+    pg_get_serial_sequence('substrate.physicality_type', 'id'),
+    (SELECT MAX(id) FROM substrate.physicality_type),
+    true
+);
 
 -- ── sql/schema/seed/edge_role.sql ───────────────────────────────────────
 INSERT INTO substrate.edge_role (code) VALUES
@@ -2282,7 +2271,7 @@ BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
             ('substrate.entity_type',           23),
-            ('substrate.physicality_type',      16),
+            ('substrate.physicality_type',       3),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  11),
             ('substrate.provenance',            11),
@@ -2641,169 +2630,197 @@ CREATE TABLE substrate.physicality (
 COMMENT ON TABLE substrate.physicality IS
     'ONE substrate-level geometric expression per (physicality_type_id, entity_hash, content_hash). PostGIS geometry(GeometryZM); substrate.st_4d_* operators extend PostGIS to honor the M dimension. Atom geom = POINTZM at real content-derived centroid (no packing — atoms have no children). Composition geom = LINESTRINGZM with mantissa-packed child refs via bb_pack_hash_lo / bb_pack_ordinal_rle / bb_pack_hash_hi / bb_pack_metadata — the geometry IS the indexed child manifest at every tier. content_hash distinguishes co-typed multi-source samples per entity.';
 
--- ── sql/schema/tables/core/physicality_s3.sql ───────────────────────────────────────
--- Physicality type 1: s3_position. POINTZM at the entity's real centroid in
--- its modality's S^3 representation. For codepoint atoms: Super-Fibonacci
--- ordered by UCA collation rank (so case/accent pairs cluster on the
--- sphere); pre-baked at codegen time in the UCD atoms blob. For other atom
--- modalities: the modality's content-derived representative position.
-CREATE TABLE substrate.physicality_s3
+-- ── sql/schema/tables/core/physicality_entity.sql ───────────────────────────────────────
+-- physicality_type_id = 1, code = 'entity'.
+--
+-- Tiered building blocks. The brick's own internal structure.
+--
+-- Atom POINTZM with real content-derived coords. Codepoint atoms get
+-- Super-Fibonacci S^3 unit-quaternion by UCA collation rank with the
+-- UCD bitmask packed into M.
+--
+-- Composition LINESTRINGZM (or MULTILINESTRINGZM for branching tiers)
+-- through child entity hash references. Vertices mantissa-packed:
+--   X = bb_pack_hash_lo(child.hash_bits_0_51)
+--   Y = bb_pack_ordinal_rle(ordinal, rle_count)
+--   Z = bb_pack_hash_hi(child.hash_bits_52_103)
+--   M = bb_pack_metadata(0)
+-- word_form `cat` = a LINESTRINGZM with 3 vertices packing the c, a, t
+-- codepoint hashes in order. The geometry IS the indexed child manifest.
+-- Reverse-resolve via bb_unpack_* → composite btree on
+-- (hash_bits_0_51, hash_bits_52_103). Same-content children dedupe to
+-- one entity referenced multiple times; rle compresses runs.
+--
+-- Modality lives on entity_type, NOT physicality_type.
+CREATE TABLE substrate.physicality_entity
     PARTITION OF substrate.physicality FOR VALUES IN (1);
-ALTER TABLE substrate.physicality_s3
-    ADD CONSTRAINT physicality_s3_pointzm
-    CHECK (GeometryType(geom) = 'POINT' AND ST_NDims(geom) = 4);
+-- CHECK admits every GeometryZM subtype so future modalities (audio,
+-- image regions, video frames, model-weight tensors) land in the same
+-- partition without a schema change. Modality is determined by the
+-- attached entity's entity_type; shape carries the within-modality
+-- structural distinction PostGIS already knows about.
+ALTER TABLE substrate.physicality_entity
+    ADD CONSTRAINT physicality_entity_geom
+    CHECK (GeometryType(geom) IN (
+              'POINT', 'LINESTRING', 'MULTILINESTRING',
+              'POLYGON', 'MULTIPOLYGON', 'MULTIPOINT',
+              'GEOMETRYCOLLECTION')
+           AND ST_NDims(geom) = 4);
 
--- ── sql/schema/tables/core/physicality_hilbert.sql ───────────────────────────────────────
--- Hilbert-index physicality partition: stores a POINTZM whose mantissas
--- pack a 4-component Hilbert curve index. PostGIS-native CHECK on
--- GeometryType / ST_NDims (the prior ST_TypeTag4D(geometry4d) signature
--- was orphaned by the geometry4d → geometry(GeometryZM) migration).
-CREATE TABLE substrate.physicality_hilbert
+-- ── sql/schema/tables/core/physicality_firefly.sql ───────────────────────────────────────
+-- physicality_type_id = 2, code = 'firefly'.
+--
+-- Per-model embedding-row POINTZM specimens attached to existing entities
+-- (typically word_form or codepoint). Each ingested AI model contributes
+-- one POINTZM per token from its embedding layer: the model's N-dimensional
+-- embedding row is projected DOWN INTO the substrate's 4D space via
+-- Procrustes / Kabsch alignment, and the resulting (x, y, z, magnitude)
+-- POINTZM is stored here. Many models per token => many POINTZM rows on
+-- the same entity_hash, distinguished by content_hash.
+--
+-- MULTIPOINTZM also allowed for aggregated cross-model surfaces written
+-- as one row per entity (cross-model consensus reads / shape comparisons).
+CREATE TABLE substrate.physicality_firefly
     PARTITION OF substrate.physicality FOR VALUES IN (2);
-ALTER TABLE substrate.physicality_hilbert
-    ADD CONSTRAINT physicality_hilbert_pointzm
-    CHECK (GeometryType(geom) = 'POINT' AND ST_NDims(geom) = 4);
+ALTER TABLE substrate.physicality_firefly
+    ADD CONSTRAINT physicality_firefly_geom
+    CHECK (GeometryType(geom) IN ('POINT', 'MULTIPOINT')
+           AND ST_NDims(geom) = 4);
 
--- ── sql/schema/tables/core/physicality_audio.sql ───────────────────────────────────────
--- Physicality types 3..10: waveform, fft_spectrum, stft_spectrogram,
--- pitch_contour, formant_trajectory, spectral_centroid, mfcc_frame, chromagram.
--- Mixed geometry shapes (POINT4D for spectral_centroid, LINESTRING4D for
--- contours/trajectories, multi-trajectory shapes) — no single
--- partition CHECK.
-CREATE TABLE substrate.physicality_audio
-    PARTITION OF substrate.physicality FOR VALUES IN (3, 4, 5, 6, 7, 8, 9, 10);
-
--- ── sql/schema/tables/core/physicality_model.sql ───────────────────────────────────────
--- Physicality types 11..12: svd_spectrum, weight_distribution.
--- Both 4D (POINT4D or LINESTRING4D); enforced per-row.
-CREATE TABLE substrate.physicality_model
-    PARTITION OF substrate.physicality FOR VALUES IN (11, 12);
-
--- ── sql/schema/tables/core/physicality_contour.sql ───────────────────────────────────────
--- Physicality type 13: contour. LINESTRINGZM whose vertices ARE the real
--- centroids of the composition's children in canonical role / sequence
--- order — NO mantissa packing of identity bits (per memory
--- `feedback-no-mantissa-vertex-packing` and the S3.D chunk-1 corrected
--- model). Universal carrier for COMPOSITION entities at every tier:
---   * Entity-tier (word_form, lemma, morpheme): vertices are the real
---     codepoint POINTZMs — for "cat" (word_form), three vertices =
---     c.centroid, a.centroid, t.centroid each read from physicality_s3.
---   * Content-tier (text_composition, sentence, paragraph, document,
---     audio_chunk, image_region, video_shot): vertices are the real
---     centroids of the constituent entities — for "the cat sat on the
---     mat" (text_composition), six vertices = the.centroid, cat.centroid,
---     sat.centroid, on.centroid, the.centroid, mat.centroid.
+-- ── sql/schema/tables/core/physicality_content.sql ───────────────────────────────────────
+-- physicality_type_id = 3, code = 'content'.
 --
--- Multi-segment / branching / parallel-sub-sequence compositions use
--- MULTILINESTRINGZM. Identity of which children are referenced lives in
--- the relational child-tracking layer; geometry stores SHAPE only.
--- ST_Frechet / Hausdorff over two contour geoms compares trajectory shape
--- in real-coord space (analogy completion, frayed-edge detection,
--- application-fault matching across structurally-similar trajectories
--- whose categorical labels differ).
+-- Content trajectories — sequences of entity bricks. A text_composition
+-- "the cat sat on the mat" is a LINESTRINGZM with 6 vertices:
+--   V1 = pack(hash(the), ord=1, rle=1, meta=0)
+--   V2 = pack(hash(cat), ord=2, rle=1, meta=0)
+--   V3 = pack(hash(sat), ord=3, rle=1, meta=0)
+--   V4 = pack(hash(on),  ord=4, rle=1, meta=0)
+--   V5 = pack(hash(the), ord=5, rle=1, meta=0)   -- same hash as V1, distinct ordinal
+--   V6 = pack(hash(mat), ord=6, rle=1, meta=0)
+-- Same content dedupes to one entity referenced at multiple ordinals.
+-- rle compresses runs.
 --
--- Split landed: physicality_entity_shape (id 15) carries real-coord canonical
--- structural fingerprints for Fréchet shape matching; physicality_ingestion_trajectory
--- (id 16) carries mantissa-packed identity-level child manifests for O(tier)
--- reconstruction via substrate.entity_by_hash_prefix. This contour partition is
--- LEGACY — retained while existing decomposers still emit
--- AddPhysicalityLineString4d(parent, "contour", verts) — and is on a deprecation
--- path. New decomposers route to AddEntityShape (entity_shape partition) for
--- real-coord canonical shape, or AddIngestionTrajectory (ingestion_trajectory
--- partition) for the mantissa-packed structural child manifest, depending on
--- which substrate surface they're contributing to.
-CREATE TABLE substrate.physicality_contour
-    PARTITION OF substrate.physicality FOR VALUES IN (13);
-ALTER TABLE substrate.physicality_contour
-    ADD CONSTRAINT physicality_contour_linestringzm
-    CHECK (GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING')
+-- The geometry IS the indexed child manifest at the content tier. The
+-- walk stops at the first entity-tier brick — the brick's internal
+-- structure lives in its own entity-partition physicality.
+--
+-- Reverse-resolve a vertex to its child brick by unpacking (X, Z) into
+-- (hash_bits_0_51, hash_bits_52_103) and JOINing against the composite
+-- btree on substrate.entity_by_hash_prefix — one bulk lookup recovers
+-- the full child slice.
+--
+-- MULTILINESTRINGZM for discontinuous / branching / multi-stream
+-- trajectories (footnote bodies interleaved with main text, bilingual
+-- interlinear, etc.).
+--
+CREATE TABLE substrate.physicality_content
+    PARTITION OF substrate.physicality FOR VALUES IN (3);
+-- LINESTRING / MULTILINESTRING for ordered trajectories (text, audio,
+-- code). POLYGON / MULTIPOLYGON for closed-region content (image
+-- regions, video shots whose spatial extent matters more than order).
+-- GEOMETRYCOLLECTION for mixed-tier content packages. All 4D.
+ALTER TABLE substrate.physicality_content
+    ADD CONSTRAINT physicality_content_geom
+    CHECK (GeometryType(geom) IN (
+              'LINESTRING', 'MULTILINESTRING',
+              'POLYGON', 'MULTIPOLYGON',
+              'GEOMETRYCOLLECTION')
            AND ST_NDims(geom) = 4);
 
 -- ── sql/schema/tables/core/physicality_entity_shape.sql ───────────────────────────────────────
--- Physicality type 15: entity_shape. The building block's own canonical
--- structural fingerprint in real metric coordinates.
+-- physicality_type_id = 15, code = 'entity_shape'.
 --
--- For atoms-with-internal-structure (tensor γ-scale shapes, codec codebook
--- contours, etc. — entities whose physicality is their own real-coord
--- internal shape rather than a trajectory through other entities), this is
--- a LINESTRINGZM through the per-feature values laid out in the partition's
--- declared axis convention.
+-- Real-coord canonical-shape geometry. Answers the question: "what does
+-- this entity look like in 4D as a structural fingerprint?"
 --
--- For compositions (word_form, lemma, morpheme, grapheme_cluster, sentence
--- shapes, document silhouettes, etc.), this is the canonical shape derived
--- from the children's real-coord centroids in role / sequence order.
--- POINTZM when a single canonical centroid suffices, LINESTRINGZM for
--- one-segment shapes, MULTILINESTRINGZM for multi-tier or branching
--- canonical fingerprints (e.g. a sentence's word-tier and grapheme-tier
--- views packaged in one row).
+-- For atoms (no children): POINTZM at the modality's anchor coord —
+-- codepoint Super-Fibonacci S^3 unit-quaternion by UCA collation rank
+-- from the pre-gen UCD blob; audio sample at signal coord; pixel channel
+-- at intensity coord; tensor cell at value coord. All four (X, Y, Z, M)
+-- are real metric coords. No mantissa packing. No bitmask payload.
 --
--- Distinct from physicality_ingestion_trajectory (id 16): entity_shape
--- vertices are REAL metric coordinates for Fréchet / Hausdorff shape
--- matching (rhyme detection, idiomaticity divergence, frayed-edge surveys,
--- application-fault pattern matching). ingestion_trajectory vertices are
--- mantissa-packed identity-POINTZMs for O(tier) reconstruction via the
--- entity_by_hash_prefix composite-btree. The two surfaces answer different
--- queries; both can coexist on the same entity_hash with distinct
--- physicality_type_id rows.
+-- For compositions (any tier of any modality): LINESTRINGZM (or
+-- MULTILINESTRINGZM for branching shapes) whose vertices ARE the
+-- children's identity POINTZM centroids in canonical order. Each vertex
+-- is a real metric coord in the parent's 4D frame. Fréchet / Hausdorff
+-- matchable; gist_geometry_ops_nd R-tree-indexed.
+--
+-- Modality lives on the attached entity's entity_type (recovered via
+-- substrate.entity_classification join). The partition itself is
+-- modality-agnostic; per-axis meaning derives from the modality of the
+-- entity it attaches to.
+--
+-- Companion partition: physicality_ingestion_trajectory (id 16) holds
+-- the mantissa-packed recomposition recipe for the same composition
+-- entity. A composition typically has both rows present — one in each
+-- partition — answering different queries.
 CREATE TABLE substrate.physicality_entity_shape
     PARTITION OF substrate.physicality FOR VALUES IN (15);
+
 ALTER TABLE substrate.physicality_entity_shape
     ADD CONSTRAINT physicality_entity_shape_geom
-    CHECK (GeometryType(geom) IN ('POINT', 'LINESTRING', 'MULTILINESTRING')
-           AND ST_NDims(geom) = 4);
+    CHECK (
+        GeometryType(geom) IN (
+            'POINT', 'LINESTRING', 'MULTILINESTRING',
+            'POLYGON', 'MULTIPOLYGON', 'MULTIPOINT',
+            'GEOMETRYCOLLECTION'
+        )
+        AND ST_NDims(geom) = 4
+    );
+
+COMMENT ON TABLE substrate.physicality_entity_shape IS
+    'Real-coord canonical-shape geometry. POINTZM for atoms at modality anchor coords; LINESTRINGZM through children identity POINTZM centroids for compositions. Modality recovered from entity_classification. Fréchet / Hausdorff matchable.';
 
 -- ── sql/schema/tables/core/physicality_ingestion_trajectory.sql ───────────────────────────────────────
--- Physicality type 16: ingestion_trajectory. The composition's recorded
--- structural child manifest — mantissa-packed LINESTRINGZM whose vertices
--- encode child entity hash prefixes via substrate.bb_pack_*.
+-- physicality_type_id = 16, code = 'ingestion_trajectory'.
 --
--- Vertex encoding per docs/specs/sql/mantissa-exploitation.md:
+-- Mantissa-packed identity geometry. Answers the question: "what children
+-- did this composition reference, in canonical order, so the substrate
+-- can recompose them?"
 --
---   X mantissa = bb_pack_hash_lo(child.hash_bits_0_51)   — bits 0..51 of child hash
---   Y mantissa = bb_pack_ordinal_rle(ordinal, rle_count) — sequence position + run-length
---   Z mantissa = bb_pack_hash_hi(child.hash_bits_52_103) — bits 52..103 of child hash
---   M mantissa = bb_pack_metadata(0)                     — reserved metadata slot
+-- LINESTRINGZM (or MULTILINESTRINGZM for branching / parallel / multi-tier
+-- content; POLYGONZM / MULTIPOLYGONZM / GEOMETRYCOLLECTIONZM for
+-- closed-region or heterogeneous bundle content) whose vertices encode
+-- child entity hash refs via the bb_pack_* contract:
 --
--- Vertices are NOT metric coordinates. The geometry IS the indexed
--- relational child manifest at this composition tier. Reverse-resolve a
--- vertex to its child entity by unpacking (X, Z) into (hash_bits_0_51,
--- hash_bits_52_103) and JOINing against substrate.entity's composite btree
--- (entity_hash_prefix_idx). Single batched lookup recovers the entire
--- child slice for a given parent — no per-child round-trip, no recursive
--- CTE explosion.
+--   X mantissa = bb_pack_hash_lo(child.hash_bits_0_51)    -- 52 bits
+--   Y mantissa = bb_pack_ordinal_rle(ordinal, rle_count)  -- 32-bit ordinal | 20-bit RLE
+--   Z mantissa = bb_pack_hash_hi(child.hash_bits_52_103)  -- 52 bits
+--   M mantissa = bb_pack_metadata(flags)                  -- 52 bits
 --
--- LINESTRINGZM for single-segment trajectories (the common case: text
--- compositions, audio chunks, ordered ASTs). MULTILINESTRINGZM for
--- discontinuous / parallel / multi-tier compositions (footnote main +
--- body interleaved, bilingual interlinear, multi-tier fingerprint views,
--- branching choose-your-own-adventure trajectories).
+-- Each vertex IS a btree-indexable, R-tree-indexable, reconstruction-ready
+-- child reference at its position. Reverse-resolve via
+-- substrate.entity_by_hash_prefix(BIGINT[], BIGINT[]) over the composite
+-- btree on substrate.entity(hash_bits_0_51, hash_bits_52_103) — one bulk
+-- lookup recovers the full child slice. substrate.get_composition_children
+-- walks the vertex stream.
 --
--- Same children sequence on the same parent ⇒ same content_hash via
--- BLAKE3(geom_bytes) ⇒ deduplicated via the (physicality_type_id,
--- entity_hash, content_hash) composite PK. Per-source segmentation
--- variation (different decomposer producing slightly different ordinal
--- groupings of the same content) yields distinct content_hash rows on
--- the same entity_hash — cross-source physicality realizations
--- accumulate naturally.
+-- The bb_pack_* contract puts packed payload in the integer-exact range
+-- [2^52, 2^53). Real-coord canonical shapes (whose ST_X falls outside that
+-- range for typical modality anchors) belong in physicality_entity_shape
+-- (id 15) instead. Per-row CHECK enforces only geometry shape and
+-- dimensionality; partition routing (physicality_type_id = 16) carries
+-- the packed-vs-real discrimination.
 --
--- GiST gist_geometry_ops_nd indexes this partition's geom by 4D bounding
--- box. Query "find every composition referencing a given child entity"
--- via geom && box4d(bb_pack_hash_lo(child.hash_bits_0_51), -inf,
--- bb_pack_hash_hi(child.hash_bits_52_103), -inf, ...) — single GiST
--- prune returns every trajectory containing the child at any ordinal.
--- The 4D index IS the inverted index for "every place X appears." No
--- recursive walk, no traversal — one indexed bbox query.
---
--- This is the substrate's load-bearing identity-level structural surface.
--- Distinct from physicality_entity_shape (id 15) which carries real-coord
--- canonical shape for Fréchet/Hausdorff matching. Both can coexist on the
--- same entity_hash via separate physicality_type_id rows.
+-- Companion partition: physicality_entity_shape (id 15) holds the
+-- real-coord canonical-shape geometry for the same composition entity.
 CREATE TABLE substrate.physicality_ingestion_trajectory
     PARTITION OF substrate.physicality FOR VALUES IN (16);
+
 ALTER TABLE substrate.physicality_ingestion_trajectory
     ADD CONSTRAINT physicality_ingestion_trajectory_geom
-    CHECK (GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING')
-           AND ST_NDims(geom) = 4);
+    CHECK (
+        GeometryType(geom) IN (
+            'LINESTRING', 'MULTILINESTRING',
+            'POLYGON', 'MULTIPOLYGON',
+            'GEOMETRYCOLLECTION'
+        )
+        AND ST_NDims(geom) = 4
+    );
+
+COMMENT ON TABLE substrate.physicality_ingestion_trajectory IS
+    'Mantissa-packed identity geometry. LINESTRINGZM (or MULTI* / POLYGON* / COLLECTION) vertices encode child entity hash refs via bb_pack_hash_lo / bb_pack_ordinal_rle / bb_pack_hash_hi / bb_pack_metadata. Reverse-resolve via substrate.entity_by_hash_prefix composite-btree. Companion to physicality_entity_shape (id 15).';
 
 -- ── sql/schema/tables/core/physicality_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_default
@@ -3877,7 +3894,7 @@ COMMENT ON FUNCTION substrate.bb_hash_hi(substrate.hash_value) IS
 -- ── sql/schema/functions/bb_pack_hash_lo.sql ───────────────────────────────────────
 -- Pack a 52-bit BIGINT into an IEEE-754 double's mantissa for use as a
 -- LINESTRING4D / MULTILINESTRING4D vertex coordinate in
--- substrate.physicality 'ingestion_trajectory' rows.
+-- substrate.physicality 'content' rows.
 --
 -- Encoding: double = 2^52 + (value & 0x000FFFFFFFFFFFFF). The result is
 -- exactly representable in IEEE-754 (the integer range [2^52, 2^53) sits
@@ -5085,55 +5102,151 @@ $f$;
 -- ── sql/schema/functions/get_composition_children.sql ───────────────────────────────────────
 -- Walk a composition entity's children in canonical order.
 --
--- The composition's physicality.geom (physicality_type = 'contour') is a
--- LINESTRINGZM (or MULTILINESTRINGZM) whose vertices encode the children's
--- identities via the mantissa packing contract:
+-- The composition's physicality.geom is a LINESTRINGZM (or
+-- MULTILINESTRINGZM) in either the 'entity' partition (entity-tier
+-- compositions: word_form, grapheme_cluster, lemma, morpheme, ...) or
+-- the 'content' partition (content-tier trajectories: text_composition,
+-- paragraph, document, audio_chunk, pixel_region, video_frame). Both
+-- partitions encode child identities via the substrate mantissa packing
+-- contract:
 --   X mantissa = child hash bits 0..51 (bb_pack_hash_lo)
 --   Y mantissa = ordinal + RLE bit-banged (bb_pack_ordinal_rle)
 --   Z mantissa = child hash bits 52..103 (bb_pack_hash_hi)
 --   M mantissa = metadata (bb_pack_metadata; currently unused, reserved)
 -- Reading the trajectory's vertices in order, unpacking via bb_unpack_*,
 -- and joining against substrate.entity's composite btree on
--- (hash_bits_0_51, hash_bits_52_103) recovers the full child hash sequence
--- in one round trip — no junction table required.
+-- (hash_bits_0_51, hash_bits_52_103) recovers the full child hash
+-- sequence in one round trip — no junction table required.
+--
+-- A composition entity typically carries exactly one structural manifest
+-- (in its tier's partition). If multiple physicality rows exist (e.g. an
+-- atom-equivalent POINTZM stored alongside a structural LINESTRINGZM via
+-- legacy decomposers), the manifest is selected by:
+--   * mantissa-range filter: X > 2^51 retains mantissa-packed vertices and
+--     excludes any real-coord POINTZM/LINESTRING dressed as composition
+--   * vertex-count desc: pick the longest manifest (singletons
+--     stored as doubled-vertex LINESTRINGs satisfy this too).
 DROP FUNCTION IF EXISTS substrate.get_composition_children(INT, BYTEA);
 CREATE OR REPLACE FUNCTION substrate.get_composition_children(
     p_parent_hash substrate.hash_value
 ) RETURNS TABLE (ordinal INT, child_hash substrate.hash_value, rle_count INT)
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
-    WITH composition_geom AS (
-        SELECT p.geom
+    -- Resolve the parent's expected child tier from its classification.
+    -- For text: word_form → grapheme_cluster → codepoint;
+    -- text_composition → word_form; paragraph → text_composition;
+    -- document → paragraph. NULL = atom (no children).
+    -- Disambiguates the singleton case where codepoint and grapheme_cluster
+    -- share the same centroid (singleton grapheme = its single codepoint's
+    -- coord) — without the tier filter, both match and the walk explodes.
+    WITH parent_tier AS (
+        SELECT et.code AS parent_code,
+               CASE et.code
+                   WHEN 'word_form'        THEN 'grapheme_cluster'
+                   WHEN 'grapheme_cluster' THEN 'codepoint'
+                   WHEN 'morpheme'         THEN 'grapheme_cluster'
+                   WHEN 'lemma'            THEN 'word_form'
+                   WHEN 'synset'           THEN 'lemma'
+                   WHEN 'text_composition' THEN 'word_form'
+                   WHEN 'paragraph'        THEN 'text_composition'
+                   WHEN 'document'         THEN 'paragraph'
+                   ELSE NULL
+               END AS expected_child_code
+          FROM substrate.entity_classification ec
+          JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+         WHERE ec.entity_hash = p_parent_hash
+         LIMIT 1
+    ),
+    composition_geom AS (
+        SELECT p.geom, pt.code AS phys_code
           FROM substrate.physicality p
           JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
          WHERE p.entity_hash = p_parent_hash
-           AND pt.code = 'contour'
-         ORDER BY p.content_hash
+           AND pt.code IN ('entity', 'content')
+           AND GeometryType(p.geom) IN ('LINESTRING', 'MULTILINESTRING')
+           AND ST_NumPoints(p.geom) >= 1
+         ORDER BY ST_NumPoints(p.geom) DESC, p.content_hash
          LIMIT 1
     ),
-    vertices AS (
-        SELECT idx.i AS vertex_idx,
-               ST_PointN(g.geom, idx.i) AS v
+    -- Singleton-doubled detection: PostGIS rejects single-vertex
+    -- LINESTRINGs, so emitters pad k==1 by repeating the only vertex.
+    -- When the geometry is exactly 2 vertices with identical coords,
+    -- it represents ONE logical child. Cap the vertex iteration.
+    geom_info AS (
+        SELECT g.geom,
+               g.phys_code,
+               ST_NumPoints(g.geom) AS n,
+               (
+                   ST_NumPoints(g.geom) = 2 AND
+                   ST_X(ST_PointN(g.geom, 1)) = ST_X(ST_PointN(g.geom, 2)) AND
+                   ST_Y(ST_PointN(g.geom, 1)) = ST_Y(ST_PointN(g.geom, 2)) AND
+                   ST_Z(ST_PointN(g.geom, 1)) = ST_Z(ST_PointN(g.geom, 2)) AND
+                   ST_M(ST_PointN(g.geom, 1)) = ST_M(ST_PointN(g.geom, 2))
+               ) AS is_singleton_doubled
           FROM composition_geom g
-          CROSS JOIN LATERAL generate_series(1, ST_NumPoints(g.geom)) AS idx(i)
     ),
-    unpacked AS (
-        SELECT substrate.bb_unpack_ordinal(ST_Y(v.v)) AS ordinal,
-               substrate.bb_unpack_rle(ST_Y(v.v))     AS rle_count,
-               substrate.bb_unpack_hash_lo(ST_X(v.v)) AS hash_lo,
-               substrate.bb_unpack_hash_hi(ST_Z(v.v)) AS hash_hi,
-               v.vertex_idx
+    vertices AS (
+        SELECT idx.i AS vertex_idx, ST_PointN(g.geom, idx.i) AS v
+          FROM geom_info g
+          CROSS JOIN LATERAL generate_series(
+              1,
+              CASE WHEN g.is_singleton_doubled THEN 1 ELSE g.n END
+          ) AS idx(i)
+    ),
+    classified AS (
+        SELECT v.vertex_idx,
+               ST_X(v.v) AS x, ST_Y(v.v) AS y, ST_Z(v.v) AS z, ST_M(v.v) AS m,
+               (ST_X(v.v) > 2.0^51) AS is_mantissa
           FROM vertices v
+    ),
+    mantissa_resolved AS (
+        SELECT substrate.bb_unpack_ordinal(c.y) AS ordinal,
+               substrate.bb_unpack_rle(c.y)     AS rle_count,
+               e.hash AS child_hash,
+               c.vertex_idx
+          FROM classified c
+          JOIN substrate.entity e
+            ON e.hash_bits_0_51   = substrate.bb_unpack_hash_lo(c.x)
+           AND e.hash_bits_52_103 = substrate.bb_unpack_hash_hi(c.z)
+         WHERE c.is_mantissa
+           AND EXISTS (
+               SELECT 1
+                 FROM substrate.entity_classification ec
+                 JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+                 JOIN parent_tier pt ON pt.expected_child_code = et.code
+                WHERE ec.entity_hash = e.hash
+           )
+    ),
+    realcoord_resolved AS (
+        SELECT c.vertex_idx AS ordinal,
+               1            AS rle_count,
+               e.hash       AS child_hash,
+               c.vertex_idx
+          FROM classified c
+          JOIN substrate.entity e
+            ON e.centroid_x = c.x
+           AND e.centroid_y = c.y
+           AND e.centroid_z = c.z
+           AND e.centroid_m = c.m
+         WHERE NOT c.is_mantissa
+           AND EXISTS (
+               SELECT 1
+                 FROM substrate.entity_classification ec
+                 JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+                 JOIN parent_tier pt ON pt.expected_child_code = et.code
+                WHERE ec.entity_hash = e.hash
+           )
     )
-    SELECT u.ordinal, e.hash, u.rle_count
-      FROM unpacked u
-      JOIN substrate.entity e
-        ON e.hash_bits_0_51   = u.hash_lo
-       AND e.hash_bits_52_103 = u.hash_hi
-     ORDER BY u.ordinal, u.vertex_idx;
+    SELECT ordinal, child_hash, rle_count
+      FROM (
+        SELECT ordinal, child_hash, rle_count, vertex_idx FROM mantissa_resolved
+        UNION ALL
+        SELECT ordinal, child_hash, rle_count, vertex_idx FROM realcoord_resolved
+      ) all_resolved
+     ORDER BY ordinal, vertex_idx;
 $f$;
 
 COMMENT ON FUNCTION substrate.get_composition_children(substrate.hash_value) IS
-    'Walk a composition entity''s children in canonical order by reading the LINESTRINGZM mantissa-packed vertices in physicality.geom, unpacking child hash slices via bb_unpack_hash_lo/hi, and joining against substrate.entity''s composite btree on (hash_bits_0_51, hash_bits_52_103). No junction table — the geometry IS the relational structure.';
+    'Walk a composition entity''s children in canonical order by reading the LINESTRINGZM mantissa-packed vertices in physicality.geom (entity or content partition), unpacking child hash slices via bb_unpack_hash_lo/hi, and joining against substrate.entity''s composite btree on (hash_bits_0_51, hash_bits_52_103). No junction table — the geometry IS the relational structure.';
 
 -- ── sql/schema/functions/api_entity_classifications.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.api_entity_classifications(
@@ -5850,7 +5963,7 @@ BEGIN
           JOIN substrate.entity_classification ec ON ec.entity_hash = p.entity_hash
           JOIN substrate.entity_type et ON et.id = ec.entity_type_id
          WHERE p.physicality_type_id = (
-             SELECT id FROM substrate.physicality_type WHERE code = 'ingestion_trajectory'
+             SELECT id FROM substrate.physicality_type WHERE code = 'content'
          )
            AND et.code IN ('text_composition', 'paragraph', 'document')
            AND substrate.bb_unpack_ordinal(ST_Y(pt.geom)) >= 1
@@ -7844,9 +7957,9 @@ BEGIN
     END IF;
 
     SELECT id INTO v_s3_phys_type
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     IF v_s3_phys_type IS NULL THEN
-        RAISE EXCEPTION 'physicality_type code=''s3_position'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'physicality_type code=''entity'' missing — bootstrap not applied?';
     END IF;
 
     SELECT id INTO v_source_auth_ctx
@@ -7961,9 +8074,9 @@ BEGIN
     END IF;
 
     SELECT id INTO v_s3_phys_type
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     IF v_s3_phys_type IS NULL THEN
-        RAISE EXCEPTION 'physicality_type code=''s3_position'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'physicality_type code=''entity'' missing — bootstrap not applied?';
     END IF;
 
     SELECT id INTO v_source_auth_ctx
@@ -7977,10 +8090,21 @@ BEGIN
         RAISE EXCEPTION 'attestation_type code=''positive_evidence'' missing — bootstrap not applied?';
     END IF;
 
-    INSERT INTO substrate.entity (hash)
-    SELECT a.hash
+    INSERT INTO substrate.entity (hash, centroid_x, centroid_y, centroid_z, centroid_m, hilbert_index)
+    SELECT a.hash,
+           a.x,
+           a.y,
+           a.z,
+           a.m,
+           (public.hilbert_4d(public.point4d(a.x, a.y, a.z, a.m), 16))::bigint
       FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
-    ON CONFLICT (hash) DO NOTHING;
+    ON CONFLICT (hash) DO UPDATE
+       SET centroid_x    = EXCLUDED.centroid_x,
+           centroid_y    = EXCLUDED.centroid_y,
+           centroid_z    = EXCLUDED.centroid_z,
+           centroid_m    = EXCLUDED.centroid_m,
+           hilbert_index = EXCLUDED.hilbert_index
+     WHERE substrate.entity.centroid_x IS NULL;
 
     INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
     SELECT a.hash, v_codepoint_etype, v_provenance_id
@@ -8384,7 +8508,7 @@ BEGIN
         FROM edge_specs
         JOIN substrate.edge_type et ON et.code = edge_specs.edge_code
         JOIN substrate.provenance provenance ON provenance.code = 'unicode_consortium'
-        JOIN substrate.physicality_type s3_type ON s3_type.code = 's3_position'
+        JOIN substrate.physicality_type s3_type ON s3_type.code = 'entity'
         JOIN substrate.physicality source_physicality
           ON source_physicality.physicality_type_id = s3_type.id
          AND source_physicality.entity_hash = edge_specs.source_hash
@@ -8527,9 +8651,9 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     SELECT id INTO v_s3_phys
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
 
     SELECT id, semantic_weight INTO v_canonical_edge_type, v_canonical_semantic
@@ -8780,9 +8904,9 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     SELECT id INTO v_s3_phys
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
       FROM substrate.edge_type WHERE code = 'has_full_case_mapping';
@@ -8957,7 +9081,7 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
       FROM substrate.edge_type WHERE code = 'confusable_with';
@@ -9188,9 +9312,9 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     SELECT id INTO v_s3_phys
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
       FROM substrate.edge_type WHERE code = 'has_standardized_variant';
@@ -9363,9 +9487,9 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     SELECT id INTO v_s3_phys
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
       FROM substrate.edge_type WHERE code = 'has_radical_stroke';
@@ -9554,7 +9678,7 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
       FROM substrate.edge_type WHERE code = 'has_named_sequence';
@@ -9777,7 +9901,7 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     v_edge_code := CASE WHEN p_use_zwj THEN 'has_emoji_zwj_sequence' ELSE 'has_emoji_sequence' END;
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight
@@ -11298,7 +11422,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
       JOIN substrate.entity_model_source ems ON ems.entity_hash = p.entity_hash
       JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
      WHERE ems.model_source_id = p_model_source_id
-       AND pt.code = 'embedding_firefly'
+       AND pt.code = 'firefly'
      ORDER BY p.entity_hash ASC;
 $f$;
 
@@ -11308,11 +11432,11 @@ COMMENT ON FUNCTION substrate.embedding_firefly_token_hashes(INT) IS
 -- ── sql/schema/functions/apply_firefly_rotation.sql ───────────────────────────────────────
 -- substrate.apply_firefly_rotation(p_model_source_id, R 3x3)
 --
--- Rotate every embedding_firefly POINTZM physicality of a given
--- model_source by a 3×3 orthogonal matrix R, leaving the M coordinate
--- (L2 magnitude) untouched. Run after EmbeddingFireflyPass for non-anchor
--- models. R must be orthogonal (det = +1); the caller is responsible —
--- Procrustes (Kabsch) returns such an R.
+-- Rotate every firefly POINTZM physicality of a given model_source by a
+-- 3×3 orthogonal matrix R, leaving the M coordinate (L2 magnitude)
+-- untouched. Run after EmbeddingFireflyPass for non-anchor models. R must
+-- be orthogonal (det = +1); the caller is responsible — Procrustes
+-- (Kabsch) returns such an R.
 --
 -- PostGIS-native geom: builds the rotated point via ST_MakePoint(x, y, z, m)
 -- — returns geometry(POINTZM). The original (X, Y, Z) extracted via
@@ -11345,14 +11469,14 @@ AS $$
          WHERE p.entity_hash         = ems.entity_hash
            AND ems.model_source_id   = p_model_source_id
            AND p.physicality_type_id = pt.id
-           AND pt.code               = 'embedding_firefly'
+           AND pt.code               = 'firefly'
         RETURNING 1
     )
     SELECT count(*)::BIGINT FROM updated;
 $$;
 
 COMMENT ON FUNCTION substrate.apply_firefly_rotation(INT, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8, FLOAT8) IS
-    'Rotate every embedding_firefly POINTZM of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
+    'Rotate every firefly POINTZM of one model_source by a 3×3 orthogonal R. M (L2 magnitude) preserved. Caller (Procrustes/Kabsch) ensures det(R)=+1. Returns count of rotated rows.';
 
 -- ── sql/schema/functions/get_firefly_coords.sql ───────────────────────────────────────
 -- substrate.get_firefly_coords(p_bpe_token_entity_hashes BYTEA[], p_model_source_id INT)
@@ -11389,7 +11513,7 @@ AS $$
         ON pt.id = p.physicality_type_id
      WHERE p.entity_hash = ANY(p_bpe_token_entity_hashes)
        AND ems.model_source_id = p_model_source_id
-       AND pt.code = 'embedding_firefly'
+       AND pt.code = 'firefly'
      ORDER BY p.entity_hash ASC;
 $$;
 
@@ -11510,18 +11634,18 @@ AS $$
 
     UNION ALL
 
-    -- Firefly count: Track 1 embedding_firefly physicalities on any
-    -- substrate entity reachable from this model via entity_model_source.
-    -- The substrate mechanic is universal — fireflies attach to whatever
-    -- content-addressed entity the Laplacian-eigenmap projection landed on,
-    -- regardless of classification (word_form / bpe_token / codepoint /
-    -- pixel_region / audio_chunk / video_frame / lemma / synset / etc.).
-    -- The query is modality- and language-agnostic by design.
-    SELECT 'embedding_firefly_count'::text,
+    -- Firefly count: firefly POINTZM physicalities on any substrate entity
+    -- reachable from this model via entity_model_source. The substrate
+    -- mechanic is universal — fireflies attach to whatever content-
+    -- addressed entity the Procrustes/Laplacian projection from the
+    -- model's N-dim embedding row landed on, regardless of classification
+    -- (word_form / codepoint / pixel_region / audio_chunk / video_frame /
+    -- lemma / synset / etc.). Modality- and language-agnostic by design.
+    SELECT 'firefly_count'::text,
            count(*)::bigint,
            NULL::text
       FROM substrate.physicality p
-      JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+      JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'firefly'
       JOIN substrate.entity_model_source ems_entity
         ON ems_entity.entity_hash = p.entity_hash
       JOIN substrate.entity_model_source ems_arch
@@ -11596,7 +11720,7 @@ AS $$
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
-             AND pt.code = 'embedding_firefly'
+             AND pt.code = 'firefly'
            WHERE p.entity_hash = p_token_hash
       ) c
       CROSS JOIN LATERAL (
@@ -11604,7 +11728,7 @@ AS $$
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
-             AND pt.code = 'embedding_firefly'
+             AND pt.code = 'firefly'
            WHERE p.entity_hash = p_token_hash
       ) d;
 $$;
@@ -11636,7 +11760,7 @@ AS $$
                ST_Z(p.geom) AS z,
                ST_M(p.geom) AS m
           FROM substrate.physicality p
-          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'firefly'
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_a
             ON ems_a.model_source_id = ems_t.model_source_id
@@ -11649,7 +11773,7 @@ AS $$
                ST_Z(p.geom) AS z,
                ST_M(p.geom) AS m
           FROM substrate.physicality p
-          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'firefly'
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_b
             ON ems_b.model_source_id = ems_t.model_source_id
@@ -11885,7 +12009,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
             ON firefly.entity_hash = source_entity.hash
           JOIN substrate.physicality_type firefly_type
             ON firefly_type.id = firefly.physicality_type_id
-           AND firefly_type.code = 'embedding_firefly'
+           AND firefly_type.code = 'firefly'
           JOIN substrate.entity_significance significance
             ON significance.entity_hash = source_entity.hash
           JOIN substrate.significance_context context

@@ -65,7 +65,7 @@ public interface ISubstrateAttestationReader
 
     /// <summary>
     /// Pull tensor-attached LINESTRINGZM physicality (the canonical
-    /// "contour" partition or a custom partition code).
+    /// "entity" partition or a custom partition code).
     /// </summary>
     Task<IReadOnlyDictionary<EntityHandle, double[]>> ReadTensorContoursAsync(
         IReadOnlyList<EntityHandle> tensorEntities,

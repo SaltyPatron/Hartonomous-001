@@ -344,7 +344,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         {
             int length = shape[0];
             double[]? values = await _physicalityReader.GetLineString4dAsync(
-                tensor, "contour", ct);
+                tensor, "entity", ct);
             if (values is null || values.Length < length)
             {
                 values = await TryReadUnitContourAsync(tensor, "has_layer_norm_scale", length, ct)
@@ -386,7 +386,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
                 int pos = rawPos - 1;
                 if (pos < 0 || pos >= rows) { continue; }
                 double[]? coords = await _physicalityReader.GetLineString4dAsync(
-                    childHandle, "contour", ct);
+                    childHandle, "entity", ct);
                 if (coords is null) { continue; }
                 int take = Math.Min(cols, coords.Length);
                 long rowBase = (long)pos * cols;
@@ -422,7 +422,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         {
             ct.ThrowIfCancellationRequested();
             double[]? coords = await _physicalityReader.GetLineString4dAsync(
-                rankComponents[rank], "contour", ct);
+                rankComponents[rank], "entity", ct);
             if (coords is null || coords.Length < 1 + m + n) { continue; }
 
             double sigma = coords[0];
@@ -464,7 +464,7 @@ public sealed class SafetensorsRecomposer : BaseRecomposer<SafetensorsFile>
         foreach (EntityHandle unit in targets)
         {
             double[]? contour = await _physicalityReader.GetLineString4dAsync(
-                unit, "contour", ct);
+                unit, "entity", ct);
             if (contour is not null && contour.Length >= minLength)
             {
                 return contour;

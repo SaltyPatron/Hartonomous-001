@@ -21,7 +21,7 @@ namespace Hartonomous.Engine.Ingestion;
 /// Edge trajectories use real metric coordinates (canonical shape for
 /// <c>frechet_4d_geom</c> over relation fingerprints — e.g. analogy completion
 /// <c>gender_correspondence(king, queen) ≈ gender_correspondence(man, woman)</c>),
-/// not mantissa-packed identity bits. Compare to <c>ingestion_trajectory</c>
+/// not mantissa-packed identity bits. Compare to <c>content</c>
 /// which uses bit-banged vertices for child identity recovery.
 /// </para>
 /// </summary>

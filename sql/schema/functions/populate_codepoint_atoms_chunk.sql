@@ -45,9 +45,9 @@ BEGIN
     END IF;
 
     SELECT id INTO v_s3_phys_type
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     IF v_s3_phys_type IS NULL THEN
-        RAISE EXCEPTION 'physicality_type code=''s3_position'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'physicality_type code=''entity'' missing — bootstrap not applied?';
     END IF;
 
     SELECT id INTO v_source_auth_ctx
@@ -61,10 +61,21 @@ BEGIN
         RAISE EXCEPTION 'attestation_type code=''positive_evidence'' missing — bootstrap not applied?';
     END IF;
 
-    INSERT INTO substrate.entity (hash)
-    SELECT a.hash
+    INSERT INTO substrate.entity (hash, centroid_x, centroid_y, centroid_z, centroid_m, hilbert_index)
+    SELECT a.hash,
+           a.x,
+           a.y,
+           a.z,
+           a.m,
+           (public.hilbert_4d(public.point4d(a.x, a.y, a.z, a.m), 16))::bigint
       FROM substrate.ucd_codepoints(p_cp_lo, p_cp_hi) a
-    ON CONFLICT (hash) DO NOTHING;
+    ON CONFLICT (hash) DO UPDATE
+       SET centroid_x    = EXCLUDED.centroid_x,
+           centroid_y    = EXCLUDED.centroid_y,
+           centroid_z    = EXCLUDED.centroid_z,
+           centroid_m    = EXCLUDED.centroid_m,
+           hilbert_index = EXCLUDED.hilbert_index
+     WHERE substrate.entity.centroid_x IS NULL;
 
     INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id)
     SELECT a.hash, v_codepoint_etype, v_provenance_id

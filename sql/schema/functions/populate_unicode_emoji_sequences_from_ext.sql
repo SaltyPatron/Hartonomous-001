@@ -41,7 +41,7 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
     v_edge_code := CASE WHEN p_use_zwj THEN 'has_emoji_zwj_sequence' ELSE 'has_emoji_sequence' END;
     SELECT id, semantic_weight INTO v_edge_type_id, v_edge_semantic_weight

@@ -40,8 +40,9 @@ extern "C" {
 #define HARTONOMOUS_KIND_TEXT_COMPOSITION  9
 
 /* ── Physicality-kind tags ─────────────────────────────────── */
-#define HARTONOMOUS_PHYS_S3_POSITION  1
-#define HARTONOMOUS_PHYS_CONTOUR      2
+#define HARTONOMOUS_PHYS_S3_POSITION  1  /* entity-tier atom POINTZM */
+#define HARTONOMOUS_PHYS_CONTOUR      2  /* entity-tier composition LINESTRINGZM (grapheme_cluster, word_form) */
+#define HARTONOMOUS_PHYS_CONTENT      3  /* content-tier trajectory LINESTRINGZM (text_composition, paragraph, document) */
 
 /* ── Significance-kind tags ────────────────────────────────── */
 #define HARTONOMOUS_SIG_SOURCE_AUTHORITY  1

@@ -61,9 +61,9 @@ BEGIN
     END IF;
 
     SELECT id INTO v_s3_phys_type
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     IF v_s3_phys_type IS NULL THEN
-        RAISE EXCEPTION 'physicality_type code=''s3_position'' missing — bootstrap not applied?';
+        RAISE EXCEPTION 'physicality_type code=''entity'' missing — bootstrap not applied?';
     END IF;
 
     SELECT id INTO v_source_auth_ctx

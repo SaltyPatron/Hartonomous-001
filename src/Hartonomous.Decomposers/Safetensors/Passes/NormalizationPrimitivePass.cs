@@ -64,16 +64,17 @@ internal sealed partial class NormalizationPrimitivePass : IModelAnalysisPass
                     p + 3 < len ? flat[p + 3] : 0.0);
             }
 
-            // Tensor γ-scale is the tensor's own internal real-coord shape
-            // (per-feature scale values laid out as a LINESTRINGZM in
-            // contiguous 4-tuples). It is NOT a trajectory through other
-            // entities; it is the tensor entity's canonical structural
-            // fingerprint. Route to physicality_entity_shape (id 15) via
-            // AddEntityShape — distinct from the content_trajectory
-            // mantissa-packed surface that text/audio/image compositions
-            // emit into. Fréchet shape matching across tensors with
-            // similar γ-scale profiles becomes a structural-shape query
-            // against the entity_shape partition.
+            // Tensor γ-scale is the tensor entity's own internal real-coord
+            // shape (per-feature scale values laid out as a LINESTRINGZM
+            // in contiguous 4-tuples). It is NOT a trajectory through
+            // other entities; it is the tensor entity's canonical
+            // structural fingerprint. AddEntityShape routes to the
+            // entity partition (physicality_type='entity', LINESTRINGZM
+            // shape) — distinct from the content partition where text/
+            // audio/image trajectory walks land. Fréchet shape matching
+            // across tensors with similar γ-scale profiles is a query
+            // over the entity-partition LINESTRINGZMs filtered by the
+            // tensor entity_type.
             Hartonomous.Core.Geometry.Point4D[] shapeVerts =
                 new Hartonomous.Core.Geometry.Point4D[verts.Length];
             for (int v = 0; v < verts.Length; v++)

@@ -581,6 +581,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             parentsWithPhysicality.Add(p.Entity.Hash);
         }
 
+        // Parent type-code lookup: needed to route the fallback PhysicalityRecord
+        // to the entity vs content partition. Composition children carry the
+        // parent's EntityHandle, so the type code is available without a SQL
+        // round trip.
+        Dictionary<Hash32, string> parentTypeCodes = new();
+        foreach (CompositionChildEntry cc in b.CompositionChildren)
+        {
+            parentTypeCodes[cc.Parent.Hash] = cc.Parent.EntityTypeCode;
+        }
+
         foreach (var pair in compositionMetadata)
         {
             if (parentsWithPhysicality.Contains(pair.Key))
@@ -591,8 +601,11 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             byte[] geometry = BuildCompositionGeometry(
                 pair.Value.ChildHashes, pair.Value.OrdinalStarts, pair.Value.RleCounts);
             Hash32 contentHash = ComputePhysicalityContentHash(geometry);
+            string fallbackType = parentTypeCodes.TryGetValue(pair.Key, out string? tc)
+                ? Hartonomous.Core.Text.SubstrateTextDecomposer.PhysicalityCodeFor(tc)
+                : "entity";
             records.Add(new PhysicalityRecord(
-                "contour",
+                fallbackType,
                 pair.Key,
                 contentHash,
                 geometry));

@@ -153,8 +153,10 @@ public interface IIngestionBatch
         => AddPhysicality(entity, physicalityTypeCode, geometryPayload);
 
     /// <summary>
-    /// Append a POINT4D physicality row (s3_position, hilbert_value,
-    /// weight_distribution single-point variants, etc.).
+    /// Append a POINTZM physicality row. physicalityTypeCode is 'entity'
+    /// for atom POINTZMs (codepoint S^3, audio sample, pixel intensity,
+    /// tensor cell — modality determined by the attached entity_type) or
+    /// 'firefly' for per-model embedding-row POINTZMs.
     /// </summary>
     void AddPhysicalityPoint4d(
         EntityHandle entity,
@@ -206,7 +208,7 @@ public interface IIngestionBatch
     /// For atoms (codepoints), call <see cref="AddPhysicalityPoint4d"/> with
     /// <c>physicalityTypeCode = "entity"</c> instead — atoms have a POINTZM
     /// shape, not a linestring. For compositions, this emits a row with
-    /// <c>physicality_type = entity_shape</c> and <c>geom = LINESTRINGZM</c>
+    /// <c>physicality_type = entity</c> and <c>geom = LINESTRINGZM</c>
     /// in real metric coordinates (NOT bit-banged identity).
     /// </para>
     ///
@@ -229,7 +231,7 @@ public interface IIngestionBatch
     /// reconstruction via <c>SubstrateTierWalker.WalkAsync</c>.
     ///
     /// <para>
-    /// Emits a row with <c>physicality_type = ingestion_trajectory</c> and
+    /// Emits a row with <c>physicality_type = content</c> and
     /// <c>geom = LINESTRINGZM</c>. Children are recovered via the
     /// <c>(hash_bits_0_51, hash_bits_52_103)</c> composite btree on
     /// <c>substrate.entity</c> — one batched lookup per tier walk, no
@@ -260,7 +262,7 @@ public interface IIngestionBatch
     /// interleaved).
     ///
     /// <para>
-    /// Emits a row with <c>physicality_type = ingestion_trajectory</c> and
+    /// Emits a row with <c>physicality_type = content</c> and
     /// <c>geom = MULTILINESTRINGZM</c>. Application reads
     /// <c>GeometryType(geom)</c> and dispatches between LINESTRING vs
     /// MULTILINESTRING.

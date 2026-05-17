@@ -56,9 +56,9 @@ BEGIN
       INTO v_unicode_provenance, v_provenance_mu, v_provenance_sigma, v_provenance_decay
       FROM substrate.provenance WHERE code = 'unicode_consortium';
     SELECT id INTO v_ingest_traj_phys
-      FROM substrate.physicality_type WHERE code = 'ingestion_trajectory';
+      FROM substrate.physicality_type WHERE code = 'content';
     SELECT id INTO v_s3_phys
-      FROM substrate.physicality_type WHERE code = 's3_position';
+      FROM substrate.physicality_type WHERE code = 'entity';
     v_positive_attest := substrate.resolve_attestation_type_id('positive_evidence');
 
     SELECT id, semantic_weight INTO v_canonical_edge_type, v_canonical_semantic

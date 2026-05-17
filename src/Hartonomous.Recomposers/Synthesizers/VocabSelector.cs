@@ -135,6 +135,12 @@ SELECT r.hash, r.deg
         return rows;
     }
 
+    // Entity-role POINTZM physicality on word_form (or codepoint) entities
+    // is the brick's representative real-coord centroid (codepoint
+    // Super-Fibonacci S^3 by UCA rank; word_form aggregated centroid).
+    // physicality_type='entity' + GeometryType=POINT selects only those
+    // rows — composition LINESTRINGZMs live in the same partition but a
+    // different shape.
     private const string LoadCentroidsSql = @"
 SELECT p.entity_hash,
        ST_X(p.geom)::double precision AS x,
@@ -143,7 +149,8 @@ SELECT p.entity_hash,
        ST_M(p.geom)::double precision AS m
   FROM substrate.physicality p
   JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id
- WHERE pt.code = 's3_position'
+ WHERE pt.code = 'entity'
+   AND GeometryType(p.geom) = 'POINT'
    AND p.entity_hash = ANY(@hashes)";
 
     public static async Task<IReadOnlyList<VocabToken>> AttachCentroidsAsync(
@@ -193,9 +200,10 @@ SELECT p.entity_hash,
             }
             else
             {
-                // Word_form without s3_position physicality — leave centroid zero.
-                // EmbeddingSynthesizer falls back to deterministic hash-derived
-                // pseudo-coords when centroid is zero.
+                // Word_form without entity-role POINTZM physicality — leave
+                // centroid zero. EmbeddingSynthesizer falls back to
+                // deterministic hash-derived pseudo-coords when centroid is
+                // zero.
                 attached.Add(t);
             }
         }

@@ -20,7 +20,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
             ON firefly.entity_hash = source_entity.hash
           JOIN substrate.physicality_type firefly_type
             ON firefly_type.id = firefly.physicality_type_id
-           AND firefly_type.code = 'embedding_firefly'
+           AND firefly_type.code = 'firefly'
           JOIN substrate.entity_significance significance
             ON significance.entity_hash = source_entity.hash
           JOIN substrate.significance_context context

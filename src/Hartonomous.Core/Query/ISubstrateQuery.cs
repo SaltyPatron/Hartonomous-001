@@ -40,7 +40,7 @@ public interface ISubstrateQuery
         CancellationToken ct);
 
     /// <summary>
-    /// Token entities carrying embedding_firefly physicality, narrowed to the
+    /// Token entities carrying firefly physicality, narrowed to the
     /// supplied vocabulary set and significance threshold in the chosen arena.
     /// </summary>
     Task<IReadOnlyList<EntityHandle>> QueryFireflyForVocabAsync(

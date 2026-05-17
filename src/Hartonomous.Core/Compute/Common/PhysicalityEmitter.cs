@@ -114,7 +114,7 @@ public static class PhysicalityEmitter
     }
 
     /// <summary>
-    /// Build the canonical-shape vertex list for an <c>entity_shape</c>
+    /// Build the canonical-shape vertex list for an <c>entity</c>
     /// physicality emission — the ordered children's POINTZM centroids in
     /// the composition's canonical role order. Returned as the caller's flat
     /// (X, Y, Z, M) tuple sequence ready for

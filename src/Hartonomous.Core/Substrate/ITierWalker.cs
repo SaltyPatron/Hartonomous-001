@@ -12,7 +12,7 @@ namespace Hartonomous.Core.Substrate;
 /// per-tier fanout.
 ///
 /// <para>
-/// Per <c>ingestion_trajectory</c> physicality rows, each parent's
+/// Per <c>content</c> physicality rows, each parent's
 /// <c>LINESTRING4D</c> (or <c>MULTILINESTRING4D</c>) carries K mantissa-packed
 /// vertices, one per child in trajectory order. Walk operation:
 /// <list type="number">
@@ -39,7 +39,7 @@ public interface ITierWalker
     /// one <see cref="TierFrame"/> per tier in depth order (depth 0 = root).
     /// Halts at <paramref name="maxDepth"/> or when the current tier contains
     /// no further descendants (atom tier, or composition whose
-    /// <c>ingestion_trajectory</c> row is absent — honest abstention).
+    /// <c>content</c> row is absent — honest abstention).
     /// </summary>
     IAsyncEnumerable<TierFrame> WalkAsync(
         EntityHandle root,
@@ -50,7 +50,7 @@ public interface ITierWalker
     /// Convenience for text-content reconstruction: walks via
     /// <see cref="WalkAsync"/> down to <c>codepoint</c> tier, accumulates leaf
     /// codepoint values in trajectory vertex order, returns the reconstructed
-    /// string. Returns <c>null</c> if the root has no <c>ingestion_trajectory</c>
+    /// string. Returns <c>null</c> if the root has no <c>content</c>
     /// (honest abstention).
     /// </summary>
     Task<string?> ReconstructTextAsync(

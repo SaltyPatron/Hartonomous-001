@@ -42,7 +42,7 @@ BEGIN
           JOIN substrate.entity_classification ec ON ec.entity_hash = p.entity_hash
           JOIN substrate.entity_type et ON et.id = ec.entity_type_id
          WHERE p.physicality_type_id = (
-             SELECT id FROM substrate.physicality_type WHERE code = 'ingestion_trajectory'
+             SELECT id FROM substrate.physicality_type WHERE code = 'content'
          )
            AND et.code IN ('text_composition', 'paragraph', 'document')
            AND substrate.bb_unpack_ordinal(ST_Y(pt.geom)) >= 1

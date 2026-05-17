@@ -13,7 +13,7 @@ namespace Hartonomous.Core.Native;
 ///
 /// <para>
 /// Vertex coordinates are returned raw. Callers interpret per context:
-/// composition <c>ingestion_trajectory</c> vertices carry mantissa-packed
+/// composition <c>content</c> vertices carry mantissa-packed
 /// identity (X = child hash bits 0..51, Y = ordinal + RLE, Z = child hash
 /// bits 52..103, M = metadata — unpack via
 /// <see cref="Hartonomous.Core.Compute.Common.MantissaPacking"/>); atom

@@ -80,7 +80,6 @@
 -- junction table is created) since it INSERTs against substrate.provenance_edge_authority.
 -- @include schema/seed/entity_type.sql
 -- @include schema/seed/physicality_type.sql
--- @include schema/seed/physicality_type_embedding_firefly.sql
 -- @include schema/seed/physicality_type_trajectories.sql
 -- @include schema/seed/edge_role.sql
 -- @include schema/seed/significance_context.sql
@@ -119,11 +118,9 @@
 -- @include schema/tables/core/edge_member_model_cross_content.sql
 -- @include schema/tables/core/edge_member_default.sql
 -- @include schema/tables/core/physicality.sql
--- @include schema/tables/core/physicality_s3.sql
--- @include schema/tables/core/physicality_hilbert.sql
--- @include schema/tables/core/physicality_audio.sql
--- @include schema/tables/core/physicality_model.sql
--- @include schema/tables/core/physicality_contour.sql
+-- @include schema/tables/core/physicality_entity.sql
+-- @include schema/tables/core/physicality_firefly.sql
+-- @include schema/tables/core/physicality_content.sql
 -- @include schema/tables/core/physicality_entity_shape.sql
 -- @include schema/tables/core/physicality_ingestion_trajectory.sql
 -- @include schema/tables/core/physicality_default.sql

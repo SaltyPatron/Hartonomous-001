@@ -21,7 +21,7 @@ AS $$
                ST_Z(p.geom) AS z,
                ST_M(p.geom) AS m
           FROM substrate.physicality p
-          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'firefly'
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_a
             ON ems_a.model_source_id = ems_t.model_source_id
@@ -34,7 +34,7 @@ AS $$
                ST_Z(p.geom) AS z,
                ST_M(p.geom) AS m
           FROM substrate.physicality p
-          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'embedding_firefly'
+          JOIN substrate.physicality_type pt ON pt.id = p.physicality_type_id AND pt.code = 'firefly'
           JOIN substrate.entity_model_source ems_t ON ems_t.entity_hash = p.entity_hash
           JOIN substrate.entity_model_source ems_b
             ON ems_b.model_source_id = ems_t.model_source_id

@@ -698,29 +698,47 @@ static void td_mean_centroid(const double* in, int32_t k, double* out)
 /* ─────────────────────────────────────────────────────────────────────
  * (6) geometry4d payload encoders for POINT4D and LINESTRING4D.
  * ───────────────────────────────────────────────────────────────────── */
-static void td_point4d_geometry(double x, double y, double z, double m, uint8_t out[33])
+/* PostGIS EWKB POINTZM, little-endian, no SRID (37 bytes):
+ *   [0]    = 0x01 byte order
+ *   [1..4] = 0xC0000001 (type POINT, Z_FLAG | M_FLAG)
+ *   [5..]  = X, Y, Z, M doubles
+ */
+static void td_point4d_geometry(double x, double y, double z, double m, uint8_t out[37])
 {
-    out[0] = 1;
-    memcpy(out + 1,  &x, 8);
-    memcpy(out + 9,  &y, 8);
-    memcpy(out + 17, &z, 8);
-    memcpy(out + 25, &m, 8);
+    uint32_t type = 0xC0000001u;
+    out[0] = 0x01;
+    memcpy(out + 1,  &type, 4);
+    memcpy(out + 5,  &x, 8);
+    memcpy(out + 13, &y, 8);
+    memcpy(out + 21, &z, 8);
+    memcpy(out + 29, &m, 8);
 }
 
+/* PostGIS EWKB LINESTRINGZM, little-endian, no SRID (9 + n*32 bytes).
+ * PostGIS rejects single-vertex LINESTRINGs ("LineString must have at
+ * least two points"). For singleton compositions (k == 1) emit a
+ * doubled-vertex LINESTRING — the only vertex repeated. Walker
+ * reverse-resolves to the same child entity on both vertices; consumers
+ * dedupe via (ordinal, child_hash) identity.
+ */
 static uint8_t* td_linestring4d_geometry(const double* verts, int k, size_t* out_len)
 {
-    size_t sz = 1 + 4 + (size_t) k * 32;
+    int n_emit = (k <= 1) ? 2 : k;
+    size_t sz = 1 + 4 + 4 + (size_t) n_emit * 32;
     uint8_t* buf = (uint8_t*) malloc(sz);
     if (!buf) { *out_len = 0; return NULL; }
-    buf[0] = 2;
-    uint32_t n = (uint32_t) k;
-    memcpy(buf + 1, &n, 4);
-    uint8_t* vp = buf + 5;
-    for (int i = 0; i < k; i++) {
-        memcpy(vp + 0,  &verts[i*4+0], 8);
-        memcpy(vp + 8,  &verts[i*4+1], 8);
-        memcpy(vp + 16, &verts[i*4+2], 8);
-        memcpy(vp + 24, &verts[i*4+3], 8);
+    uint32_t type = 0xC0000002u;
+    buf[0] = 0x01;
+    memcpy(buf + 1, &type, 4);
+    uint32_t n = (uint32_t) n_emit;
+    memcpy(buf + 5, &n, 4);
+    uint8_t* vp = buf + 9;
+    for (int i = 0; i < n_emit; i++) {
+        int src = (i < k) ? i : 0;
+        memcpy(vp + 0,  &verts[src*4+0], 8);
+        memcpy(vp + 8,  &verts[src*4+1], 8);
+        memcpy(vp + 16, &verts[src*4+2], 8);
+        memcpy(vp + 24, &verts[src*4+3], 8);
         vp += 32;
     }
     *out_len = sz;
@@ -852,12 +870,12 @@ int hartonomous_text_decompose(
             .kind = HARTONOMOUS_REC_CLASSIFICATION, .subkind = HARTONOMOUS_KIND_CODEPOINT,
             .hash_a = h
         }));
-        uint8_t pt[33];
+        uint8_t pt[37];
         td_point4d_geometry(cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3], pt);
         EMIT(((hartonomous_text_record_t){
             .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_S3_POSITION,
             .hash_a = h, .hash_b = h,
-            .geometry = pt, .geometry_len = 33,
+            .geometry = pt, .geometry_len = 37,
             .centroid = { cp_c[i*4+0], cp_c[i*4+1], cp_c[i*4+2], cp_c[i*4+3] }
         }));
         EMIT(((hartonomous_text_record_t){
@@ -994,8 +1012,10 @@ int hartonomous_text_decompose(
             xfree(ls_buf);
             ls_buf = td_linestring4d_geometry(w_c, wN, &ls_len);
             if (!ls_buf) { rc_final = -9; goto out_cleanup; }
+            /* Content-tier trajectory: distinct subkind so the PG-side
+             * physicality_type_id resolver lands on 'content', not 'entity'. */
             EMIT(((hartonomous_text_record_t){
-                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTOUR,
+                .kind = HARTONOMOUS_REC_PHYSICALITY, .subkind = HARTONOMOUS_PHYS_CONTENT,
                 .hash_a = comp_h, .hash_b = comp_h,
                 .geometry = ls_buf, .geometry_len = ls_len,
                 .centroid = { comp_c[0], comp_c[1], comp_c[2], comp_c[3] }

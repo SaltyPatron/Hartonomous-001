@@ -367,6 +367,27 @@ public sealed class SubstrateTextDecomposer
         _                                        => "text_composition",
     };
 
+    /// <summary>
+    /// Content-tier types are trajectories through entity bricks. They get
+    /// physicality_type='content'. Everything else (codepoint atoms,
+    /// grapheme_cluster / word_form / morpheme / lemma / synset / language_name
+    /// / etc.) is entity-tier and gets physicality_type='entity'.
+    /// </summary>
+    public static bool IsContentTier(string entityCode) => entityCode switch
+    {
+        "text_composition" => true,
+        "paragraph"        => true,
+        "document"         => true,
+        "audio_recording"  => true,
+        "audio_chunk"      => true,
+        "pixel_region"     => true,
+        "video_frame"      => true,
+        _                  => false,
+    };
+
+    public static string PhysicalityCodeFor(string entityCode)
+        => IsContentTier(entityCode) ? "content" : "entity";
+
     private static bool ShouldEmitEntity(TextDecomposeOptions options, string entityTypeCode, Hash32 hash)
         => options.EmissionCache?.TryRegisterEntity(entityTypeCode, hash, options.ProvenanceCode) ?? true;
 
@@ -477,12 +498,13 @@ public sealed class SubstrateTextDecomposer
                     string entityCode = KindByHash.TryGetValue(entHash, out string? c)
                         ? c : "text_composition";
                     EntityHandle eh = new(entHash, entityCode);
-                    string physCode = record.Subkind switch
-                    {
-                        TextDecomposeNative.PhysS3Position => "s3_position",
-                        TextDecomposeNative.PhysContour    => "contour",
-                        _                                   => "contour",
-                    };
+                    // 3-row physicality_type: content-tier compositions
+                    // (text_composition / paragraph / document / audio_chunk /
+                    // pixel_region / video_frame) land in 'content'.
+                    // Entity-tier (codepoint atom POINTZM, grapheme_cluster /
+                    // word_form / morpheme / lemma / etc. LINESTRINGZM) land
+                    // in 'entity'. Modality stays on entityCode.
+                    string physCode = SubstrateTextDecomposer.PhysicalityCodeFor(entityCode);
                     if (!ShouldEmitPhysicality(Options, physCode, entHash))
                     {
                         break;
@@ -627,12 +649,10 @@ public sealed class SubstrateTextDecomposer
                 case TextDecomposeNative.RecPhysicality:
                 {
                     Hash32 entHash = ReadHash(record.HashA);
-                    string physCode = record.Subkind switch
-                    {
-                        TextDecomposeNative.PhysS3Position => "s3_position",
-                        TextDecomposeNative.PhysContour    => "contour",
-                        _                                   => "contour",
-                    };
+                    string entityCode2 = KindByHash.TryGetValue(entHash, out string? c2)
+                        ? c2 : "text_composition";
+                    // 3-row physicality_type — see OnRecord above.
+                    string physCode = SubstrateTextDecomposer.PhysicalityCodeFor(entityCode2);
                     if (!ShouldEmitPhysicality(Options, physCode, entHash))
                     {
                         break;

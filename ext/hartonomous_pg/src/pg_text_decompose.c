@@ -19,6 +19,7 @@
 #include "pg_text_decompose.h"
 #include "hartonomous_pg.h"
 #include "hartonomous.h"
+#include "hartonomous/geometry.h"
 #include "generated/pg_unicode_version.h"
 #include "generated/pg_ucd_segmentation.h"
 #include "generated/pg_ucd_classification.h"
@@ -622,8 +623,9 @@ typedef struct {
     int entity_type_grapheme_cluster;
     int entity_type_word_form;
     int entity_type_text_composition;  /* and root */
-    int physicality_type_s3_position;
-    int physicality_type_contour;
+    int physicality_type_s3_position;  /* maps to 'entity' partition */
+    int physicality_type_contour;      /* maps to 'entity' partition (entity-tier compositions) */
+    int physicality_type_content;      /* maps to 'content' partition (content-tier trajectories) */
     int significance_context_source_authority;
     int loaded;
 } RefIds;
@@ -654,10 +656,17 @@ static void resolve_ref_ids(RefIds* r, const char* provenance_code)
         "SELECT id FROM substrate.entity_type WHERE code = $1", "word_form");
     r->entity_type_text_composition = spi_lookup_id(
         "SELECT id FROM substrate.entity_type WHERE code = $1", "text_composition");
+    /* 3-row physicality_type: codepoint atom POINTZM (PHYS_S3_POSITION) and
+     * entity-tier composition LINESTRINGZMs (PHYS_CONTOUR — grapheme_cluster
+     * / word_form) land in 'entity'. Content-tier trajectory LINESTRINGZMs
+     * (PHYS_CONTENT — text_composition / paragraph / document) land in
+     * 'content'. */
     r->physicality_type_s3_position = spi_lookup_id(
-        "SELECT id FROM substrate.physicality_type WHERE code = $1", "s3_position");
+        "SELECT id FROM substrate.physicality_type WHERE code = $1", "entity");
     r->physicality_type_contour = spi_lookup_id(
-        "SELECT id FROM substrate.physicality_type WHERE code = $1", "contour");
+        "SELECT id FROM substrate.physicality_type WHERE code = $1", "entity");
+    r->physicality_type_content = spi_lookup_id(
+        "SELECT id FROM substrate.physicality_type WHERE code = $1", "content");
     r->significance_context_source_authority = spi_lookup_id(
         "SELECT id FROM substrate.significance_context WHERE code = $1", "source_authority");
     r->loaded = 1;
@@ -673,6 +682,11 @@ static void resolve_ref_ids(RefIds* r, const char* provenance_code)
 
 typedef struct {
     bytea**  hashes;
+    double*  centroid_x;
+    double*  centroid_y;
+    double*  centroid_z;
+    double*  centroid_m;
+    int64_t* hilbert_index;
     int      count;
     int      cap;
 } HashList;
@@ -722,17 +736,24 @@ static bytea* hash_to_bytea(const uint8_t* h32)
     return b;
 }
 
+/* PostGIS EWKB POINTZM, little-endian, no SRID (37 bytes).
+ *   [0]    = 0x01 (byte order)
+ *   [1..4] = 0xC0000001 (WKB type 1 = POINT, | Z_FLAG | M_FLAG)
+ *   [5..]  = X, Y, Z, M as doubles
+ */
 static bytea* point4d_to_geometry(double x, double y, double z, double m)
 {
-    bytea* b = (bytea*) palloc(VARHDRSZ + 33);
+    bytea* b = (bytea*) palloc(VARHDRSZ + 37);
     uint8_t* p;
-    SET_VARSIZE(b, VARHDRSZ + 33);
+    uint32_t type = 0xC0000001u;
+    SET_VARSIZE(b, VARHDRSZ + 37);
     p = (uint8_t*) VARDATA(b);
-    p[0] = 1;
-    memcpy(p + 1,  &x, 8);
-    memcpy(p + 9,  &y, 8);
-    memcpy(p + 17, &z, 8);
-    memcpy(p + 25, &m, 8);
+    p[0] = 0x01;
+    memcpy(p + 1,  &type, 4);
+    memcpy(p + 5,  &x, 8);
+    memcpy(p + 13, &y, 8);
+    memcpy(p + 21, &z, 8);
+    memcpy(p + 29, &m, 8);
     return b;
 }
 
@@ -762,26 +783,34 @@ static void pg_text_decompose_keep_future_symbols(void)
     }
 }
 
+/* PostGIS EWKB LINESTRINGZM, little-endian, no SRID (9 + n_emit*32 bytes).
+ * Singleton (k == 1) gets doubled-vertex layout because PostGIS rejects
+ * single-vertex LINESTRINGs ("LineString must have at least two points").
+ */
 static bytea* linestring4d_to_geometry(const double* verts /* k * 4 */, int k)
 {
-    size_t sz = 1 + 4 + (size_t)k * 32;
+    int n_emit = (k <= 1) ? 2 : k;
+    size_t sz = 1 + 4 + 4 + (size_t)n_emit * 32;
     bytea* b = (bytea*) palloc(VARHDRSZ + sz);
     uint8_t* p;
+    uint32_t type = 0xC0000002u;
     uint32_t n;
     uint8_t* vp;
-    int i;
+    int i, src;
 
     SET_VARSIZE(b, VARHDRSZ + sz);
     p = (uint8_t*) VARDATA(b);
-    p[0] = 2;
-    n = (uint32_t) k;
-    memcpy(p + 1, &n, 4);
-    vp = p + 5;
-    for (i = 0; i < k; i++) {
-        memcpy(vp + 0,  &verts[i*4+0], 8);
-        memcpy(vp + 8,  &verts[i*4+1], 8);
-        memcpy(vp + 16, &verts[i*4+2], 8);
-        memcpy(vp + 24, &verts[i*4+3], 8);
+    p[0] = 0x01;
+    memcpy(p + 1, &type, 4);
+    n = (uint32_t) n_emit;
+    memcpy(p + 5, &n, 4);
+    vp = p + 9;
+    for (i = 0; i < n_emit; i++) {
+        src = (i < k) ? i : 0;
+        memcpy(vp + 0,  &verts[src*4+0], 8);
+        memcpy(vp + 8,  &verts[src*4+1], 8);
+        memcpy(vp + 16, &verts[src*4+2], 8);
+        memcpy(vp + 24, &verts[src*4+3], 8);
         vp += 32;
     }
     return b;
@@ -879,6 +908,18 @@ static ArrayType* build_int4_array(int* items, int n)
     return construct_md_array(datums, NULL, 1, dims, lbs, INT4OID, sizeof(int32), true, TYPALIGN_INT);
 }
 
+static ArrayType* build_int8_array(int64_t* items, int n)
+{
+    Datum* datums = (Datum*) palloc(sizeof(Datum) * n);
+    int dims[1];
+    int lbs[1];
+    int i;
+    for (i = 0; i < n; i++) datums[i] = Int64GetDatum(items[i]);
+    dims[0] = n;
+    lbs[0] = 1;
+    return construct_md_array(datums, NULL, 1, dims, lbs, INT8OID, sizeof(int64), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE);
+}
+
 static ArrayType* build_float8_array(double* items, int n)
 {
     Datum* datums = (Datum*) palloc(sizeof(Datum) * n);
@@ -893,17 +934,28 @@ static ArrayType* build_float8_array(double* items, int n)
 
 static void flush_entities(HashList* L)
 {
-    Oid types[1];
-    Datum vals[1];
+    Oid types[6];
+    Datum vals[6];
     int rc;
     if (L->count == 0) return;
     types[0] = BYTEAARRAYOID;
+    types[1] = FLOAT8ARRAYOID;
+    types[2] = FLOAT8ARRAYOID;
+    types[3] = FLOAT8ARRAYOID;
+    types[4] = FLOAT8ARRAYOID;
+    types[5] = INT8ARRAYOID;
     vals[0] = PointerGetDatum(build_bytea_array(L->hashes, L->count));
+    vals[1] = PointerGetDatum(build_float8_array(L->centroid_x, L->count));
+    vals[2] = PointerGetDatum(build_float8_array(L->centroid_y, L->count));
+    vals[3] = PointerGetDatum(build_float8_array(L->centroid_z, L->count));
+    vals[4] = PointerGetDatum(build_float8_array(L->centroid_m, L->count));
+    vals[5] = PointerGetDatum(build_int8_array(L->hilbert_index, L->count));
     rc = SPI_execute_with_args(
-        "INSERT INTO substrate.entity (hash) "
-        "SELECT DISTINCT h FROM unnest($1::bytea[]) AS h "
+        "INSERT INTO substrate.entity (hash, centroid_x, centroid_y, centroid_z, centroid_m, hilbert_index) "
+        "SELECT DISTINCT ON (h) h, cx, cy, cz, cm, hi "
+        "  FROM unnest($1::bytea[], $2::float8[], $3::float8[], $4::float8[], $5::float8[], $6::int8[]) AS u(h, cx, cy, cz, cm, hi) "
         "ON CONFLICT (hash) DO NOTHING",
-        1, types, vals, NULL, false, 0);
+        6, types, vals, NULL, false, 0);
     if (rc != SPI_OK_INSERT) elog(ERROR, "flush_entities: SPI_execute (%d)", rc);
 }
 
@@ -950,7 +1002,7 @@ static void flush_physicalities(PhysList* L, SeqList* S)
     vals[3] = PointerGetDatum(build_bytea_array(L->geometries, L->count));
     rc = SPI_execute_with_args(
         "INSERT INTO substrate.physicality (physicality_type_id, entity_hash, content_hash, geom) "
-        "SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, bytea_to_geometry4d(geometry_payload)::geometry "
+        "SELECT DISTINCT ON (pt, eh, ch) pt, eh, ch, public.ST_GeomFromEWKB(geometry_payload) "
         "  FROM unnest($1::int[], $2::bytea[], $3::bytea[], $4::bytea[]) AS u(pt, eh, ch, geometry_payload) "
         " ORDER BY pt, eh, ch, geometry_payload "
         "ON CONFLICT (physicality_type_id, entity_hash, content_hash) DO NOTHING",
@@ -1026,7 +1078,12 @@ static void ensure_hash_capacity(HashList* L)
 {
     if (L->count < L->cap) return;
     L->cap = L->cap > 0 ? L->cap * 2 : 64;
-    L->hashes = (bytea**) repalloc(L->hashes, sizeof(bytea*) * L->cap);
+    L->hashes        = (bytea**)  repalloc(L->hashes,        sizeof(bytea*)  * L->cap);
+    L->centroid_x    = (double*)  repalloc(L->centroid_x,    sizeof(double)  * L->cap);
+    L->centroid_y    = (double*)  repalloc(L->centroid_y,    sizeof(double)  * L->cap);
+    L->centroid_z    = (double*)  repalloc(L->centroid_z,    sizeof(double)  * L->cap);
+    L->centroid_m    = (double*)  repalloc(L->centroid_m,    sizeof(double)  * L->cap);
+    L->hilbert_index = (int64_t*) repalloc(L->hilbert_index, sizeof(int64_t) * L->cap);
 }
 
 static void ensure_class_capacity(ClassList* L)
@@ -1082,6 +1139,7 @@ static int native_physicality_type_id_for(const RefIds* ids, int native_kind)
     switch (native_kind) {
         case HARTONOMOUS_PHYS_S3_POSITION: return ids->physicality_type_s3_position;
         case HARTONOMOUS_PHYS_CONTOUR:     return ids->physicality_type_contour;
+        case HARTONOMOUS_PHYS_CONTENT:     return ids->physicality_type_content;
         default:                           return ids->physicality_type_contour;
     }
 }
@@ -1127,7 +1185,12 @@ static void init_emit_context(PgTextEmitContext* ctx, const RefIds* ids)
     ctx->ids = ids;
 
     LIST_INIT(ctx->ent, 64);
-    ctx->ent.hashes = (bytea**) palloc(sizeof(bytea*) * ctx->ent.cap);
+    ctx->ent.hashes        = (bytea**)  palloc(sizeof(bytea*)  * ctx->ent.cap);
+    ctx->ent.centroid_x    = (double*)  palloc(sizeof(double)  * ctx->ent.cap);
+    ctx->ent.centroid_y    = (double*)  palloc(sizeof(double)  * ctx->ent.cap);
+    ctx->ent.centroid_z    = (double*)  palloc(sizeof(double)  * ctx->ent.cap);
+    ctx->ent.centroid_m    = (double*)  palloc(sizeof(double)  * ctx->ent.cap);
+    ctx->ent.hilbert_index = (int64_t*) palloc(sizeof(int64_t) * ctx->ent.cap);
 
     LIST_INIT(ctx->cls, 64);
     ctx->cls.entity_hashes = (bytea**) palloc(sizeof(bytea*) * ctx->cls.cap);
@@ -1166,9 +1229,18 @@ static int pg_text_emit_callback(void* callback_ctx, const hartonomous_text_reco
 
     switch (rec->kind) {
         case HARTONOMOUS_REC_ENTITY:
+        {
             ensure_hash_capacity(&ctx->ent);
-            ctx->ent.hashes[ctx->ent.count++] = hash_to_bytea(rec->hash_a);
+            int idx = ctx->ent.count;
+            ctx->ent.hashes[idx]     = hash_to_bytea(rec->hash_a);
+            ctx->ent.centroid_x[idx] = rec->centroid[0];
+            ctx->ent.centroid_y[idx] = rec->centroid[1];
+            ctx->ent.centroid_z[idx] = rec->centroid[2];
+            ctx->ent.centroid_m[idx] = rec->centroid[3];
+            ctx->ent.hilbert_index[idx] = (int64_t) hartonomous_hilbert_index(rec->centroid, 16);
+            ctx->ent.count++;
             return 0;
+        }
 
         case HARTONOMOUS_REC_CLASSIFICATION:
             ensure_class_capacity(&ctx->cls);

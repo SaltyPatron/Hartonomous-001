@@ -7,7 +7,7 @@ namespace Hartonomous.Recomposers.Synthesizers;
 /// surface form for tokenizer.json; <see cref="EdgeCount"/> is the
 /// substrate-measured prominence (used to rank for vocab selection); the
 /// 4D centroid (<see cref="CentroidX"/>..<see cref="CentroidM"/>) is the
-/// word_form's representative 4D position read out of the s3_position
+/// word_form's representative 4D position read out of the entity
 /// physicality partition.
 /// </summary>
 public sealed record VocabToken(

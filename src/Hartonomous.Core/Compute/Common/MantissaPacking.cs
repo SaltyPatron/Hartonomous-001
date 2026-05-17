@@ -6,7 +6,7 @@ namespace Hartonomous.Core.Compute.Common;
 /// C# mirror of <c>substrate.bb_*</c> SQL functions. Provides bit-banged
 /// encoding/decoding of <c>BIGINT</c> payloads into IEEE-754 double mantissas
 /// for use as PostGIS LINESTRINGZM / MULTILINESTRINGZM vertex coordinates in
-/// <c>ingestion_trajectory</c> physicality rows.
+/// <c>content</c> physicality rows.
 ///
 /// <para>
 /// Encoding contract — round-trip determinism across C# (write side) and
@@ -22,7 +22,7 @@ namespace Hartonomous.Core.Compute.Common;
 /// </para>
 ///
 /// <para>
-/// Per-mantissa allocation in an <c>ingestion_trajectory</c> vertex:
+/// Per-mantissa allocation in an <c>content</c> vertex:
 /// <list type="bullet">
 ///   <item>X mantissa — child hash bits 0..51 via <see cref="PackHashLo"/>.</item>
 ///   <item>Y mantissa — (ordinal, RLE) bit-banged via <see cref="PackOrdinalRle"/>.</item>

@@ -1,6 +1,6 @@
 -- Pack a 52-bit BIGINT into an IEEE-754 double's mantissa for use as a
 -- LINESTRING4D / MULTILINESTRING4D vertex coordinate in
--- substrate.physicality 'ingestion_trajectory' rows.
+-- substrate.physicality 'content' rows.
 --
 -- Encoding: double = 2^52 + (value & 0x000FFFFFFFFFFFFF). The result is
 -- exactly representable in IEEE-754 (the integer range [2^52, 2^53) sits

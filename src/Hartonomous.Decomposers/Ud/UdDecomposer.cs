@@ -310,7 +310,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         }
 
         // Sentence's structural-identity child manifest emits as a
-        // mantissa-packed LINESTRINGZM into the ingestion_trajectory
+        // mantissa-packed LINESTRINGZM into the content
         // physicality partition. Vertices reference the per-token word_form
         // entities by 104-bit hash prefix encoded in (X, Z) mantissas, with
         // (Y) carrying ordinal+RLE. substrate.get_composition_children /

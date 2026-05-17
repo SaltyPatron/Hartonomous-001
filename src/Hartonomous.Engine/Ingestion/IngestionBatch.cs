@@ -230,7 +230,7 @@ internal sealed class IngestionBatch : IIngestionBatch
 
         _physicalities.Add(new PhysicalityEntry(
             entity,
-            "entity_shape",
+            "entity",
             geometry,
             centroid));
     }
@@ -257,15 +257,14 @@ internal sealed class IngestionBatch : IIngestionBatch
                 MantissaPacking.PackMetadata(v.Metadata));
         }
 
-        // Mean of packed vertices serves as the entity's "centroid" for
+        // Mean of packed vertices serves as the entity's centroid for
         // downstream edge.geom inline construction. The value is not metric
         // — it's the mean of mantissa-packed identity bits — but it is
         // deterministic and consistent across runs, so edges constructed
-        // through this entity's centroid will land in the same
-        // structural-identity coordinate space as the ingestion_trajectory
-        // itself. GiST bbox queries against the ingestion_trajectory
-        // partition operate on the same coordinate space, so the centroid
-        // remains meaningful for those queries.
+        // through this entity's centroid land in the same structural-
+        // identity coordinate space as the content trajectory itself.
+        // GiST bbox queries against the content partition operate on the
+        // same coordinate space.
         if (!Point4D.TryMean((ReadOnlySpan<Point4D>)packed, out Point4D centroid))
         {
             throw new ArgumentException(
@@ -277,7 +276,7 @@ internal sealed class IngestionBatch : IIngestionBatch
 
         _physicalities.Add(new PhysicalityEntry(
             parent,
-            "ingestion_trajectory",
+            "content",
             geometry,
             centroid));
     }
@@ -296,7 +295,7 @@ internal sealed class IngestionBatch : IIngestionBatch
         byte[] geometry = Geometry4dPayloadBuilder.Point(projection);
         _physicalities.Add(new PhysicalityEntry(
             parent,
-            "embedding_firefly",
+            "firefly",
             geometry,
             projection));
         _entityModelSources.Add(new EntityModelSourceEntry(parent, modelSourceId));

@@ -10,7 +10,7 @@ BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
             ('substrate.entity_type',           23),
-            ('substrate.physicality_type',      16),
+            ('substrate.physicality_type',       3),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  11),
             ('substrate.provenance',            11),

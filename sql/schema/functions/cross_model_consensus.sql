@@ -30,7 +30,7 @@ AS $$
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
-             AND pt.code = 'embedding_firefly'
+             AND pt.code = 'firefly'
            WHERE p.entity_hash = p_token_hash
       ) c
       CROSS JOIN LATERAL (
@@ -38,7 +38,7 @@ AS $$
             FROM substrate.physicality p
             JOIN substrate.physicality_type pt
               ON pt.id   = p.physicality_type_id
-             AND pt.code = 'embedding_firefly'
+             AND pt.code = 'firefly'
            WHERE p.entity_hash = p_token_hash
       ) d;
 $$;
