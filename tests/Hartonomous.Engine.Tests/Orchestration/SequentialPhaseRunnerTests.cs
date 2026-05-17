@@ -343,6 +343,18 @@ public sealed class SequentialPhaseRunnerTests
         public Task DrainPendingAsync(CancellationToken ct)
         {
             DrainPendingCalls++;
+            // P1f-minimal: drain completion is the post-pass trigger, not
+            // phase completion. SequentialPhaseRunner no longer calls
+            // PopulateEdgeTrajectoriesAsync / PrimeAllSignificanceAsync
+            // directly; the real pipeline's DrainPendingAsync fires them
+            // inline when edges have been submitted. Mirror that contract
+            // in the fake so phase-runner tests observe the right call
+            // counts.
+            if (StatsOverride.EdgesSubmitted > 0)
+            {
+                PopulateEdgeTrajectoriesCalls++;
+                PrimeAllSignificanceCalls++;
+            }
             return Task.CompletedTask;
         }
         public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)

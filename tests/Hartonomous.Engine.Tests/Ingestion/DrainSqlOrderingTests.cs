@@ -12,7 +12,13 @@ public sealed class DrainSqlOrderingTests
 {
     public static IEnumerable<object[]> DrainOrderingRequirements()
     {
-        yield return Requirement("entity", "order by hash", "on conflict (hash) do nothing");
+        // entity.drain.sql uses ON CONFLICT DO UPDATE with COALESCE for
+        // centroid back-fill (first non-NULL wins by Merkle invariant), not
+        // DO NOTHING — a producer that didn't have the centroid in hand can
+        // be followed by one that does, and the entity row picks it up.
+        // Content identity is still hash-only; the update is content-
+        // preserving denormalization.
+        yield return Requirement("entity", "order by hash", "on conflict (hash) do update");
         yield return Requirement("entity_classification", "order by entity_hash, entity_type_id, provenance_id", "on conflict (entity_hash, entity_type_id, provenance_id) do nothing");
         yield return Requirement("edge", "order by edge_type_id, hash, (geometry_payload is null), provenance_id, geometry_payload", "on conflict (edge_type_id, hash) do nothing");
         yield return Requirement("edge_member", "order by edge_type_id, edge_hash, entity_hash, edge_role_id, role_position", "on conflict (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position) do nothing");

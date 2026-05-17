@@ -229,16 +229,18 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                            1.0, upFull, fn.Intermediate, fn.Down, fn.Intermediate,
                                            0.0, response, hiddenDim);
 
-        // Noise floor for pair scores response·embed: the expected stddev of
-        // dot products between an FFN-projected response vector and a raw
-        // embed vector. Uses ||response|| × ||embed|| / sqrt(hidden), NOT
-        // ||response||² / sqrt(hidden). The former matches the actual pair
-        // distribution; the latter mistakenly assumes both factors share the
-        // FFN-amplified magnitude — which lifts the floor above planted signal
-        // when FFN amplification is non-trivial.
-        double sumSqResp = 0;
-        double sumSqEmbed = 0;
-        int counted = 0;
+        // Per-pair noise floor. For each (a,b) pair, the random-vector
+        // expected magnitude is ||response[a]|| · ||embed[b]|| · sqrt(2/(π·d)).
+        // Using the GLOBAL mean (the prior shape) included signal tokens
+        // in the average, which lifted the floor above what those very
+        // tokens' pair scores can reach — every planted-signal pair fell
+        // below the global floor it itself was inflating. Per-pair floors
+        // adapt: low-norm tokens get low floors; high-norm tokens get high
+        // floors. A pair only needs cos(response[a], embed[b]) > sqrt(2/(π·d))
+        // to register as supra-floor signal, which is the actual
+        // random-vs-correlated discriminator.
+        double[] respNorms = new double[vocabSize];
+        double[] embedNorms = new double[vocabSize];
         for (int v = 0; v < vocabSize; v++)
         {
             if (!usable[v]) { continue; }
@@ -250,20 +252,10 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                 double xr = response[off + h]; sqR += xr * xr;
                 double xe = embed[off + h];    sqE += xe * xe;
             }
-            sumSqResp  += sqR;
-            sumSqEmbed += sqE;
-            counted++;
+            respNorms[v]  = Math.Sqrt(sqR);
+            embedNorms[v] = Math.Sqrt(sqE);
         }
-        double meanRespNorm  = counted > 0 ? Math.Sqrt(sumSqResp  / counted) : 1.0;
-        double meanEmbedNorm = counted > 0 ? Math.Sqrt(sumSqEmbed / counted) : 1.0;
-        // Random-vector E[|X·Y|] ≈ ||X|| · ||Y|| · sqrt(2/(π·d)). Use that as
-        // the noise floor — pair scores above this estimate dominate random
-        // dot-product noise. The previous formula used 1/sqrt(d), which is
-        // the STDDEV (≈2.5× higher than the mean) and rejected planted
-        // signal that sits between mean and stddev.
         double dimFactor = Math.Sqrt(2.0 / (Math.PI * Math.Max(1, hiddenDim)));
-        double temperature = meanRespNorm * meanEmbedNorm * dimFactor;
-        if (temperature <= 0) { temperature = 1.0; }
 
         long emitted = 0;
         double[] sourceGather = new double[(long)SourceChunkSize * hiddenDim];
@@ -286,12 +278,9 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                  hiddenDim * sizeof(double));
             }
 
-            // Threshold-only LTH discrimination (AP-33): pair-score values
-            // above the per-tensor noise floor (== temperature, the stddev
-            // estimate of pair values) are signal; emit inline. No top-K
-            // count cap. Pairs below floor produce sigmoid ≈ 0.5 (Glicko
-            // draw); honest-abstention drops them at emission.
-            double noiseFloor = temperature;
+            // Threshold-only LTH discrimination (AP-33): each pair has its
+            // own random-vector noise floor based on the pair's actual norms.
+            // No global-mean conflation; no top-K count cap.
 
             // Per target chunk: pair score = sourceResponse · embed[b].
             for (int tChunkStart = 0; tChunkStart < vocabSize; tChunkStart += TargetChunkSize)
@@ -308,19 +297,21 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                                    0.0,
                                                    sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
 
-                // Inline emit pairs above per-tensor noise floor.
+                // Inline emit pairs above per-pair noise floor.
                 for (int i = 0; i < sChunkLen; i++)
                 {
                     int a = sources[sChunkStart + i];
                     Hash32? aHash = vocabHashByIdx[a];
                     if (aHash is null) { continue; }
+                    double aRespNorm = respNorms[a];
                     long rowOff = (long)i * tChunkLen;
                     for (int j = 0; j < tChunkLen; j++)
                     {
                         int b = tChunkStart + j;
                         if (b == a || !usable[b]) { continue; }
                         double signed = sBlock[rowOff + j];
-                        if (Math.Abs(signed) < noiseFloor) { continue; }
+                        double pairNoiseFloor = aRespNorm * embedNorms[b] * dimFactor;
+                        if (Math.Abs(signed) < pairNoiseFloor) { continue; }
 
                         Hash32? bHash = vocabHashByIdx[b];
                         if (bHash is null) { continue; }

@@ -72,12 +72,16 @@ public sealed class FfnTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e => Assert.Equal("model_ffn_factor", e.EdgeTypeCode));
-            // Post-AP-38: AttestationTypeCode is sign-only. SwiGLU vs BERT vs MoE
-            // discrimination is via SlotCode + TupleCode; arena routing
-            // (model_trust + semantic_relevance) is via ContextTypeCode.
+            // Post-AP-38: AttestationTypeCode is sign-only (positive/negative).
+            // SwiGLU vs BERT vs MoE discrimination is via SlotCode + TupleCode;
+            // arena routing (model_trust + semantic_relevance) is via
+            // ContextTypeCode. Per AP-31 sign-bearing: each pair emits one
+            // sign per its actual response·embed value; negative correlation
+            // is load-bearing evidence, not a bug.
             Assert.All(session.Batch.Edges, e =>
                 Assert.Contains(e.RatingEvents, s => s.SlotCode == "Gate,Up,Down"
-                    && s.AttestationTypeCode == "positive_evidence"));
+                    && (s.AttestationTypeCode == "positive_evidence"
+                        || s.AttestationTypeCode == "negative_evidence")));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -127,7 +131,8 @@ public sealed class FfnTuplePassTests
             Assert.NotEmpty(session.Batch.Edges);
             Assert.All(session.Batch.Edges, e =>
                 Assert.Contains(e.RatingEvents, s => s.SlotCode == "Intermediate,Output"
-                    && s.AttestationTypeCode == "positive_evidence"));
+                    && (s.AttestationTypeCode == "positive_evidence"
+                        || s.AttestationTypeCode == "negative_evidence")));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
@@ -180,11 +185,12 @@ public sealed class FfnTuplePassTests
 
             Assert.NotEmpty(session.Batch.Edges);
             // MoE expert tuple: TupleCode == "MoeRouterBlock"; ExpertIndex set;
-            // arena = model_trust / semantic_relevance.
+            // arena = model_trust / semantic_relevance. Sign-bearing per AP-31.
             Assert.All(session.Batch.Edges, e =>
                 Assert.Contains(e.RatingEvents, s => s.TupleCode == "MoeRouterBlock"
                     && s.ExpertIndex == 0
-                    && s.AttestationTypeCode == "positive_evidence"));
+                    && (s.AttestationTypeCode == "positive_evidence"
+                        || s.AttestationTypeCode == "negative_evidence")));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
