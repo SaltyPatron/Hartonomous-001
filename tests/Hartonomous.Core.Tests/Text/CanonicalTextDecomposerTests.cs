@@ -246,25 +246,27 @@ public sealed class CanonicalTextDecomposerTests
             => throw new NotSupportedException("Canonical text decomposer should not emit junctions.");
         public void AddPhysicality(EntityHandle e, string t, byte[] g)
         {
-            if (g.Length < 1)
+            if (g.Length < 5)
             {
-                throw new InvalidOperationException("Expected native geometry4d payload.");
+                throw new InvalidOperationException("Expected native EWKB geometry payload (>=5 bytes).");
             }
-
-            if (g[0] == 1)
+            // EWKB layout: byte[0] = byte-order (always 0x01 little-endian),
+            // bytes[1..4] = type uint32 with Z/M flag bits in the high byte
+            // (0xC0000001 = POINTZM, 0xC0000002 = LINESTRINGZM). Low byte at
+            // g[1] discriminates POINT (1) from LINESTRING (2).
+            byte geomType = g[1];
+            if (geomType == 1)
             {
                 Points4d.Add((e, t, 0, 0, 0, 0));
                 return;
             }
-
-            if (g[0] == 2)
+            if (geomType == 2)
             {
-                int vertexCount = (int) BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(1, 4));
+                int vertexCount = (int) BinaryPrimitives.ReadUInt32LittleEndian(g.AsSpan(5, 4));
                 LineStrings4d.Add((e, t, vertexCount));
                 return;
             }
-
-            throw new InvalidOperationException($"Unexpected geometry4d tag {g[0]}.");
+            throw new InvalidOperationException($"Unexpected EWKB geometry type {geomType}.");
         }
         public void AddEntityModelSource(EntityHandle e, long m)
             => throw new NotSupportedException();

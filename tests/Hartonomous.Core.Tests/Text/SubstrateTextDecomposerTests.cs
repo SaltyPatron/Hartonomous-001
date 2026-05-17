@@ -25,8 +25,16 @@ public sealed class SubstrateTextDecomposerTests
 
         Assert.Equal(8, result.PhysicalityRowsEmitted);
         Assert.NotEqual((0d, 0d, 0d, 0d), result.RootCentroid);
+        // 3-role physicality_type vocabulary: entity / firefly / content. The
+        // root carries either depending on whether top_kind is entity-tier
+        // (codepoint / grapheme_cluster / word_form / morpheme / lemma /
+        // synset / language_name) or content-tier (text_composition /
+        // paragraph / document / audio_recording / audio_chunk /
+        // pixel_region / video_frame). Lemma falls through to the native
+        // text_composition kernel branch — content-tier — until a dedicated
+        // KindLemma lands.
         Assert.Contains(batch.Physicalities, row =>
-            row.Type == "contour"
+            (row.Type == "entity" || row.Type == "content")
             && row.Entity.Hash.Equals(result.RootHash));
     }
 

@@ -165,6 +165,66 @@ public static partial class TextDecomposeNative
     [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_uca_index")]
     public static partial int UcdCpUcaIndex(int cp);
 
+    /// <summary>UAX #44 General_Category for <paramref name="cp"/>. Returns
+    /// stable byte code matching the substrate's reference vocabulary id
+    /// minus 1 (0 = Cn ... 29 = Co). Out-of-range returns 0 (Cn).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_gc")]
+    public static partial byte UcdCpGc(int cp);
+
+    /// <summary>UAX #44 Canonical_Combining_Class for <paramref name="cp"/>.
+    /// 0 = Not_Reordered; values per UAX #44 §5.7.4.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_ccc")]
+    public static partial byte UcdCpCcc(int cp);
+
+    /// <summary>ISO 15924 script code for <paramref name="cp"/>. Returns the
+    /// uint16 script id matching the substrate's reference vocabulary id minus
+    /// 1. Out-of-range returns 0 (Zzzz / Unknown).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_script")]
+    public static partial ushort UcdCpScript(int cp);
+
+    /// <summary>Unicode block for <paramref name="cp"/>. Returns the uint16
+    /// block id matching the substrate's reference vocabulary id minus 1.
+    /// Out-of-range returns 0 (No_Block).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_block")]
+    public static partial ushort UcdCpBlock(int cp);
+
+    /// <summary>UAX #9 Bidi_Class for <paramref name="cp"/>. Returns the byte
+    /// id matching the substrate's bidi_class reference vocabulary minus 1.
+    /// Out-of-range returns 0 (L).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_bidi")]
+    public static partial byte UcdCpBidi(int cp);
+
+    /// <summary>UAX #11 East_Asian_Width for <paramref name="cp"/>. Returns
+    /// the byte id matching the substrate's east_asian_width reference
+    /// vocabulary minus 1. Out-of-range returns 0 (N).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_eaw")]
+    public static partial byte UcdCpEaw(int cp);
+
+    /// <summary>Hangul_Syllable_Type for <paramref name="cp"/>. 0 =
+    /// Not_Applicable; values per UAX #44 §5.7.5.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_hsy")]
+    public static partial byte UcdCpHsy(int cp);
+
+    /// <summary>Numeric_Type for <paramref name="cp"/>. 0 = None, 1 =
+    /// Decimal, 2 = Digit, 3 = Numeric (UAX #44 §5.7.7).</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_num_type")]
+    public static partial byte UcdCpNumType(int cp);
+
+    /// <summary>UAX #44 Decomposition_Type for <paramref name="cp"/>.
+    /// 0 = None, 1 = Canonical, 2..17 = Compat variants
+    /// (Circle/Final/Font/Fraction/Initial/Isolated/Medial/Narrow/NoBreak/
+    /// Small/Square/Sub/Super/Vertical/Wide) per UAX #44 §5.7.3.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_decomp_type")]
+    public static partial byte UcdCpDecompType(int cp);
+
+    /// <summary>Copies the canonical/compatibility decomposition mapping for
+    /// <paramref name="cp"/> into <paramref name="outBuf"/>. Returns the
+    /// codepoint count on success (>= 0; 0 = no decomposition), or -1 on
+    /// null/out-of-range/insufficient-buffer. Hangul algorithmic
+    /// decomposition is NOT expanded here.</summary>
+    [LibraryImport(Library, EntryPoint = "hartonomous_ucd_cp_decomp_mapping")]
+    public static unsafe partial int UcdCpDecompMapping(int cp, int* outBuf, int outMax);
+
     /// <summary>
     /// Decompose UTF-8 bytes into the substrate's text DAG. Native walks the
     /// codepoint/grapheme/word/composition DAG and fires <paramref name="emit"/>

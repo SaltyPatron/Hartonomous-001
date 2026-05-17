@@ -114,6 +114,32 @@ HARTONOMOUS_API int hartonomous_ucd_cp_full_case_fold(
  * Super-Fibonacci projection orders by). */
 HARTONOMOUS_API int32_t hartonomous_ucd_cp_uca_index(int32_t cp);
 
+/* UAX #44 classification properties. All values are stable byte/uint16
+ * codes matching the substrate's reference-vocabulary id enumerations
+ * baked at build time. Out-of-range codepoints return the property's
+ * "Other" / "None" / "Unknown" sentinel. */
+HARTONOMOUS_API uint8_t  hartonomous_ucd_cp_gc(int32_t cp);
+HARTONOMOUS_API uint8_t  hartonomous_ucd_cp_ccc(int32_t cp);
+HARTONOMOUS_API uint16_t hartonomous_ucd_cp_script(int32_t cp);
+HARTONOMOUS_API uint16_t hartonomous_ucd_cp_block(int32_t cp);
+HARTONOMOUS_API uint8_t  hartonomous_ucd_cp_bidi(int32_t cp);
+HARTONOMOUS_API uint8_t  hartonomous_ucd_cp_eaw(int32_t cp);
+HARTONOMOUS_API uint8_t  hartonomous_ucd_cp_hsy(int32_t cp);
+HARTONOMOUS_API uint8_t  hartonomous_ucd_cp_num_type(int32_t cp);
+
+/* UAX #44 decomposition. decomp_type returns the UC_DECOMP_TYPE_* enum
+ * code (0 = None, 1 = Canonical, 2..17 = Compat variants per UAX #44
+ * §5.7.3). decomp_mapping copies the decomposed codepoint sequence into
+ * `out` (caller-allocated; size at least uc_decomp_len[cp]). Returns
+ * codepoint count on success (>= 0; 0 = no decomposition); -1 on null/
+ * out-of-range/insufficient-buffer. Hangul algorithmic decomposition is
+ * NOT expanded; callers handle Hangul L/V/T separately per UAX #15 §3. */
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_decomp_type(int32_t cp);
+HARTONOMOUS_API int hartonomous_ucd_cp_decomp_mapping(
+    int32_t cp,
+    int32_t* out,
+    int out_max);
+
 /* ── Decomposition ─────────────────────────────────────────── */
 
 HARTONOMOUS_API int hartonomous_text_decompose(

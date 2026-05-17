@@ -33,6 +33,13 @@ public sealed class BlobUcdPropertyAccessor : IUcdPropertyAccessor
     /// </summary>
     private const int FullCaseFoldMaxLen = 8;
 
+    /// <summary>
+    /// Worst-case expansion length for any UCD decomposition mapping at
+    /// Unicode 17.0. Compatibility decompositions can be ~18 codepoints
+    /// long (e.g. circled forms); 32 ceiling future-proofs.
+    /// </summary>
+    private const int DecompositionMaxLen = 32;
+
     /// <inheritdoc/>
     public GraphemeBreak GetGcb(int codepoint)
     {
@@ -146,5 +153,113 @@ public sealed class BlobUcdPropertyAccessor : IUcdPropertyAccessor
         {
             return TextDecomposeNative.UcdCpCentroid(codepoint, p) == 0;
         }
+    }
+
+    /// <inheritdoc/>
+    public byte GetGeneralCategoryCode(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpGc(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public byte GetCanonicalCombiningClass(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpCcc(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public ushort GetScriptCode(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpScript(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public ushort GetBlockCode(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpBlock(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public byte GetBidiClassCode(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpBidi(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public byte GetEastAsianWidthCode(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpEaw(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public byte GetHangulSyllableType(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpHsy(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public byte GetNumericType(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpNumType(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public int GetUcaIndex(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpUcaIndex(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public int GetSimpleUppercase(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpSimpleUppercase(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public int GetSimpleLowercase(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpSimpleLowercase(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public int GetSimpleTitlecase(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpSimpleTitlecase(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public byte GetDecompositionType(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        return TextDecomposeNative.UcdCpDecompType(codepoint);
+    }
+
+    /// <inheritdoc/>
+    public unsafe ReadOnlySpan<int> GetDecompositionMapping(int codepoint)
+    {
+        SubstrateTextDecomposer.EnsureUcdLoaded();
+        int[] buffer = new int[DecompositionMaxLen];
+        int n;
+        fixed (int* p = buffer)
+        {
+            n = TextDecomposeNative.UcdCpDecompMapping(codepoint, p, DecompositionMaxLen);
+        }
+        if (n <= 0)
+        {
+            return ReadOnlySpan<int>.Empty;
+        }
+        return new ReadOnlySpan<int>(buffer, 0, n);
     }
 }

@@ -25,6 +25,8 @@
 #include "generated/pg_ucd_pictographic.h"
 #include "generated/pg_ucd_casing.h"
 #include "generated/pg_ucd_fcf.h"
+#include "generated/pg_ucd_classification.h"
+#include "generated/pg_ucd_decomp.h"
 
 /* ── UAX-#29 / UAX-#14 break properties ─────────────────────────────── */
 
@@ -151,6 +153,113 @@ HARTONOMOUS_API int hartonomous_ucd_cp_full_case_fold(
         return -1;
     }
     memcpy(out, &uc_fcf_data[off], n * sizeof(int32_t));
+    return (int)n;
+}
+
+/* ── UAX #44 classification properties (per-codepoint enum lookups) ───── */
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_gc(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* Cn */
+    }
+    return uc_gc[cp];
+}
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_ccc(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0;
+    }
+    return uc_ccc[cp];
+}
+
+HARTONOMOUS_API uint16_t hartonomous_ucd_cp_script(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* Zzzz / Unknown */
+    }
+    return uc_script[cp];
+}
+
+HARTONOMOUS_API uint16_t hartonomous_ucd_cp_block(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* No_Block */
+    }
+    return uc_block[cp];
+}
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_bidi(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0;
+    }
+    return uc_bidi[cp];
+}
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_eaw(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* N */
+    }
+    return uc_eaw[cp];
+}
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_hsy(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* Not_Applicable */
+    }
+    return uc_hsy[cp];
+}
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_num_type(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* None */
+    }
+    return uc_num_type[cp];
+}
+
+/* ── UAX #44 decomposition properties ─────────────────────────────────── */
+
+HARTONOMOUS_API uint8_t hartonomous_ucd_cp_decomp_type(int32_t cp)
+{
+    if (cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return 0; /* None */
+    }
+    return uc_decomp_type[cp];
+}
+
+/*
+ * Copies the canonical/compatibility decomposition mapping for `cp` into
+ * `out` (which must hold at least `out_max` int32_t entries). Returns the
+ * number of codepoints written (0 if no decomposition; positive on success).
+ * Returns -1 on null buffer, out-of-range codepoint, or insufficient buffer.
+ * Hangul algorithmic decompositions are NOT expanded here — callers that
+ * need Hangul L/V/T expansion must do it themselves (UAX #15 §3).
+ */
+HARTONOMOUS_API int hartonomous_ucd_cp_decomp_mapping(
+    int32_t cp,
+    int32_t* out,
+    int out_max)
+{
+    if (out == NULL || cp < 0 || cp >= UNICODE_CODEPOINT_MAX) {
+        return -1;
+    }
+    uint16_t n = uc_decomp_len[cp];
+    if (n == 0) {
+        return 0;
+    }
+    if (out_max < (int)n) {
+        return -1;
+    }
+    uint32_t off = uc_decomp_off[cp];
+    if ((size_t)off + (size_t)n > (size_t)UC_DECOMP_DATA_LEN) {
+        return -1;
+    }
+    memcpy(out, &uc_decomp_data[off], n * sizeof(int32_t));
     return (int)n;
 }
 

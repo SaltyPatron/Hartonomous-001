@@ -52,7 +52,7 @@ internal static class RecomposeContentCommand
         {
             byte[] hashBytes;
             try { hashBytes = Convert.FromHexString(hashHex); }
-            catch (FormatException ex)
+            catch (FormatException ex)  // BOUNDARY: CLI argument validation surfaces the parse error to stderr with exit code 2; not a substrate-internal catch.
             {
                 Console.Error.WriteLine($"Invalid --hash (expected 64 hex chars): {ex.Message}");
                 Environment.ExitCode = 2;

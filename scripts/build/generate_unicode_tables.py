@@ -919,14 +919,27 @@ def emit_byte_blob(name, blob, items, item_bytes):
 GCB = {"Other":0, "CR":1, "LF":2, "Control":3, "Extend":4, "ZWJ":5,
        "Regional_Indicator":6, "Prepend":7, "SpacingMark":8,
        "L":9, "V":10, "T":11, "LV":12, "LVT":13}
+# UCD flat XML emits the short property-value alias for GCB. Translate to
+# the canonical long name before enum lookup. Per PropertyValueAliases.txt.
+GCB_ALIAS = {"XX":"Other", "CN":"Control", "EX":"Extend", "PP":"Prepend",
+             "RI":"Regional_Indicator", "SM":"SpacingMark"}
 WB  = {"Other":0, "CR":1, "LF":2, "Newline":3, "Extend":4, "ZWJ":5,
        "Format":6, "Katakana":7, "Hebrew_Letter":8, "ALetter":9,
        "Single_Quote":10, "Double_Quote":11, "MidNumLet":12, "MidLetter":13,
        "MidNum":14, "Numeric":15, "ExtendNumLet":16, "Regional_Indicator":17,
        "WSegSpace":18, "Extended_Pictographic":19}
+WB_ALIAS = {"XX":"Other", "NL":"Newline", "FO":"Format", "KA":"Katakana",
+            "HL":"Hebrew_Letter", "LE":"ALetter", "SQ":"Single_Quote",
+            "DQ":"Double_Quote", "MB":"MidNumLet", "ML":"MidLetter",
+            "MN":"MidNum", "NU":"Numeric", "EX":"ExtendNumLet",
+            "RI":"Regional_Indicator", "EB":"Extended_Pictographic",
+            "GAZ":"Extended_Pictographic", "EBG":"Extended_Pictographic"}
 SB  = {"Other":0, "CR":1, "LF":2, "Sep":3, "Format":4, "Sp":5, "Lower":6,
        "Upper":7, "OLetter":8, "Numeric":9, "ATerm":10, "STerm":11,
        "Close":12, "SContinue":13, "Extend":14}
+SB_ALIAS = {"XX":"Other", "SE":"Sep", "FO":"Format", "SP":"Sp", "LO":"Lower",
+            "UP":"Upper", "LE":"OLetter", "NU":"Numeric", "AT":"ATerm",
+            "ST":"STerm", "CL":"Close", "SC":"SContinue", "EX":"Extend"}
 LB = {"XX":0, "BK":1, "CR":2, "LF":3, "CM":4, "NL":5, "SG":6, "WJ":7, "ZW":8,
       "GL":9, "SP":10, "B2":11, "BA":12, "BB":13, "HY":14, "CB":15, "CL":16,
       "CP":17, "EX":18, "IN":19, "NS":20, "OP":21, "QU":22, "IS":23, "NU":24,
@@ -1975,9 +1988,21 @@ def main():
     for code in sorted(INCB.keys(), key=lambda k: INCB[k]): break_props.append(("InCB", code))
 
     print("[gen] building per-codepoint property arrays...")
-    cp_gcb     = [GCB.get(gcb_map.get(cp, "Other"), 0) for cp in range(UNICODE_MAX)]
-    cp_wb      = [WB.get(wb_map.get(cp, "Other"), 0) for cp in range(UNICODE_MAX)]
-    cp_sb      = [SB.get(sb_map.get(cp, "Other"), 0) for cp in range(UNICODE_MAX)]
+    # Flat XML emits short property-value aliases for the break properties; map
+    # short→long before the enum lookup or every codepoint silently classifies
+    # as Other and the UAX-29 kernel falls through to default break/no-break.
+    def _gcb(cp):
+        v = gcb_map.get(cp, "Other")
+        return GCB.get(GCB_ALIAS.get(v, v), 0)
+    def _wb(cp):
+        v = wb_map.get(cp, "Other")
+        return WB.get(WB_ALIAS.get(v, v), 0)
+    def _sb(cp):
+        v = sb_map.get(cp, "Other")
+        return SB.get(SB_ALIAS.get(v, v), 0)
+    cp_gcb     = [_gcb(cp) for cp in range(UNICODE_MAX)]
+    cp_wb      = [_wb(cp) for cp in range(UNICODE_MAX)]
+    cp_sb      = [_sb(cp) for cp in range(UNICODE_MAX)]
     cp_lb      = [LB.get(lb_map.get(cp, "XX"), 0) for cp in range(UNICODE_MAX)]
     cp_incb    = [INCB.get(incb_map.get(cp, "None"), 0) for cp in range(UNICODE_MAX)]
     cp_picto   = [1 if ext_picto_map.get(cp) == "Extended_Pictographic" else 0 for cp in range(UNICODE_MAX)]

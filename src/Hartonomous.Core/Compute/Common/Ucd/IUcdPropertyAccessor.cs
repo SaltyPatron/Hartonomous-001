@@ -83,4 +83,50 @@ public interface IUcdPropertyAccessor
     /// receive <c>false</c> must abstain rather than fabricate property values.
     /// </summary>
     bool IsCodepointAvailable(int codepoint);
+
+    /// <summary>UAX #44 General_Category enum code (0 = Cn ... 29 = Co).</summary>
+    byte GetGeneralCategoryCode(int codepoint);
+
+    /// <summary>UAX #44 Canonical_Combining_Class (0 = Not_Reordered).</summary>
+    byte GetCanonicalCombiningClass(int codepoint);
+
+    /// <summary>ISO 15924 script enum code (0 = Zzzz / Unknown).</summary>
+    ushort GetScriptCode(int codepoint);
+
+    /// <summary>Unicode block enum code (0 = No_Block).</summary>
+    ushort GetBlockCode(int codepoint);
+
+    /// <summary>UAX #9 Bidi_Class enum code (0 = L).</summary>
+    byte GetBidiClassCode(int codepoint);
+
+    /// <summary>UAX #11 East_Asian_Width enum code (0 = N).</summary>
+    byte GetEastAsianWidthCode(int codepoint);
+
+    /// <summary>Hangul_Syllable_Type enum code (0 = Not_Applicable).</summary>
+    byte GetHangulSyllableType(int codepoint);
+
+    /// <summary>Numeric_Type enum code (0 = None).</summary>
+    byte GetNumericType(int codepoint);
+
+    /// <summary>UCA primary-weight collation rank — the rank the S³
+    /// Super-Fibonacci centroid is ordered by.</summary>
+    int GetUcaIndex(int codepoint);
+
+    /// <summary>Simple uppercase mapping. Returns codepoint itself if no mapping.</summary>
+    int GetSimpleUppercase(int codepoint);
+
+    /// <summary>Simple lowercase mapping. Returns codepoint itself if no mapping.</summary>
+    int GetSimpleLowercase(int codepoint);
+
+    /// <summary>Simple titlecase mapping. Returns codepoint itself if no mapping.</summary>
+    int GetSimpleTitlecase(int codepoint);
+
+    /// <summary>UAX #44 Decomposition_Type enum code (0 = None, 1 = Canonical,
+    /// 2..17 = Compat variants per UAX #44 §5.7.3).</summary>
+    byte GetDecompositionType(int codepoint);
+
+    /// <summary>Canonical/compatibility decomposition mapping (NOT Hangul-
+    /// expanded). Returns the decomposed codepoint sequence in canonical UCD
+    /// order, or empty if no decomposition. Caller does NOT free.</summary>
+    ReadOnlySpan<int> GetDecompositionMapping(int codepoint);
 }
