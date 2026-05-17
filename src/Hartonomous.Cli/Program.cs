@@ -62,6 +62,7 @@ internal static class Program
         root.AddCommand(ClassifyCommand.Build(CliConfiguration.DefaultConnectionString));
         root.AddCommand(RerankCommand.Build(CliConfiguration.DefaultConnectionString));
         root.AddCommand(QuoteCommand.Build(CliConfiguration.DefaultConnectionString));
+        root.AddCommand(RecomposeContentCommand.Build(CliConfiguration.DefaultConnectionString));
         root.AddCommand(CompleteCommand.Build(CliConfiguration.DefaultConnectionString));
 
         return await root.InvokeAsync(args);

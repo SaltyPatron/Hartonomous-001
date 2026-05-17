@@ -262,6 +262,7 @@
 -- @include schema/functions/reference_code_double_map.sql
 -- @include schema/functions/reference_int64_set.sql
 -- @include schema/functions/reference_id_by_code.sql
+-- @include schema/functions/reference_language_alias_map.sql
 -- @include schema/functions/resolve_context_id.sql
 -- @include schema/functions/resolve_attestation_type_id.sql
 -- @include schema/functions/resolve_entity_handles.sql
@@ -378,28 +379,22 @@
 -- @include schema/functions/consensus_token_pairs.sql
 -- @include schema/functions/create_arena.sql
 -- @include schema/functions/create_model_trust_arena.sql
--- @include schema/functions/populate_codepoint_atoms.sql
--- @include schema/functions/populate_codepoint_atoms_chunk.sql
--- Extension-driven UCD/UCA reference + property population (replaces the
--- C# UCD decomposer's per-codepoint round-trips with five SQL calls). The
--- functions below depend on the hartonomous extension being loaded —
--- bootstrap.sql loads it last (Phase 16), so these are declared here but
--- only callable post-bootstrap. Seed phases (scripts/seed/Ucd.ps1) invoke
--- them in this exact order.
+-- Reference-vocabulary population (app data, not substrate content) stays
+-- as SQL populators driven from the embedded blob — this is legitimate
+-- pre-gen perf-cache consumption.
 -- @include schema/functions/populate_general_categories_from_ext.sql
 -- @include schema/functions/populate_scripts_from_ext.sql
 -- @include schema/functions/populate_blocks_from_ext.sql
 -- @include schema/functions/populate_break_properties_from_ext.sql
 -- @include schema/functions/populate_codepoint_property_range_from_ext.sql
 -- @include schema/functions/unicode_edge_hash.sql
--- @include schema/functions/populate_unicode_case_edges_from_properties.sql
--- @include schema/functions/populate_unicode_decomposition_edges_from_ext.sql
--- @include schema/functions/populate_unicode_full_case_mapping_edges_from_ext.sql
--- @include schema/functions/populate_unicode_confusables_from_ext.sql
--- @include schema/functions/populate_unicode_standardized_variants_from_ext.sql
--- @include schema/functions/populate_unicode_radical_stroke_from_ext.sql
--- @include schema/functions/populate_unicode_named_sequences_from_ext.sql
--- @include schema/functions/populate_unicode_emoji_sequences_from_ext.sql
+-- (Substrate-ingestion populate_*_from_ext + populate_codepoint_atoms+chunk
+-- RETIRED 2026-05-17 per Step J of ancient-launching-papert plan.
+-- Substrate.entity/edge content for Unicode now comes from producer-pattern
+-- C# passes under src/Hartonomous.Decomposers/Ucd/ that parse source files
+-- directly via UcdFlatXmlReader + IIngestionPipeline.CreateBatch.
+-- substrate.recompose_content provides the load-bearing reconstruction.)
+-- @include schema/functions/recompose_content.sql
 -- @include schema/functions/ucd_materialization_counts.sql
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local

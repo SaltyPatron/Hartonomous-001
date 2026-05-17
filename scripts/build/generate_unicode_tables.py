@@ -587,6 +587,283 @@ def parse_indic_categories(path, allowed=None):
     return parse_ranged_property(path, allowed=allowed)
 
 
+# ── Canonical flat XML parser ────────────────────────────────────────────
+#
+# `ucd.all.flat.xml` is the per-codepoint UAX #44 canonical source. One
+# streaming pass replaces the 13 separate per-cp .txt parsers AND picks up
+# ~10 attributes the .txt set was missing (scx, bidi_m, bmg, jt, jg, InSC,
+# InPC, age, full case mappings lc/uc/tc/cf, Comp_Ex, NFx_QC, vo, emoji
+# flags, case property flags, name aliases).
+#
+# Returns shapes compatible with the existing main() consumers — udata
+# carries the same fields parse_unicode_data emits, plus more.
+#
+# Flat XML uses default namespace http://www.unicode.org/ns/2003/ucd/1.0
+# so iterparse returns qualified tags like "{ns}char". We strip the
+# namespace prefix for matching.
+UCD_NS = "{http://www.unicode.org/ns/2003/ucd/1.0}"
+
+def _strip_ns(tag):
+    return tag[len(UCD_NS):] if tag.startswith(UCD_NS) else tag
+
+def _parse_cp_seq(s, fallback_cp=None):
+    """Parse a space-separated hex sequence like '0041 0301' into [cps].
+    Returns [fallback_cp] (or []) if s is empty/whitespace."""
+    s = (s or "").strip()
+    if not s:
+        return [fallback_cp] if fallback_cp is not None else []
+    return [int(x, 16) for x in s.split()]
+
+def _xml_attr_or(elem, name, default=""):
+    """Element attribute lookup with default for missing."""
+    v = elem.get(name)
+    return v if v is not None else default
+
+def parse_ucd_flat_xml(zip_or_xml_path):
+    """Stream-parse ucd.all.flat.xml (extracts from .zip if given a zip path).
+    Returns Dict[int, Dict[str, Any]] mapping codepoint → per-cp attribute dict.
+
+    Per-cp dict shape (compatible with parse_unicode_data output, plus extras):
+        name, gc, ccc, bidi (== bc), decomp (raw "type cp ..."),
+        numeric_type_decimal, numeric_type_digit, numeric_type_value,
+        upper, lower, title (simple cases as ints),
+        gcb, wb, sb, lb, ea, hst, sc, blk, age,
+        scx (list of script codes), bidi_mirrored (bool), bmg (cp or 0),
+        jt, jg, InSC, InPC, InCB,
+        ext_picto (bool), emoji (bool), epres (bool), emod (bool),
+        ebase (bool), ecomp (bool),
+        full_uc (list of cps), full_lc (list of cps), full_tc (list of cps),
+        full_cf (list of cps), simple_cf (cp or 0),
+        comp_ex (bool — Full_Composition_Exclusion),
+        nfc_qc, nfd_qc, nfkc_qc, nfkd_qc (Y/N/M),
+        vo (vertical orientation R/U/Tu/Tr),
+        bracket_type, bracket_pair (cp or 0),
+        name_aliases (list of (alias_type, alias_string))
+    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+    p = Path(zip_or_xml_path)
+    if p.suffix == ".zip":
+        with zipfile.ZipFile(str(p), "r") as zf:
+            # The flat XML file inside the zip is named ucd.all.flat.xml
+            inner_name = None
+            for nm in zf.namelist():
+                if nm.endswith(".xml"):
+                    inner_name = nm
+                    break
+            if inner_name is None:
+                raise RuntimeError(f"No .xml entry in {p}")
+            xml_stream = zf.open(inner_name)
+            return _parse_flat_xml_stream(xml_stream)
+    else:
+        with open(p, "rb") as xml_stream:
+            return _parse_flat_xml_stream(xml_stream)
+
+def _parse_flat_xml_stream(stream):
+    import xml.etree.ElementTree as ET
+    out = {}
+    # iterparse with end events; clear() to bound memory
+    context = ET.iterparse(stream, events=("end",))
+    for event, elem in context:
+        tag = _strip_ns(elem.tag)
+        if tag not in ("char", "reserved", "noncharacter", "surrogate"):
+            if tag == "name-alias":
+                # name-alias is a child of char; handled inline via elem.findall on parent
+                continue
+            elem.clear()
+            continue
+
+        # Codepoint range or single cp
+        cp_attr = elem.get("cp")
+        first_cp = elem.get("first-cp")
+        last_cp = elem.get("last-cp")
+        if cp_attr is not None:
+            cps = [int(cp_attr, 16)]
+        elif first_cp is not None and last_cp is not None:
+            cps = list(range(int(first_cp, 16), int(last_cp, 16) + 1))
+        else:
+            elem.clear()
+            continue
+
+        # Build the per-cp dict from this element's attributes (range elements
+        # share attributes across all cps in the range).
+        gc = elem.get("gc", "Cn")
+        ccc = int(elem.get("ccc", "0") or "0")
+        bidi = elem.get("bc", "L")
+        dt = elem.get("dt", "none")
+        dm = elem.get("dm", "")
+        # Reassemble decomp string in parse_decomposition_field's expected form:
+        #   "<type> cp cp cp" for non-canonical, "cp cp ..." for canonical, "" for none
+        if dt == "none" or not dm or dm == "#":
+            decomp = ""
+        else:
+            # dm uses "#" to mean "self-reference" — treat as empty per UAX #42
+            dm_clean = " ".join(c for c in dm.split() if c != "#")
+            if not dm_clean:
+                decomp = ""
+            elif dt == "canonical" or dt == "can":
+                decomp = dm_clean
+            else:
+                decomp = f"<{dt}> {dm_clean}"
+
+        nt = elem.get("nt", "None")
+        nv = elem.get("nv", "")
+        # Map flat XML's nt values to parse_unicode_data's three boolean-flavored fields
+        ntd = nv if nt == "De" else ""
+        ntdig = nv if nt == "Di" else ""
+        ntnum = nv if nt == "Nu" else ""
+
+        # Simple case mappings (flat XML uses 'suc'/'slc'/'stc' for simple,
+        # 'uc'/'lc'/'tc' for full; '#' means self-reference). We populate upper/lower/title
+        # from the SIMPLE forms to match parse_unicode_data's behavior.
+        def _simple_cp(attr_val):
+            if not attr_val or attr_val == "#":
+                return 0
+            # Simple case maps are always one codepoint
+            parts = attr_val.split()
+            return int(parts[0], 16) if parts else 0
+
+        upper = _simple_cp(elem.get("suc"))
+        lower = _simple_cp(elem.get("slc"))
+        title = _simple_cp(elem.get("stc"))
+
+        # Full case mappings (may be multi-cp; '#' means same as simple)
+        def _full_cps(attr_val, simple_fallback):
+            if not attr_val:
+                return []
+            if attr_val == "#":
+                return [simple_fallback] if simple_fallback else []
+            return [int(x, 16) for x in attr_val.split()]
+
+        full_uc = _full_cps(elem.get("uc"), upper)
+        full_lc = _full_cps(elem.get("lc"), lower)
+        full_tc = _full_cps(elem.get("tc"), title)
+        full_cf = _full_cps(elem.get("cf"), 0)
+        simple_cf = _simple_cp(elem.get("scf"))
+
+        scx_raw = elem.get("scx", "")
+        scx = scx_raw.split() if scx_raw else []
+
+        # Name aliases (child elements)
+        aliases = []
+        for child in elem:
+            if _strip_ns(child.tag) == "name-alias":
+                alias_str = child.get("alias", "")
+                alias_type = child.get("type", "")
+                if alias_str:
+                    aliases.append((alias_type, alias_str))
+
+        entry = {
+            "name": elem.get("na", ""),
+            "gc": gc,
+            "ccc": ccc,
+            "bidi": bidi,
+            "decomp": decomp,
+            "numeric_type_decimal": ntd,
+            "numeric_type_digit": ntdig,
+            "numeric_type_value": ntnum,
+            "upper": upper,
+            "lower": lower,
+            "title": title,
+            # New per-cp attributes flat XML carries (.txt path was missing or only partial):
+            "gcb": elem.get("GCB", "Other"),
+            "wb": elem.get("WB", "Other"),
+            "sb": elem.get("SB", "Other"),
+            "lb": elem.get("lb", "XX"),
+            "ea": elem.get("ea", "N"),
+            "hst": elem.get("hst", "NA"),
+            "sc": elem.get("sc", "Unknown"),
+            "scx": scx,
+            "blk": elem.get("blk", "No_Block"),
+            "age": elem.get("age", "unassigned"),
+            "bidi_mirrored": elem.get("Bidi_M", "N") == "Y",
+            "bmg": int(elem.get("bmg", "0") or "0", 16) if elem.get("bmg") else 0,
+            "bracket_type": elem.get("bpt", "n"),
+            "bracket_pair": int(elem.get("bpb"), 16) if elem.get("bpb") and elem.get("bpb") != "#" else 0,
+            "jt": elem.get("jt", "U"),
+            "jg": elem.get("jg", "No_Joining_Group"),
+            "InSC": elem.get("InSC", "Other"),
+            "InPC": elem.get("InPC", "NA"),
+            "InCB": elem.get("InCB", "None"),
+            "vo": elem.get("vo", "R"),
+            "ext_picto": elem.get("ExtPict", "N") == "Y",
+            "emoji": elem.get("Emoji", "N") == "Y",
+            "epres": elem.get("EPres", "N") == "Y",
+            "emod": elem.get("EMod", "N") == "Y",
+            "ebase": elem.get("EBase", "N") == "Y",
+            "ecomp": elem.get("EComp", "N") == "Y",
+            "full_uc": full_uc,
+            "full_lc": full_lc,
+            "full_tc": full_tc,
+            "full_cf": full_cf,
+            "simple_cf": simple_cf,
+            "comp_ex": elem.get("Comp_Ex", "N") == "Y",
+            "nfc_qc": elem.get("NFC_QC", "Y"),
+            "nfd_qc": elem.get("NFD_QC", "Y"),
+            "nfkc_qc": elem.get("NFKC_QC", "Y"),
+            "nfkd_qc": elem.get("NFKD_QC", "Y"),
+            "cased": elem.get("Cased", "N") == "Y",
+            "ci": elem.get("CI", "N") == "Y",
+            "name_aliases": aliases,
+        }
+        # Expand range elements
+        for cp in cps:
+            out[cp] = dict(entry)  # shallow copy is enough — dict items are scalars/lists
+
+        elem.clear()
+    return out
+
+def derive_dicts_from_flat_xml(udata_full):
+    """Given the unified per-cp dict from parse_ucd_flat_xml, derive the
+    dict shapes the existing main() expected from individual .txt parsers.
+
+    Returns a tuple of dicts:
+        (udata_minimal, gcb_map, wb_map, sb_map, lb_map, ext_picto_map,
+         incb_map, script_map, simple_fold, full_fold, eaw_map, hsy_map,
+         full_comp_exclusion)
+    """
+    gcb_map = {}
+    wb_map = {}
+    sb_map = {}
+    lb_map = {}
+    ext_picto_map = {}
+    incb_map = {}
+    script_map = {}
+    eaw_map = {}
+    hsy_map = {}
+    simple_fold = {}
+    full_fold = {}
+    full_comp_exclusion = set()
+
+    for cp, entry in udata_full.items():
+        gcb_map[cp] = entry.get("gcb", "Other")
+        wb_map[cp] = entry.get("wb", "Other")
+        sb_map[cp] = entry.get("sb", "Other")
+        lb_map[cp] = entry.get("lb", "XX")
+        if entry.get("ext_picto"):
+            ext_picto_map[cp] = "Extended_Pictographic"
+        incb_map[cp] = entry.get("InCB", "None")
+        script_map[cp] = entry.get("sc", "Unknown")
+        eaw_map[cp] = entry.get("ea", "N")
+        hsy_map[cp] = entry.get("hst", "NA")
+
+        # Case folding
+        scf = entry.get("simple_cf", 0)
+        fcf = entry.get("full_cf", [])
+        if scf and scf != cp:
+            simple_fold[cp] = scf
+        if fcf and (len(fcf) > 1 or (len(fcf) == 1 and fcf[0] != cp)):
+            full_fold[cp] = fcf
+
+        # Full composition exclusion
+        if entry.get("comp_ex"):
+            full_comp_exclusion.add(cp)
+
+    return (udata_full, gcb_map, wb_map, sb_map, lb_map, ext_picto_map,
+            incb_map, script_map, simple_fold, full_fold, eaw_map, hsy_map,
+            full_comp_exclusion)
+
+
 # ── Code emission helpers ────────────────────────────────────────────────
 def emit_uint8_array(name, vals):
     L = [f"const uint8_t {name}[{len(vals)}] = {{"]
@@ -1624,34 +1901,30 @@ def main():
         print(f"[gen] emitted pg_ucd_decomp with {len(composition_pairs):,} composition pairs")
         return
 
-    print("[gen] parsing UnicodeData.txt..."); udata = parse_unicode_data(ucd_root / "ucd" / "UnicodeData.txt")
-    print("[gen] parsing GraphemeBreakProperty.txt..."); gcb_map = parse_ranged_property(ucd_root / "ucd" / "auxiliary" / "GraphemeBreakProperty.txt")
-    print("[gen] parsing WordBreakProperty.txt..."); wb_map = parse_ranged_property(ucd_root / "ucd" / "auxiliary" / "WordBreakProperty.txt")
-    print("[gen] parsing SentenceBreakProperty.txt..."); sb_map = parse_ranged_property(ucd_root / "ucd" / "auxiliary" / "SentenceBreakProperty.txt")
-    print("[gen] parsing LineBreak.txt..."); lb_map = parse_ranged_property(ucd_root / "ucd" / "LineBreak.txt")
-    print("[gen] parsing emoji-data.txt...");
-    ext_picto_map = parse_ranged_property(ucd_root / "ucd" / "emoji" / "emoji-data.txt", allowed={"Extended_Pictographic"})
-    print("[gen] parsing DerivedCoreProperties.txt for InCB...")
-    incb_map = {}
-    with (ucd_root / "ucd" / "DerivedCoreProperties.txt").open("r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.split("#", 1)[0].strip()
-            if not line: continue
-            parts = [p.strip() for p in line.split(";")]
-            if len(parts) < 3 or parts[1] != "InCB": continue
-            rng = parts[0]; v = parts[2]
-            if ".." in rng:
-                lo, hi = rng.split("..")
-                lo_i, hi_i = int(lo, 16), int(hi, 16)
-            else:
-                lo_i = hi_i = int(rng, 16)
-            for cp in range(lo_i, hi_i + 1):
-                incb_map[cp] = v
-    print("[gen] parsing Scripts.txt..."); script_map = parse_ranged_property(ucd_root / "ucd" / "Scripts.txt")
+    # Canonical per-cp UAX #44 data — ONE pass over ucd.all.flat.xml.
+    # Replaces 13 separate .txt parsers + adds ~10 attributes flat XML carries
+    # that the .txt set was missing (scx, bidi_m, bmg, jt, jg, InSC, InPC, age,
+    # full case mappings, Comp_Ex, NFx_QC, vo, emoji flags beyond ExtPict,
+    # case property flags, name aliases).
+    flat_xml_path = ucd_root / "ucdxml" / "ucd.all.flat.zip"
+    if not flat_xml_path.exists():
+        flat_xml_path = ucd_root / "ucdxml" / "ucd.all.flat.xml"
+    if not flat_xml_path.exists():
+        raise SystemExit(
+            f"ucd.all.flat.xml/.zip not found under {ucd_root / 'ucdxml'}. "
+            f"Flat XML is the canonical source for per-codepoint UAX #44 properties; "
+            f"the .txt-parsing fallback is removed per the rule in "
+            f".claude/rules/00-hartonomous-core.md and root CLAUDE.md.")
+    print(f"[gen] parsing {flat_xml_path.name} (canonical per-cp UAX #44 source)...")
+    udata_full = parse_ucd_flat_xml(flat_xml_path)
+    print(f"[gen]   parsed {len(udata_full):,} codepoint entries from flat XML")
+    (udata, gcb_map, wb_map, sb_map, lb_map, ext_picto_map, incb_map,
+     script_map, simple_fold, full_fold, eaw_map, hsy_map,
+     full_comp_exclusion) = derive_dicts_from_flat_xml(udata_full)
+    print(f"[gen]   derived: {len(simple_fold):,} simple_fold, {len(full_fold):,} full_fold, "
+          f"{len(full_comp_exclusion):,} comp_exclusion entries")
     print("[gen] parsing Blocks.txt...");  blocks = parse_blocks(ucd_root / "ucd" / "Blocks.txt")
-    print("[gen] parsing CaseFolding.txt..."); simple_fold, full_fold = parse_case_folding(ucd_root / "ucd" / "CaseFolding.txt")
     print("[gen] parsing UCA allkeys.txt..."); uca = parse_uca_allkeys(ucd_root / "uca" / "allkeys.txt")
-    print("[gen] parsing EastAsianWidth.txt..."); eaw_map = parse_ranged_property(ucd_root / "ucd" / "EastAsianWidth.txt")
     # Multi-codepoint UCD families (NOT in ucd.all.grouped.xml — XML covers
     # per-codepoint properties only). Each maps to its own pg_ucd_*.{h,c}
     # baked-table family; populate_unicode_*_from_ext PG functions read the
@@ -1686,9 +1959,9 @@ def main():
         print("[gen] parsing CJKRadicals.txt..."); cjk_radicals = parse_cjk_radicals(cjk_radicals_path)
     else:
         cjk_radicals = {}
-    print("[gen] parsing HangulSyllableType.txt..."); hsy_map = parse_ranged_property(ucd_root / "ucd" / "HangulSyllableType.txt")
-    print("[gen] parsing DerivedNormalizationProps.txt..."); full_comp_exclusion = parse_codepoint_set_property(
-        ucd_root / "ucd" / "DerivedNormalizationProps.txt", "Full_Composition_Exclusion")
+    # hsy_map and full_comp_exclusion were derived from flat XML above
+    # (HangulSyllableType.txt and DerivedNormalizationProps.txt Full_Composition_Exclusion
+    # are both per-cp UAX #44 attributes flat XML carries — `hst` and `Comp_Ex`).
 
     # Inventory IDs
     script_ids = assign_ids([script_map[cp] for cp in sorted(script_map.keys())], reserved_zero="Unknown")

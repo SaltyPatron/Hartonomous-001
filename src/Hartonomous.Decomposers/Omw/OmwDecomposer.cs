@@ -187,8 +187,10 @@ public sealed partial class OmwDecomposer : TextIngestingDecomposer
                         batchLemmaHandles[lemmaKey] = lemmaHandle;
                         entityCount++;
 
-                        // entity_language junction inline.
-                        batch.AddJunction("entity_language", lemmaHandle, langId);
+                        // Cross-link attestation: unified Glicko surface
+                        // (has_language edge) + denormalized analytics cache
+                        // (entity_language junction) per AP-8 correction.
+                        CrossLinkAttestation.EmitLanguageAttestation(batch, lemmaHandle, langCode, langId, ProvenanceCode);
                     }
 
                     // POS junction derived from the synset code suffix.

@@ -4,7 +4,7 @@
 
 **Authority:** Slice of [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §VI. Algorithm derivation from research dispatched 2026-05-09. References Geva, Dai foundational papers on FFN-as-key-value memory.
 
-**Reciprocal of:** `FfnLayerDecomposer` (Phase A.1; refactored from `TokenFfnEdgePass`) which emits `model_ffn_factor` edges between word_form entities with `model_ffn_full_path` attestation_type encoding (input_token, output_token, strength) constraints from forward FFN analysis.
+**Reciprocal of:** `FfnLayerDecomposer` (Phase A.1; refactored from `TokenFfnEdgePass`) which emits `model_ffn_factor` edges between word_form entities with sign-aware `positive_evidence`/`negative_evidence` events (P1d 2026-05-14 collapse) and `EdgeRatingEvent` attribution `(Linear, SwiGluFfn|BertFfn, {gate|up|down|intermediate|output})` encoding (input_token, output_token, strength) constraints from forward FFN analysis. (The old `model_ffn_full_path` attestation_type label moved to the EdgeRatingEvent attribution metadata.)
 
 ---
 

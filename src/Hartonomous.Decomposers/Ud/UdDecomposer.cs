@@ -197,7 +197,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
                 (int posWritten, int morphWritten, int langWritten) = EmitSentenceInline(
                     batch, sent,
-                    posMap, morphFeatMap, langId,
+                    posMap, morphFeatMap, langId, bank.LanguageCode,
                     ref entityCount, ref edgeCount);
                 totalPosWritten += posWritten;
                 totalMorphWritten += morphWritten;
@@ -221,6 +221,7 @@ public sealed partial class UdDecomposer : BaseDecomposer
         Dictionary<string, int> posMap,
         Dictionary<(string, string), int> morphFeatMap,
         int? langId,
+        string? langCode,
         ref long entityCount,
         ref long edgeCount)
     {
@@ -303,9 +304,9 @@ public sealed partial class UdDecomposer : BaseDecomposer
             EmitText(batch, sentenceText, _codepointProperties, "text_composition", TrustPriorMu);
         entityCount++;
 
-        if (langId is int sentLang)
+        if (langId is int sentLang && langCode is not null)
         {
-            batch.AddJunction("entity_language", sentEntity, sentLang);
+            CrossLinkAttestation.EmitLanguageAttestation(batch, sentEntity, langCode, sentLang, ProvenanceCode);
             langWritten++;
         }
 

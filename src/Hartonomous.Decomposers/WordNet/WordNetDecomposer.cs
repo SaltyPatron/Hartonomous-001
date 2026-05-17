@@ -351,7 +351,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                             ReadOnlySpan<EdgeSignificanceSpec>.Empty,
                             EdgeArenaRouter.EventsFor("has_sense"));
                             Bump("has_sense");
-                            localBatch.AddJunction("entity_language", memberHandles[i], engLangId);
+                            CrossLinkAttestation.EmitLanguageAttestation(localBatch, memberHandles[i], "eng", engLangId, ProvenanceCode);
                         }
 
                         foreach ((string edgeType, EntityHandle textHandle) in glossEdges)
@@ -523,7 +523,7 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 {
                     batch.AddJunction("entity_pos", inflectedHandle, infPosId, TrustPriorMu);
                 }
-                batch.AddJunction("entity_language", inflectedHandle, engLangId);
+                CrossLinkAttestation.EmitLanguageAttestation(batch, inflectedHandle, "eng", engLangId, ProvenanceCode);
 
                 foreach (string baseForm in mex.BaseForms)
                 {

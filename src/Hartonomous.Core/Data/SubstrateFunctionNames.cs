@@ -56,19 +56,23 @@ public static class SubstrateFunctionNames
     public const string PromptDocumentReady = "substrate.prompt_document_ready";
     public const string PopulateBlocksFromExt = "substrate.populate_blocks_from_ext";
     public const string PopulateBreakPropertiesFromExt = "substrate.populate_break_properties_from_ext";
-    public const string PopulateCodepointAtomsChunk = "substrate.populate_codepoint_atoms_chunk";
+    // Retired 2026-05-17 per Step J — replaced by C# producer passes:
+    // public const string PopulateCodepointAtomsChunk = "substrate.populate_codepoint_atoms_chunk";
     public const string PopulateCodepointPropertyRangeFromExt = "substrate.populate_codepoint_property_range_from_ext";
     public const string PopulateGeneralCategoriesFromExt = "substrate.populate_general_categories_from_ext";
     public const string PopulateScripts = "substrate.populate_scripts";
     public const string PopulateScriptsFromExt = "substrate.populate_scripts_from_ext";
-    public const string PopulateUnicodeCaseEdgesFromProperties = "substrate.populate_unicode_case_edges_from_properties";
-    public const string PopulateUnicodeDecompositionEdgesFromExt = "substrate.populate_unicode_decomposition_edges_from_ext";
-    public const string PopulateUnicodeFullCaseMappingEdgesFromExt = "substrate.populate_unicode_full_case_mapping_edges_from_ext";
-    public const string PopulateUnicodeConfusablesFromExt = "substrate.populate_unicode_confusables_from_ext";
-    public const string PopulateUnicodeStandardizedVariantsFromExt = "substrate.populate_unicode_standardized_variants_from_ext";
-    public const string PopulateUnicodeRadicalStrokeFromExt = "substrate.populate_unicode_radical_stroke_from_ext";
-    public const string PopulateUnicodeNamedSequencesFromExt = "substrate.populate_unicode_named_sequences_from_ext";
-    public const string PopulateUnicodeEmojiSequencesFromExt = "substrate.populate_unicode_emoji_sequences_from_ext";
+    // Retired 2026-05-17 per Step J — replaced by C# producer passes that
+    // parse source files directly via UcdFlatXmlReader + IIngestionPipeline.
+    // public const string PopulateUnicodeCaseEdgesFromProperties = ...
+    // public const string PopulateUnicodeDecompositionEdgesFromExt = ...
+    // public const string PopulateUnicodeFullCaseMappingEdgesFromExt = ...
+    // public const string PopulateUnicodeConfusablesFromExt = ...
+    // public const string PopulateUnicodeStandardizedVariantsFromExt = ...
+    // public const string PopulateUnicodeRadicalStrokeFromExt = ...
+    // public const string PopulateUnicodeNamedSequencesFromExt = ...
+    // public const string PopulateUnicodeEmojiSequencesFromExt = ...
+    public const string RecomposeContent = "substrate.recompose_content";
     public const string PreviewTargetArch = "substrate.preview_target_arch";
     public const string QueryAttentionComponents = "substrate.query_attention_components";
     public const string QueryEntities = "substrate.query_entities";
@@ -83,6 +87,7 @@ public static class SubstrateFunctionNames
     public const string ReferenceIdByCode = "substrate.reference_id_by_code";
     public const string ReferenceInt64Set = "substrate.reference_int64_set";
     public const string ReferenceKeyValueMap = "substrate.reference_key_value_map";
+    public const string ReferenceLanguageAliasMap = "substrate.reference_language_alias_map";
     public const string RecomposeText = "substrate.recompose_text";
     public const string RecomposeAuditWalk = "substrate.recompose_audit_walk";
     public const string RecordAttestationsBulk = "substrate.record_attestations_bulk";
@@ -155,19 +160,13 @@ public static class SubstrateFunctionNames
         PromptDocumentReady,
         PopulateBlocksFromExt,
         PopulateBreakPropertiesFromExt,
-        PopulateCodepointAtomsChunk,
+        // PopulateCodepointAtomsChunk — retired 2026-05-17
         PopulateCodepointPropertyRangeFromExt,
         PopulateGeneralCategoriesFromExt,
         PopulateScripts,
         PopulateScriptsFromExt,
-        PopulateUnicodeCaseEdgesFromProperties,
-        PopulateUnicodeDecompositionEdgesFromExt,
-        PopulateUnicodeFullCaseMappingEdgesFromExt,
-        PopulateUnicodeConfusablesFromExt,
-        PopulateUnicodeStandardizedVariantsFromExt,
-        PopulateUnicodeRadicalStrokeFromExt,
-        PopulateUnicodeNamedSequencesFromExt,
-        PopulateUnicodeEmojiSequencesFromExt,
+        // PopulateUnicode*FromExt entries retired 2026-05-17 per Step J
+        RecomposeContent,
         PreviewTargetArch,
         QueryAttentionComponents,
         QueryEntities,
@@ -182,6 +181,7 @@ public static class SubstrateFunctionNames
         ReferenceIdByCode,
         ReferenceInt64Set,
         ReferenceKeyValueMap,
+        ReferenceLanguageAliasMap,
         RecomposeText,
         RecomposeAuditWalk,
         RecordAttestationsBulk,

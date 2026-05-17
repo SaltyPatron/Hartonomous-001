@@ -1,10 +1,10 @@
 # Layer-Type Decomposer Library Specification
 
-**Status:** Canonical for the layer-type decomposer library. Authoritative spec for the substrate's per-role attestation-edge emission architecture.
+**Status:** Predates two corrections. (1) Per AP-30 + `docs/01-tensor-primitive-spec.md` §VI, layer-type decomposers collapse to 4 primitive passes + 5 tuple passes; the per-layer-name dispatch in this doc is replaced by `(PrimitiveKind, ArchetypeTuple, TupleSlot)` dispatch. (2) Per AP-38 + 2026-05-14 P1d collapse, all `attestation_type` references in this doc (`model_attention_qk_pattern`, `model_ffn_full_path`, `model_input_embedding`, `model_lm_head_projection`, `model_moe_router`, `model_moe_expert_response`, `model_lora_adapter_evidence`, `model_position_embedding`, `model_local_kernel_evidence`, `model_embedding_proximity`, etc.) are superseded — `attestation_type` is now 3 generic rows (`positive_evidence`, `negative_evidence`, `neutral_evidence`); kind-of-evidence metadata lives on `EdgeRatingEvent` attribution fields (`PrimitiveCode`, `TupleCode`, `SlotCode`, `LayerIdx`, `HeadIdx`, `ExpertIdx`, `ModelSourceId`, `TensorHash`, `SourceTensorName`). See `docs/01-tensor-primitive-spec.md` §IV for the current attestation mapping table.
 
-**Authority:** Slice of [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §V. Where this document and the spec disagree, the spec is correct.
+**Authority:** Slice of [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §V. Where this document and the spec disagree, the spec is correct. Where this document and [`docs/01-tensor-primitive-spec.md`](../../01-tensor-primitive-spec.md) disagree, the tensor-primitive spec is correct (it supersedes this doc's per-layer-name organization).
 
-**Working template:** [`src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`](../../../src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs). Every layer-type decomposer follows this shape.
+**Working template:** [`src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`](../../../src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs). Every layer-type decomposer follows this shape (until the primitive/tuple pass collapse lands).
 
 ---
 

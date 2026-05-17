@@ -1,6 +1,6 @@
 # Recomposers
 
-**Status**: ✅ Complete
+**Status**: Predates 2026-05-14 P1d attestation_type collapse. `model_attention_qk_pattern` references in synthesizer descriptions are superseded — filter on `EdgeRatingEvent` attribution `(Linear, AttentionBlock, {Q,K})` instead. See `docs/01-tensor-primitive-spec.md` §IV.
 
 How data gets OUT of the system. Recomposers traverse the graph and reconstitute output in a target format. Decomposition is lossy in format but lossless in content — recomposition reconstructs semantic content, not byte-for-byte source files.
 

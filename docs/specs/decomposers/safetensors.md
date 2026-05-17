@@ -349,13 +349,19 @@ edge_member: (edge, word_form_k, role='target', position=1)
 edge_significance: context_type_id→significance_context('model_trust'),
                    edge_type_id→edge_type('model_attention_pattern'),
                    edge_hash=...,
-                   attestation_type_id→attestation_type('model_attention_qk_pattern'),
+                   attestation_type_id→attestation_type('positive_evidence')  -- or 'negative_evidence' per sign(value); P1d 2026-05-14 collapse
                    mu=derived_from_qk_pair_strength,
-                   sigma=initial,
-                   layer_index=N, head_index=H  -- rating-event metadata, not entity types
+                   sigma=initial
+
+edge_rating_event: score=1.0 if value>0 else 0.0    -- sign-aware AP-31
+                   weight=abs(value)
+                   primitive_code='Linear', tuple_code='AttentionBlock', slot_code='Q'  -- or 'K' depending on math
+                   layer_idx=N, head_idx=H
+                   model_source_id=<this model's source>
+                   tensor_hash=<source tensor entity hash>
 ```
 
-When a second model (Llama, Qwen, etc.) decomposes into the same `(model_attention_pattern, [word_form_q, word_form_k])`, the second model fires another `model_attention_qk_pattern` rating event on the SAME edge hash. Cross-model corroboration accumulates as separate `attestation_type`-distinguished events; sigma tightens; no duplicate edge spawns.
+When a second model (Llama, Qwen, etc.) decomposes into the same `(model_attention_pattern, [word_form_q, word_form_k])`, the second model fires another sign-aware positive_evidence/negative_evidence rating event on the SAME edge hash with its own provenance + attribution. Cross-model corroboration accumulates as separate (provenance, arena, EdgeRatingEvent-attribution) events on the unified Glicko surface; sigma tightens; no duplicate edge spawns.
 
 See `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs` for the working template, and [`docs/specs/decomposers/layer-type-library.md`](layer-type-library.md) for the full layer-type decomposer library specification.
 

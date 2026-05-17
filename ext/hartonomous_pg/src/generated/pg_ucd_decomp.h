@@ -28,8 +28,8 @@ typedef struct { int32_t first; int32_t second; int32_t composite; } UcCompositi
 extern const uint8_t  uc_decomp_type[UNICODE_CODEPOINT_MAX];
 extern const uint32_t uc_decomp_off [UNICODE_CODEPOINT_MAX];
 extern const uint16_t uc_decomp_len [UNICODE_CODEPOINT_MAX];
-#define UC_DECOMP_DATA_LEN  8740
+#define UC_DECOMP_DATA_LEN  31084
 extern const int32_t  uc_decomp_data[UC_DECOMP_DATA_LEN];
-#define UC_COMPOSITION_PAIR_COUNT  961
+#define UC_COMPOSITION_PAIR_COUNT  12133
 extern const UcCompositionPair uc_composition_pairs[UC_COMPOSITION_PAIR_COUNT];
 #endif

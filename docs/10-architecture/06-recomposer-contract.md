@@ -1,6 +1,6 @@
 # Recomposer Contract
 
-**Status:** Canonical
+**Status:** Predates the 2026-05-14 P1d attestation_type collapse. All `model_attention_qk_pattern`, `model_attention_vo_pattern`, `model_ffn_full_path`, `model_ffn_up_projection`, `model_ffn_gate_projection`, `model_ffn_down_projection`, `model_lm_head_projection`, `model_position_embedding` `attestation_type` references in the synthesizer descriptions below are superseded — `attestation_type` is now 3 generic rows (`positive_evidence`, `negative_evidence`, `neutral_evidence`); synthesizers query by `EdgeRatingEvent` attribution metadata (`PrimitiveCode`, `TupleCode`, `SlotCode`, `LayerIdx`, `HeadIdx`, `ExpertIdx`). See `docs/01-tensor-primitive-spec.md` §IV for the current attestation mapping table.
 **Last verified:** 2026-04-29
 **Audience:** Engineers writing or maintaining recomposers for any output format. Critically: this is the load-bearing engineering for refinement-as-service and Laplace originals.
 

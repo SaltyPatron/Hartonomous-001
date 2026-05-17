@@ -131,9 +131,9 @@ public sealed class NpgsqlReferenceDataReader : IReferenceDataReader
         // alias → canonical-id map. ~8k rows × ~2 populated forms each ≈ 16k entries.
         Dictionary<string, int> map = new(16384, StringComparer.OrdinalIgnoreCase);
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        const string sql = "SELECT id, code, part1, part2b, part2t FROM substrate.language";
-        await using NpgsqlCommand cmd = new(sql, conn);
-        cmd.CommandTimeout = 60;
+        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
+            conn,
+            SubstrateFunctionNames.ReferenceLanguageAliasMap);
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {

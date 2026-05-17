@@ -94,7 +94,7 @@ Cross-references: [`.claude/rules/25-physicality-4d.md`](../.claude/rules/25-phy
 
 Reference vocabularies (`entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `attestation_type`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `language`, `tensor_role`, `architecture_class`, etc.) and evidence junctions (`entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`, etc.) are infrastructure for fast indexed lookups (microsecond JOIN), NOT substrate content.
 
-Glicko-2 confidence on junction-bearing classifications lives on `entity_pos.mu` and `pattern_deprel.mu`; substrate trust lives on `entity_significance` and `edge_significance` (see §IV).
+Per the AP-8 unified-Glicko-surface correction: POS / sense / language / morph / deprel classifications attest on the unified `substrate.edge_significance` surface via typed edges (`has_pos`, `has_sense`, `has_language`, `has_morph_feature`, `has_deprel_pattern`, `has_lexname`). The junction tables (`entity_pos`, `pattern_deprel`, `entity_morph_feature`, `entity_lexname`, `entity_language`) remain as denormalized analytics caches for fast index-locality lookups, but the authoritative classification consensus lives on `edge_significance` so AI-model attestations on POS / morph / deprel claims compete with corpus attestations on the SAME Glicko ladder per arena.
 
 Pushing classification (POS, sense, language) into `substrate.entity` is the most common drift. It belongs in reference + junction tables.
 
@@ -116,13 +116,13 @@ For each per-role unit identified in a Track 2 tensor:
 
 2. **Emit a typed edge** between those content entities. The `edge_type_id` (e.g. `model_attention_pattern` from `sql/schema/seed/edge_type.sql:84-90`) encodes the relationship. The edge's `LINESTRINGZM` trajectory IS the unit's spectral fingerprint. The edge hash is `ComputeEdgeHash(edge_type_id, role-ordered participant hashes)` — placement-free, content-addressed.
 
-3. **Fire a Glicko-2 rating event** on the edge with `attestation_type` (per `sql/schema/seed/attestation_type.sql`) distinguishing what KIND of model evidence (`model_attention_qk_pattern`, `model_attention_vo_pattern`, `model_ffn_full_path`, `model_input_embedding`, `model_lm_head_projection`, `model_moe_router`, `model_moe_expert_response`, `model_lora_adapter_evidence`, `model_position_embedding`, etc.). Initial mu derives from the tensor math itself (singular value magnitude, attention concentration, activation norm) — not from prompts. Layer/head/expert/position indices are metadata on the rating-event row, NOT separate types.
+3. **Fire a Glicko-2 rating event** on the edge with sign-aware `score` and `weight` per AP-31: `score = value > 0 ? 1.0 : 0.0` (`positive_evidence` or `negative_evidence` `attestation_type` per `sql/schema/seed/attestation_type.sql`), `weight = abs(value)`. Initial mu derives from the tensor math itself (singular value magnitude, attention concentration, activation norm) — not from prompts. Kind-of-evidence metadata (which primitive, which tuple, which slot, which layer index, which head index, which expert index, which model source) lives on `EdgeRatingEvent` attribution fields (`PrimitiveCode`, `TupleCode`, `SlotCode`, `ModelSourceId`, `TensorHash`, `SourceTensorName`), NOT as separate `attestation_type` rows. Per the 2026-05-14 P1d collapse the attestation_type vocabulary is 3 generic rows: `positive_evidence`, `negative_evidence`, `neutral_evidence`. Discrimination by source and domain lives on `(provenance, arena)` not on `attestation_type`.
 
 ### III.2 Cross-model corroboration
 
 When a second model decomposes into the same `(edge_type_id, role-ordered participant hashes)`, it produces the same edge hash. The row already exists; the second model fires a SEPARATE `attestation_type`-distinguished rating event on the existing edge. Glicko-2 sigma tightens; mu refines toward consensus; no duplicate edges spawn.
 
-Two LLMs both attesting "King ↔ Queen via gender_correspondence" fire two attestation events on one edge. Three LLMs and two vision-language models all attesting the same token-pair attention pattern across their attention heads create five `model_attention_qk_pattern` rating events on one edge. The substrate's consensus on that pattern emerges quantitatively as Glicko mu/sigma evolves with each new attestation.
+Two LLMs both attesting "King ↔ Queen via gender_correspondence" fire two attestation events on one edge. Three LLMs and two vision-language models all attesting the same token-pair attention pattern across their attention heads create five `positive_evidence` rating events on one edge (under per-model provenance + appropriate arena, with `EdgeRatingEvent` attribution metadata distinguishing each model's `(PrimitiveCode=Linear, TupleCode=AttentionBlock, SlotCode=Q|K, ModelSourceId=<source>)` shape). The substrate's consensus on that pattern emerges quantitatively as Glicko mu/sigma evolves with each new attestation.
 
 This is what makes the substrate's consensus surface load-bearing: every model strengthens what it agrees with the consensus on, fragments where it disagrees (cross_model_divergence attestation), and contributes its own novel attestations where it's first. The substrate accumulates a strictly more authoritative model of its content than any single ingested source.
 
@@ -133,8 +133,8 @@ This is what makes the substrate's consensus surface load-bearing: every model s
 - Read tokenizer.json once via `HuggingFaceTokenizerParser`; for each vocab entry run its bytes through `SubstrateTextDecomposer.EmitStatic` to get the `word_form` content hash that already exists (or is being created in this batch) for that token.
 - Read the relevant tensors as f64 (lossless decode per Law #6).
 - Compute the per-role-unit math (Q/K projection norms, FFN activation patterns, attention scoring, etc.).
-- Apply per-tensor adaptive noise floor; take top-K above floor (sparse honest recording, see §VIII).
-- For each surviving (token_a, token_b) pair, emit `model_<type>_pattern(token_a, token_b)` edge with `EdgeSignificanceSpec` carrying `attestation_type` and Glicko mu derived from the math.
+- Apply per-tensor adaptive noise floor; emit every cell above floor (threshold-only LTH discrimination per AP-33 — no top-K truncation; sparse honest recording, see §VIII).
+- For each surviving (token_a, token_b) pair, emit `model_attention_pattern(token_a, token_b)` (or `model_ffn_factor`, `model_concept_similarity`, `model_cross_modal_pattern` per tuple) edge with `EdgeSignificanceSpec` (arena, attestation_type, initial mu) AND sign-aware `EdgeRatingEvent` (score = sign(value), weight = abs(value)) per AP-31.
 
 Reference: `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs:25-342`.
 
@@ -142,18 +142,16 @@ Cross-references: [`sql/schema/seed/attestation_type.sql`](../sql/schema/seed/at
 
 ---
 
-## IV. Glicko-2 on four surfaces
+## IV. Glicko-2 on two surfaces (unified per AP-8 correction)
 
-Confidence and trust live on four distinct surfaces. They do NOT merge.
+Confidence and trust live on two substrate surfaces. They do NOT merge.
 
 | Surface | Rates |
 |---|---|
 | `substrate.entity_significance(context_type_id, entity_hash)` | trustworthiness of THIS CONTENT in this arena |
 | `substrate.edge_significance(context_type_id, edge_type_id, edge_hash)` | strength of THIS ATTESTED RELATION in this arena |
-| `entity_pos(entity_hash, pos_id).mu` | confidence that this entity bears this POS classification |
-| `pattern_deprel(entity_hash, deprel_id).mu` | strength of this dependency pattern ↔ deprel binding |
 
-Substrate significance rates *what is there*. Junction Glicko rates *what we say about what is there*.
+The earlier four-surface framing listed `entity_pos.mu` and `pattern_deprel.mu` as separate Glicko surfaces. Per the AP-8 unified-Glicko-surface correction (P1g): POS / sense / language / morph / deprel classifications attest on the unified `edge_significance` surface via typed edges (`has_pos`, `has_sense`, `has_language`, `has_morph_feature`, `has_deprel_pattern`, `has_lexname`). The junction tables remain populated as denormalized analytics caches for fast lookup, but the authoritative cross-source consensus lives on `edge_significance` so AI-model attestations compete with corpus attestations on the SAME Glicko ladder per arena.
 
 **Arenas are open vocabulary.** `substrate.significance_context` ships with starter codes (`lexical_disambiguation`, `syntactic_role_fitness`, `translation_quality`, `model_trust`, `source_authority`, `semantic_relevance`, `corroboration_strength`, `frequency_significance`, `attention_pattern_confidence`, `morphological_productivity`). Runtime additions are expected (`pragmatic_register`, domain-specific arenas like `English-medical-pharmacology`, model-comparison arenas, etc.). Code that hard-codes the starter list is wrong (see anti-pattern AP-1). The pipeline's edge-significance priming cross-products against whatever arenas exist at insert time; new arenas auto-backfill via substrate function.
 
@@ -179,19 +177,19 @@ The existing `src/Hartonomous.Decomposers/Safetensors/Passes/TensorClassifier.cs
 
 ### V.2 Universal layer decomposers
 
-These cover every dense / MoE / LoRA transformer regardless of architecture or modality:
+These cover every dense / MoE / LoRA transformer regardless of architecture or modality. **Per P1d 2026-05-14 collapse: `attestation_type` is `positive_evidence`/`negative_evidence`/`neutral_evidence` (sign discriminator only); the previous modality-specific names are now `EdgeRatingEvent` attribution metadata `(PrimitiveCode, TupleCode, SlotCode, LayerIdx, HeadIdx, ExpertIdx)` — see `docs/01-tensor-primitive-spec.md` §IV.** Per AP-30 + the 2026-05-14 layer-type → primitive/tuple collapse (per `docs/01-tensor-primitive-spec.md` §VI), the per-layer decomposers below are being replaced by 4 primitive passes + 5 tuple passes; the table is preserved for reference:
 
-| Decomposer | Tensor roles | Math | Attestation type emitted | Edge participants |
+| Decomposer (legacy name) | Tensor roles | Math | EdgeRatingEvent attribution `(PrimitiveCode, TupleCode, SlotCode)` | Edge participants |
 |---|---|---|---|---|
-| `AttentionQkvLayerDecomposer` | AttentionQuery + AttentionKey | Q/K projection norms via `‖embed[v] · Q‖`, top-K filter, pair scoring | `model_attention_qk_pattern` | `word_form ↔ word_form` |
-| `AttentionVoLayerDecomposer` | AttentionValue + AttentionOutput | V·O composition; residual contribution scoring | `model_attention_vo_pattern` | `word_form ↔ word_form` |
-| `FfnLayerDecomposer` | FfnGate + FfnUp + FfnDown | FFN-as-KV-memory: identify (key, value) pairs per row; project keys back to input tokens, values to output tokens | `model_ffn_full_path` (or split per up/gate/down attestation types per arena needs) | `word_form ↔ word_form` |
-| `EmbeddingLayerDecomposer` | TokenEmbedding | Embedding row direction; per-token attestation participation; **side-effect: firefly POINTZM emission per token, see §VII** | `model_input_embedding` | `word_form ↔ word_form` for proximity attestations |
-| `LmHeadLayerDecomposer` | LmHead | Unembedding row → logit projection per token | `model_lm_head_projection` | `word_form` (single-participant attestation on the entity, with hidden-direction→token strength on the rating event) |
-| `LayerNormLayerDecomposer` | LayerNormScale, LayerNormBias | Per-feature γ scale; analysis surface (no token edges; see §X analytics) | `model_layer_norm_evidence` | per-tensor analysis attestation |
-| `MoeRouterLayerDecomposer` | MoeRouter | Router gate scoring per token → expert | `model_moe_router` | `word_form ↔ expert-id metadata`; expert-id is rating-event metadata not entity |
-| `MoeExpertLayerDecomposer` | MoeExpertGate, MoeExpertUp, MoeExpertDown, MoeSharedExpert | Per-expert FFN decomposition | `model_moe_expert_response` | `word_form ↔ word_form`, with expert-id metadata |
-| `LoRAAdapterLayerDecomposer` | LoRA A and B factors | A·B low-rank update preserved as structured attestation series | `model_lora_adapter_evidence` | `word_form ↔ word_form`, with rank-component metadata |
+| `AttentionQkvLayerDecomposer` | AttentionQuery + AttentionKey | Q/K projection norms, threshold-only LTH | `(Linear, AttentionBlock, {Q,K})` on `model_attention_pattern` | `word_form ↔ word_form` |
+| `AttentionVoLayerDecomposer` | AttentionValue + AttentionOutput | V·O composition; residual contribution scoring | `(Linear, AttentionBlock, {V,O})` on `model_attention_pattern` | `word_form ↔ word_form` |
+| `FfnLayerDecomposer` | FfnGate + FfnUp + FfnDown | FFN-as-KV-memory; project keys back to input tokens, values to output tokens | `(Linear, SwiGluFfn, {gate,up,down})` on `model_ffn_factor` | `word_form ↔ word_form` |
+| `EmbeddingLayerDecomposer` | TokenEmbedding | Embedding row direction; per-token attestation participation; **side-effect: firefly POINTZM emission per token, see §VII** | `(Lookup, EmbeddingLookup, table)` on `model_concept_similarity` | `word_form ↔ word_form` for proximity attestations |
+| `LmHeadLayerDecomposer` | LmHead | Unembedding row → logit projection per token | `(Linear, EmbeddingLookup, lm_head)` on `model_concept_similarity` | `word_form` (single-participant attestation on the entity, with hidden-direction→token strength on the rating event) |
+| `LayerNormLayerDecomposer` | LayerNormScale, LayerNormBias | Per-feature γ scale; analysis surface (no token edges; see §X analytics) | `(Normalization, <containing tuple>, {scale,offset})` (physicality on tensor entity) | per-tensor analysis attestation |
+| `MoeRouterLayerDecomposer` | MoeRouter | Router gate scoring per token → expert | `(Linear, MoeRouterBlock, router)` on `model_concept_similarity` | `word_form ↔ expert-id metadata`; expert-id is rating-event metadata not entity |
+| `MoeExpertLayerDecomposer` | MoeExpertGate, MoeExpertUp, MoeExpertDown, MoeSharedExpert | Per-expert FFN decomposition | `(Linear, MoeRouterBlock, expert_N_{gate,up,down})` on `model_ffn_factor` | `word_form ↔ word_form`, with expert-id metadata |
+| `LoRAAdapterLayerDecomposer` | LoRA A and B factors | A·B low-rank update preserved as structured attestation series | `(Linear, LoraDelta, {A,B}, AdaptationOf=<base_hash>)` on same edges as base's tuple | `word_form ↔ word_form`, with rank-component metadata |
 
 ### V.3 Specialist layer decomposers
 
@@ -296,11 +294,11 @@ This is the inverse of the decomposer library: each layer-type decomposer has a 
 
 | Synthesizer | Target tensor role | Synthesis algorithm |
 |---|---|---|
-| `AttentionQkvLayerSynthesizer` | AttentionQuery + AttentionKey | Low-rank approximation `min ‖S - QK^T‖²` over the sparse attestation matrix S where `S[a][b]` is the consensus mu of `model_attention_qk_pattern(token_a, token_b)` filtered by arena |
-| `AttentionVoLayerSynthesizer` | AttentionValue + AttentionOutput | Same low-rank fit over `model_attention_vo_pattern` consensus |
-| `FfnLayerSynthesizer` | FfnGate + FfnUp + FfnDown | KV-memory inversion: solve for (W_up, W_gate, W_down) such that the (token-pair, attestation-strength) constraints are best satisfied; honest abstention on under-attested rows |
+| `AttentionQkvLayerSynthesizer` | AttentionQuery + AttentionKey | Low-rank approximation `min ‖S - QK^T‖²` over the sparse attestation matrix S where `S[a][b]` is the consensus mu of `model_attention_pattern(token_a, token_b)` edges filtered by arena + `EdgeRatingEvent` attribution `(Linear, AttentionBlock, {Q,K})` |
+| `AttentionVoLayerSynthesizer` | AttentionValue + AttentionOutput | Same low-rank fit over `model_attention_pattern` consensus filtered by `(Linear, AttentionBlock, {V,O})` attribution |
+| `FfnLayerSynthesizer` | FfnGate + FfnUp + FfnDown | KV-memory inversion over `model_ffn_factor` consensus filtered by `(Linear, SwiGluFfn, {gate,up,down})` attribution; honest abstention on under-attested rows |
 | `EmbeddingLayerSynthesizer` | TokenEmbedding | PCA over per-token attestation participation; alternatively use the firefly cluster centroids (per §VII) projected back to hidden_dim via inverse Laplacian eigenmap |
-| `LmHeadLayerSynthesizer` | LmHead | PCA / least-squares over `model_lm_head_projection` attestations |
+| `LmHeadLayerSynthesizer` | LmHead | PCA / least-squares over `model_concept_similarity` attestations on word_form entities filtered by `(Linear, EmbeddingLookup, lm_head)` attribution |
 | `LayerNormLayerSynthesizer` | LayerNormScale | Per-feature parameter from analysis-surface attestations |
 | `MoeRouterLayerSynthesizer` | MoeRouter | Synthesize routing matrix from token↔expert attestation strengths; expert IDs may be remapped per target |
 | `MoeExpertLayerSynthesizer` | MoeExpert(Gate/Up/Down) | Per-expert FFN synthesis using FfnLayerSynthesizer's algorithm scoped to the expert's attestation set |
@@ -431,7 +429,7 @@ Substrate state is queryable for:
 
 | Capability | Query shape |
 |---|---|
-| Mechanistic interpretability | "Find every attention head across N ingested models whose `model_attention_qk_pattern` attestations form induction-head shape (token A → token B where token B follows token A in nearby context). Rank by mu; cluster by architecture." |
+| Mechanistic interpretability | "Find every attention head across N ingested models whose `model_attention_pattern` events (with `EdgeRatingEvent` attribution `(Linear, AttentionBlock, {Q,K})`) form induction-head shape (token A → token B where token B follows token A in nearby context). Rank by mu; cluster by architecture via the HeadIdx/LayerIdx attribution metadata." |
 | Bias / safety audit | "For sensitive attribute X (gendered pronouns, race tokens, etc.) and outcome Y (occupation tokens, crime-related tokens, etc.), compute the consensus attestation strength between (X-tokens) and (Y-tokens) across every ingested model." |
 | Capability tomography | "For domain D (oncology, contract law, chemical synthesis), report attestation density between D's content entities per ingested model. Distinguish models with strong attestations from models with shallow/memorized attestations from models with no real coverage." |
 | Provenance / contamination / theft detection | "Does Model M's attestation distribution match Dataset D's content distribution beyond chance?" "Did Company B's model derive from Company A's model based on attestation fingerprint similarity?" |

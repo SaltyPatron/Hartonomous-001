@@ -2,6 +2,8 @@
 
 **Status:** Canonical for `EmbeddingLayerSynthesizer`. Supersedes the inverse-Laplacian-eigenmap approach previously in `docs/00-substrate-spec.md §VI` Mode 2 description.
 
+**Predates the 2026-05-14 P1d attestation_type collapse.** `model_input_embedding`, `model_concept_similarity` `attestation_type` references in algorithm descriptions are superseded — `attestation_type` is now 3 generic rows (`positive_evidence`, `negative_evidence`, `neutral_evidence`); embedding-attestation queries filter on `EdgeRatingEvent` attribution `(Lookup, EmbeddingLookup, table)` instead.
+
 **Authority:** Architectural correction landed 2026-05-09. The substrate's embedding for a token IS the consensus over its firefly cluster — NOT a 4D approximation of the source's hidden_dim row that we then try to invert back. Forward-only operation; no inverse problem.
 
 **Reciprocal of:** `EmbeddingLayerDecomposer` (Phase A.1) — emits per-(model, token) POINTZM fireflies attached to existing word_form entities; this synthesizer reads them.

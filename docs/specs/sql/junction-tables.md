@@ -1,10 +1,10 @@
 # Junction Table DDL
 
-**Status**: ✅ Complete
+**Status**: Predates the AP-8 unified-Glicko-surface correction (P1g) and the 2026-05-14 P1d attestation_type collapse. (1) Per AP-8: `entity_pos.mu`, `pattern_deprel.mu`, `entity_morph_feature` Glicko, `entity_lexname` Glicko, `entity_language` Glicko are NO LONGER the authoritative consensus surface — those classifications now attest on the unified `substrate.edge_significance` surface via typed edges (`has_pos`, `has_morph_feature`, `has_deprel_pattern`, `has_lexname`, `has_language`). Junction tables remain populated as denormalized analytics caches. (2) `model_attention_qk_pattern` attestation_type references in this doc are superseded — `attestation_type` is now 3 generic rows; kind-of-evidence attribution moves to EdgeRatingEvent fields. See `docs/01-tensor-primitive-spec.md` §IV.
 
 Junction tables map entities to classification reference table rows. They are the fast application-layer lookup path — "Is 'rake' a noun?" = one JOIN. Some carry significance (Glicko-2 priors from seed data, updated during inference).
 
-These are NOT edges. They provide fast indexed lookups for classification. The edge table provides significance-weighted traversal. Both use the same underlying data; junction tables are the fast path, edges are the deep path.
+These are NOT edges. They provide fast indexed lookups for classification. The edge table provides significance-weighted traversal. Both use the same underlying data; junction tables are the fast path, edges are the deep path. Per AP-8: substrate's authoritative cross-source classification consensus lives on `edge_significance` via typed `has_*` edges; junction `.mu` columns are analytics caches.
 
 All tables live in the `substrate` schema.
 

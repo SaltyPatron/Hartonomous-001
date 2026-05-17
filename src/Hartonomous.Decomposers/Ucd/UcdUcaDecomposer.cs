@@ -51,6 +51,7 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
         await using NpgsqlConnection connection = await dataSource.OpenConnectionAsync(ct);
 
         UnicodePassContext context = new(
+            pipeline,
             dataSource,
             connection,
             reporter,
@@ -76,6 +77,9 @@ public sealed partial class UcdUcaDecomposer : BaseDecomposer
             new UnicodeRadicalStrokePass(),
             new UnicodeNamedSequencePass(),
             new UnicodeEmojiSequencePass(),
+            new UnihanReadingPass(),
+            new IvdPerCollectionPass(),
+            new UcdVersionDifferencingPass(),
             new UnicodeMaterializationValidationPass(),
         ];
 

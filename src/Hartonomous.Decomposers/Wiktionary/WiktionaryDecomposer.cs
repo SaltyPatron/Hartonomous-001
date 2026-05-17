@@ -417,9 +417,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             batch.AddJunction("entity_pos", lemmaHandle, posId, TrustPriorMu);
         }
         int? sourceLangId = ResolveLangId(entry.LangCode);
-        if (sourceLangId is int langId)
+        if (sourceLangId is int langId && !string.IsNullOrEmpty(entry.LangCode))
         {
-            batch.AddJunction("entity_language", lemmaHandle, langId);
+            CrossLinkAttestation.EmitLanguageAttestation(batch, lemmaHandle, entry.LangCode, langId, ProvenanceCode);
         }
 
         foreach (WiktForm form in entry.Forms)
@@ -433,9 +433,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
             entityCount++;
 
-            if (sourceLangId is int infLang)
+            if (sourceLangId is int infLang && !string.IsNullOrEmpty(entry.LangCode))
             {
-                batch.AddJunction("entity_language", infHandle, infLang);
+                CrossLinkAttestation.EmitLanguageAttestation(batch, infHandle, entry.LangCode, infLang, ProvenanceCode);
             }
 
             addEdge("has_form",
@@ -518,9 +518,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             batch.AddSignificance(srcLemma, "source_authority", TrustPriorMu);
             entityCount++;
             int? srcLangId = ResolveLangId(srcLang);
-            if (srcLangId is int sl)
+            if (srcLangId is int sl && !string.IsNullOrEmpty(srcLang))
             {
-                batch.AddJunction("entity_language", srcLemma, sl);
+                CrossLinkAttestation.EmitLanguageAttestation(batch, srcLemma, srcLang, sl, ProvenanceCode);
             }
 
             addEdge(edgeCode,
@@ -552,9 +552,9 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
             entityCount++;
             int? trLangId = ResolveLangId(tr.LangCode);
-            if (trLangId is int tl)
+            if (trLangId is int tl && !string.IsNullOrEmpty(tr.LangCode))
             {
-                batch.AddJunction("entity_language", foreignLemma, tl);
+                CrossLinkAttestation.EmitLanguageAttestation(batch, foreignLemma, tr.LangCode, tl, ProvenanceCode);
             }
 
             addEdge("translation_of",

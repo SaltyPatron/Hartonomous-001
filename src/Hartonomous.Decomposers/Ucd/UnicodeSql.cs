@@ -1,15 +1,26 @@
 using System.Globalization;
 using Hartonomous.Core.Data;
 using Npgsql;
-using NpgsqlTypes;
 
 namespace Hartonomous.Decomposers.Ucd;
 
+/// <summary>
+/// Thin Npgsql helpers for substrate functions still in use by Unicode passes.
+/// Substrate-ingestion populate_*_from_ext functions were retired 2026-05-17
+/// per Step J of the ancient-launching-papert plan; substrate.entity/edge
+/// content now comes from C# producer passes under src/Hartonomous.Decomposers/Ucd/.
+///
+/// What remains:
+///  - PopulateCodepointPropertiesAsync: feeds the codepoint_property junction
+///    table (app-data infrastructure per the three-tier distinction; NOT
+///    substrate content; legitimate populate_*_from_ext consumer).
+///  - LoadMaterializationCountsAsync: post-pass count verification used by
+///    UnicodeMaterializationValidationPass.
+/// </summary>
 internal static class UnicodeSql
 {
     public const int MaxCodepoints = 0x110000;
     public const int PropertyChunkSize = 32768;
-    public const int AtomParallelism = 8;
 
     public static async Task<string> ExecuteScalarStringAsync(NpgsqlConnection connection, string functionName, CancellationToken ct)
     {
@@ -25,21 +36,6 @@ internal static class UnicodeSql
         command.CommandTimeout = 0;
         object? value = await command.ExecuteScalarAsync(ct);
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateCodepointAtomsAsync(NpgsqlDataSource dataSource, CancellationToken ct)
-    {
-        int chunkSize = (int)Math.Ceiling((double)MaxCodepoints / AtomParallelism);
-        Task<long>[] tasks = new Task<long>[AtomParallelism];
-        for (int i = 0; i < AtomParallelism; i++)
-        {
-            int lo = i * chunkSize;
-            int hi = Math.Min(lo + chunkSize, MaxCodepoints);
-            tasks[i] = PopulateCodepointAtomRangeAsync(dataSource, lo, hi, ct);
-        }
-
-        long[] counts = await Task.WhenAll(tasks);
-        return counts.Sum();
     }
 
     public static async Task<long> PopulateCodepointPropertiesAsync(NpgsqlConnection connection, CancellationToken ct)
@@ -58,90 +54,6 @@ internal static class UnicodeSql
         }
 
         return total;
-    }
-
-    public static async Task<long> PopulateUnicodeCaseEdgesAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeCaseEdgesFromProperties);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeDecompositionEdgesAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeDecompositionEdgesFromExt);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeFullCaseMappingEdgesAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeFullCaseMappingEdgesFromExt);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeConfusablesAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeConfusablesFromExt);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeStandardizedVariantsAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeStandardizedVariantsFromExt);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeRadicalStrokeAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeRadicalStrokeFromExt);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeNamedSequencesAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeNamedSequencesFromExt);
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
-    public static async Task<long> PopulateUnicodeEmojiSequencesAsync(
-        NpgsqlConnection connection,
-        bool useZwj,
-        CancellationToken ct)
-    {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateUnicodeEmojiSequencesFromExt,
-            new object?[] { useZwj });
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
     public static async Task<UcdMaterializationCounts> LoadMaterializationCountsAsync(
@@ -165,27 +77,5 @@ internal static class UnicodeSql
             reader.GetInt64(3),
             reader.GetInt64(4),
             reader.GetInt64(5));
-    }
-
-    private static async Task<long> PopulateCodepointAtomRangeAsync(
-        NpgsqlDataSource dataSource,
-        int lo,
-        int hi,
-        CancellationToken ct)
-    {
-        await using NpgsqlConnection connection = await dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection,
-            SubstrateFunctionNames.PopulateCodepointAtomsChunk,
-            new[]
-            {
-                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = "unicode_consortium" },
-                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Double, Value = DBNull.Value },
-                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = lo },
-                new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = hi },
-            });
-        command.CommandTimeout = 0;
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 }

@@ -10,7 +10,7 @@ typedef struct { const char* code; int32_t range_start; int32_t range_end; } Blo
 typedef struct { const char* category; const char* code; uint8_t enum_id; } BreakPropEntry;
 
 #define UC_GC_COUNT      30
-#define UC_SCRIPT_COUNT  175
+#define UC_SCRIPT_COUNT  176
 #define UC_BLOCK_COUNT   347
 #define UC_BREAK_COUNT   101
 

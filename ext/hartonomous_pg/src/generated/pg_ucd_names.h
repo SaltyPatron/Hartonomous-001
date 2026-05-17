@@ -6,6 +6,6 @@
 
 extern const uint32_t uc_name_off[UNICODE_CODEPOINT_MAX];
 extern const uint16_t uc_name_len[UNICODE_CODEPOINT_MAX];
-#define UC_NAME_BLOB_LEN  1040683
+#define UC_NAME_BLOB_LEN  3704880
 extern const uint8_t  uc_name_blob[UC_NAME_BLOB_LEN];
 #endif

@@ -197,7 +197,28 @@ FROM (VALUES
     -- by substrate.populate_sequence_following_edges from content trajectory
     -- ordinals. Source role = preceding token; target role = following token.
     -- Weighted by ln(1+freq) in sequence_following arena.
-    ('often_follows',            'sequence',      'word_form',          'word_form')            -- 113
+    ('often_follows',            'sequence',      'word_form',          'word_form'),           -- 113
+    -- ── Cross-link (Unicode ↔ ISO / encoding-standard / CLDR) ──────────
+    -- Per universal-cross-source-attestation: every text-bearing source
+    -- attests cross-cuttingly. These edges land the cross-link semantic
+    -- facts that previously had no substrate edge_type.
+    ('has_iso_639_1_code',       'cross_lingual', 'language_name',      'text_composition'),    -- 114
+    ('has_iso_639_2b_code',      'cross_lingual', 'language_name',      'text_composition'),    -- 115
+    ('has_iso_639_2t_code',      'cross_lingual', 'language_name',      'text_composition'),    -- 116
+    ('has_script',               'cross_lingual', 'language_name',      'text_composition'),    -- 117  (target = ISO 15924 4-letter script code as text_composition)
+    ('has_region',               'cross_lingual', 'language_name',      'text_composition'),    -- 118  (target = ISO 3166-1 alpha-2 region code as text_composition)
+    ('has_encoding_position',    'unicode',       'codepoint',          'text_composition'),    -- 119  (target = byte sequence in encoding's space as text_composition)
+    ('has_ideographic_variant_in_collection', 'unicode', 'codepoint',   'text_composition'),    -- 120  (target = collection-qualified variant glyph identifier as text_composition)
+    -- ── AP-8 unified-Glicko-surface migration edges ────────────────────
+    -- POS / morph / deprel / lexname / language classifications attest on
+    -- the unified substrate.edge_significance surface via these typed
+    -- edges. Junction tables (entity_pos, pattern_deprel, etc.) remain as
+    -- denormalized analytics caches; authoritative consensus lives here.
+    ('has_pos',                  'structural',    'word_form',          'text_composition'),    -- 121  (target = POS category name "NOUN"/"VERB"/etc. as text_composition)
+    ('has_morph_feature',        'structural',    'word_form',          'text_composition'),    -- 122  (target = "Gender=Masc"/"Number=Sing"/etc. as text_composition)
+    ('has_deprel_pattern',       'structural',    'word_form',          'text_composition'),    -- 123  (target = dep relation "nsubj"/"obj"/etc. as text_composition)
+    ('has_lexname',              'structural',    'synset',             'text_composition'),    -- 124  (target = WordNet lexname "noun.animal"/etc. as text_composition)
+    ('has_language',             'cross_lingual', NULL,                 'language_name')        -- 125  (polymorphic source — any entity that asserts a language tag)
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;

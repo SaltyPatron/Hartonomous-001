@@ -15,4 +15,16 @@ INSERT INTO substrate.significance_context (code) VALUES
     -- Bigram next-token prior arena. Populated by
     -- substrate.populate_sequence_following_edges from content trajectory
     -- ordinals. Source of generative coherence at inference time.
-    ('sequence_following');
+    ('sequence_following'),
+    -- Unicode/ISO/CLDR/encoding cross-source consensus arenas (per
+    -- universal-cross-source-attestation framing). Each names a contested
+    -- surface where multiple sources fire attestation events on shared
+    -- content-addressed edge identities.
+    ('unicode_version_consensus'),         -- 30 UCD versions attesting per-cp properties
+    ('encoding_position_consensus'),       -- ASCII/ISO 8859/EBCDIC/Windows/JIS/GB/etc.
+    ('ivd_collection_consensus'),          -- 5 IVD collections attesting ideographic variants
+    ('unihan_reading_consensus'),          -- 4 Unihan reading languages
+    ('consortium_discussion_density'),     -- L2/IRG/WG2 working docs (future scope)
+    ('script_membership_consensus'),       -- Unicode + ISO 15924 + CLDR + corpus attestation
+    ('language_codepoint_coverage_consensus'), -- per-language codepoint usage
+    ('locale_definition_consensus');       -- per-CLDR-version locale definition stability

@@ -115,7 +115,7 @@ Members: `base` (Linear, the parent being adapted) + `A` (Linear `[rank, in]`) +
 - Diffusers LoRA: `*.lora_down.weight + *.lora_up.weight`
 - Multiple named adapters per base: the `default` suffix can be other names; substrate stores per-adapter independently
 
-**Fires:** the **base** fires its normal tuple's attestations (`model_attention_qk_pattern` if base is in an AttentionBlock-Q slot, etc.) with normal mu. The **delta** fires `model_lora_adapter_evidence` on the SAME edges with delta-scaled mu — the substrate stores both. Synthesizer can choose to merge (apply delta into base output) or keep separate (export base + sibling adapter file).
+**Fires:** the **base** fires its normal tuple's sign-aware attestations (per AP-31: `positive_evidence` or `negative_evidence` carried by `EdgeRatingEvent` with attribution metadata `(PrimitiveCode, TupleCode, SlotCode)` per the §IV table) on the appropriate edges with normal mu. The **delta** fires events on the SAME edges with `AdaptationOf=<base_hash>` metadata + delta-scaled weight — the substrate stores both. Synthesizer can choose to merge (apply delta into base output) or keep separate (export base + sibling adapter file).
 
 ### II.7 `ConvResidualBlock` — spatial mixing with skip
 Members: `conv1` (LocalKernel), `norm1` (Normalization), `conv2` (LocalKernel), `norm2` (Normalization), optional `shortcut` (LocalKernel 1×1 for downsampling), associated `BnState` tuples for each Normalization that's batch-norm.
@@ -125,7 +125,7 @@ Members: `conv1` (LocalKernel), `norm1` (Normalization), `conv2` (LocalKernel), 
 - VAE up/down blocks: `norm1 + conv1 + norm2 + conv2 + nin_shortcut`
 - Swin patch-merging: simplified residual
 
-**Fires:** `model_local_kernel_evidence` on edge_type `model_spatial_pattern` between pixel_region or audio_chunk content-entity pairs at neighborhood positions.
+**Fires:** sign-aware `positive_evidence`/`negative_evidence` events on `model_spatial_pattern` edges between pixel_region or audio_chunk content-entity pairs at neighborhood positions, with `EdgeRatingEvent` attribution `(LocalKernel, ConvResidualBlock, {conv1|conv2|shortcut})`.
 
 ### II.8 `ConformerBlock` — audio composition pattern
 Members: `ff1` (BertFfn or half-scale variant), `attn` (AttentionBlock), `conv_module` (`pre_norm` Normalization + `pointwise_conv1` LocalKernel + `depthwise_conv` LocalKernel + `batch_norm` Normalization + `pointwise_conv2` LocalKernel), `ff2` (BertFfn), `post_norm` (Normalization).
@@ -324,33 +324,33 @@ The 4-D-shape-with-trailing-1's reshape rule is critical: TupleResolver inspects
 
 ## IV. Tuple → attestation mapping
 
-| Tuple | edge_type | attestation_type | Score basis |
-|---|---|---|---|
-| AttentionBlock (Q+K) | `model_attention_pattern` | `model_attention_qk_pattern` | Q^T·K projection magnitude (sign → Glicko score, magnitude → event weight) |
-| AttentionBlock (V+O) | `model_attention_pattern` | `model_attention_vo_pattern` | V·O^T projection magnitude (sign → Glicko score, magnitude → event weight) |
-| CrossAttentionBlock | `model_cross_modal_pattern` | `model_cross_modal_alignment` | Q^T·K projection magnitude across modalities |
-| SwiGluFfn / BertFfn | `model_ffn_factor` | `model_ffn_full_path` | down(act(gate(x))⊙up(x)) full-path response per token-pair |
-| MoeRouterBlock router | `model_concept_similarity` | `model_moe_router` | per-token routing strength alignment |
-| MoeRouterBlock expert | `model_ffn_factor` | `model_moe_expert_response` | per-expert FFN response (same math as SwiGluFfn) |
-| LoraDelta | (same edges as the base's tuple) | `model_lora_adapter_evidence` | delta B·A response |
-| ConvResidualBlock | `model_spatial_pattern` (NEW edge_type) | `model_local_kernel_evidence` | conv kernel response between pixel_region neighbors |
-| ConformerBlock conv_module | `model_spatial_pattern` | `model_local_kernel_evidence` | between audio_chunk neighbors |
-| SwinWindowAttn position-bias | (same edges as AttentionBlock) | `model_position_embedding` | window-relative-position bias contribution |
-| PatchEmbed | (firefly POINTZM physicality on patch entity) | `model_input_embedding` | per-patch embedding position |
-| EmbeddingLookup token table | `model_concept_similarity` | `model_input_embedding` | row cosine between vocab tokens (sign → Glicko score) |
-| EmbeddingLookup position table | (firefly POINTZM on position entity) | `model_position_embedding` | per-position embedding magnitude |
-| EmbeddingLookup VQ codebook | (firefly POINTZM on codec_codevector entity) | `model_codec_evidence` (NEW attestation_type) | per-codeword position |
-| DetectionHead class_proj | `model_detection_class` (NEW edge_type) | `model_detection_class_attestation` (NEW) | per-(object_query, visual_concept) class score |
-| DetectionHead bbox_proj | (geometry physicality on object_query entity) | `model_detection_bbox_attestation` (NEW) | per-object_query bbox parameters |
-| Normalization (γ, β) | (physicality on tensor entity) | `model_layer_norm_evidence` | per-feature γ, β contour |
-| Normalization (running stats subset of BnState) | (physicality on tensor entity) | `model_inference_state_evidence` (NEW) | per-feature running_mean/var contour, lower per-event weight |
-| Lookup RoPE freq | (physicality on tensor entity) | `model_position_embedding` | freq vector |
+Per the 2026-05-14 P1d collapse: `attestation_type` is 3 generic rows (`positive_evidence`, `negative_evidence`, `neutral_evidence`) discriminating ONLY sign. Source discrimination lives on `provenance_id`; domain discrimination lives on `context_type_id` (arena); kind-of-evidence attribution (which primitive, which tuple, which slot, which layer/head/expert index, which model source, which tensor) lives on the `EdgeRatingEvent` attribution fields (`PrimitiveCode`, `TupleCode`, `SlotCode`, `LayerIdx`, `HeadIdx`, `ExpertIdx`, `ModelSourceId`, `TensorHash`, `SourceTensorName`).
 
-**New attestation_types to add to seed:** `model_local_kernel_evidence`, `model_codec_evidence`, `model_detection_class_attestation`, `model_detection_bbox_attestation`, `model_inference_state_evidence`. Total: 5 new.
+| Tuple | edge_type | attestation_type | EdgeRatingEvent metadata | Score basis |
+|---|---|---|---|---|
+| AttentionBlock (Q+K) | `model_attention_pattern` | sign(value) → `positive_evidence` or `negative_evidence` | `(Linear, AttentionBlock, {Q,K})` | Q^T·K projection magnitude |
+| AttentionBlock (V+O) | `model_attention_pattern` | sign(value) → positive/negative | `(Linear, AttentionBlock, {V,O})` | V·O^T projection magnitude |
+| CrossAttentionBlock | `model_cross_modal_pattern` | sign(value) → positive/negative | `(Linear, CrossAttentionBlock, {Q,K,V,O})` | Q^T·K projection magnitude across modalities |
+| SwiGluFfn / BertFfn | `model_ffn_factor` | sign(value) → positive/negative | `(Linear, {SwiGluFfn|BertFfn}, {gate,up,down}|{intermediate,output})` | down(act(gate(x))⊙up(x)) full-path response per token-pair |
+| MoeRouterBlock router | `model_concept_similarity` | sign(value) → positive/negative | `(Linear, MoeRouterBlock, router)` | per-token routing strength alignment |
+| MoeRouterBlock expert | `model_ffn_factor` | sign(value) → positive/negative | `(Linear, MoeRouterBlock, expert_{N}_{gate,up,down})` | per-expert FFN response (same math as SwiGluFfn) |
+| LoraDelta | (same edges as the base's tuple) | sign(value) → positive/negative | `(Linear, LoraDelta, {A,B}, AdaptationOf=<base_hash>)` | delta B·A response |
+| ConvResidualBlock | `model_spatial_pattern` | sign(value) → positive/negative | `(LocalKernel, ConvResidualBlock, {conv1,conv2,...})` | conv kernel response between pixel_region neighbors |
+| ConformerBlock conv_module | `model_spatial_pattern` | sign(value) → positive/negative | `(LocalKernel, ConformerBlock, {dw,pw1,pw2})` | between audio_chunk neighbors |
+| SwinWindowAttn position-bias | (same edges as AttentionBlock) | sign(value) → positive/negative | `(Lookup, SwinWindowAttn, bias_table)` | window-relative-position bias contribution |
+| PatchEmbed | (firefly POINTZM physicality on patch entity) | sign(value) → positive/negative | `(LocalKernel, PatchEmbed, patch_conv)` | per-patch embedding position |
+| EmbeddingLookup token table | `model_concept_similarity` | sign(value) → positive/negative | `(Lookup, EmbeddingLookup, table)` | row cosine between vocab tokens (sign → Glicko score) |
+| EmbeddingLookup position table | (firefly POINTZM on position entity) | sign(value) → positive/negative | `(Lookup, EmbeddingLookup, position_table)` | per-position embedding magnitude |
+| EmbeddingLookup VQ codebook | (firefly POINTZM on codec_codevector entity) | sign(value) → positive/negative | `(Lookup, EmbeddingLookup, vq_codebook)` | per-codeword position |
+| DetectionHead class_proj | `model_detection_class` | sign(value) → positive/negative | `(Linear, DetectionHead, class_proj)` | per-(object_query, visual_concept) class score |
+| DetectionHead bbox_proj | (geometry physicality on object_query entity) | sign(value) → positive/negative | `(Linear, DetectionHead, bbox_proj)` | per-object_query bbox parameters |
+| Normalization (γ, β) | (physicality on tensor entity) | sign(value) → positive/negative | `(Normalization, <containing tuple>, {scale,offset})` | per-feature γ, β contour |
+| Normalization (BnState running stats) | (physicality on tensor entity) | `neutral_evidence` (inference-time state, not learned) | `(Normalization, BnState, {running_mean,running_var})`, lower per-event weight | per-feature running_mean/var contour |
+| Lookup RoPE freq | (physicality on tensor entity) | sign(value) → positive/negative | `(Lookup, EmbeddingLookup, rope_freq)` | freq vector |
 
-**Existing attestation_types to delete (over-granular, the tuple-level types subsume them):** `model_attention_query_projection`, `model_attention_key_projection`, `model_attention_value_projection`, `model_attention_output_projection`, `model_ffn_up_projection`, `model_ffn_gate_projection`, `model_ffn_down_projection`, `model_per_role_unit_circuit`, `cross_model_corroboration` (duplicate of the corroboration mechanism Glicko itself provides). Total: 9 deletions.
+**No new attestation_types to add to seed.** The 3 generic rows cover all evidence kinds via sign + provenance × arena + EdgeRatingEvent attribution.
 
-**New edge_types to add to seed:** `model_spatial_pattern (pixel_region, pixel_region)` for image and `(audio_chunk, audio_chunk)` for audio; `model_cross_modal_pattern (variable, variable)` for VL/audio-text bridges; `model_detection_class (object_query, visual_concept)` for detection heads. Total: 3 new.
+**New edge_types to add to seed:** `model_spatial_pattern (pixel_region, pixel_region)` for image and `(audio_chunk, audio_chunk)` for audio; `model_detection_class (object_query, visual_concept)` for detection heads. `model_cross_modal_pattern` already exists. Net: 2 new.
 
 **Existing edge_types to delete (point to phantom entity types):** `has_weight_distribution, has_spectrum, has_eigenvalue_spectrum, has_sparsity_profile, has_activation_range, has_layer_norm_scale, has_codebook, contains_codevector, has_layer_similarity, has_rope_freqs, has_rank_component, has_moe_routing, has_embedding_position, has_ffn_neuron, has_logit_projection, has_attention_component, has_codec_filter, has_bbox_projection, has_class_projection, has_conformer_component, has_conv_filter, has_diffusion_component, has_lora_component, has_modality_basis, has_moe_neuron, has_route_direction, has_object_query, has_vision_feature, encodes_archetype, has_vocab_coverage`. Total: 30 deletions. (Their analytics/per-tensor information moves to physicality-on-tensor-entity; their per-row content moves to attestation edges between content entities.)
 
@@ -404,15 +404,15 @@ The 30+ singleton-per-name decomposers replace with:
 PrimitivePasses (4 — one per PrimitiveKind, run on every tensor of that primitive):
   LinearProjectionPass         — emits per-tensor signature (canonical content hash, dimensionality)
   LocalKernelPass              — emits per-tensor kernel signature
-  NormalizationPass            — emits γ, β as physicality contour on tensor entity; fires per-tensor entity_significance with attestation_type appropriate to the slot (model_layer_norm_evidence, etc.)
-  LookupPass                   — emits per-row firefly POINTZM physicality on the looked-up content entity (token, position, codevector); fires per-row Track-1 attestations
+  NormalizationPass            — emits γ, β as physicality contour on tensor entity; fires per-tensor entity_significance with sign-aware events (positive_evidence/negative_evidence per AP-31; attribution `(Normalization, <containing tuple>, {scale|offset})` on EdgeRatingEvent)
+  LookupPass                   — emits per-row firefly POINTZM physicality on the looked-up content entity (token, position, codevector); fires per-row Track-1 sign-aware attestations
 
 TuplePasses (5 — fire on RESOLVED tuples after primitive decomposition):
-  AttentionBlockTuplePass      — consumes (Q, K, V, O [+ q_norm, k_norm, pos_bias]) tuple at one layer; emits model_attention_qk_pattern between content-entity-pairs determined by ModalityHint, AND model_attention_vo_pattern on same edge identity. Sign-aware.
-  FfnTuplePass                 — consumes SwiGluFfn or BertFfn; emits model_ffn_full_path. Sign-aware. MoE expert variant scopes by ExpertIdx.
-  LoraDeltaTuplePass           — consumes (base, A, B); fires base attestations + delta attestations on same edges. Records AdaptationOf relationship.
-  CrossAttentionTuplePass      — consumes CrossAttentionBlock; emits model_cross_modal_alignment between (entity_type_A, entity_type_B) pairs.
-  SpatialKernelTuplePass       — consumes ConvResidualBlock or ConformerBlock conv_module; emits model_local_kernel_evidence between pixel_region/audio_chunk neighbors.
+  AttentionBlockTuplePass      — consumes (Q, K, V, O [+ q_norm, k_norm, pos_bias]) tuple at one layer; emits sign-aware events on model_attention_pattern edges between content-entity-pairs determined by ModalityHint. Attribution on EdgeRatingEvent: `(Linear, AttentionBlock, {Q|K|V|O})`. Q^T·K for QK semantics, V·O^T for VO semantics — both land on the same edge_type with attribution distinguishing the math.
+  FfnTuplePass                 — consumes SwiGluFfn or BertFfn; emits sign-aware events on model_ffn_factor. Attribution: `(Linear, {SwiGluFfn|BertFfn}, {gate|up|down}|{intermediate|output})`. MoE expert variant scopes by ExpertIdx attribution.
+  LoraDeltaTuplePass           — consumes (base, A, B); fires base attestations + delta attestations on same edges. Attribution carries `AdaptationOf=<base_hash>` for the delta events.
+  CrossAttentionTuplePass      — consumes CrossAttentionBlock; emits sign-aware events on model_cross_modal_pattern between (entity_type_A, entity_type_B) pairs. Attribution: `(Linear, CrossAttentionBlock, {Q|K|V|O})`.
+  SpatialKernelTuplePass       — consumes ConvResidualBlock or ConformerBlock conv_module; emits sign-aware events on model_spatial_pattern between pixel_region/audio_chunk neighbors. Attribution: `(LocalKernel, {ConvResidualBlock|ConformerBlock}, {conv1|conv2|dw|pw1|pw2})`.
 
 TupleResolver (data-driven, not a pass):
   Per-architecture name-pattern table → tuple membership tagging. Run once at decomposer startup per model. Output is a list of tuples and their member tensor entities.
@@ -465,15 +465,15 @@ Once the primitive vocabulary + tuple vocabulary + per-architecture resolution i
 
 The cleanup work this spec enables, in order:
 
-### IX.1 Seed cleanup (one batch)
+### IX.1 Seed cleanup — ✅ STATUS UPDATE
 
-- **Delete** 30 phantom edge_type rows from `sql/schema/seed/edge_type.sql` (enumerated in §IV).
-- **Delete** 9 over-granular attestation_type rows from `sql/schema/seed/attestation_type.sql` (enumerated in §IV).
-- **DONE** — ~30 phantom entity_type rows removed from `sql/schema/seed/entity_type.sql` (2026-05-08 correction applied; 23 real content types remain).
-- **Add** 5 new attestation_type rows: `model_local_kernel_evidence`, `model_codec_evidence`, `model_detection_class_attestation`, `model_detection_bbox_attestation`, `model_inference_state_evidence`.
-- **Add** 3 new edge_type rows: `model_spatial_pattern`, `model_cross_modal_pattern`, `model_detection_class`.
-- **Add** new entity_type rows for content modalities not yet present: `audio_chunk`, `pixel_region`, `visual_concept`, `object_query`, `codec_codevector` (verify which already exist).
-- After deletion, handle the entity_model partition repartitioning per the existing seed comment (some partitions may be defined per phantom type and need cleanup).
+- **DONE** ✅ — ~30 phantom entity_type rows removed from `sql/schema/seed/entity_type.sql` (2026-05-08 correction; 23 real content types remain).
+- **DONE** ✅ — `attestation_type` collapsed 27→3 rows (`positive_evidence`, `negative_evidence`, `neutral_evidence`) per 2026-05-14 P1d correction. The original §IX.1 plan called for "delete 9 over-granular + add 5 new"; superseded by the full collapse. Kind-of-evidence metadata moves to `EdgeRatingEvent` attribution fields (`PrimitiveCode`, `TupleCode`, `SlotCode`, `LayerIdx`, `HeadIdx`, `ExpertIdx`, `ModelSourceId`, `TensorHash`, `SourceTensorName`), NOT new attestation_type rows.
+- **DONE** ✅ — `model_cross_modal_pattern` edge_type seeded (`sql/schema/seed/edge_type.sql:144`).
+- **PENDING** — Add 2 new edge_type rows: `model_spatial_pattern (pixel_region, pixel_region)`, `model_detection_class (object_query, visual_concept)`. (`model_cross_modal_pattern` already done.)
+- **PENDING** — Delete the 30 phantom edge_type rows enumerated in §IV (point to phantom entity types that no longer exist).
+- **PENDING** — After deletion, handle any partition repartitioning per the existing seed comment.
+- Entity types `audio_chunk`, `pixel_region`, `visual_concept`, `object_query`, `codec_codevector`: ✅ all present in seed (`sql/schema/seed/entity_type.sql`).
 
 ### IX.2 `TensorClassification` refactor (one batch)
 

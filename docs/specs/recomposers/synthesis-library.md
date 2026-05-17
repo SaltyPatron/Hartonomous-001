@@ -1,8 +1,8 @@
 # Per-Layer-Type Synthesizer Library Specification
 
-**Status:** Canonical for the per-layer-type synthesizer library used by the Build-a-bear synthesis recomposer.
+**Status:** Predates the 2026-05-14 P1d attestation_type collapse. All `model_*_pattern`, `model_*_evidence`, `model_*_projection`, `model_*_embedding`, `model_*_response` `attestation_type` references in the substrate-query examples below are superseded — `attestation_type` is now 3 generic rows (`positive_evidence`, `negative_evidence`, `neutral_evidence`); synthesizer substrate queries filter by `EdgeRatingEvent` attribution metadata (`PrimitiveCode`, `TupleCode`, `SlotCode`, `LayerIdx`, `HeadIdx`, `ExpertIdx`) instead. See `docs/01-tensor-primitive-spec.md` §IV for the current attestation mapping table. Also predates the AP-30 + 01-spec §VII synthesizer collapse to 4 primitive synthesizers + 3 tuple synthesizers.
 
-**Authority:** Slice of [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §VI. Where this document and the spec disagree, the spec is correct.
+**Authority:** Slice of [`docs/00-substrate-spec.md`](../../00-substrate-spec.md) §VI. Where this document and the spec disagree, the spec is correct. Where this document and `docs/01-tensor-primitive-spec.md` §VII disagree, the tensor-primitive spec is correct.
 
 **Reciprocal:** [`docs/specs/decomposers/layer-type-library.md`](../decomposers/layer-type-library.md). Each layer-type decomposer has a reciprocal synthesizer in this library.
 

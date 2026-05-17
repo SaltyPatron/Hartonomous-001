@@ -267,11 +267,27 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         sentenceIdToHash[row.SentenceId] = sentHash;
 
         // entity_language junction inline, keyed by the text_composition hash;
-        // no phase-wide hash list.
+        // no phase-wide hash list. Retained as denormalized analytics cache
+        // per the AP-8 unified-Glicko-surface correction.
         if (languageMap.TryGetValue(row.Lang, out int langId))
         {
             batch.AddJunction("entity_language", sentEntity, langId);
         }
+
+        // Cross-link attestation (Step I of ancient-launching-papert plan): emit
+        // has_language edge on the unified substrate.edge_significance surface so
+        // cross-source language-coverage consensus accumulates. language_name
+        // entity is content-addressed by BLAKE3 over the ISO 639-3 3-letter code.
+        Hartonomous.Core.Compute.Common.Hash32 langHash =
+            Hartonomous.Core.Compute.Common.Blake3.Hash32(System.Text.Encoding.UTF8.GetBytes(row.Lang));
+        EntityHandle langHandle = batch.AddEntity(langHash, "language_name");
+        EdgeMemberSpec[] langMembers =
+        [
+            new EdgeMemberSpec(sentEntity, "source", 0),
+            new EdgeMemberSpec(langHandle, "target", 1),
+        ];
+        batch.AddEdge("has_language", ProvenanceCode, langMembers);
+        edgeCount++;
     }
 
     private static void EmitLink(
