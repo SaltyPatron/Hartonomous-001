@@ -4,27 +4,36 @@ using System.Text;
 namespace Hartonomous.Core.Text.Segmentation;
 
 /// <summary>
-/// UAX #29 extended grapheme cluster segmentation. The primitive walks UTF-8
-/// input once and applies the UAX #29 break rules using codepoint properties
-/// sourced from the substrate (<see cref="ICodepointProperties"/>). All rules
-/// implemented: GB1–GB9b, GB11 (emoji ZWJ sequences), GB12/GB13, GB999.
+/// UAX #29 extended grapheme cluster segmentation. Thin C# wrapper around the
+/// canonical native implementation at <c>ext/libhartonomous/src/text_decompose.c</c>.
+///
+/// <para>
+/// Single source of UAX-29 truth (rule 10-text-and-semantics + Law #6 + the
+/// compute-facade discipline in CLAUDE.md). The PG extension's
+/// <c>pg_text_decompose</c> and this C# binding both call into
+/// <c>hartonomous_text_grapheme_boundaries</c> in the same libhartonomous
+/// build — one implementation, byte-identical hashes across PG and C#.
+/// </para>
+///
+/// <para>
+/// The prior C# state machine that lived here failed 425 / 766 UCD test
+/// cases (44.5% conformance) and was a second implementation of the same
+/// algorithm — exactly the kind of reinvented wheel the substrate's
+/// canonical-implementation discipline forbids. Deleted; the native path
+/// is the only path.
+/// </para>
 /// </summary>
 public static class GraphemeClusters
 {
     /// <summary>
-    /// .NET-backed grapheme cluster enumeration via
-    /// <see cref="StringInfo.GetTextElementEnumerator(string)"/>. This delegates
-    /// to Microsoft's UAX #29 implementation (currently UAX #29 v15.1 in .NET 9
-    /// targeting Unicode 16). Use this path when conformance to the official
-    /// UCD <c>GraphemeBreakTest.txt</c> is required.
-    /// <para>
-    /// Why this exists: the hand-rolled <see cref="Enumerate"/> below fails 425
-    /// of 766 UCD test cases (44.5% conformance, see
-    /// <c>UcdConformanceTests.GraphemeClusters_Conform_To_UCD_Test_File</c>).
-    /// Until those bugs are tracked down, every text-decomposition path that
-    /// requires correct grapheme boundaries on non-ASCII content (combining
-    /// marks, Devanagari conjuncts, complex emoji ZWJ) MUST use this method.
-    /// </para>
+    /// .NET <see cref="StringInfo.GetTextElementEnumerator(string)"/>-backed
+    /// grapheme cluster enumeration. Delegates to Microsoft's UAX #29 implementation
+    /// (currently UAX #29 v15.1 in .NET 9, Unicode 16). Provided as an
+    /// explicitly-named alternative for callers who want a non-substrate UAX-29
+    /// implementation (e.g. UI display, where the substrate's UCD version may
+    /// differ from the host runtime's). It is NOT the substrate's identity-
+    /// bearing path — anything that hashes content MUST go through
+    /// <see cref="Enumerate"/> which uses the substrate's bundled UCD via native.
     /// </summary>
     public static List<GraphemeRange> EnumerateUsingNet(ReadOnlySpan<byte> utf8)
     {
@@ -35,10 +44,6 @@ public static class GraphemeClusters
         }
 
         string s = Encoding.UTF8.GetString(utf8);
-        // Build per-char-index byte offset map so we can translate StringInfo's
-        // char indices back to UTF-8 byte offsets without rescanning. Surrogate
-        // pairs (one supplementary codepoint = 2 chars) share a single 4-byte
-        // UTF-8 sequence; both char indices map to the same byte offset.
         int[] charToByte = new int[s.Length + 1];
         int byteCursor = 0;
         int i = 0;
@@ -89,22 +94,29 @@ public static class GraphemeClusters
         return result;
     }
 
-    private enum EmojiChain : byte { None, Pict, ZwjAfterPict }
+    /// <summary>
+    /// Enumerate extended grapheme clusters over <paramref name="utf8"/>.
+    /// Calls the native UAX-29 kernel and converts codepoint boundaries to
+    /// UTF-8 byte ranges. The <paramref name="properties"/> argument is
+    /// retained for API compatibility but unused — native sources UCD
+    /// properties from the substrate's bundled UCD blob (Law #6: one UCD
+    /// version owns substrate identity).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Native UCD blob not loadable. Substrate-content paths MUST have the
+    /// blob installed; there is no in-process fallback because a second
+    /// UAX-29 implementation would drift from the canonical one. Cold-start
+    /// environments must call <c>SubstrateTextDecomposer.EnsureUcdLoaded()</c>
+    /// (or rely on the auto-load) before any content-hashing path runs.
+    /// </exception>
+    public static List<GraphemeRange> Enumerate(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
+        => Enumerate(utf8);
 
     /// <summary>
-    /// Enumerate extended grapheme clusters over <paramref name="utf8"/> and
-    /// materialize them into a list. Ill-formed UTF-8 bytes are treated as
-    /// single-byte U+FFFD substitutions per Unicode best practice.
-    ///
-    /// PRIMARY PATH: P/Invoke into the native UAX-29 kernel
-    /// (<see cref="Hartonomous.Core.Native.TextDecomposeNative.GraphemeBoundaries"/>).
-    /// The native implementation is the substrate's SINGLE source of UAX-29
-    /// truth (rule 10-text-and-semantics + Law #6 + CLAUDE.md compute-facade).
-    /// Native passes UAX-29 conformance (UCD GraphemeBreakTest.txt).
-    /// Falls back to the in-process C# state machine ONLY when the native
-    /// UCD blob is unavailable. Fallback is on the deprecation path (task #21).
+    /// Native-only grapheme enumeration. The <see cref="ICodepointProperties"/>
+    /// overload exists for legacy callers; new code should call this directly.
     /// </summary>
-    public static List<GraphemeRange> Enumerate(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
+    public static List<GraphemeRange> Enumerate(ReadOnlySpan<byte> utf8)
     {
         List<GraphemeRange> result = new();
         if (utf8.IsEmpty)
@@ -112,79 +124,33 @@ public static class GraphemeClusters
             return result;
         }
 
-        if (TryNativeEnumerate(utf8, out List<GraphemeRange>? native))
+        if (!TryNativeEnumerate(utf8, out List<GraphemeRange>? native))
         {
-            return native!;
+            throw new InvalidOperationException(
+                "GraphemeClusters.Enumerate: native UAX-29 kernel unavailable. "
+                + "Substrate identity requires the bundled UCD blob; install "
+                + "hartonomous-ucd to /opt/pg18/share/postgresql/extension/hartonomous-ucd "
+                + "or set HARTONOMOUS_UCD_BLOB_DIR. The previous in-process C# "
+                + "fallback was a second UAX-29 implementation that fragmented "
+                + "substrate identity (44.5% UCD conformance) and was removed.");
         }
-
-        long clusterByteStart = 0;
-        long clusterCpStart = 0;
-        long byteOffset = 0;
-        long cpOffset = 0;
-
-        GraphemeBreak prev = GraphemeBreak.Other;
-        bool hasPrev = false;
-        int riRun = 0;
-        EmojiChain chain = EmojiChain.None;
-
-        int idx = 0;
-        while (idx < utf8.Length)
-        {
-            (int cp, int consumed) = Utf8.DecodeOne(utf8[idx..]);
-            if (cp < 0 || consumed == 0)
-            {
-                break;
-            }
-
-            GraphemeBreak curr = properties.GetGraphemeBreak(cp);
-            bool currIsExtPict = properties.IsExtendedPictographic(cp);
-            bool shouldBreak = hasPrev && DecideBreak(prev, curr, riRun, chain, currIsExtPict);
-
-            if (shouldBreak)
-            {
-                result.Add(new GraphemeRange(
-                    clusterByteStart,
-                    clusterCpStart,
-                    (int)(byteOffset - clusterByteStart),
-                    (int)(cpOffset - clusterCpStart)));
-                clusterByteStart = byteOffset;
-                clusterCpStart = cpOffset;
-            }
-
-            if (curr == GraphemeBreak.RegionalIndicator)
-            {
-                riRun = shouldBreak ? 1 : riRun + 1;
-            }
-            else
-            {
-                riRun = 0;
-            }
-
-            chain = NextChain(chain, curr, currIsExtPict);
-
-            prev = curr;
-            hasPrev = true;
-            byteOffset += consumed;
-            cpOffset += 1;
-            idx += consumed;
-        }
-
-        if (hasPrev)
-        {
-            result.Add(new GraphemeRange(
-                clusterByteStart,
-                clusterCpStart,
-                (int)(byteOffset - clusterByteStart),
-                (int)(cpOffset - clusterCpStart)));
-        }
-
-        return result;
+        return native!;
     }
+
+    /// <summary>
+    /// Count extended grapheme clusters without materializing the ranges.
+    /// </summary>
+    public static long Count(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
+        => Count(utf8);
+
+    /// <summary>Native-only count.</summary>
+    public static long Count(ReadOnlySpan<byte> utf8)
+        => Enumerate(utf8).Count;
 
     /// <summary>
     /// Calls the native UAX-29 grapheme boundary kernel and materializes
     /// per-grapheme ranges in original-UTF-8 byte space. Returns false if
-    /// native isn't loadable.
+    /// native isn't loadable so callers can produce a clearer error.
     /// </summary>
     private static unsafe bool TryNativeEnumerate(ReadOnlySpan<byte> utf8, out List<GraphemeRange>? ranges)
     {
@@ -198,7 +164,7 @@ public static class GraphemeClusters
         {
             Hartonomous.Core.Text.SubstrateTextDecomposer.EnsureUcdLoaded();
         }
-        catch (InvalidOperationException)  // BOUNDARY: native UCD blob load. See WordBoundaries.TryNativeBoundaries.
+        catch (InvalidOperationException)  // BOUNDARY: native UCD blob load. Caller-visible InvalidOperationException raised at the public Enumerate boundary; this internal short-circuit just propagates "blob missing".
         {
             return false;
         }
@@ -227,8 +193,6 @@ public static class GraphemeClusters
             }
         }
 
-        // Walk source bytes; for each native codepoint boundary, materialize a GraphemeRange
-        // from the previous boundary to this one.
         List<GraphemeRange> result = new(graphemeCount);
         int cursorBytes = 0;
         int cursorCps = 0;
@@ -255,144 +219,6 @@ public static class GraphemeClusters
             clusterCpStart = cursorCps;
         }
         ranges = result;
-        return true;
-    }
-
-    /// <summary>
-    /// Count extended grapheme clusters without materializing the ranges.
-    /// </summary>
-    public static long Count(ReadOnlySpan<byte> utf8, ICodepointProperties properties)
-    {
-        if (utf8.IsEmpty)
-        {
-            return 0;
-        }
-
-        long count = 1;
-        GraphemeBreak prev = GraphemeBreak.Other;
-        bool hasPrev = false;
-        int riRun = 0;
-        EmojiChain chain = EmojiChain.None;
-
-        int idx = 0;
-        while (idx < utf8.Length)
-        {
-            (int cp, int consumed) = Utf8.DecodeOne(utf8[idx..]);
-            if (cp < 0 || consumed == 0)
-            {
-                break;
-            }
-
-            GraphemeBreak curr = properties.GetGraphemeBreak(cp);
-            bool currIsExtPict = properties.IsExtendedPictographic(cp);
-            bool shouldBreak = hasPrev && DecideBreak(prev, curr, riRun, chain, currIsExtPict);
-            if (shouldBreak)
-            {
-                count++;
-            }
-
-            if (curr == GraphemeBreak.RegionalIndicator)
-            {
-                riRun = shouldBreak ? 1 : riRun + 1;
-            }
-            else
-            {
-                riRun = 0;
-            }
-
-            chain = NextChain(chain, curr, currIsExtPict);
-
-            prev = curr;
-            hasPrev = true;
-            idx += consumed;
-        }
-
-        return count;
-    }
-
-    private static EmojiChain NextChain(EmojiChain prev, GraphemeBreak curr, bool currIsExtPict)
-    {
-        if (currIsExtPict)
-        {
-            return EmojiChain.Pict;
-        }
-        if (curr == GraphemeBreak.Extend && prev == EmojiChain.Pict)
-        {
-            return EmojiChain.Pict;
-        }
-        if (curr == GraphemeBreak.ZWJ && prev == EmojiChain.Pict)
-        {
-            return EmojiChain.ZwjAfterPict;
-        }
-        return EmojiChain.None;
-    }
-
-    private static bool DecideBreak(
-        GraphemeBreak prev,
-        GraphemeBreak curr,
-        int riRun,
-        EmojiChain chain,
-        bool currIsExtPict)
-    {
-        // GB3: CR × LF
-        if (prev == GraphemeBreak.CR && curr == GraphemeBreak.LF)
-        {
-            return false;
-        }
-        // GB4: (Control | CR | LF) ÷
-        if (prev == GraphemeBreak.Control || prev == GraphemeBreak.CR || prev == GraphemeBreak.LF)
-        {
-            return true;
-        }
-        // GB5: ÷ (Control | CR | LF)
-        if (curr == GraphemeBreak.Control || curr == GraphemeBreak.CR || curr == GraphemeBreak.LF)
-        {
-            return true;
-        }
-        // GB6: L × (L | V | LV | LVT)
-        if (prev == GraphemeBreak.L &&
-            (curr == GraphemeBreak.L || curr == GraphemeBreak.V ||
-             curr == GraphemeBreak.LV || curr == GraphemeBreak.LVT))
-        {
-            return false;
-        }
-        // GB7: (LV | V) × (V | T)
-        if ((prev == GraphemeBreak.LV || prev == GraphemeBreak.V) &&
-            (curr == GraphemeBreak.V || curr == GraphemeBreak.T))
-        {
-            return false;
-        }
-        // GB8: (LVT | T) × T
-        if ((prev == GraphemeBreak.LVT || prev == GraphemeBreak.T) && curr == GraphemeBreak.T)
-        {
-            return false;
-        }
-        // GB9: × (Extend | ZWJ)
-        if (curr == GraphemeBreak.Extend || curr == GraphemeBreak.ZWJ)
-        {
-            return false;
-        }
-        // GB9a: × SpacingMark
-        if (curr == GraphemeBreak.SpacingMark)
-        {
-            return false;
-        }
-        // GB9b: Prepend ×
-        if (prev == GraphemeBreak.Prepend)
-        {
-            return false;
-        }
-        // GB11: Extended_Pictographic Extend* ZWJ × Extended_Pictographic
-        if (chain == EmojiChain.ZwjAfterPict && currIsExtPict)
-        {
-            return false;
-        }
-        // GB12 / GB13: RI × RI when the trailing RI run so far has ODD length.
-        if (prev == GraphemeBreak.RegionalIndicator && curr == GraphemeBreak.RegionalIndicator)
-        {
-            return (riRun % 2) == 0;
-        }
-        // GB999: otherwise break.
         return true;
     }
 }

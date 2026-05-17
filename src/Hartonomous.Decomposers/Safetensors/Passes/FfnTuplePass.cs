@@ -229,37 +229,29 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                            1.0, upFull, fn.Intermediate, fn.Down, fn.Intermediate,
                                            0.0, response, hiddenDim);
 
-        // Per-pair noise floor. For each (a,b) pair, the random-vector
-        // expected magnitude is ||response[a]|| · ||embed[b]|| · sqrt(2/(π·d)).
-        // Using the GLOBAL mean (the prior shape) included signal tokens
-        // in the average, which lifted the floor above what those very
-        // tokens' pair scores can reach — every planted-signal pair fell
-        // below the global floor it itself was inflating. Per-pair floors
-        // adapt: low-norm tokens get low floors; high-norm tokens get high
-        // floors. A pair only needs cos(response[a], embed[b]) > sqrt(2/(π·d))
-        // to register as supra-floor signal, which is the actual
-        // random-vs-correlated discriminator.
-        double[] respNorms = new double[vocabSize];
-        double[] embedNorms = new double[vocabSize];
-        for (int v = 0; v < vocabSize; v++)
-        {
-            if (!usable[v]) { continue; }
-            long off = (long)v * hiddenDim;
-            double sqR = 0;
-            double sqE = 0;
-            for (int h = 0; h < hiddenDim; h++)
-            {
-                double xr = response[off + h]; sqR += xr * xr;
-                double xe = embed[off + h];    sqE += xe * xe;
-            }
-            respNorms[v]  = Math.Sqrt(sqR);
-            embedNorms[v] = Math.Sqrt(sqE);
-        }
-        double dimFactor = Math.Sqrt(2.0 / (Math.PI * Math.Max(1, hiddenDim)));
+        // Per-tensor adaptive noise floor (AP-33, Han et al. 2015 magnitude
+        // pruning). The "tensor" being thresholded is the pair-score matrix
+        // S[a,b] = response[a]·embed[b]; the floor is mean(|S|) × NoiseFraction
+        // derived from the score distribution's own magnitudes. Same shape
+        // as LoraDeltaTuplePass (mean of per-token response magnitudes ×
+        // NoiseFraction) but lifted to the pair-score surface that FFN
+        // produces. Same NoiseFraction = 0.10 (10% of mean magnitude is the
+        // jitter boundary; cells above are signal, cells below are gradient-
+        // descent noise that doesn't encode learned function).
+        //
+        // Sampled from the FIRST source chunk × all targets (cheap, one
+        // GEMM cost amortized against the same chunks the emission loop
+        // will compute anyway — see two-pass shape below). Sample is
+        // stationary across source tokens for the same FFN, so first-chunk
+        // mean is a sufficient estimator for the full pair distribution.
 
+        const double NoiseFraction = 0.10;
         long emitted = 0;
         double[] sourceGather = new double[(long)SourceChunkSize * hiddenDim];
         double[] sBlock = new double[(long)SourceChunkSize * TargetChunkSize];
+        double noiseFloor = -1.0; // sentinel: computed from first chunk's score distribution
+        double pairSumAbs = 0.0;
+        long pairSampleCount = 0;
 
         for (int sChunkStart = 0; sChunkStart < sources.Length; sChunkStart += SourceChunkSize)
         {
@@ -278,10 +270,6 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                  hiddenDim * sizeof(double));
             }
 
-            // Threshold-only LTH discrimination (AP-33): each pair has its
-            // own random-vector noise floor based on the pair's actual norms.
-            // No global-mean conflation; no top-K count cap.
-
             // Per target chunk: pair score = sourceResponse · embed[b].
             for (int tChunkStart = 0; tChunkStart < vocabSize; tChunkStart += TargetChunkSize)
             {
@@ -297,21 +285,51 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                                    0.0,
                                                    sBlock.AsSpan(0, checked(sChunkLen * tChunkLen)), tChunkLen);
 
-                // Inline emit pairs above per-pair noise floor.
+                // Sample the score distribution from this chunk until the
+                // floor estimator is computed. Lazy: first chunk seeds the
+                // floor; all subsequent chunks (and this chunk's emission
+                // pass) use it. Mean(|S|) × NoiseFraction is Han 2015
+                // magnitude-pruning applied to the score tensor.
+                if (noiseFloor < 0)
+                {
+                    for (int i = 0; i < sChunkLen; i++)
+                    {
+                        int a = sources[sChunkStart + i];
+                        long rowOff = (long)i * tChunkLen;
+                        for (int j = 0; j < tChunkLen; j++)
+                        {
+                            int b = tChunkStart + j;
+                            if (b == a || !usable[b]) { continue; }
+                            pairSumAbs += Math.Abs(sBlock[rowOff + j]);
+                            pairSampleCount++;
+                        }
+                    }
+                }
+
+                // First emission opportunity: finalize the floor once we
+                // have a sample. The sentinel keeps emission gated until
+                // after sampling completes; for tiny vocab this happens
+                // within the first chunk.
+                if (noiseFloor < 0 && pairSampleCount > 0)
+                {
+                    double meanAbs = pairSumAbs / pairSampleCount;
+                    noiseFloor = meanAbs * NoiseFraction;
+                }
+                if (noiseFloor < 0) { continue; }
+
+                // Inline emit pairs above per-tensor adaptive floor.
                 for (int i = 0; i < sChunkLen; i++)
                 {
                     int a = sources[sChunkStart + i];
                     Hash32? aHash = vocabHashByIdx[a];
                     if (aHash is null) { continue; }
-                    double aRespNorm = respNorms[a];
                     long rowOff = (long)i * tChunkLen;
                     for (int j = 0; j < tChunkLen; j++)
                     {
                         int b = tChunkStart + j;
                         if (b == a || !usable[b]) { continue; }
                         double signed = sBlock[rowOff + j];
-                        double pairNoiseFloor = aRespNorm * embedNorms[b] * dimFactor;
-                        if (Math.Abs(signed) < pairNoiseFloor) { continue; }
+                        if (Math.Abs(signed) < noiseFloor) { continue; }
 
                         Hash32? bHash = vocabHashByIdx[b];
                         if (bHash is null) { continue; }
