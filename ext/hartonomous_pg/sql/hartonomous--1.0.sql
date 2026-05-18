@@ -1120,15 +1120,11 @@ CREATE OPERATOR CLASS substrate.cp_uca_ops
 COMMENT ON OPERATOR CLASS substrate.cp_uca_ops USING btree IS
     'Btree opclass keyed on int (or substrate.codepoint) that sorts by UCA-derived position from the embedded catalog. Use as ORDER BY cp USING OPERATOR(substrate.<#) or via index opclass on a codepoint column.';
 
--- ── (27) Inventory views over the SRFs ───────────────────────────────────
-CREATE VIEW substrate.v_general_category   AS SELECT * FROM substrate.ucd_general_categories();
-CREATE VIEW substrate.v_script             AS SELECT * FROM substrate.ucd_scripts();
-CREATE VIEW substrate.v_block              AS SELECT * FROM substrate.ucd_blocks();
-CREATE VIEW substrate.v_break_property     AS SELECT * FROM substrate.ucd_break_properties();
-CREATE VIEW substrate.v_codepoint_atom     AS SELECT * FROM substrate.ucd_codepoints();
-
-COMMENT ON VIEW substrate.v_codepoint_atom IS
-    '1,114,112-row view over the embedded UCD/UCA 17.0.0 catalog. Each row is a complete codepoint atom (id, hash, 4D centroid, hilbert, all enum/case properties, name). Materialized at query time via a single C SRF call.';
+-- (27) Inventory views removed 2026-05-17 (Gate 1 Task #22) — they wrapped
+-- the deleted substrate.ucd_general_categories / ucd_scripts / ucd_blocks /
+-- ucd_break_properties / ucd_codepoints SRFs. Callers that previously
+-- read substrate.v_* now route through BlobUcdPropertyAccessor (C#) or
+-- the substrate.cp_* C wrappers (SQL).
 
 -- ── (28) Case folding via embedded full-case-fold blob ──────────────────
 CREATE FUNCTION substrate.case_fold_text(s text) RETURNS text

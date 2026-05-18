@@ -70,6 +70,13 @@
     "reason": "Long-lived bounded-channel drain task owns COPY chunks; it is the central ingestion pipeline, not decomposer-private RBAR."
   },
   {
+    "rule": "db-loop-review",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "kv in buckets",
+    "classification": "allowed-bounded-chunk",
+    "reason": "One bulk substrate.record_attestations_bulk call per (arena, attestation_type) bucket; bucket count bounded by N_arenas * N_attestation_types (<100). Per-bucket payload is array-batched; no per-event SQL."
+  },
+  {
     "rule": "sql-loop-review",
     "path": "sql/schema/functions/recompose_text.sql",
     "text_contains": "WITH RECURSIVE walk",
@@ -166,6 +173,20 @@
     "text_contains": "END LOOP;",
     "classification": "allowed-bounded-reconstruction",
     "reason": "Termination of the per-vertex unpack loop; same justification as the FOR opener."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/geometryzm_to_geometry4d.sql",
+    "text_contains": "FOR i IN 1..n LOOP",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "Inverse of geometry4d_to_geometryzm: per-vertex pack of a PostGIS LINESTRINGZM into a native LINESTRING4D; n is the input geometry's vertex count, bounded by the input. No row IO, no recursion."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/geometryzm_to_geometry4d.sql",
+    "text_contains": "END LOOP;",
+    "classification": "allowed-bounded-reconstruction",
+    "reason": "Termination of the per-vertex pack loop; same justification as the FOR opener."
   },
   {
     "rule": "direct-npgsql-command",
