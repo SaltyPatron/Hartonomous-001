@@ -1,7 +1,8 @@
 -- Edge identity = BLAKE3 of (edge_type_id, ordered participant hashes).
 -- No surrogate id. PK (edge_type_id, hash). Partitioned by edge_type_id.
--- geom is populated post-insert from participant centroids in role order
--- via substrate.populate_edge_trajectories.
+-- geom is built inline at edge-emit by the bundled-emit pipeline from
+-- participants' mantissa-packed identity-POINTZMs in role order — no
+-- post-pass backfill, no NULL window. AP-37.
 CREATE TABLE substrate.edge (
     edge_type_id  INT  NOT NULL REFERENCES substrate.edge_type(id),
     hash          substrate.hash_value NOT NULL,

@@ -23,9 +23,13 @@ endif()
 # Directory where generators emit lh_*.{h,c}.
 set(LH_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../src/generated")
 
+# Directory where pg_ucd_segmentation.{c,h} are emitted (consumed by both
+# libhartonomous and the hartonomous_pg extension).
+set(LH_PG_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../hartonomous_pg/src/generated")
+
 # Where unzipped UCD XML lives at codegen time. CMake unzips on demand so
 # the .gitignored `_unicode_extracted/` directory carries no source.
-set(LH_UCD_ROOT "/vault/Data/Unicode/Public/UCD/latest"
+set(LH_UCD_ROOT "/vault/Data/Unicode/Public/17.0.0"
     CACHE PATH "Root of the canonical UCD/UCA/security/idna data tree")
 set(LH_UCD_EXTRACT_DIR "${CMAKE_BINARY_DIR}/_unicode_extracted")
 
@@ -74,25 +78,28 @@ lh_add_generator(gen_codepoint_hashes
     ARGS
         ${LH_GENERATED_DIR})
 
-# ── UCD grouped XML — extract on demand ────────────────────────────────
-set(LH_UCD_ALL_GROUPED_XML "${LH_UCD_EXTRACT_DIR}/ucd.all.grouped.xml")
+# ── UCD flat XML — extract on demand ──────────────────────────────────
+# Flat XML is canonical per project rule .claude/rules/00-hartonomous-core.md
+# ("XML-flat for per-codepoint UCD pre-gen"). Self-contained per-char, no
+# group-inheritance state machine — parser simplicity wins.
+set(LH_UCD_ALL_FLAT_XML "${LH_UCD_EXTRACT_DIR}/ucd.all.flat.xml")
 add_custom_command(
-    OUTPUT ${LH_UCD_ALL_GROUPED_XML}
+    OUTPUT ${LH_UCD_ALL_FLAT_XML}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${LH_UCD_EXTRACT_DIR}
     COMMAND ${CMAKE_COMMAND} -E tar xf
-        ${LH_UCD_ROOT}/ucdxml/ucd.all.grouped.zip
+        ${LH_UCD_ROOT}/ucdxml/ucd.all.flat.zip
     WORKING_DIRECTORY ${LH_UCD_EXTRACT_DIR}
-    COMMENT "[codegen] extracting ucd.all.grouped.zip"
+    COMMENT "[codegen] extracting ucd.all.flat.zip"
     VERBATIM)
 
-lh_add_generator(gen_ucd_grouped
+lh_add_generator(gen_ucd_flat
     OUTPUTS
-        ${LH_GENERATED_DIR}/lh_ucd_props.h
-        ${LH_GENERATED_DIR}/lh_ucd_props.c
+        ${LH_PG_GENERATED_DIR}/pg_ucd_segmentation.h
+        ${LH_PG_GENERATED_DIR}/pg_ucd_segmentation.c
     ARGS
-        ${LH_UCD_ALL_GROUPED_XML} ${LH_GENERATED_DIR})
+        ${LH_UCD_ALL_FLAT_XML} ${LH_PG_GENERATED_DIR})
 
-# Add the extracted-XML dependency to gen_ucd_grouped's run target so the
+# Add the extracted-XML dependency to gen_ucd_flat's run target so the
 # unzip happens before the generator runs.
-add_custom_target(gen_ucd_grouped_extract DEPENDS ${LH_UCD_ALL_GROUPED_XML})
-add_dependencies(gen_ucd_grouped_run gen_ucd_grouped_extract)
+add_custom_target(gen_ucd_flat_extract DEPENDS ${LH_UCD_ALL_FLAT_XML})
+add_dependencies(gen_ucd_flat_run gen_ucd_flat_extract)

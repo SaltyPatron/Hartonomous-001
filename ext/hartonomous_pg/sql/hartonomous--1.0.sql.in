@@ -976,40 +976,12 @@ CREATE FUNCTION substrate.cp_uca_weights(cp int) RETURNS int[]
 CREATE FUNCTION substrate.cp_name(cp int) RETURNS text
     AS 'MODULE_PATHNAME', 'pg_cp_name' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- ── (23) SETOF inventory accessors — drive reference-table population ────
--- Return shapes match the per-inventory struct in pg_unicode_inventory.h.
-CREATE FUNCTION substrate.ucd_general_categories(
-    OUT id int, OUT code text, OUT description text, OUT group_code text
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_general_categories'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_scripts(
-    OUT id int, OUT code text
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_scripts'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_blocks(
-    OUT id int, OUT code text, OUT range_start int, OUT range_end int
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_blocks'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_break_properties(
-    OUT id int, OUT category text, OUT code text, OUT enum_id int
-) RETURNS SETOF record
-    AS 'MODULE_PATHNAME', 'pg_ucd_break_properties'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-COMMENT ON FUNCTION substrate.ucd_general_categories() IS
-    'Inventory of 30 UCD General_Category values from the embedded extension catalog (code, long description, top-level group L/M/N/P/S/Z/C). Drives substrate.populate_general_categories_from_ext().';
-COMMENT ON FUNCTION substrate.ucd_scripts() IS
-    'Inventory of 175 UCD Script values from the embedded extension catalog. Drives substrate.populate_scripts_from_ext().';
-COMMENT ON FUNCTION substrate.ucd_blocks() IS
-    'Inventory of 347 UCD Block values from the embedded extension catalog with explicit range_start/range_end. Drives substrate.populate_blocks_from_ext().';
-COMMENT ON FUNCTION substrate.ucd_break_properties() IS
-    'Inventory of 101 break-property enums (GCB/WB/SB/LB) from the embedded extension catalog with explicit category column. Drives substrate.populate_break_properties_from_ext().';
+-- (23) SETOF inventory accessors removed 2026-05-17 (Gate 1 Task #22).
+-- substrate.ucd_general_categories / ucd_scripts / ucd_blocks /
+-- ucd_break_properties were SQL bindings for populate_*_from_ext, which
+-- are gone. Reference-vocabulary population now happens client-side via
+-- BlobUcdPropertyAccessor + the canonical seed inserts under
+-- sql/schema/seed/. Per Principle 1 — blob and substrate are siblings.
 
 -- ── (24) Codepoint domain + composite atom type + bulk SRFs ──────────────
 -- The codepoint domain bounds-checks at the type-system level so callers
@@ -1061,74 +1033,15 @@ CREATE TYPE substrate.codepoint_atom AS (
 CREATE FUNCTION substrate.cp_atom(cp int) RETURNS substrate.codepoint_atom
     AS 'MODULE_PATHNAME', 'pg_cp_atom' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- Bulk SRF over the entire UCD plane, or a slice. Default args emit all
--- 1,114,112 codepoints. Use this for INSERT INTO substrate.entity from
--- the extension catalog — single C call, no per-cp function invocation.
-CREATE FUNCTION substrate.ucd_codepoints(
-    "start" int DEFAULT 0,
-    "count" int DEFAULT 1114112
-) RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
--- Predicate-pushdown SRFs. The predicate is evaluated inside C against
--- the embedded array — no SQL-side filter, no row materialization for
--- non-matches.
-CREATE FUNCTION substrate.ucd_codepoints_in_block(block_id int)
-    RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_in_block'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_codepoints_in_script(script_id int)
-    RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_in_script'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_codepoints_with_gc(gc_id int)
-    RETURNS SETOF substrate.codepoint_atom
-    AS 'MODULE_PATHNAME', 'pg_ucd_codepoints_with_gc'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- ── (24b) Multi-codepoint sequence + cross-codepoint relation SRFs ──────
--- Backed by pg_ucd_sequences_pg.c against the .py-emitted pre-gen tables.
--- One row per entry in the embedded blob; substrate.populate_unicode_*_from_ext
--- functions materialise text_composition entities + LINESTRINGZM physicality +
--- typed edges under unicode_consortium provenance.
-
-CREATE FUNCTION substrate.ucd_named_sequences()
-    RETURNS TABLE (codepoint_sequence int[], name text)
-    AS 'MODULE_PATHNAME', 'pg_ucd_named_sequences'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_emoji_sequences()
-    RETURNS TABLE (codepoint_sequence int[], name text, props text)
-    AS 'MODULE_PATHNAME', 'pg_ucd_emoji_sequences'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_emoji_zwj_sequences()
-    RETURNS TABLE (codepoint_sequence int[], name text, props text)
-    AS 'MODULE_PATHNAME', 'pg_ucd_emoji_zwj_sequences'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_standardized_variants()
-    RETURNS TABLE (base_codepoint int, variation_selector_codepoint int, description text, scope text)
-    AS 'MODULE_PATHNAME', 'pg_ucd_standardized_variants'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_confusables()
-    RETURNS TABLE (source_codepoints int[], target_codepoints int[], confusable_class text)
-    AS 'MODULE_PATHNAME', 'pg_ucd_confusables'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_idna_mapping()
-    RETURNS TABLE (codepoint_lo int, codepoint_hi int, status text, mapping_codepoints int[])
-    AS 'MODULE_PATHNAME', 'pg_ucd_idna_mapping'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
-
-CREATE FUNCTION substrate.ucd_cjk_radicals()
-    RETURNS TABLE (radical_number text, radical_form_codepoint int, unified_ideograph_codepoint int)
-    AS 'MODULE_PATHNAME', 'pg_ucd_cjk_radicals'
-    LANGUAGE C IMMUTABLE PARALLEL SAFE;
+-- Bulk SRFs (ucd_codepoints / ucd_codepoints_in_block / _in_script /
+-- _with_gc) removed 2026-05-17 (Gate 1 Task #22) along with the
+-- multi-codepoint relation SRFs (ucd_named_sequences,
+-- ucd_emoji_sequences, ucd_emoji_zwj_sequences,
+-- ucd_standardized_variants, ucd_confusables, ucd_idna_mapping,
+-- ucd_cjk_radicals). These bound the populate_*_from_ext server-side
+-- ingestion path that is now retired. UnicodeDecomposer reads the UCD
+-- source directly via BlobUcdPropertyAccessor + IIngestionPipeline.
+-- substrate.cp_atom() remains for ad-hoc single-cp lookup.
 
 -- ── (25) Bulk hash array helpers ─────────────────────────────────────────
 CREATE FUNCTION substrate.cp_hashes(cps int[]) RETURNS bytea[]

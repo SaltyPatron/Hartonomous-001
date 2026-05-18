@@ -233,7 +233,7 @@ internal sealed class PhasesCommand(IConfiguration configuration)
 
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
-            [Phase.UcdUca] = [new UcdUcaDecomposer(ucdConfig, logFactory.CreateLogger<UcdUcaDecomposer>())],
+            [Phase.UcdUca] = [new UnicodeDecomposer(ucdConfig, logFactory.CreateLogger<UnicodeDecomposer>())],
             [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter)],
             [Phase.WordNetOmw] =
             [

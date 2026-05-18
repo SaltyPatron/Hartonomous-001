@@ -227,8 +227,6 @@ public sealed class PhaseStatusPersistenceTests : IAsyncLifetime
         public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
         public Task SubmitBatchAsync(IIngestionBatch batch, CancellationToken ct) => Task.CompletedTask;
         public Task DrainPendingAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task PrimeAllSignificanceAsync(CancellationToken ct) => Task.CompletedTask;
         public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<Hash32> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());
         public Task<HashSet<EntityClassificationKey>> GetExistingEntityClassificationsAsync(IReadOnlyCollection<EntityClassificationKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EntityClassificationKey>());
         public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());

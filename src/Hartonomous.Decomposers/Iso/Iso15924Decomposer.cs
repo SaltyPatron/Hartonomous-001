@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Hartonomous.Core.Compute.Common;
@@ -21,6 +22,12 @@ namespace Hartonomous.Decomposers.Iso;
 /// Per universal-cross-source-attestation: script_name entities accumulate cross-source
 /// consensus as Unicode UCD (per-cp sc attribute), CLDR (per-locale defaultScript),
 /// and corpus attestations fire events on the same shared identities.
+///
+/// AP-19 compliance: candidate language_name entity hashes (code + English name +
+/// French name) are buffered per chunk and probed via
+/// <see cref="IIngestionPipeline.GetExistingEntityHashesAsync"/> ONCE per chunk
+/// before emit. Only missing entities are added to the producer batch; existing
+/// entities get a handle-only reference for downstream edge FKs.
 /// </summary>
 public sealed partial class Iso15924Decomposer : BaseDecomposer
 {
@@ -29,7 +36,7 @@ public sealed partial class Iso15924Decomposer : BaseDecomposer
     public override IReadOnlyList<Phase> Phases => [Phase.Iso639];
 
     private const double TrustPriorMu = 95000.0;
-    private const int BatchFlushSize = 5_000;
+    private const int PreDedupeChunk = 256;
 
     private readonly string _sourceDir;
 
@@ -57,6 +64,16 @@ public sealed partial class Iso15924Decomposer : BaseDecomposer
         return null;
     }
 
+    /// <summary>
+    /// In-process parsed record from one iso15924.txt row. Buffered and
+    /// flushed in <see cref="PreDedupeChunk"/>-sized chunks so AP-19's bulk
+    /// existence probe fires once per chunk per kind.
+    /// </summary>
+    private readonly record struct PendingRecord(
+        string Code, Hash32 CodeHash,
+        string EnglishName, Hash32 EnHash,
+        string FrenchName, Hash32 FrHash);
+
     protected override async Task DecomposeCoreAsync(
         IIngestionPipeline pipeline,
         IProgressReporter reporter,
@@ -72,6 +89,83 @@ public sealed partial class Iso15924Decomposer : BaseDecomposer
         long entityCount = 0;
         long edgeCount = 0;
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
+        List<PendingRecord> pending = new(PreDedupeChunk);
+
+        async Task FlushPendingAsync()
+        {
+            if (pending.Count == 0) { return; }
+
+            // Step 1: precompute the chunk's candidate entity hashes locally.
+            List<Hash32> candidates = new(pending.Count * 3);
+            foreach (PendingRecord r in pending)
+            {
+                candidates.Add(r.CodeHash);
+                if (r.EnglishName.Length > 0 && !r.EnHash.Equals(r.CodeHash))
+                {
+                    candidates.Add(r.EnHash);
+                }
+                if (r.FrenchName.Length > 0 && !r.FrHash.Equals(r.CodeHash) && !r.FrHash.Equals(r.EnHash))
+                {
+                    candidates.Add(r.FrHash);
+                }
+            }
+
+            // Step 2: one bulk probe per chunk (AP-19).
+            HashSet<HashKey> existing = await pipeline.GetExistingEntityHashesAsync(candidates, ct);
+
+            // Step 3: emit only the diff. Existing entities get handle-only
+            // references; missing entities get full AddEntity + AddSignificance.
+            EntityHandle EmitOrReference(Hash32 hash, string typeCode, bool addSignificance)
+            {
+                if (existing.Contains(new HashKey(hash)))
+                {
+                    return new EntityHandle(hash, typeCode);
+                }
+                EntityHandle h = batch.AddEntity(hash, typeCode);
+                if (addSignificance)
+                {
+                    batch.AddSignificance(h, "source_authority", TrustPriorMu);
+                }
+                // Track new emission for accurate accounting.
+                existing.Add(new HashKey(hash));
+                entityCount++;
+                return h;
+            }
+
+            foreach (PendingRecord r in pending)
+            {
+                EntityHandle codeHandle = EmitOrReference(r.CodeHash, "language_name", addSignificance: true);
+
+                if (r.EnglishName.Length > 0 && !r.EnHash.Equals(r.CodeHash))
+                {
+                    EntityHandle enHandle = EmitOrReference(r.EnHash, "language_name", addSignificance: true);
+                    batch.AddEdge("has_alternate_name", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(codeHandle, "source", 0),
+                        new EdgeMemberSpec(enHandle, "target", 1),
+                    ]);
+                    edgeCount++;
+                }
+
+                if (r.FrenchName.Length > 0 && !r.FrHash.Equals(r.CodeHash) && !r.FrHash.Equals(r.EnHash))
+                {
+                    EntityHandle frHandle = EmitOrReference(r.FrHash, "language_name", addSignificance: true);
+                    batch.AddEdge("has_alternate_name", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(codeHandle, "source", 0),
+                        new EdgeMemberSpec(frHandle, "target", 1),
+                    ]);
+                    edgeCount++;
+                }
+            }
+            pending.Clear();
+
+            if (batch.EntityCount + batch.EdgeCount >= PreDedupeChunk * 8)
+            {
+                await pipeline.SubmitBatchAsync(batch, ct);
+                batch = pipeline.CreateBatch(ProvenanceCode);
+            }
+        }
 
         foreach (string raw in File.ReadLines(path))
         {
@@ -86,51 +180,17 @@ public sealed partial class Iso15924Decomposer : BaseDecomposer
             string frenchName = parts[3].Trim();
             if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(englishName)) { continue; }
 
-            // Code identity = BLAKE3 of the 4-letter code in UTF-8.
             Hash32 codeHash = Blake3.Hash32(Encoding.UTF8.GetBytes(code));
-            EntityHandle codeHandle = batch.AddEntity(codeHash, "language_name");
-            batch.AddSignificance(codeHandle, "source_authority", TrustPriorMu);
-            entityCount++;
+            Hash32 enHash = englishName.Length > 0 ? Blake3.Hash32(Encoding.UTF8.GetBytes(englishName)) : default;
+            Hash32 frHash = frenchName.Length > 0 ? Blake3.Hash32(Encoding.UTF8.GetBytes(frenchName)) : default;
+            pending.Add(new PendingRecord(code, codeHash, englishName, enHash, frenchName, frHash));
 
-            // English name as alternate.
-            Hash32 enHash = Blake3.Hash32(Encoding.UTF8.GetBytes(englishName));
-            if (!enHash.Equals(codeHash))
+            if (pending.Count >= PreDedupeChunk)
             {
-                EntityHandle enHandle = batch.AddEntity(enHash, "language_name");
-                batch.AddSignificance(enHandle, "source_authority", TrustPriorMu);
-                batch.AddEdge("has_alternate_name", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(codeHandle, "source", 0),
-                    new EdgeMemberSpec(enHandle, "target", 1),
-                ]);
-                entityCount++;
-                edgeCount++;
-            }
-
-            // French name as alternate (cross-lingual corroboration).
-            if (frenchName.Length > 0)
-            {
-                Hash32 frHash = Blake3.Hash32(Encoding.UTF8.GetBytes(frenchName));
-                if (!frHash.Equals(codeHash) && !frHash.Equals(enHash))
-                {
-                    EntityHandle frHandle = batch.AddEntity(frHash, "language_name");
-                    batch.AddSignificance(frHandle, "source_authority", TrustPriorMu);
-                    batch.AddEdge("has_alternate_name", ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(codeHandle, "source", 0),
-                        new EdgeMemberSpec(frHandle, "target", 1),
-                    ]);
-                    entityCount++;
-                    edgeCount++;
-                }
-            }
-
-            if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
-            {
-                await pipeline.SubmitBatchAsync(batch, ct);
-                batch = pipeline.CreateBatch(ProvenanceCode);
+                await FlushPendingAsync();
             }
         }
+        await FlushPendingAsync();
 
         if (batch.EntityCount > 0 || batch.EdgeCount > 0)
         {

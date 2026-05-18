@@ -84,8 +84,12 @@ public sealed class InterfaceShapeTests
         Assert.Equal(typeof(Task), Method(t, "SubmitBatchAsync").ReturnType);
         Assert.Equal(typeof(Task), Method(t, "DrainPendingAsync").ReturnType);
         Assert.Null(t.GetMethod("PopulateSequencePhysicalityAsync"));
-        Assert.Equal(typeof(Task), Method(t, "PopulateEdgeTrajectoriesAsync").ReturnType);
-        Assert.Equal(typeof(Task), Method(t, "PrimeAllSignificanceAsync").ReturnType);
+        // Drain-completion post-passes (PopulateEdgeTrajectoriesAsync /
+        // PrimeAllSignificanceAsync) are deleted — edge geometry +
+        // per-arena significance priors are emitted inline at edge-emit
+        // by the bundled-emit pipeline. AP-37.
+        Assert.Null(t.GetMethod("PopulateEdgeTrajectoriesAsync"));
+        Assert.Null(t.GetMethod("PrimeAllSignificanceAsync"));
         Assert.Equal(typeof(Task<HashSet<EdgeMemberKey>>), Method(t, "GetExistingEdgeMembersAsync").ReturnType);
         Assert.Equal(typeof(PipelineStats), Property(t, "Stats").PropertyType);
     }

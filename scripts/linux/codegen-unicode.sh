@@ -20,6 +20,15 @@ while (($#)); do
             cat <<'USAGE'
 Usage: scripts/linux/codegen-unicode.sh [--ucd-root PATH] [--force]
 Regenerate embedded UCD/UCA extension tables from authoritative Unicode source files. This is offline codegen, not build or seed.
+
+Canonical generator: ext/libhartonomous/codegen/gen_ucd_flat.c walks
+ucd.all.flat.xml (UAX #42) and emits ext/hartonomous_pg/src/generated/
+pg_ucd_segmentation.{c,h}. Property-value short aliases (GCB/WB/SB) are
+resolved against PropertyValueAliases.txt internally.
+
+Pre-gen ≠ substrate ingestion. This produces the build-time client-side
+perf cache; substrate-content ingestion is a separate runtime path
+(decomposers reading source files directly).
 USAGE
             exit 0
             ;;
@@ -29,42 +38,60 @@ USAGE
     esac
 done
 
-require_cmd python3
+require_cmd cmake
+require_cmd ninja
+require_cmd unzip
 
-required_sources=(
-    "$ucd_root/ucd/UnicodeData.txt"
-    "$ucd_root/ucd/Blocks.txt"
-    "$ucd_root/ucd/Scripts.txt"
-    "$ucd_root/ucd/LineBreak.txt"
-    "$ucd_root/ucd/CaseFolding.txt"
-    "$ucd_root/ucd/DerivedCoreProperties.txt"
-    "$ucd_root/ucd/auxiliary/GraphemeBreakProperty.txt"
-    "$ucd_root/ucd/auxiliary/WordBreakProperty.txt"
-    "$ucd_root/ucd/auxiliary/SentenceBreakProperty.txt"
-    "$ucd_root/ucd/emoji/emoji-data.txt"
-    "$ucd_root/uca/allkeys.txt"
-)
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+ucd_xml_zip="$ucd_root/ucdxml/ucd.all.flat.zip"
 
-missing=()
-for file in "${required_sources[@]}"; do
-    [[ -f "$file" ]] || missing+=("$file")
-done
-
-if ((${#missing[@]})); then
-    printf 'Missing UCD source files:\n' >&2
-    printf '  %s\n' "${missing[@]}" >&2
-    die "set HARTONOMOUS_UCD_ROOT or pass --ucd-root to a complete UCD tree"
+if [[ ! -f "$ucd_xml_zip" ]]; then
+    die "Missing UCD source: $ucd_xml_zip — set HARTONOMOUS_UCD_ROOT or pass --ucd-root to a complete UCD tree"
 fi
 
-if [[ "$force" == false ]] && generated_unicode_tables_present; then
-    newest_source="$(find "${required_sources[@]}" -printf '%T@\n' | sort -nr | head -n 1)"
-    oldest_generated="$(find ext/hartonomous_pg/src/generated -maxdepth 1 -type f \( -name '*.h' -o -name '*.c' \) -printf '%T@\n' | sort -n | head -n 1)"
+build_dir="$repo_root/ext/libhartonomous/build"
+if [[ ! -d "$build_dir" ]]; then
+    info "Configuring libhartonomous build dir (first run)"
+    mkdir -p "$build_dir"
+    (cd "$build_dir" && cmake -G Ninja -DHARTONOMOUS_BUILD_CODEGEN=ON "$repo_root/ext/libhartonomous")
+fi
+
+# Ensure codegen target is enabled (idempotent reconfigure if user disabled it).
+(cd "$build_dir" && cmake -DHARTONOMOUS_BUILD_CODEGEN=ON . >/dev/null)
+
+info "Building gen_ucd_flat"
+(cd "$build_dir" && ninja gen_ucd_flat)
+
+generator="$build_dir/bin/gen_ucd_flat"
+[[ -x "$generator" ]] || die "gen_ucd_flat build did not produce $generator"
+
+# Extract flat XML into a scratch dir.
+extract_dir="$build_dir/_unicode_extracted"
+flat_xml="$extract_dir/ucd.all.flat.xml"
+if [[ "$force" == true ]] || [[ ! -f "$flat_xml" ]] || [[ "$ucd_xml_zip" -nt "$flat_xml" ]]; then
+    info "Extracting $ucd_xml_zip → $extract_dir"
+    mkdir -p "$extract_dir"
+    (cd "$extract_dir" && unzip -o "$ucd_xml_zip" >/dev/null)
+fi
+
+out_dir="$repo_root/ext/hartonomous_pg/src/generated"
+mkdir -p "$out_dir"
+
+newest_source="$(stat -c '%Y' "$flat_xml")"
+oldest_generated=""
+if [[ -f "$out_dir/pg_ucd_segmentation.c" ]] && [[ -f "$out_dir/pg_ucd_segmentation.h" ]]; then
+    oldest_generated="$(find "$out_dir/pg_ucd_segmentation.c" "$out_dir/pg_ucd_segmentation.h" -printf '%T@\n' | sort -n | head -n 1)"
+fi
+
+if [[ "$force" == false ]] && [[ -n "$oldest_generated" ]]; then
     if awk "BEGIN { exit !($oldest_generated >= $newest_source) }"; then
-        info "Generated Unicode extension tables are up to date"
+        info "Generated Unicode segmentation tables are up to date"
         exit 0
     fi
 fi
 
-info "Regenerating Unicode extension tables from $ucd_root"
-python3 scripts/build/generate_unicode_tables.py --ucd-root "$ucd_root" --out ext/hartonomous_pg/src/generated
-generated_unicode_tables_present || die "Unicode generator completed but expected outputs are missing"
+info "Regenerating Unicode segmentation tables from $flat_xml"
+"$generator" "$flat_xml" "$out_dir"
+[[ -f "$out_dir/pg_ucd_segmentation.c" ]] || die "Generator completed but pg_ucd_segmentation.c is missing"
+[[ -f "$out_dir/pg_ucd_segmentation.h" ]] || die "Generator completed but pg_ucd_segmentation.h is missing"
+info "Wrote $out_dir/pg_ucd_segmentation.{c,h}"

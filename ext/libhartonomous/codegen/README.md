@@ -13,7 +13,7 @@ standard library and libblake3 (statically linked).
 | `lh_emit.c` / `lh_emit.h` | Helpers to write generated `lh_*.h` and `lh_*.c` files with deterministic byte order, ≤25 MB per file (rolls over with `_part2.c`, `_part3.c`, …). |
 | `lh_input.c` / `lh_input.h` | Mmap helpers for reading source files. |
 | `gen_codepoint_hashes.c` | Iterates `U+0000..U+10FFFF`, emits BLAKE3 of UTF-8 bytes per assigned codepoint. No XML input — purely synthetic. |
-| `gen_ucd_grouped.c` | Reads `ucd.all.grouped.xml` → `lh_ucd_props.{h,c}`. |
+| `gen_ucd_flat.c` | Reads `ucd.all.flat.xml` (UAX #42 flat form) → `../../hartonomous_pg/src/generated/pg_ucd_segmentation.{c,h}`. Resolves GCB / WB / SB short property-value aliases against PropertyValueAliases.txt internally. Canonical per project rule `.claude/rules/00-hartonomous-core.md` ("XML-flat for per-codepoint UCD pre-gen"). |
 | `gen_unihan_grouped.c` | Reads `ucd.unihan.grouped.xml` → `lh_unihan.{h,c}`. |
 | `gen_uca.c` | Reads `allkeys.txt` and CLDR tailorings → `lh_uca_ducet.{h,c}` + `lh_uca_tailorings.{h,c}`. |
 | `gen_uax14_pairtable.c` | Reads `LineBreak.txt` → `lh_uax14.{h,c}`. |

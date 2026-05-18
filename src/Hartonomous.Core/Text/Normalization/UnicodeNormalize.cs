@@ -7,11 +7,10 @@ namespace Hartonomous.Core.Text.Normalization;
 /// <see cref="string.Normalize(System.Text.NormalizationForm)"/>, which is
 /// table-driven and Unicode-version-stable per .NET runtime release. The
 /// substrate's <c>text_segmentation_profile</c> records the ICU / Unicode
-/// version so a future substrate-native implementation backed by UCD data
-/// ingested by the substrate-side UCD seed (scripts/seed/Ucd.ps1 +
-/// substrate.populate_codepoint_property_range_from_ext) is a drop-in replacement
-/// behind the
-/// same API. Content is never mutated — every method returns a new byte[].
+/// version so a future substrate-native implementation backed by the
+/// embedded UCD blob (via <c>BlobUcdPropertyAccessor</c>) is a drop-in
+/// replacement behind the same API. Content is never mutated — every
+/// method returns a new byte[].
 /// </summary>
 public static class UnicodeNormalize
 {

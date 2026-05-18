@@ -10,7 +10,8 @@ PostgreSQL.
 
 The PG extension and the embedded library both consume the same on-disk
 binary blob (per-block files + global reverse table + index) produced by
-`scripts/build/generate_unicode_tables.py`. Same bytes, same answers,
+the codegen tools under `ext/libhartonomous/codegen/` (canonical generator:
+`gen_ucd_flat.c`, walks `ucd.all.flat.xml`). Same bytes, same answers,
 deterministic across platforms.
 
 ## Build

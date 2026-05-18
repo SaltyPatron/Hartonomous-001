@@ -6,8 +6,8 @@
 -- coordinate mean is meaningless. Composition entities do not have a
 -- stored representative-POINTZM; if one is needed (e.g. for edge.geom
 -- construction) it is derived inline from the entity's hash bits via
--- substrate.bb_pack_hash_lo / bb_pack_hash_hi (see
--- substrate.populate_edge_trajectories).
+-- substrate.bb_pack_hash_lo / bb_pack_hash_hi by the bundled-emit
+-- pipeline at edge-emit time.
 CREATE OR REPLACE FUNCTION substrate.geometry4d_centroid(g geometry)
 RETURNS public.point4d
 LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE

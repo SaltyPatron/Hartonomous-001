@@ -15,6 +15,18 @@ using Microsoft.Extensions.Logging;
 
 namespace Hartonomous.Decomposers.Iso639;
 
+/// <summary>
+/// ISO 639-3 + ISO 639-2 + IETF language tag decomposer.
+///
+/// AP-19 compliance: every chunk of candidate <c>language_name</c> entity
+/// hashes is computed in-process via <see cref="BaseDecomposer.ComputeWordFormHash"/>
+/// and probed via <see cref="IIngestionPipeline.GetExistingEntityHashesAsync"/>
+/// ONCE per chunk before any <c>EmitText</c> call fires. Existing entities
+/// get handle-only references; only missing entities pay the full canonical-
+/// text-DAG decomposition cost. The 30:1 write amplification observed on
+/// blind-emit decomposers (2026-05-08 telemetry, AP-19 citation) collapses to
+/// roughly 1:1 against substrate cardinality for this decomposer.
+/// </summary>
 public sealed partial class Iso639Decomposer : BaseDecomposer
 {
     public override string ProvenanceCode => "sil_international";
@@ -22,6 +34,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
     public override IReadOnlyList<Phase> Phases => [Phase.Iso639];
 
     private const double TrustPriorMu = 95000.0;
+    private const int PreDedupeChunk = 256;
 
     private readonly string _sourceDir;
     private readonly ICodepointProperties _codepointProperties;
@@ -52,6 +65,64 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
         Path.Combine(_sourceDir, "iso-639-3_Name_Index.tab"),
         Path.Combine(_sourceDir, "iso-639-3_Retirements.tab"),
     ];
+
+    /// <summary>
+    /// AP-19 pre-dedupe helper. Buffers candidate strings + their precomputed
+    /// language_name root hashes; on flush, probes the substrate ONCE per chunk
+    /// and emits only the missing diff through <see cref="EmitText"/>. For
+    /// existing entities the handle is constructed handle-only so downstream
+    /// FKs still resolve without the heavy canonical-text-DAG decomposition.
+    /// Returns the set of (text, hash, handle) triples in input order.
+    /// </summary>
+    private async Task<List<(string Text, Hash32 Hash, EntityHandle Handle)>> EmitLanguageNameChunkAsync(
+        IIngestionBatch batch,
+        IIngestionPipeline pipeline,
+        List<string> texts,
+        bool addSignificance,
+        CancellationToken ct)
+    {
+        // Step 1: precompute candidate hashes locally + dedupe within chunk.
+        List<Hash32> hashes = new(texts.Count);
+        Dictionary<HashKey, int> firstIndexByHash = new();
+        for (int i = 0; i < texts.Count; i++)
+        {
+            Hash32 h = ComputeWordFormHash(texts[i]);
+            hashes.Add(h);
+            firstIndexByHash.TryAdd(new HashKey(h), i);
+        }
+
+        // Step 2: one bulk probe per chunk (AP-19).
+        HashSet<HashKey> existing = await pipeline.GetExistingEntityHashesAsync(hashes, ct);
+
+        // Step 3: emit only the diff; existing entities get handle-only refs.
+        List<(string Text, Hash32 Hash, EntityHandle Handle)> results = new(texts.Count);
+        for (int i = 0; i < texts.Count; i++)
+        {
+            Hash32 hash = hashes[i];
+            HashKey key = new(hash);
+
+            EntityHandle handle;
+            if (existing.Contains(key))
+            {
+                handle = new EntityHandle(hash, "language_name");
+            }
+            else
+            {
+                // First occurrence in chunk → full EmitText DAG decomposition.
+                // Subsequent occurrences fall under existing via this set
+                // being mutated below.
+                (EntityHandle h, _, _) = EmitText(batch, texts[i], _codepointProperties, "language_name", TrustPriorMu);
+                handle = h;
+                if (addSignificance)
+                {
+                    batch.AddSignificance(handle, "source_authority", TrustPriorMu);
+                }
+                existing.Add(key);
+            }
+            results.Add((texts[i], hash, handle));
+        }
+        return results;
+    }
 
     protected override async Task DecomposeCoreAsync(
         IIngestionPipeline pipeline,
@@ -87,10 +158,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 EdgesCreated = 0,
             }, ct);
 
-            // ── Step 2: Create language_name entities with codepoint composition ──
-            // Each reference name decomposes into constituent codepoints via sequence
-            // entries. Codepoint entities already exist from UCD — re-adding them to
-            // the batch causes a no-op upsert that returns existing IDs for linking.
             long entityCount = 0;
             long edgeCount = 0;
             int batchNum = 0;
@@ -99,20 +166,22 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             Dictionary<string, Hash32> codeToNameHash = new(languages.Count, StringComparer.Ordinal);
             IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
 
-            foreach (Iso639Record rec in languages)
+            // ── Step 2: Create language_name entities for canonical refNames ──
+            // AP-19 chunked: precompute hashes, probe substrate once per chunk,
+            // only invoke EmitText (which fans out into the full text DAG) for
+            // entities not already in the substrate.
+            for (int chunkStart = 0; chunkStart < languages.Count; chunkStart += PreDedupeChunk)
             {
-                ct.ThrowIfCancellationRequested();
+                int chunkEnd = Math.Min(chunkStart + PreDedupeChunk, languages.Count);
+                List<string> chunkTexts = new(chunkEnd - chunkStart);
+                for (int i = chunkStart; i < chunkEnd; i++) { chunkTexts.Add(languages[i].RefName); }
 
-                // language_name identity = native text root hash over the same text DAG.
-                // The shared text decomposer creates codepoint + grapheme_cluster +
-                // language_name entities and composition metadata in one pass; same content from
-                // any decomposer yields the same entity row with language_name classification.
-                (EntityHandle nameEntity, Hash32 nameHash, _) =
-                    EmitText(batch, rec.RefName, _codepointProperties, "language_name", TrustPriorMu);
-                codeToNameHash[rec.Id] = nameHash;
-
-                batch.AddSignificance(nameEntity, "source_authority", TrustPriorMu);
-                entityCount++;
+                var emitted = await EmitLanguageNameChunkAsync(batch, pipeline, chunkTexts, addSignificance: true, ct);
+                for (int i = 0; i < emitted.Count; i++)
+                {
+                    codeToNameHash[languages[chunkStart + i].Id] = emitted[i].Hash;
+                    entityCount++;
+                }
 
                 if (batch.EntityCount >= BatchSize)
                 {
@@ -123,49 +192,60 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             }
 
             // ── Step 3: Alternative names from Name_Index ──
-            // Names that differ from the reference name are additional language_name
-            // entities linked via has_alternate_name edges.
+            // Same AP-19 pattern: precompute hashes per chunk, probe, emit diff.
             Dictionary<string, List<Hash32>> codeToAlternateHashes = new(StringComparer.Ordinal);
 
+            // Filter entries first so we only buffer attributable rows.
+            List<(NameIndexEntry Entry, Hash32 RefHash, Hash32 PrintHash, Hash32 InvertHash)> filtered = new(nameIndex.Count);
             foreach (NameIndexEntry entry in nameIndex)
             {
-                ct.ThrowIfCancellationRequested();
-
-                if (!codeToNameHash.TryGetValue(entry.Id, out Hash32 refHash))
-                {
-                    continue;
-                }
-
-                // Canonical Merkle hash for both alternates — same content as the
-                // reference name yields the same hash → no duplicate row.
+                if (!codeToNameHash.TryGetValue(entry.Id, out Hash32 refHash)) { continue; }
                 Hash32 printHash = ComputeWordFormHash(entry.PrintName);
                 Hash32 invertHash = ComputeWordFormHash(entry.InvertedName);
+                filtered.Add((entry, refHash, printHash, invertHash));
+            }
 
-                bool printIsRef = printHash.Equals(refHash);
-                bool invertIsRef = invertHash.Equals(refHash);
-                bool invertIsPrint = invertHash.Equals(printHash);
+            for (int chunkStart = 0; chunkStart < filtered.Count; chunkStart += PreDedupeChunk)
+            {
+                int chunkEnd = Math.Min(chunkStart + PreDedupeChunk, filtered.Count);
+                // Build the list of (text, expectedHash) emit candidates plus
+                // a parallel list of (entryId, slot) so we know where to attach
+                // hashes after emission.
+                List<string> chunkTexts = new(2 * (chunkEnd - chunkStart));
+                List<(string EntryId, int Slot, Hash32 ExpectedHash)> slotMap = new(2 * (chunkEnd - chunkStart));
 
-                if (!codeToAlternateHashes.TryGetValue(entry.Id, out List<Hash32>? altList))
+                for (int i = chunkStart; i < chunkEnd; i++)
                 {
-                    altList = [];
-                    codeToAlternateHashes[entry.Id] = altList;
+                    var (entry, refHash, printHash, invertHash) = filtered[i];
+                    bool printIsRef = printHash.Equals(refHash);
+                    bool invertIsRef = invertHash.Equals(refHash);
+                    bool invertIsPrint = invertHash.Equals(printHash);
+
+                    if (!printIsRef)
+                    {
+                        chunkTexts.Add(entry.PrintName);
+                        slotMap.Add((entry.Id, 0, printHash));
+                    }
+                    if (!invertIsRef && !invertIsPrint)
+                    {
+                        chunkTexts.Add(entry.InvertedName);
+                        slotMap.Add((entry.Id, 1, invertHash));
+                    }
                 }
 
-                if (!printIsRef)
-                {
-                    (EntityHandle altEntity, Hash32 hash, _) =
-                        EmitText(batch, entry.PrintName, _codepointProperties, "language_name", TrustPriorMu);
-                    batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
-                    altList.Add(hash);
-                    entityCount++;
-                }
+                if (chunkTexts.Count == 0) { continue; }
 
-                if (!invertIsRef && !invertIsPrint)
+                var emitted = await EmitLanguageNameChunkAsync(batch, pipeline, chunkTexts, addSignificance: true, ct);
+
+                for (int i = 0; i < emitted.Count; i++)
                 {
-                    (EntityHandle altEntity, Hash32 hash, _) =
-                        EmitText(batch, entry.InvertedName, _codepointProperties, "language_name", TrustPriorMu);
-                    batch.AddSignificance(altEntity, "source_authority", TrustPriorMu);
-                    altList.Add(hash);
+                    string entryId = slotMap[i].EntryId;
+                    if (!codeToAlternateHashes.TryGetValue(entryId, out List<Hash32>? altList))
+                    {
+                        altList = new List<Hash32>();
+                        codeToAlternateHashes[entryId] = altList;
+                    }
+                    altList.Add(emitted[i].Hash);
                     entityCount++;
                 }
 
@@ -187,9 +267,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             Log.EntitiesCreated(Logger, entityCount, batchNum);
 
             // ── Step 4: entity_language junctions ──
-            // The substrate.language reference table has no back-pointer to
-            // name entities. Names are substrate content; language membership
-            // is evidence on entity_language keyed by entity hash.
             List<(string Code, byte[] NameHash)> languageNameRows = new(codeToNameHash.Count);
             foreach (KeyValuePair<string, Hash32> kv in codeToNameHash)
             {
@@ -200,18 +277,12 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             Log.JunctionEntriesWritten(Logger, languageNameRows.Count);
 
             // ── Step 5: cross-language edges between language_name entities ──
-            // Three relations from the ISO 639-3 source data that the substrate
-            // surfaces as traversable edges:
-            //   has_alternate_name        — alt names from Name_Index
-            //   member_of_macrolanguage   — Norwegian → Bokmål, Chinese → Mandarin
-            //   superseded_by             — fri → fry, auv → oci
-            //
-            // All three live between language_name entities — name strings ARE
-            // entities in the substrate, and these are typed relations between
-            // them. The reference-table junction (entity_language) already
-            // records "this name belongs to language code X"; these edges
-            // record relations between the names themselves so the engine can
-            // walk them.
+            // The handles here reference entities established in steps 2 and 3,
+            // so AddEntity acts as a handle factory (the rows already drain via
+            // ON CONFLICT DO NOTHING). Edges are typed relations whose identity
+            // is computed server-side at flush; producer-side edge pre-dedupe
+            // would need an edge_type_id resolver on the IIngestionPipeline
+            // surface that is not yet exposed.
 
             IIngestionBatch edgeBatch = pipeline.CreateBatch(ProvenanceCode);
             EntityHandle MakeHandle(Hash32 hash) => edgeBatch.AddEntity(hash, "language_name");
@@ -257,33 +328,42 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 edgeCount++;
             }
 
+            // ── Step 5b: retirement records ──
+            // The retired code's reference name is in the retirement record
+            // (not in codeToNameHash, since it's no longer in iso-639-3.tab),
+            // so emit it as a language_name entity with the same AP-19 chunked
+            // pre-dedupe pattern.
+            List<(RetirementRecord R, Hash32 SuccessorHash)> retirementsToEmit = new(retirements.Count);
+            List<string> retiredNames = new(retirements.Count);
             foreach (RetirementRecord r in retirements)
             {
-                string? changeTo = r.ChangeTo;
-                if (string.IsNullOrEmpty(changeTo))
+                if (string.IsNullOrEmpty(r.ChangeTo)) { continue; }
+                if (!codeToNameHash.TryGetValue(r.ChangeTo, out Hash32 successorHash)) { continue; }
+                retirementsToEmit.Add((r, successorHash));
+                retiredNames.Add(r.RefName);
+            }
+
+            for (int chunkStart = 0; chunkStart < retirementsToEmit.Count; chunkStart += PreDedupeChunk)
+            {
+                int chunkEnd = Math.Min(chunkStart + PreDedupeChunk, retirementsToEmit.Count);
+                List<string> chunkTexts = new(chunkEnd - chunkStart);
+                for (int i = chunkStart; i < chunkEnd; i++) { chunkTexts.Add(retiredNames[i]); }
+
+                var emitted = await EmitLanguageNameChunkAsync(edgeBatch, pipeline, chunkTexts, addSignificance: true, ct);
+                for (int i = 0; i < emitted.Count; i++)
                 {
-                    continue;
+                    EntityHandle retiredHandle = emitted[i].Handle;
+                    Hash32 successorHash = retirementsToEmit[chunkStart + i].SuccessorHash;
+                    entityCount++;
+                    edgeBatch.AddEdge("superseded_by", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(retiredHandle, "source", 0),
+                        new EdgeMemberSpec(MakeHandle(successorHash), "target", 1),
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("superseded_by"));
+                    edgeCount++;
                 }
-                if (!codeToNameHash.TryGetValue(changeTo, out Hash32 successorHash))
-                {
-                    continue;
-                }
-                // The retired code's reference name is in the retirement record,
-                // not in codeToNameHash (since the retired code is no longer in
-                // iso-639-3.tab). Emit it as a fresh language_name entity so the
-                // edge has a source.
-                (EntityHandle retiredHandle, Hash32 retiredHash, _) =
-                    EmitText(edgeBatch, r.RefName, _codepointProperties, "language_name", TrustPriorMu);
-                edgeBatch.AddSignificance(retiredHandle, "source_authority", TrustPriorMu);
-                entityCount++;
-                edgeBatch.AddEdge("superseded_by", ProvenanceCode,
-                [
-                    new EdgeMemberSpec(retiredHandle, "source", 0),
-                    new EdgeMemberSpec(MakeHandle(successorHash), "target", 1),
-                ],
-                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
-                EdgeArenaRouter.EventsFor("superseded_by"));
-                edgeCount++;
             }
 
             if (edgeBatch.EntityCount > 0 || edgeBatch.EdgeCount > 0)
@@ -292,67 +372,82 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                 await ReportProgressAsync(pipeline, reporter, edgeBatch, entityCount, edgeCount, batchNum, "iso-639-3", ct);
             }
 
-            // ── Step 6: ISO 639-2 cross-source corroboration (P4 partial) ──
-            // The LoC-published ISO-639-2_utf-8.txt brings alpha-3-bibliographic
-            // + alpha-3-terminologic + alpha-2 + English/French names. Same
-            // alpha-3 codes that ISO 639-3 attests; cross-source corroboration
-            // accumulates on the existing language_name entities. The substrate
-            // doesn't create new entities for codes already attested by 639-3;
-            // it fires additional has_alternate_name edges from the existing
-            // refHash to French name variants + alpha-3-terminologic name
-            // variants when those differ from the bibliographic name.
+            // ── Step 6: ISO 639-2 cross-source corroboration ──
+            // LoC's ISO-639-2_utf-8.txt brings alpha-3-bibliographic + alpha-3-
+            // terminologic + alpha-2 + English/French names. Cross-source
+            // attestation accumulates on existing language_name entities.
             string iso6392Path = Path.Combine(_sourceDir, "ISO-639-2_utf-8.txt");
             if (File.Exists(iso6392Path))
             {
                 List<Iso6392Record> iso6392Records = Iso639Parser.ParseIso639_2(iso6392Path);
                 IIngestionBatch iso6392Batch = pipeline.CreateBatch("library_of_congress");
                 long iso6392Edges = 0;
+
+                // Filter to rows whose alpha3-bibliographic is recognized.
+                List<Iso6392Record> recognized = new(iso6392Records.Count);
                 foreach (Iso6392Record r in iso6392Records)
                 {
-                    // Anchor to the existing language_name entity for the
-                    // bibliographic alpha-3 code (P4: cross-source on shared
-                    // identity). ISO 639-3 + ISO 639-2 both attest to the same
-                    // code → same content-hash → same entity. The LoC
-                    // attestations layer onto the 639-3 entity via library_of_congress
-                    // provenance, distinct from sil_international provenance.
-                    if (!codeToNameHash.TryGetValue(r.Alpha3Bibliographic, out Hash32 anchorHash))
+                    if (codeToNameHash.ContainsKey(r.Alpha3Bibliographic))
                     {
-                        continue; // 639-2 has codes 639-3 doesn't recognize; skip those
+                        recognized.Add(r);
                     }
-                    EntityHandle anchorHandle = iso6392Batch.AddEntity(anchorHash, "language_name");
+                }
 
-                    // English name attestation from LoC. If it differs from the
-                    // 639-3 ref_name, fire has_alternate_name edge.
-                    if (r.EnglishName.Length > 0)
+                for (int chunkStart = 0; chunkStart < recognized.Count; chunkStart += PreDedupeChunk)
+                {
+                    int chunkEnd = Math.Min(chunkStart + PreDedupeChunk, recognized.Count);
+
+                    // Collect (entryIndex, slot, text) tuples so we can map the
+                    // post-emit handles back to source records.
+                    List<string> chunkTexts = new(2 * (chunkEnd - chunkStart));
+                    List<int> chunkRecIndex = new(2 * (chunkEnd - chunkStart));
+                    List<int> chunkSlot = new(2 * (chunkEnd - chunkStart)); // 0 = english, 1 = french
+
+                    for (int i = chunkStart; i < chunkEnd; i++)
                     {
-                        (EntityHandle engHandle, _, _) = EmitText(iso6392Batch, r.EnglishName,
-                            _codepointProperties, "language_name", TrustPriorMu);
-                        if (!engHandle.Hash.Equals(anchorHash))
+                        Iso6392Record r = recognized[i];
+                        if (r.EnglishName.Length > 0) { chunkTexts.Add(r.EnglishName); chunkRecIndex.Add(i); chunkSlot.Add(0); }
+                        if (r.FrenchName.Length > 0)  { chunkTexts.Add(r.FrenchName);  chunkRecIndex.Add(i); chunkSlot.Add(1); }
+                    }
+
+                    if (chunkTexts.Count == 0) { continue; }
+
+                    // AP-19 chunked pre-dedupe also for this provenance.
+                    List<Hash32> hashes = new(chunkTexts.Count);
+                    foreach (string t in chunkTexts) { hashes.Add(ComputeWordFormHash(t)); }
+                    HashSet<HashKey> existing = await pipeline.GetExistingEntityHashesAsync(hashes, ct);
+
+                    for (int i = 0; i < chunkTexts.Count; i++)
+                    {
+                        Iso6392Record r = recognized[chunkRecIndex[i]];
+                        Hash32 anchorHash = codeToNameHash[r.Alpha3Bibliographic];
+                        Hash32 thisHash = hashes[i];
+
+                        EntityHandle anchorHandle = iso6392Batch.AddEntity(anchorHash, "language_name");
+
+                        EntityHandle nameHandle;
+                        if (existing.Contains(new HashKey(thisHash)))
+                        {
+                            nameHandle = new EntityHandle(thisHash, "language_name");
+                        }
+                        else
+                        {
+                            (EntityHandle h, _, _) = EmitText(iso6392Batch, chunkTexts[i], _codepointProperties, "language_name", TrustPriorMu);
+                            nameHandle = h;
+                            existing.Add(new HashKey(thisHash));
+                        }
+
+                        if (!thisHash.Equals(anchorHash))
                         {
                             iso6392Batch.AddEdge("has_alternate_name", "library_of_congress",
                             [
                                 new EdgeMemberSpec(anchorHandle, "source", 0),
-                                new EdgeMemberSpec(engHandle, "target", 1),
+                                new EdgeMemberSpec(nameHandle, "target", 1),
                             ],
                             ReadOnlySpan<EdgeSignificanceSpec>.Empty,
                             EdgeArenaRouter.EventsFor("has_alternate_name"));
                             iso6392Edges++;
                         }
-                    }
-
-                    // French name as alternate (cross-lingual corroboration).
-                    if (r.FrenchName.Length > 0)
-                    {
-                        (EntityHandle frHandle, _, _) = EmitText(iso6392Batch, r.FrenchName,
-                            _codepointProperties, "language_name", TrustPriorMu);
-                        iso6392Batch.AddEdge("has_alternate_name", "library_of_congress",
-                        [
-                            new EdgeMemberSpec(anchorHandle, "source", 0),
-                            new EdgeMemberSpec(frHandle, "target", 1),
-                        ],
-                        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
-                        EdgeArenaRouter.EventsFor("has_alternate_name"));
-                        iso6392Edges++;
                     }
 
                     if (iso6392Batch.EntityCount >= 1000 || iso6392Batch.EdgeCount >= 1000)
@@ -362,6 +457,7 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
                         iso6392Batch = pipeline.CreateBatch("library_of_congress");
                     }
                 }
+
                 if (iso6392Batch.EntityCount > 0 || iso6392Batch.EdgeCount > 0)
                 {
                     batchNum++;
@@ -378,8 +474,6 @@ public sealed partial class Iso639Decomposer : BaseDecomposer
             await refWriter.DisposeAsync();
         }
     }
-
-
 
     private static partial class Log
     {

@@ -156,18 +156,13 @@ public sealed partial class SequentialPhaseRunner : IPhaseRunner
                 Log.DecomposerCompleted(_logger, decomposer.DisplayName, phase);
             }
 
-            // Post-phase enrichment: single authority for these operations.
-            // P1f: drain completion (not phase completion) is the post-pass
-            // trigger. DrainPendingAsync internally invokes
-            // PopulateEdgeTrajectoriesAsync + PrimeAllSignificanceAsync once
-            // all channels are quiescent, so edge.geom is non-null and per-arena
-            // Glicko priming has fired against every current arena before this
-            // returns. The substrate is continuously queryable; phases are an
-            // orchestration convenience for the runner, NOT a substrate
-            // boundary. Live ingest (user prompts at runtime, single-source
-            // mid-conversation uploads, etc.) hits the same drain path with
-            // the same atomic-on-drain semantics — no phase-end window where
-            // edges sit with NULL geom or arenas wait for priming.
+            // Drain pending records. Edge geometry + per-arena significance
+            // priors are built inline at edge-emit inside the bundled-emit
+            // pipeline; there is no end-of-phase post-pass. The substrate is
+            // continuously queryable; phases are an orchestration convenience
+            // for the runner, NOT a substrate boundary. Live ingest (user
+            // prompts at runtime, single-source mid-conversation uploads,
+            // etc.) hits the same drain path with the same semantics.
             await _pipeline.DrainPendingAsync(ct);
 
             _status[phase] = PhaseStatus.Completed;

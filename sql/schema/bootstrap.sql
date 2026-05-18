@@ -194,7 +194,8 @@
 -- @include schema/tables/monitor/significance_snapshot.sql
 
 -- ── Phase 11: meta tables ────────────────────────────────────────────
--- @include schema/tables/meta/arena_priming_state.sql
+--  (no meta tables — drain-completion post-passes were removed; the
+--  arena_priming_state watermark table is gone with them.)
 
 -- ── Phase 12: indexes ─────────────────────────────────────────────────
 -- @include schema/indexes/idx_block_range.sql
@@ -250,9 +251,10 @@
 --  StreamingIngestionPipeline writes DIRECTLY into substrate core tables
 --  via session-local pg_temp.X_inflight tables created per drain-task
 --  connection. ON CONFLICT DO NOTHING guards within-session and cross-
---  session duplicates. The post-pass populate_edge_trajectories +
---  prime_unprimed_edges_chunk run once per phase from FlushAsync; no
---  background drain worker, no background significance primer.)
+--  session duplicates. Edge geometry + per-arena significance priors are
+--  built inline at edge-emit inside the bundled-emit pipeline — no
+--  populate_edge_trajectories, no prime_unprimed_edges_chunk, no
+--  arena_priming_state, no drain-completion post-passes.)
 
 -- ── Phase 13: functions ──────────────────────────────────────────────
 -- Reference / utility helpers
@@ -308,9 +310,10 @@
 -- @include schema/functions/hausdorff_4d_geom.sql
 -- @include schema/functions/geometry4d_centroid.sql
 -- @include schema/functions/geometry4d_to_geometryzm.sql
+-- @include schema/functions/geometryzm_to_geometry4d.sql
 -- @include schema/functions/geometryzm_centroid_point.sql
--- @include schema/functions/populate_edge_trajectories.sql
--- @include schema/functions/count_missing_edge_trajectories.sql
+-- (populate_edge_trajectories + count_missing_edge_trajectories removed —
+--  edge geometry is built inline at edge-emit by the bundled-emit pipeline.)
 -- @include schema/functions/physicality_linestring4d.sql
 -- @include schema/functions/physicality_point4d.sql
 -- Read helpers
@@ -357,12 +360,11 @@
 -- invariant (deterministic from hash) produces same centroid on first write.
 -- @include schema/functions/entity_tier_hint.sql
 -- @include schema/functions/entity_tier_hints.sql
--- Significance machinery (prime_edge_significance_per_arena removed —
--- it referenced substrate.staging_edge which no longer exists. The
--- per-arena chunked primer below is what the C# pipeline calls from the
--- phase-owned PrimeAllSignificanceAsync post-pass.)
--- @include schema/functions/reset_arena_priming_state.sql
--- @include schema/functions/prime_unprimed_edges_chunk.sql
+-- Significance machinery — per-arena initial-mu rows are inserted inline
+-- at edge-emit by the bundled-emit pipeline, cross-producted against every
+-- arena currently in substrate.significance_context at pipeline startup
+-- (AP-1: open vocabulary, no hardcoded subset). No reset/prime watermark
+-- functions; no end-of-phase post-pass.
 -- @include schema/functions/prune_significance.sql
 -- @include schema/functions/prune_significance_for_context.sql
 -- @include schema/functions/record_comparison.sql
@@ -379,23 +381,14 @@
 -- @include schema/functions/consensus_token_pairs.sql
 -- @include schema/functions/create_arena.sql
 -- @include schema/functions/create_model_trust_arena.sql
--- Reference-vocabulary population (app data, not substrate content) stays
--- as SQL populators driven from the embedded blob — this is legitimate
--- pre-gen perf-cache consumption.
--- @include schema/functions/populate_general_categories_from_ext.sql
--- @include schema/functions/populate_scripts_from_ext.sql
--- @include schema/functions/populate_blocks_from_ext.sql
--- @include schema/functions/populate_break_properties_from_ext.sql
--- @include schema/functions/populate_codepoint_property_range_from_ext.sql
+-- Server-side populate_*_from_ext + ucd_materialization_counts removed
+-- 2026-05-17 (Gate 1 Task #22). Reference vocabularies + codepoint atoms
+-- + edges are now emitted by UnicodeDecomposer reading the UCD source
+-- directly via BlobUcdPropertyAccessor (native blob) +
+-- IIngestionPipeline.CreateBatch. Per Principle 1 — blob and substrate
+-- are siblings derived from the same source; neither populates the other.
 -- @include schema/functions/unicode_edge_hash.sql
--- (Substrate-ingestion populate_*_from_ext + populate_codepoint_atoms+chunk
--- RETIRED 2026-05-17 per Step J of ancient-launching-papert plan.
--- Substrate.entity/edge content for Unicode now comes from producer-pattern
--- C# passes under src/Hartonomous.Decomposers/Ucd/ that parse source files
--- directly via UcdFlatXmlReader + IIngestionPipeline.CreateBatch.
--- substrate.recompose_content provides the load-bearing reconstruction.)
 -- @include schema/functions/recompose_content.sql
--- @include schema/functions/ucd_materialization_counts.sql
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local
 --  temp table — no persistent staging, no auto-discovered drain manifest.)

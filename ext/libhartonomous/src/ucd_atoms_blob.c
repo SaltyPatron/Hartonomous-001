@@ -31,7 +31,8 @@
   #include <sys/mman.h>
 #endif
 
-/* Constants — must match scripts/build/generate_unicode_tables.py output. */
+/* Constants — must match the codegen tools under ext/libhartonomous/codegen/
+ * and the embedded UCD blob layout under ext/hartonomous_ucd_embedded/. */
 #define BLK_MAGIC 0x4B4C4248u  /* 'HBLK' LE */
 #define IDX_MAGIC 0x58444348u  /* 'HCDX' LE */
 #define REV_MAGIC 0x56455248u  /* 'HREV' LE */

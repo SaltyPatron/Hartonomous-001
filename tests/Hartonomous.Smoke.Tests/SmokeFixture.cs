@@ -76,3 +76,32 @@ public sealed class SmokeFixtureCollectionDefinition : ICollectionFixture<SmokeF
 #pragma warning restore CA1711
 {
 }
+
+/// <summary>
+/// Minimal Xunit.SkippableFact-style helper so smoke tests can bail when the
+/// substrate DB isn't reachable. Throws a <see cref="SkipException"/>; xunit
+/// catches and surfaces the test as skipped rather than failed.
+/// </summary>
+internal static class Skip
+{
+    public static void IfNot(bool condition, string reason)
+    {
+        if (!condition)
+        {
+            throw new SkipException(reason);
+        }
+    }
+
+    public static void If(bool condition, string reason)
+    {
+        if (condition)
+        {
+            throw new SkipException(reason);
+        }
+    }
+}
+
+internal sealed class SkipException : Exception
+{
+    public SkipException(string reason) : base(reason) { }
+}

@@ -206,8 +206,15 @@ public sealed class SequentialPhaseRunnerTests
     }
 
     [Fact]
-    public async Task RunPhase_NoSubmittedRecords_SkipsGraphPostPasses()
+    public async Task RunPhase_AlwaysCallsDrainPendingAsync_NoSeparatePostPasses()
     {
+        // Drain-completion post-passes are deleted (AP-37). DrainPendingAsync
+        // is the only synchronization point at phase end; edge geometry +
+        // per-arena significance priors are emitted inline at edge-emit by
+        // the bundled-emit pipeline. The phase runner calls DrainPendingAsync
+        // unconditionally on every phase end — there are no
+        // PopulateEdgeTrajectoriesAsync / PrimeAllSignificanceAsync methods
+        // on IIngestionPipeline anymore.
         FakePipeline pipeline = new();
         FakeDecomposer decomposer = new();
         Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
@@ -220,29 +227,6 @@ public sealed class SequentialPhaseRunnerTests
 
         Assert.Equal(PhaseStatus.Completed, result.Status);
         Assert.Equal(1, pipeline.DrainPendingCalls);
-        Assert.Equal(0, pipeline.PopulateEdgeTrajectoriesCalls);
-        Assert.Equal(0, pipeline.PrimeAllSignificanceCalls);
-    }
-
-    [Fact]
-    public async Task RunPhase_SubmittedEdges_RunsGraphPostPasses()
-    {
-        FakePipeline pipeline = new()
-        {
-            StatsOverride = new PipelineStats { EdgesSubmitted = 1 },
-        };
-        FakeDecomposer decomposer = new();
-        Dictionary<Phase, IReadOnlyList<IDecomposer>> map = new()
-        {
-            [Phase.CoreAlgebra] = [decomposer],
-        };
-        SequentialPhaseRunner runner = CreateRunner(map, pipeline);
-
-        PhaseResult result = await runner.RunPhaseAsync(Phase.CoreAlgebra, CancellationToken.None);
-
-        Assert.Equal(PhaseStatus.Completed, result.Status);
-        Assert.Equal(1, pipeline.PopulateEdgeTrajectoriesCalls);
-        Assert.Equal(1, pipeline.PrimeAllSignificanceCalls);
     }
 
     [Fact]
@@ -334,8 +318,6 @@ public sealed class SequentialPhaseRunnerTests
     {
         public PipelineStats StatsOverride { get; init; } = new();
         public int DrainPendingCalls { get; private set; }
-        public int PopulateEdgeTrajectoriesCalls { get; private set; }
-        public int PrimeAllSignificanceCalls { get; private set; }
         public PipelineStats Stats => StatsOverride;
         public IIngestionBatch CreateBatch() => new FakeBatch();
         public IIngestionBatch CreateBatch(string provenanceCode) => new FakeBatch();
@@ -343,28 +325,6 @@ public sealed class SequentialPhaseRunnerTests
         public Task DrainPendingAsync(CancellationToken ct)
         {
             DrainPendingCalls++;
-            // P1f-minimal: drain completion is the post-pass trigger, not
-            // phase completion. SequentialPhaseRunner no longer calls
-            // PopulateEdgeTrajectoriesAsync / PrimeAllSignificanceAsync
-            // directly; the real pipeline's DrainPendingAsync fires them
-            // inline when edges have been submitted. Mirror that contract
-            // in the fake so phase-runner tests observe the right call
-            // counts.
-            if (StatsOverride.EdgesSubmitted > 0)
-            {
-                PopulateEdgeTrajectoriesCalls++;
-                PrimeAllSignificanceCalls++;
-            }
-            return Task.CompletedTask;
-        }
-        public Task PopulateEdgeTrajectoriesAsync(CancellationToken ct)
-        {
-            PopulateEdgeTrajectoriesCalls++;
-            return Task.CompletedTask;
-        }
-        public Task PrimeAllSignificanceAsync(CancellationToken ct)
-        {
-            PrimeAllSignificanceCalls++;
             return Task.CompletedTask;
         }
         public Task<HashSet<HashKey>> GetExistingEntityHashesAsync(IReadOnlyCollection<Hash32> hashes, CancellationToken ct) => Task.FromResult(new HashSet<HashKey>());

@@ -3,8 +3,10 @@
 -- query time from per-attestation_type rows under an AttestationTypeBlend
 -- recipe (default: equal weight across attestation_types within arena).
 --
--- New arenas (open vocabulary) auto-prime against every existing edge —
--- see substrate.prime_unprimed_edges_chunk.
+-- New arenas (open vocabulary) get inline priors at edge-emit for every
+-- edge inserted after the arena is created; the pipeline reloads the
+-- (provenance × edge_type × arena) primer table at its next startup.
+-- AP-37: no end-of-phase post-pass.
 --
 -- attestation_type_id stratifies the rating: same edge gets separate rows
 -- per (arena, attestation_type) so corpus-window evidence, model-circuit

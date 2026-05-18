@@ -9,8 +9,8 @@
 -- POINTZM. Composition representative POINTZMs are derived inline from
 -- substrate.entity.hash_bits_0_51 / hash_bits_52_103 via
 -- substrate.bb_pack_hash_lo / bb_pack_hash_hi when needed for edge.geom
--- construction (see substrate.populate_edge_trajectories) — they are not
--- stored anywhere.
+-- construction by the bundled-emit pipeline — they are not stored
+-- anywhere.
 CREATE OR REPLACE FUNCTION substrate.physicality_point4d(
     p_entity_hash substrate.hash_value,
     p_entity_type_code TEXT,

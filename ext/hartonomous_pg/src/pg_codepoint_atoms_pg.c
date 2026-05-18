@@ -1,6 +1,6 @@
 /*
  * pg_codepoint_atoms_pg.c — PG-callable surface over the tier-0 codepoint
- * atoms generated from UCD 17.0.0 (see scripts/build/generate_unicode_tables.py).
+ * atoms generated from UCD 17.0.0 (see ext/libhartonomous/codegen/gen_ucd_flat.c).
  *
  * Functions exposed to substrate.* SQL:
  *

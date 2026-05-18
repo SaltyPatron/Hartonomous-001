@@ -59,27 +59,21 @@ public sealed class InferenceSmokeTests
     }
 
     [Fact]
-    public async Task PrimeUnprimedEdgesChunk_FunctionExists()
+    public async Task DrainPostPassFunctions_Removed()
     {
         Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
-        // The post-pass priming function the C# pipeline calls per arena
-        // after each phase. Drift here = edges land with no significance
-        // rows = traversal sees default-mu = uniform-cost BFS, not A*.
+        // Drain-completion post-pass functions (populate_edge_trajectories,
+        // prime_unprimed_edges_chunk, reset_arena_priming_state,
+        // count_missing_edge_trajectories) were deleted per AP-37 — edge
+        // geometry and per-arena significance priors are emitted inline at
+        // edge-emit by the bundled-emit pipeline. The functions MUST be
+        // absent from the live substrate so callers can't drift back to
+        // the post-pass shape.
         long n = await _fx.ExecScalarLongAsync(
             "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace " +
-            "WHERE n.nspname = 'substrate' AND p.proname = 'prime_unprimed_edges_chunk'");
-        Assert.Equal(1, n);
-    }
-
-    [Fact]
-    public async Task PopulateEdgeTrajectories_FunctionExists()
-    {
-        Skip.IfNot(_fx.DbReachable, "Hartonomous DB not reachable");
-        // End-of-phase edge trajectory backfill — fills LINESTRINGZM geometry
-        // for edges whose participant centroids landed across batches.
-        long n = await _fx.ExecScalarLongAsync(
-            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace " +
-            "WHERE n.nspname = 'substrate' AND p.proname = 'populate_edge_trajectories'");
-        Assert.Equal(1, n);
+            "WHERE n.nspname = 'substrate' AND p.proname IN " +
+            "('populate_edge_trajectories','prime_unprimed_edges_chunk'," +
+            "'reset_arena_priming_state','count_missing_edge_trajectories')");
+        Assert.Equal(0, n);
     }
 }

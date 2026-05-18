@@ -12,27 +12,15 @@ using Microsoft.Extensions.Logging;
 namespace Hartonomous.Engine.Significance;
 
 /// <summary>
-/// SignificanceField phase runner — master plan item #61. Replaces the prior stub
-/// where Phase.SignificanceField had no decomposer registered, so it ran as a
-/// no-op and edges sat at the Glicko-2 default of 1500. With every edge scoring
-/// identically, A* could not differentiate paths, and inference returned ranked
-/// results that were actually all tied at 1500.
-/// <para>
-/// Bulk-inserts edge-level significance rows for every arena currently present
-/// in <c>substrate.significance_context</c>, seeding each edge's μ from its
-/// provenance trust prior. Subsequent arena plays refine these values as
-/// inference traverses edges and Glicko-2 updates accumulate evidence.
-/// </para>
-/// <para>
-/// Trust-prior tiers (set by canonical provenance seed data):
-///   * authoritative_standard (Unicode, ISO 639): 100000
-///   * academic_curated (Princeton WordNet): 95000
-///   * academic_consortium (UD, OMW): 90000-92000
-///   * community_curated (Wiktionary): 68000
-///   * community_contributed (Tatoeba): 50000
-///   * model_derived: per-model
-///   * user_session: 1000
-/// </para>
+/// SignificanceField phase decomposer. Per-arena edge-significance priors
+/// are emitted inline at edge-emit time by the bundled-emit pipeline
+/// (provenance.initial_mu × edge_type.semantic_weight × derivation_decay
+/// cross-producted against every arena in substrate.significance_context
+/// at pipeline startup — AP-1 compliant, open vocabulary). The
+/// SignificanceField phase has no remaining work; it exists in the DAG to
+/// gate downstream phases on every prior phase's edge emission having
+/// completed, and the runner satisfies the IDecomposer registration so
+/// SequentialPhaseRunner can mark the phase complete.
 /// </summary>
 public sealed partial class SignificanceFieldRunner : IDecomposer
 {
@@ -46,7 +34,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
 
     public string ProvenanceCode => "system_computed";
 
-    public string DisplayName => "SignificanceField — edge-level significance priming";
+    public string DisplayName => "SignificanceField — edge-significance priors emitted inline at edge-emit (no post-pass)";
 
     public IReadOnlyList<Phase> Phases => [Phase.SignificanceField];
 
@@ -59,12 +47,13 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
     {
         Stopwatch sw = Stopwatch.StartNew();
 
-        await pipeline.PrimeAllSignificanceAsync(ct).ConfigureAwait(false);
-
+        // No-op — significance priors are emitted inline at edge-emit by
+        // StreamingIngestionPipeline. This decomposer exists only so the
+        // SignificanceField phase has a registered IDecomposer and the
+        // sequential phase runner can mark the phase complete.
         sw.Stop();
-        Log.Primed(_logger, sw.Elapsed);
+        Log.NoOp(_logger, sw.Elapsed);
 
-        // Surface progress to the standard reporter so the phase runner records the work.
         await reporter.ReportAsync(
             new ProgressSnapshot
             {
@@ -72,7 +61,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
                 CurrentPhase = "SignificanceField",
                 EntitiesCreated = 0,
                 EdgesCreated = 0,
-                CurrentFile = $"primed_edge_significance",
+                CurrentFile = "inline_at_edge_emit",
                 CurrentBatch = 0,
             },
             ct);
@@ -86,7 +75,7 @@ public sealed partial class SignificanceFieldRunner : IDecomposer
 
     private static partial class Log
     {
-        [LoggerMessage(Level = LogLevel.Information, Message = "SignificanceField primed edge significance via centralized ingestion pipeline in {Elapsed}")]
-        public static partial void Primed(ILogger logger, TimeSpan elapsed);
+        [LoggerMessage(Level = LogLevel.Information, Message = "SignificanceField is a no-op — priors are inline at edge-emit ({Elapsed})")]
+        public static partial void NoOp(ILogger logger, TimeSpan elapsed);
     }
 }

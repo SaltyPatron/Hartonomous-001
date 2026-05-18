@@ -123,7 +123,7 @@ AS $$
         NULL::TEXT,
         NULL::TEXT,
         NULL::DOUBLE PRECISION,
-        substrate.dist_4d(p_self.geom, p_other.geom),
+        substrate.dist_4d(substrate.geometryzm_to_geometry4d(p_self.geom), substrate.geometryzm_to_geometry4d(p_other.geom)),
         NULL::INT
     FROM substrate.physicality p_self
     JOIN substrate.physicality p_other
@@ -133,7 +133,7 @@ AS $$
       AND p_frechet_threshold > 0
       AND p_self.geom IS NOT NULL
       AND p_other.geom IS NOT NULL
-      AND substrate.dist_4d(p_self.geom, p_other.geom) <= p_frechet_threshold;
+      AND substrate.dist_4d(substrate.geometryzm_to_geometry4d(p_self.geom), substrate.geometryzm_to_geometry4d(p_other.geom)) <= p_frechet_threshold;
 $$;
 
 COMMENT ON FUNCTION substrate.neighborhood(BYTEA, INT, DOUBLE PRECISION) IS

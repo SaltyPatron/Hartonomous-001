@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Hartonomous.Core.Compute.Common;
@@ -18,6 +19,13 @@ namespace Hartonomous.Decomposers.Iso;
 /// on the same entity as ISO 639/15924/3166 publishers also attest.
 /// Suppress-Script + Preferred-Value + Prefix relations emit as edges between
 /// language_name entities, complementing the ISO 639 / ISO 15924 cross-link surface.
+///
+/// AP-19 compliance: parsed records are buffered into chunks; per-chunk all
+/// candidate language_name entity hashes (subtag + descriptions + preferred
+/// value + suppress script) are probed via
+/// <see cref="IIngestionPipeline.GetExistingEntityHashesAsync"/> ONCE before
+/// emit. Existing entities get handle-only references; only the diff lands
+/// in the producer batch.
 /// </summary>
 public sealed partial class Bcp47Decomposer : BaseDecomposer
 {
@@ -26,7 +34,7 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
     public override IReadOnlyList<Phase> Phases => [Phase.Iso639];
 
     private const double TrustPriorMu = 90000.0;
-    private const int BatchFlushSize = 5_000;
+    private const int PreDedupeChunk = 128;
 
     private readonly string _sourceDir;
 
@@ -54,6 +62,21 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
         return null;
     }
 
+    /// <summary>
+    /// A parsed BCP 47 record buffered for the AP-19 pre-dedupe chunk.
+    /// Holds the subtag identity + content payloads we plan to emit.
+    /// </summary>
+    private sealed class PendingRecord
+    {
+        public string Subtag = string.Empty;
+        public Hash32 SubtagHash;
+        public List<(string Text, Hash32 Hash)> Descriptions = new();
+        public string? Preferred;
+        public Hash32 PreferredHash;
+        public string? SuppressScript;
+        public Hash32 SuppressScriptHash;
+    }
+
     protected override async Task DecomposeCoreAsync(
         IIngestionPipeline pipeline,
         IProgressReporter reporter,
@@ -69,24 +92,143 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
         long entityCount = 0;
         long edgeCount = 0;
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
+        List<PendingRecord> pending = new(PreDedupeChunk);
+
+        async Task FlushPendingAsync()
+        {
+            if (pending.Count == 0) { return; }
+
+            // Step 1: precompute the chunk's candidate entity hashes.
+            HashSet<HashKey> candidateSet = new(pending.Count * 2);
+            List<Hash32> candidates = new(pending.Count * 2);
+            void Push(Hash32 h)
+            {
+                if (candidateSet.Add(new HashKey(h))) { candidates.Add(h); }
+            }
+            foreach (PendingRecord r in pending)
+            {
+                Push(r.SubtagHash);
+                foreach ((_, Hash32 dh) in r.Descriptions)
+                {
+                    if (!dh.Equals(r.SubtagHash)) { Push(dh); }
+                }
+                if (r.Preferred is not null) { Push(r.PreferredHash); }
+                if (r.SuppressScript is not null) { Push(r.SuppressScriptHash); }
+            }
+
+            // Step 2: one bulk probe per chunk (AP-19).
+            HashSet<HashKey> existing = await pipeline.GetExistingEntityHashesAsync(candidates, ct);
+
+            EntityHandle EmitOrReference(Hash32 hash)
+            {
+                if (existing.Contains(new HashKey(hash)))
+                {
+                    return new EntityHandle(hash, "language_name");
+                }
+                EntityHandle h = batch.AddEntity(hash, "language_name");
+                existing.Add(new HashKey(hash));
+                entityCount++;
+                return h;
+            }
+
+            foreach (PendingRecord r in pending)
+            {
+                EntityHandle subtagHandle = EmitOrReference(r.SubtagHash);
+
+                foreach ((_, Hash32 dh) in r.Descriptions)
+                {
+                    if (dh.Equals(r.SubtagHash)) { continue; }
+                    EntityHandle descHandle = EmitOrReference(dh);
+                    batch.AddEdge("has_alternate_name", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(subtagHandle, "source", 0),
+                        new EdgeMemberSpec(descHandle, "target", 1),
+                    ]);
+                    edgeCount++;
+                }
+
+                if (r.Preferred is not null)
+                {
+                    EntityHandle prefHandle = EmitOrReference(r.PreferredHash);
+                    batch.AddEdge("superseded_by", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(subtagHandle, "source", 0),
+                        new EdgeMemberSpec(prefHandle, "target", 1),
+                    ]);
+                    edgeCount++;
+                }
+
+                if (r.SuppressScript is not null)
+                {
+                    EntityHandle scriptHandle = EmitOrReference(r.SuppressScriptHash);
+                    batch.AddEdge("has_script", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(subtagHandle, "source", 0),
+                        new EdgeMemberSpec(scriptHandle, "target", 1),
+                    ]);
+                    edgeCount++;
+                }
+            }
+            pending.Clear();
+
+            if (batch.EntityCount + batch.EdgeCount >= PreDedupeChunk * 8)
+            {
+                await pipeline.SubmitBatchAsync(batch, ct);
+                batch = pipeline.CreateBatch(ProvenanceCode);
+            }
+        }
 
         // BCP 47 registry is %%-separated records. Each record has Type, Subtag (or Tag),
         // Description (may repeat), plus optional Suppress-Script, Preferred-Value, Prefix.
         Dictionary<string, string> fields = new(System.StringComparer.OrdinalIgnoreCase);
         List<string> descriptions = new();
 
+        void StagePending()
+        {
+            if (!fields.TryGetValue("Subtag", out string? subtag) && !fields.TryGetValue("Tag", out subtag))
+            {
+                return;
+            }
+            if (string.IsNullOrEmpty(subtag)) { return; }
+
+            PendingRecord rec = new()
+            {
+                Subtag = subtag,
+                SubtagHash = Blake3.Hash32(Encoding.UTF8.GetBytes(subtag)),
+            };
+
+            foreach (string desc in descriptions)
+            {
+                Hash32 dh = Blake3.Hash32(Encoding.UTF8.GetBytes(desc));
+                rec.Descriptions.Add((desc, dh));
+            }
+
+            if (fields.TryGetValue("Preferred-Value", out string? preferred) && !string.IsNullOrEmpty(preferred))
+            {
+                rec.Preferred = preferred;
+                rec.PreferredHash = Blake3.Hash32(Encoding.UTF8.GetBytes(preferred));
+            }
+
+            if (fields.TryGetValue("Suppress-Script", out string? script) && !string.IsNullOrEmpty(script))
+            {
+                rec.SuppressScript = script;
+                rec.SuppressScriptHash = Blake3.Hash32(Encoding.UTF8.GetBytes(script));
+            }
+
+            pending.Add(rec);
+        }
+
         foreach (string raw in File.ReadLines(path))
         {
             ct.ThrowIfCancellationRequested();
             if (raw == "%%")
             {
-                await EmitRecord(batch, fields, descriptions, ct);
+                StagePending();
                 fields.Clear();
                 descriptions.Clear();
-                if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
+                if (pending.Count >= PreDedupeChunk)
                 {
-                    await pipeline.SubmitBatchAsync(batch, ct);
-                    batch = pipeline.CreateBatch(ProvenanceCode);
+                    await FlushPendingAsync();
                 }
                 continue;
             }
@@ -102,21 +244,20 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
             {
                 fields[key] = val;
             }
-            entityCount = batch.EntityCount;
-            edgeCount = batch.EdgeCount;
         }
         // Final record
         if (fields.Count > 0)
         {
-            await EmitRecord(batch, fields, descriptions, ct);
+            StagePending();
         }
+        await FlushPendingAsync();
 
         if (batch.EntityCount > 0 || batch.EdgeCount > 0)
         {
             await pipeline.SubmitBatchAsync(batch, ct);
         }
 
-        Log.Materialized(Logger, batch.EntityCount, batch.EdgeCount);
+        Log.Materialized(Logger, entityCount, edgeCount);
         await reporter.ReportAsync(new ProgressSnapshot
         {
             DecomposerCode = ProvenanceCode,
@@ -126,66 +267,10 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
         }, ct);
     }
 
-    private static Task EmitRecord(
-        IIngestionBatch batch,
-        Dictionary<string, string> fields,
-        List<string> descriptions,
-        CancellationToken ct)
-    {
-        if (!fields.TryGetValue("Subtag", out string? subtag) && !fields.TryGetValue("Tag", out subtag))
-        {
-            return Task.CompletedTask;
-        }
-        if (string.IsNullOrEmpty(subtag)) { return Task.CompletedTask; }
-
-        // Subtag entity identity = BLAKE3 of UTF-8 subtag string
-        Hash32 subtagHash = Blake3.Hash32(Encoding.UTF8.GetBytes(subtag));
-        EntityHandle subtagHandle = batch.AddEntity(subtagHash, "language_name");
-
-        // Each Description as alternate name
-        foreach (string desc in descriptions)
-        {
-            Hash32 descHash = Blake3.Hash32(Encoding.UTF8.GetBytes(desc));
-            if (descHash.Equals(subtagHash)) { continue; }
-            EntityHandle descHandle = batch.AddEntity(descHash, "language_name");
-            batch.AddEdge("has_alternate_name", "ietf_bcp47",
-            [
-                new EdgeMemberSpec(subtagHandle, "source", 0),
-                new EdgeMemberSpec(descHandle, "target", 1),
-            ]);
-        }
-
-        // Preferred-Value (when present) = superseded_by edge
-        if (fields.TryGetValue("Preferred-Value", out string? preferred) && !string.IsNullOrEmpty(preferred))
-        {
-            Hash32 prefHash = Blake3.Hash32(Encoding.UTF8.GetBytes(preferred));
-            EntityHandle prefHandle = batch.AddEntity(prefHash, "language_name");
-            batch.AddEdge("superseded_by", "ietf_bcp47",
-            [
-                new EdgeMemberSpec(subtagHandle, "source", 0),
-                new EdgeMemberSpec(prefHandle, "target", 1),
-            ]);
-        }
-
-        // Suppress-Script (when present) = has_script edge
-        if (fields.TryGetValue("Suppress-Script", out string? script) && !string.IsNullOrEmpty(script))
-        {
-            Hash32 scriptHash = Blake3.Hash32(Encoding.UTF8.GetBytes(script));
-            EntityHandle scriptHandle = batch.AddEntity(scriptHash, "language_name");
-            batch.AddEdge("has_script", "ietf_bcp47",
-            [
-                new EdgeMemberSpec(subtagHandle, "source", 0),
-                new EdgeMemberSpec(scriptHandle, "target", 1),
-            ]);
-        }
-
-        return Task.CompletedTask;
-    }
-
     private static partial class Log
     {
         [LoggerMessage(Level = LogLevel.Information, Message = "BCP 47 decomposition complete: entities={Entities}, edges={Edges}")]
-        public static partial void Materialized(ILogger logger, int entities, int edges);
+        public static partial void Materialized(ILogger logger, long entities, long edges);
 
         [LoggerMessage(Level = LogLevel.Warning, Message = "BCP 47 source language-subtag-registry.txt not found; pass skipped")]
         public static partial void SourceMissing(ILogger logger);

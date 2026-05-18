@@ -26,7 +26,7 @@ public sealed class PipelineSmokeTests
         string[] kinds =
         [
             "entity", "entity_classification", "edge", "edge_member",
-            "junction", "physicality", "sequence",
+            "junction", "physicality",
             "entity_significance", "edge_significance", "entity_model_source",
         ];
 
@@ -58,7 +58,7 @@ public sealed class PipelineSmokeTests
         string[] kinds =
         [
             "entity", "entity_classification", "edge", "edge_member",
-            "junction", "physicality", "sequence",
+            "junction", "physicality",
             "entity_significance", "edge_significance", "entity_model_source",
         ];
 

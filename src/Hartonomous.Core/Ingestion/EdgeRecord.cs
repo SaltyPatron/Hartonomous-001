@@ -15,13 +15,12 @@ namespace Hartonomous.Core.Ingestion;
 /// chunk (within-session) or a prior chunk (cross-session, ON CONFLICT
 /// handled).
 ///
-/// <see cref="Geometry"/> carries an optional pre-built LINESTRING4D payload
-/// for the edge's trajectory (participant centroids in role order). When
-/// non-null, the drain INSERT writes it straight into substrate.edge.geom.
-/// When null, the row goes in
-/// with geom = NULL and an end-of-phase
-/// substrate.populate_edge_trajectories populates from
-/// substrate.edge_member joined to substrate.physicality.
+/// <see cref="Geometry"/> carries the pre-built LINESTRINGZM payload for
+/// the edge's trajectory (participants' mantissa-packed identity-POINTZMs
+/// in role order). The bundled-emit pipeline builds it inline at edge-emit
+/// from the bundle's edge_members; the drain INSERT writes it straight
+/// into substrate.edge.geom. There is no NULL-geom window, no end-of-phase
+/// backfill (AP-37).
 /// </summary>
 public sealed record EdgeRecord(
     string EdgeTypeCode,

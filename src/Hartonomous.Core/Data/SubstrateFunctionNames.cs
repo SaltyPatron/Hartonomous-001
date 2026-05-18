@@ -34,7 +34,6 @@ public static class SubstrateFunctionNames
     public const string ClaimOrGetEmbeddingAnchor = "substrate.claim_or_get_embedding_anchor";
     public const string CodepointPropertyRows = "substrate.codepoint_property_rows";
     public const string CompositionRange = "substrate.composition_range";
-    public const string CountMissingEdgeTrajectories = "substrate.count_missing_edge_trajectories";
     public const string EmbeddingFireflyTokenHashes = "substrate.embedding_firefly_token_hashes";
     public const string GetFireflyCoords = "substrate.get_firefly_coords";
     public const string GetEdgeInfoByHandles = "substrate.get_edge_info_by_handles";
@@ -46,7 +45,6 @@ public static class SubstrateFunctionNames
     public const string ModelVocabRecovered = "substrate.model_vocab_recovered";
     public const string PhysicalityLineString4d = "substrate.physicality_linestring4d";
     public const string PhysicalityPoint4d = "substrate.physicality_point4d";
-    public const string PopulateEdgeTrajectories = "substrate.populate_edge_trajectories";
     public const string PopulateBlocks = "substrate.populate_blocks";
     public const string PopulateBreakProperties = "substrate.populate_break_properties";
     public const string PopulateDeprels = "substrate.populate_deprels";
@@ -54,24 +52,7 @@ public static class SubstrateFunctionNames
     public const string PopulateLanguages = "substrate.populate_languages";
     public const string PopulateMorphFeatures = "substrate.populate_morph_features";
     public const string PromptDocumentReady = "substrate.prompt_document_ready";
-    public const string PopulateBlocksFromExt = "substrate.populate_blocks_from_ext";
-    public const string PopulateBreakPropertiesFromExt = "substrate.populate_break_properties_from_ext";
-    // Retired 2026-05-17 per Step J — replaced by C# producer passes:
-    // public const string PopulateCodepointAtomsChunk = "substrate.populate_codepoint_atoms_chunk";
-    public const string PopulateCodepointPropertyRangeFromExt = "substrate.populate_codepoint_property_range_from_ext";
-    public const string PopulateGeneralCategoriesFromExt = "substrate.populate_general_categories_from_ext";
     public const string PopulateScripts = "substrate.populate_scripts";
-    public const string PopulateScriptsFromExt = "substrate.populate_scripts_from_ext";
-    // Retired 2026-05-17 per Step J — replaced by C# producer passes that
-    // parse source files directly via UcdFlatXmlReader + IIngestionPipeline.
-    // public const string PopulateUnicodeCaseEdgesFromProperties = ...
-    // public const string PopulateUnicodeDecompositionEdgesFromExt = ...
-    // public const string PopulateUnicodeFullCaseMappingEdgesFromExt = ...
-    // public const string PopulateUnicodeConfusablesFromExt = ...
-    // public const string PopulateUnicodeStandardizedVariantsFromExt = ...
-    // public const string PopulateUnicodeRadicalStrokeFromExt = ...
-    // public const string PopulateUnicodeNamedSequencesFromExt = ...
-    // public const string PopulateUnicodeEmojiSequencesFromExt = ...
     public const string RecomposeContent = "substrate.recompose_content";
     public const string PreviewTargetArch = "substrate.preview_target_arch";
     public const string QueryAttentionComponents = "substrate.query_attention_components";
@@ -101,8 +82,6 @@ public static class SubstrateFunctionNames
     public const string Recall = "substrate.recall";
     public const string RefinementSummary = "substrate.refinement_summary";
     public const string RefinementSummaryTop = "substrate.refinement_summary_top";
-    public const string PrimeUnprimedEdgesChunk = "substrate.prime_unprimed_edges_chunk";
-    public const string ResetArenaPrimingState = "substrate.reset_arena_priming_state";
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
     public const string TraversalNeighbors = "substrate.traversal_neighbors";
@@ -138,7 +117,6 @@ public static class SubstrateFunctionNames
         ClaimOrGetEmbeddingAnchor,
         CodepointPropertyRows,
         CompositionRange,
-        CountMissingEdgeTrajectories,
         EmbeddingFireflyTokenHashes,
         GetFireflyCoords,
         GetEdgeInfoByHandles,
@@ -150,7 +128,6 @@ public static class SubstrateFunctionNames
         ModelVocabRecovered,
         PhysicalityLineString4d,
         PhysicalityPoint4d,
-        PopulateEdgeTrajectories,
         PopulateBlocks,
         PopulateBreakProperties,
         PopulateDeprels,
@@ -158,14 +135,7 @@ public static class SubstrateFunctionNames
         PopulateLanguages,
         PopulateMorphFeatures,
         PromptDocumentReady,
-        PopulateBlocksFromExt,
-        PopulateBreakPropertiesFromExt,
-        // PopulateCodepointAtomsChunk — retired 2026-05-17
-        PopulateCodepointPropertyRangeFromExt,
-        PopulateGeneralCategoriesFromExt,
         PopulateScripts,
-        PopulateScriptsFromExt,
-        // PopulateUnicode*FromExt entries retired 2026-05-17 per Step J
         RecomposeContent,
         PreviewTargetArch,
         QueryAttentionComponents,
@@ -195,8 +165,6 @@ public static class SubstrateFunctionNames
         Recall,
         RefinementSummary,
         RefinementSummaryTop,
-        PrimeUnprimedEdgesChunk,
-        ResetArenaPrimingState,
         ResolveEntityHandles,
         SignificanceContextIds,
         TraversalNeighbors,

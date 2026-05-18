@@ -26,26 +26,12 @@ public interface IIngestionPipeline : IAsyncDisposable
 
     /// <summary>
     /// Wait until all records submitted so far have been drained to substrate,
-    /// without closing the pipeline to later phase emissions.
+    /// without closing the pipeline to later phase emissions. Edge geometry
+    /// and per-arena significance priors are built inline at edge-emit by the
+    /// bundled-emit pipeline, so this method returns when channels are
+    /// quiescent — there is NO end-of-phase post-pass.
     /// </summary>
     Task DrainPendingAsync(CancellationToken ct);
-
-    /// <summary>
-    /// Populate edge trajectory geometry for all edges whose trajectories are
-    /// not yet set. Call once at the end of a decomposition phase rather than
-    /// per-batch.
-    /// </summary>
-    Task PopulateEdgeTrajectoriesAsync(CancellationToken ct);
-
-    /// <summary>
-    /// Prime <c>substrate.edge_significance</c> for every arena currently in
-    /// <c>substrate.significance_context</c>, inserting default-mu rows for
-    /// any edge that lacks a significance row for a given arena. AP-1
-    /// compliant: cross-products against ALL arenas present at call time —
-    /// do not filter or cherry-pick. Call once at the end of a decomposition
-    /// phase after <see cref="PopulateEdgeTrajectoriesAsync"/>.
-    /// </summary>
-    Task PrimeAllSignificanceAsync(CancellationToken ct);
 
     PipelineStats Stats { get; }
 

@@ -48,7 +48,10 @@ typedef struct xml_attr {
     const char *value;    /* NUL-terminated, entity-decoded */
 } xml_attr;
 
-#define XML_MAX_ATTRS 128
+/* CJK Unihan codepoints in ucd.all.flat.xml carry many kIRG_-prefixed and
+ * kHanYu / kCantonese / etc. attributes. The largest entries observed in
+ * UCD 17.0.0 push past 160; 256 gives headroom and stays in stack budget. */
+#define XML_MAX_ATTRS 256
 
 typedef struct xml_pull {
     /* input */

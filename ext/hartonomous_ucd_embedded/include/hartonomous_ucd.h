@@ -5,8 +5,8 @@
  * BLAKE3 hash, 4D Super-Fibonacci centroid, Hilbert code, and reverse
  * hash lookup, but cannot link against PostgreSQL.
  *
- * Wire format: identical to the per-block layout produced by
- * scripts/build/generate_unicode_tables.py — interoperable byte-for-byte
+ * Wire format: identical to the per-block layout produced by the codegen
+ * tools under ext/libhartonomous/codegen/ — interoperable byte-for-byte
  * with the PostgreSQL extension's loader.
  *
  * Memory model:
