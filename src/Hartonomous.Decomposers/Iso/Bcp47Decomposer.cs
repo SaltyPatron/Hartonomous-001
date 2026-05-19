@@ -143,7 +143,9 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
                     [
                         new EdgeMemberSpec(subtagHandle, "source", 0),
                         new EdgeMemberSpec(descHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_alternate_name"));
                     edgeCount++;
                 }
 
@@ -154,7 +156,9 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
                     [
                         new EdgeMemberSpec(subtagHandle, "source", 0),
                         new EdgeMemberSpec(prefHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("superseded_by"));
                     edgeCount++;
                 }
 
@@ -165,7 +169,9 @@ public sealed partial class Bcp47Decomposer : BaseDecomposer
                     [
                         new EdgeMemberSpec(subtagHandle, "source", 0),
                         new EdgeMemberSpec(scriptHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_script"));
                     edgeCount++;
                 }
             }

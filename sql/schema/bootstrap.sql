@@ -88,6 +88,10 @@
 -- @include schema/seed/provenance.sql
 -- @include schema/seed/bidi_class.sql
 -- @include schema/seed/east_asian_width.sql
+-- @include schema/seed/general_category.sql
+-- @include schema/seed/script.sql
+-- @include schema/seed/block.sql
+-- @include schema/seed/break_property.sql
 -- @include schema/seed/lexname.sql
 -- @include schema/seed/pos.sql
 -- @include schema/seed/edge_type.sql
@@ -95,6 +99,14 @@
 
 -- ── Phase 7: core tables + LIST partitions ───────────────────────────
 -- @include schema/tables/core/entity.sql
+-- @include schema/tables/core/entity_p0.sql
+-- @include schema/tables/core/entity_p1.sql
+-- @include schema/tables/core/entity_p2.sql
+-- @include schema/tables/core/entity_p3.sql
+-- @include schema/tables/core/entity_p4.sql
+-- @include schema/tables/core/entity_p5.sql
+-- @include schema/tables/core/entity_p6.sql
+-- @include schema/tables/core/entity_p7.sql
 -- @include schema/tables/core/edge.sql
 -- @include schema/tables/core/edge_structural.sql
 -- @include schema/tables/core/edge_cross_lingual.sql
@@ -107,23 +119,69 @@
 -- @include schema/tables/core/edge_model_cross_content.sql
 -- @include schema/tables/core/edge_default.sql
 -- @include schema/tables/core/edge_member.sql
--- @include schema/tables/core/edge_member_structural.sql
--- @include schema/tables/core/edge_member_cross_lingual.sql
--- @include schema/tables/core/edge_member_cross_modal.sql
--- @include schema/tables/core/edge_member_unicode.sql
--- @include schema/tables/core/edge_member_model.sql
--- @include schema/tables/core/edge_member_model_concept_similarity.sql
--- @include schema/tables/core/edge_member_model_attention_pattern.sql
--- @include schema/tables/core/edge_member_model_ffn_factor.sql
--- @include schema/tables/core/edge_member_model_cross_content.sql
--- @include schema/tables/core/edge_member_default.sql
+-- @include schema/tables/core/edge_member_p0.sql
+-- @include schema/tables/core/edge_member_p1.sql
+-- @include schema/tables/core/edge_member_p2.sql
+-- @include schema/tables/core/edge_member_p3.sql
+-- @include schema/tables/core/edge_member_p4.sql
+-- @include schema/tables/core/edge_member_p5.sql
+-- @include schema/tables/core/edge_member_p6.sql
+-- @include schema/tables/core/edge_member_p7.sql
 -- @include schema/tables/core/physicality.sql
 -- @include schema/tables/core/physicality_entity.sql
+-- @include schema/tables/core/physicality_entity_p0.sql
+-- @include schema/tables/core/physicality_entity_p1.sql
+-- @include schema/tables/core/physicality_entity_p2.sql
+-- @include schema/tables/core/physicality_entity_p3.sql
+-- @include schema/tables/core/physicality_entity_p4.sql
+-- @include schema/tables/core/physicality_entity_p5.sql
+-- @include schema/tables/core/physicality_entity_p6.sql
+-- @include schema/tables/core/physicality_entity_p7.sql
 -- @include schema/tables/core/physicality_firefly.sql
+-- @include schema/tables/core/physicality_firefly_p0.sql
+-- @include schema/tables/core/physicality_firefly_p1.sql
+-- @include schema/tables/core/physicality_firefly_p2.sql
+-- @include schema/tables/core/physicality_firefly_p3.sql
+-- @include schema/tables/core/physicality_firefly_p4.sql
+-- @include schema/tables/core/physicality_firefly_p5.sql
+-- @include schema/tables/core/physicality_firefly_p6.sql
+-- @include schema/tables/core/physicality_firefly_p7.sql
 -- @include schema/tables/core/physicality_content.sql
+-- @include schema/tables/core/physicality_content_p0.sql
+-- @include schema/tables/core/physicality_content_p1.sql
+-- @include schema/tables/core/physicality_content_p2.sql
+-- @include schema/tables/core/physicality_content_p3.sql
+-- @include schema/tables/core/physicality_content_p4.sql
+-- @include schema/tables/core/physicality_content_p5.sql
+-- @include schema/tables/core/physicality_content_p6.sql
+-- @include schema/tables/core/physicality_content_p7.sql
 -- @include schema/tables/core/physicality_entity_shape.sql
+-- @include schema/tables/core/physicality_entity_shape_p0.sql
+-- @include schema/tables/core/physicality_entity_shape_p1.sql
+-- @include schema/tables/core/physicality_entity_shape_p2.sql
+-- @include schema/tables/core/physicality_entity_shape_p3.sql
+-- @include schema/tables/core/physicality_entity_shape_p4.sql
+-- @include schema/tables/core/physicality_entity_shape_p5.sql
+-- @include schema/tables/core/physicality_entity_shape_p6.sql
+-- @include schema/tables/core/physicality_entity_shape_p7.sql
 -- @include schema/tables/core/physicality_ingestion_trajectory.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p0.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p1.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p2.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p3.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p4.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p5.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p6.sql
+-- @include schema/tables/core/physicality_ingestion_trajectory_p7.sql
 -- @include schema/tables/core/physicality_default.sql
+-- @include schema/tables/core/physicality_default_p0.sql
+-- @include schema/tables/core/physicality_default_p1.sql
+-- @include schema/tables/core/physicality_default_p2.sql
+-- @include schema/tables/core/physicality_default_p3.sql
+-- @include schema/tables/core/physicality_default_p4.sql
+-- @include schema/tables/core/physicality_default_p5.sql
+-- @include schema/tables/core/physicality_default_p6.sql
+-- @include schema/tables/core/physicality_default_p7.sql
 -- @include schema/tables/core/entity_significance.sql
 -- @include schema/tables/core/entity_significance_lexical.sql
 -- @include schema/tables/core/entity_significance_syntactic.sql
@@ -163,7 +221,20 @@
 -- @include schema/tables/junctions/entity_lexname.sql
 -- @include schema/tables/junctions/entity_language.sql
 -- @include schema/tables/junctions/entity_morph_feature.sql
--- @include schema/tables/junctions/codepoint_property.sql
+-- Per-codepoint UCD property analytics caches (Gate 1 #38 refactor 2026-05-18).
+-- Replaces the deleted wide flat substrate.codepoint_property (25-column junction
+-- with 7 indexes + 9 FKs — wrong substrate shape; substrate truth lives on the
+-- has_cp_* typed edges in substrate.edge). These narrow per-property tables are
+-- denormalized for index-locality on "all codepoints of property X" queries.
+-- @include schema/tables/junctions/cp_general_category.sql
+-- @include schema/tables/junctions/cp_script.sql
+-- @include schema/tables/junctions/cp_block.sql
+-- @include schema/tables/junctions/cp_bidi_class.sql
+-- @include schema/tables/junctions/cp_east_asian_width.sql
+-- @include schema/tables/junctions/cp_grapheme_break.sql
+-- @include schema/tables/junctions/cp_word_break.sql
+-- @include schema/tables/junctions/cp_sentence_break.sql
+-- @include schema/tables/junctions/cp_line_break.sql
 -- @include schema/tables/junctions/model_architecture_class.sql
 -- @include schema/tables/junctions/tensor_tensor_role.sql
 -- @include schema/tables/junctions/pattern_deprel.sql
@@ -200,12 +271,16 @@
 -- ── Phase 12: indexes ─────────────────────────────────────────────────
 -- @include schema/indexes/idx_block_range.sql
 -- @include schema/indexes/idx_break_property_category.sql
--- @include schema/indexes/idx_codepoint_property_block.sql
--- @include schema/indexes/idx_codepoint_property_codepoint.sql
--- @include schema/indexes/idx_codepoint_property_bidi.sql
--- @include schema/indexes/idx_codepoint_property_eaw.sql
--- @include schema/indexes/idx_codepoint_property_gc.sql
--- @include schema/indexes/idx_codepoint_property_script.sql
+-- Per-codepoint UCD property analytics-cache reverse indexes (Gate 1 #38).
+-- @include schema/indexes/idx_cp_general_category_by_id.sql
+-- @include schema/indexes/idx_cp_script_by_id.sql
+-- @include schema/indexes/idx_cp_block_by_id.sql
+-- @include schema/indexes/idx_cp_bidi_class_by_id.sql
+-- @include schema/indexes/idx_cp_east_asian_width_by_id.sql
+-- @include schema/indexes/idx_cp_grapheme_break_by_id.sql
+-- @include schema/indexes/idx_cp_word_break_by_id.sql
+-- @include schema/indexes/idx_cp_sentence_break_by_id.sql
+-- @include schema/indexes/idx_cp_line_break_by_id.sql
 -- @include schema/indexes/idx_comparison_event_arena.sql
 -- @include schema/indexes/idx_comparison_event_session.sql
 -- @include schema/indexes/idx_edge_type_category.sql
@@ -340,8 +415,15 @@
 -- @include schema/functions/composition_range.sql
 -- @include schema/functions/composition_subtrajectory.sql
 -- @include schema/functions/composition_parents.sql
--- @include schema/functions/recompose_text.sql
--- @include schema/functions/recompose_text_bulk.sql
+-- substrate.recompose_text / recompose_text_bulk removed 2026-05-18 (Gate 1
+-- reopened item #36 in modular-wishing-koala plan). Document-scale
+-- recomposition is now the C# bulk-tier walker
+-- (Hartonomous.Core.Recomposition.BulkTierContentWalk; thin wrapper at
+-- Hartonomous.Recomposers.ContentRecomposer; Engine fast-path callers route
+-- via NpgsqlEntityReader.RecomposeTextAsync). PG-side recursive-CTE walkers
+-- were wrong-shape — single-query recursive CTE over physicality.geom forced
+-- the executor to materialize intermediate state at every recursion depth,
+-- multi-minute for documents. See plan §"Gate 1 Reopening" #36 + AP-29.
 -- @include schema/functions/populate_sequence_following_edges.sql
 -- @include schema/tables/derived/position_embedding_aggregate.sql
 -- @include schema/indexes/position_embedding_aggregate_ordinal_idx.sql
@@ -388,7 +470,8 @@
 -- IIngestionPipeline.CreateBatch. Per Principle 1 — blob and substrate
 -- are siblings derived from the same source; neither populates the other.
 -- @include schema/functions/unicode_edge_hash.sql
--- @include schema/functions/recompose_content.sql
+-- substrate.recompose_content removed 2026-05-18 (Gate 1 reopened item #36) —
+-- see C# ContentRecomposer comment above.
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local
 --  temp table — no persistent staging, no auto-discovered drain manifest.)

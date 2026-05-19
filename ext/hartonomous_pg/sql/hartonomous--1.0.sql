@@ -449,18 +449,11 @@ CREATE OR REPLACE FUNCTION substrate.similarity_topk(
     AS 'MODULE_PATHNAME', 'pg_similarity_topk'
     LANGUAGE C STABLE STRICT;
 
--- ── substrate.recompose_walk ────────────────────────────────────────────
--- Iterative DFS over physicality-backed composition metadata starting at p_root_hash. Emits the
--- root first then descendants in left-to-right depth-first order. content_label
--- is always NULL — substrate.entity is hash-only; the C# layer joins content
--- (codepoint_value, classification, etc.) out-of-band.
-CREATE OR REPLACE FUNCTION substrate.recompose_walk(
-    p_root_hash bytea,
-    p_max_depth int DEFAULT 16
-) RETURNS TABLE (entity_hash bytea, ordinal_position int, content_label text, depth int)
-    AS 'MODULE_PATHNAME', 'pg_recompose_walk'
-    LANGUAGE C STABLE STRICT;
-
+-- substrate.recompose_walk and the pg_recompose_walk C SRF were removed
+-- 2026-05-18 (Gate 1 reopened item #36 in modular-wishing-koala plan).
+-- Document-scale recomposition is now the C# bulk-tier walker
+-- (Hartonomous.Core.Recomposition.BulkTierContentWalk). The N+1 SPI per-node
+-- DFS the C SRF did was wrong-shape — see AP-29 / plan §"Gate 1 Reopening".
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- (9) linestring4d — varlena polyline type for 4D trajectories

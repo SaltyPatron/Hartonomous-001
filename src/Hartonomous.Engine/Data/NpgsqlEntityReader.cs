@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Compute.Common;
@@ -6,6 +7,7 @@ using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Engine;
 using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Recomposition;
 using Npgsql;
 
 namespace Hartonomous.Engine.Data;
@@ -218,13 +220,16 @@ public sealed class NpgsqlEntityReader : IEntityReader, ITextRecompositionReader
 
     public async Task<string?> RecomposeTextAsync(EntityHandle root, int maxDepth, CancellationToken ct)
     {
+        // Delegate to the C# bulk-tier walker in Core (Gate 1 item #36). The
+        // walker handles its own connection lifetime — but we own the
+        // NpgsqlDataSource here, so a fresh connection per call is the
+        // cleanest contract.
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = NpgsqlSubstrateCommand.CreateFunction(
-            conn,
-            SubstrateFunctionNames.RecomposeText,
-            new object?[] { root.Hash, maxDepth });
-
-        object? result = await cmd.ExecuteScalarAsync(ct);
-        return result is DBNull or null ? null : (string)result;
+        // maxDepth=0 is a contract violation in the bulk walker; the
+        // ITextRecompositionReader caller may pass 0 to mean "default" so
+        // clamp upward.
+        int depth = maxDepth > 0 ? maxDepth : 16;
+        byte[] bytes = await BulkTierContentWalk.RecomposeAsync(conn, root.Hash, depth, ct);
+        return bytes.Length == 0 ? null : Encoding.UTF8.GetString(bytes);
     }
 }

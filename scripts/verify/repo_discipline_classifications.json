@@ -126,6 +126,13 @@
     "reason": "Both NpgsqlCommand instantiations in SubstrateTierWalker call named substrate-side SRFs (substrate.get_composition_children and substrate.recompose_text). The inline string IS the function-call boundary, not constructed user SQL; parameters are bound via NpgsqlParameter."
   },
   {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Core/Recomposition/BulkTierContentWalk.cs",
+    "text_contains": "await using NpgsqlCommand cmd = new(Sql, conn);",
+    "classification": "allowed-substrate-boundary",
+    "reason": "C# bulk-tier client-side recompose walker (Gate 1 #36). Both NpgsqlCommand instantiations are single bulk SELECT queries against substrate.* tables — one against substrate.physicality with ST_AsEWKB to fetch tier-N composition geometries by entity_hash array, one against substrate.entity to bulk-resolve child hash prefixes via the (hash_bits_0_51, hash_bits_52_103) composite-btree. Parameters bound via NpgsqlParameter (bytea[] / bigint[]); no string interpolation, no RBAR. Replaces the deleted PG-side recursive-CTE recompose_text / recompose_content / pg_recompose_walk paths."
+  },
+  {
     "rule": "inline-sql-csharp",
     "path": "src/Hartonomous.Engine/Substrate/SubstrateTierWalker.cs",
     "text_contains": "SELECT child_hash FROM substrate.get_composition_children",
@@ -187,6 +194,13 @@
     "text_contains": "END LOOP;",
     "classification": "allowed-bounded-reconstruction",
     "reason": "Termination of the per-vertex pack loop; same justification as the FOR opener."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Decomposers/Ucd/UnicodeDecomposer.cs",
+    "text_contains": "await using NpgsqlCommand command = new(sql, connection)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Single inline COUNT(*) materialization-validation query against substrate.* tables, replacing the deleted substrate.ucd_materialization_counts() SRF. One round trip, set-based, no per-row IO."
   },
   {
     "rule": "direct-npgsql-command",

@@ -109,6 +109,83 @@ public sealed class SubstrateTextDecomposerTests
         Assert.Equal(1, TextDecomposeNative.UcdTablesReady());
     }
 
+    /// <summary>
+    /// Gate-1 #37 lock-in: raw text decomposition has no basis for POS / sense /
+    /// language attestation. Those come exclusively from observer sources (UD,
+    /// WordNet, OMW, Wiktionary). The "rake noun vs verb" disambiguation lives
+    /// on edges those sources attest — not on edges raw text invents.
+    ///
+    /// If a future change makes <c>SubstrateTextDecomposer</c> (or the native
+    /// <c>hartonomous_text_decompose</c>) emit any <c>has_pos</c> /
+    /// <c>has_sense</c> / <c>has_language</c> / <c>has_morph_feature</c> /
+    /// <c>has_lexname</c> / <c>has_deprel</c> edge — or any
+    /// <c>entity_pos</c> / <c>entity_language</c> / <c>entity_morph_feature</c>
+    /// / <c>entity_lexname</c> junction — this test fails with the exact
+    /// emission recorded.
+    /// </summary>
+    [Fact]
+    public void EmitStatic_RawText_EmitsNoPosSenseOrLanguageRecords()
+    {
+        if (!TryUseNativeTextDecomposer())
+        {
+            return;
+        }
+
+        ClassificationProbingBatch batch = new();
+        TextDecomposeOptions options = new("user_session", "text_composition", 1500.0);
+
+        SubstrateTextDecomposer.EmitStatic(batch, "rake the rakes"u8, options);
+
+        Assert.Empty(batch.Edges);
+        Assert.Empty(batch.Junctions);
+    }
+
+    private sealed class ClassificationProbingBatch : IIngestionBatch
+    {
+        public string ProvenanceCode { get; } = "user_session";
+        public List<(Hash32 Hash, string Type)> Entities { get; } = [];
+        public List<(EntityHandle Entity, string Type)> Physicalities { get; } = [];
+        public List<string> Edges { get; } = [];
+        public List<string> Junctions { get; } = [];
+        public int EntityCount => Entities.Count;
+        public int EdgeCount => Edges.Count;
+
+        public EntityHandle AddEntity(Hash32 hash, string entityTypeCode)
+        {
+            Entities.Add((hash, entityTypeCode));
+            return new EntityHandle(hash, entityTypeCode);
+        }
+
+        public void AddPhysicality(EntityHandle entity, string physicalityTypeCode, byte[] geomWkb)
+            => Physicalities.Add((entity, physicalityTypeCode));
+
+        public void AddSignificance(EntityHandle entity, string contextTypeCode, double initialMu, string attestationTypeCode = "provenance_authority_corroboration")
+        {
+        }
+
+        public void AddCompositionChild(EntityHandle parent, int ordinal, EntityHandle child, int rleCount = 1)
+        {
+        }
+
+        public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
+            => Edges.Add(edgeTypeCode);
+
+        public void AddJunction(string junctionTable, EntityHandle entity, int referenceId, double? mu = null, string attestationTypeCode = "lexical_curated_relation")
+            => Junctions.Add(junctionTable);
+
+        public void AddPhysicalityPoint4d(EntityHandle entity, string physicalityTypeCode, double x1, double x2, double x3, double x4)
+        {
+        }
+
+        public void AddPhysicalityLineString4d(EntityHandle entity, string physicalityTypeCode, ReadOnlySpan<(double X1, double X2, double X3, double X4)> vertices)
+        {
+        }
+
+        public void AddEntityModelSource(EntityHandle entity, long modelSourceId)
+        {
+        }
+    }
+
     private static bool TryUseNativeTextDecomposer()
     {
         try

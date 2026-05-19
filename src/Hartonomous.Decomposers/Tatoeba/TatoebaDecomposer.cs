@@ -277,16 +277,24 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         // Cross-link attestation (Step I of ancient-launching-papert plan): emit
         // has_language edge on the unified substrate.edge_significance surface so
         // cross-source language-coverage consensus accumulates. language_name
-        // entity is content-addressed by BLAKE3 over the ISO 639-3 3-letter code.
+        // entity is content-addressed by BLAKE3 over the ISO 639-3 3-letter code
+        // — matches CrossLinkAttestation.EmitLanguageAttestation so UD/OMW/
+        // WordNet/Wiktionary land on the same language_name entity per-code.
+        //
+        // Gate 1 Reopening item #32: 5-arg AddEdge with EdgeArenaRouter rating
+        // events so per-sentence language attestation fires one Glicko event
+        // per routed arena (source_authority for has_language). Substitutes
+        // the prior 3-arg form that produced no Glicko games.
         Hartonomous.Core.Compute.Common.Hash32 langHash =
             Hartonomous.Core.Compute.Common.Blake3.Hash32(System.Text.Encoding.UTF8.GetBytes(row.Lang));
         EntityHandle langHandle = batch.AddEntity(langHash, "language_name");
-        EdgeMemberSpec[] langMembers =
+        batch.AddEdge("has_language", ProvenanceCode,
         [
             new EdgeMemberSpec(sentEntity, "source", 0),
             new EdgeMemberSpec(langHandle, "target", 1),
-        ];
-        batch.AddEdge("has_language", ProvenanceCode, langMembers);
+        ],
+        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+        EdgeArenaRouter.EventsFor("has_language"));
         edgeCount++;
     }
 

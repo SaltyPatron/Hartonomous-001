@@ -1,21 +1,30 @@
 using System.CommandLine;
 using System.IO;
-using Hartonomous.Core.Data;
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Recomposers;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Hartonomous.Cli.Commands;
 
 /// <summary>
-/// Recompose UTF-8 content from a substrate entity hash. The load-bearing
-/// reconstruction-property demonstration: ONE substrate query via the C
-/// extension's pg_recompose_walk + cp_from_hash mmap lookup + UTF-8 byte
-/// assembly, returning the full content as bytea. Holistic stack — C does
-/// the DFS walk + memory-direct codepoint resolution; SQL hosts the
-/// recursive query; C# orchestrates with one ExecuteScalarAsync.
+/// Recompose UTF-8 content from a substrate entity hash via the C# bulk-tier
+/// <see cref="ContentRecomposer"/> (Gate 1 reopened item #36 in the
+/// modular-wishing-koala plan).
 ///
-/// Per the substrate's geometry-as-indexed-manifest contract: total walk
-/// runtime is O(tier-depth × bbtree-probe-microseconds), not O(document-length).
-/// Bible-size documents (~200K words) reconstruct in sub-second.
+/// <para>
+/// Architecture: N+1 BULK PG queries (one geom-fetch + one hash-resolve per
+/// composition tier; ~5–6 tiers for text), parsed entirely in C# against
+/// the substrate's mantissa-packed LINESTRINGZM physicality manifest.
+/// Codepoint leaves resolve via the embedded UCD blob (microsecond reverse
+/// lookup); the previous PG-side recursive-CTE walker
+/// (<c>substrate.recompose_content</c>) was wrong-shape and is gone.
+/// </para>
+///
+/// <para>
+/// Performance contract: sub-second for Bible-size documents (Moby Dick,
+/// ~250K codepoint leaves, verified in TextRoundTripTests.MobyDick_FullRoundTrip).
+/// </para>
 /// </summary>
 internal static class RecomposeContentCommand
 {
@@ -36,13 +45,14 @@ internal static class RecomposeContentCommand
             description: "Output file path. If omitted, writes assembled UTF-8 to stdout.");
         Option<int> depthOpt = new(
             DepthAliases,
-            getDefaultValue: () => 16,
-            description: "Maximum walk depth (defends against pathological cycles; default 16).");
+            getDefaultValue: () => 32,
+            description: "Maximum tier descent depth (defends against pathological cycles; default 32).");
 
         Command cmd = new(
             "recompose-content",
-            "Reconstruct UTF-8 content from a substrate document/content entity hash via the substrate's "
-            + "geometry-as-indexed-manifest tree walk. ONE PG round trip; sub-second for Bible-size documents.");
+            "Reconstruct UTF-8 content from a substrate document/content entity hash via the C# "
+            + "bulk-tier walker over LINESTRINGZM mantissa-packed child manifests. Sub-second for "
+            + "Bible-size documents (~250K codepoint leaves).");
         cmd.AddOption(connOpt);
         cmd.AddOption(hashOpt);
         cmd.AddOption(outOpt);
@@ -66,22 +76,11 @@ internal static class RecomposeContentCommand
             }
 
             await using NpgsqlDataSource ds = NpgsqlDataSource.Create(conn);
-            await using NpgsqlConnection connection = await ds.OpenConnectionAsync();
-            await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-                connection,
-                SubstrateFunctionNames.RecomposeContent,
-                new object?[] { hashBytes, maxDepth });
-            command.CommandTimeout = 60;
+            ContentRecomposer recomposer = new(ds, NullLogger<ContentRecomposer>.Instance);
 
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
-            object? raw = await command.ExecuteScalarAsync();
+            byte[] bytes = await recomposer.RecomposeAsync(new Hash32(hashBytes), maxDepth, CancellationToken.None);
             sw.Stop();
-            if (raw is not byte[] bytes)
-            {
-                Console.Error.WriteLine($"substrate.recompose_content returned {raw?.GetType().Name ?? "NULL"} (expected bytea)");
-                Environment.ExitCode = 1;
-                return;
-            }
 
             if (outPath is not null)
             {

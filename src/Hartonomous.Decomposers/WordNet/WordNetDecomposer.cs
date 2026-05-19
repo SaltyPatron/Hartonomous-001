@@ -332,13 +332,48 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         string udPos = WordNetParser.PosCharToUdPos(WordNetParser.SsTypeToPos(syn.SsType));
                         if (posIdMap.TryGetValue(udPos, out int posId))
                         {
+                            // Legacy junction (denormalized analytics cache per AP-8)
                             localBatch.AddJunction("entity_pos", synsetHandle, posId, TrustPriorMu);
+
+                            // Unified Glicko surface — has_pos edge on the
+                            // content-hashed POS reference-vocabulary entity.
+                            // Idempotent: same code → same hash → one
+                            // substrate.entity row regardless of how many
+                            // decomposers emit it. EdgeArenaRouter routes
+                            // the edge into lexical_disambiguation +
+                            // source_authority + corroboration_strength
+                            // arenas; cross-source POS attestations
+                            // accumulate on the same edge_significance row.
+                            Hash32 posHash = ReferenceVocabularyHashes.PosEntityHash(udPos);
+                            EntityHandle posHandle = localBatch.AddEntity(posHash, "pos");
+                            localBatch.AddEdge("has_pos", ProvenanceCode,
+                            [
+                                new EdgeMemberSpec(synsetHandle, "source", 0),
+                                new EdgeMemberSpec(posHandle,    "target", 1),
+                            ],
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor("has_pos"));
+                            Bump("has_pos");
                         }
 
                         string lexnameCode = GetLexname(syn.LexFileNum);
                         if (lexnameIdMap.TryGetValue(lexnameCode, out int lexnameId))
                         {
+                            // Legacy junction (denormalized analytics cache per AP-8)
                             localBatch.AddJunction("entity_lexname", synsetHandle, lexnameId);
+
+                            // Unified Glicko surface — has_lexname edge on the
+                            // content-hashed lexname reference-vocabulary entity.
+                            Hash32 lexnameHash = ReferenceVocabularyHashes.LexnameEntityHash(lexnameCode);
+                            EntityHandle lexnameHandle = localBatch.AddEntity(lexnameHash, "lexname");
+                            localBatch.AddEdge("has_lexname", ProvenanceCode,
+                            [
+                                new EdgeMemberSpec(synsetHandle,  "source", 0),
+                                new EdgeMemberSpec(lexnameHandle, "target", 1),
+                            ],
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor("has_lexname"));
+                            Bump("has_lexname");
                         }
 
                         for (int i = 0; i < memberHandles.Count; i++)
@@ -519,9 +554,24 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 morphEntityCount++;
                 entityCount++;
 
-                if (posIdMap.TryGetValue(WordNetParser.PosCharToUdPos(mex.Pos), out int infPosId))
+                string infUdPos = WordNetParser.PosCharToUdPos(mex.Pos);
+                if (posIdMap.TryGetValue(infUdPos, out int infPosId))
                 {
+                    // Legacy junction (denormalized analytics cache per AP-8)
                     batch.AddJunction("entity_pos", inflectedHandle, infPosId, TrustPriorMu);
+
+                    // Unified Glicko surface — has_pos edge on the
+                    // content-hashed POS reference-vocabulary entity.
+                    Hash32 infPosHash = ReferenceVocabularyHashes.PosEntityHash(infUdPos);
+                    EntityHandle infPosHandle = batch.AddEntity(infPosHash, "pos");
+                    batch.AddEdge("has_pos", ProvenanceCode,
+                    [
+                        new EdgeMemberSpec(inflectedHandle, "source", 0),
+                        new EdgeMemberSpec(infPosHandle,    "target", 1),
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_pos"));
+                    Bump("has_pos");
                 }
                 CrossLinkAttestation.EmitLanguageAttestation(batch, inflectedHandle, "eng", engLangId, ProvenanceCode);
 

@@ -1,0 +1,1 @@
+CREATE INDEX idx_cp_general_category_by_id ON substrate.cp_general_category(general_category_id, entity_hash);

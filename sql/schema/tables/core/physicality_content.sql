@@ -25,7 +25,8 @@
 -- interlinear, etc.).
 --
 CREATE TABLE substrate.physicality_content
-    PARTITION OF substrate.physicality FOR VALUES IN (3);
+    PARTITION OF substrate.physicality FOR VALUES IN (3)
+    PARTITION BY LIST (partition_bucket);
 -- LINESTRING / MULTILINESTRING for ordered trajectories (text, audio,
 -- code). POLYGON / MULTIPOLYGON for closed-region content (image
 -- regions, video shots whose spatial extent matters more than order).

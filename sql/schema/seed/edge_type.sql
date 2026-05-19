@@ -218,7 +218,23 @@ FROM (VALUES
     ('has_morph_feature',        'structural',    'word_form',          'text_composition'),    -- 122  (target = "Gender=Masc"/"Number=Sing"/etc. as text_composition)
     ('has_deprel_pattern',       'structural',    'word_form',          'text_composition'),    -- 123  (target = dep relation "nsubj"/"obj"/etc. as text_composition)
     ('has_lexname',              'structural',    'synset',             'text_composition'),    -- 124  (target = WordNet lexname "noun.animal"/etc. as text_composition)
-    ('has_language',             'cross_lingual', NULL,                 'language_name')        -- 125  (polymorphic source — any entity that asserts a language tag)
+    ('has_language',             'cross_lingual', NULL,                 'language_name'),       -- 125  (polymorphic source — any entity that asserts a language tag)
+    -- ── Generic classification attestation (Gate 1 #38 refactor 2026-05-19) ─
+    -- Collapses per-dimension classification edge proliferation into a single
+    -- polymorphic edge. Source = any classifiable content entity (codepoint,
+    -- word_form, lemma, synset, ...). Target = content-hashed classification
+    -- entity whose entity_type discriminates the dimension (general_category /
+    -- script / block / bidi_class / east_asian_width / break_property / pos /
+    -- lexname / morph_feature / deprel / language_name / ...). Arena routing
+    -- by (edge_type × target_entity_type) per AP-30/AP-38 collapse principle —
+    -- discrimination via (target_type × provenance × arena), not via
+    -- per-dimension edge_type proliferation.
+    --
+    -- Migrating existing has_pos / has_lexname / has_morph_feature /
+    -- has_deprel_pattern edges onto this generic kind is staged for a
+    -- follow-up; both surfaces will coexist transitionally until the
+    -- migration completes.
+    ('has_classification',       'structural',    NULL,                 NULL)                   -- 126
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;

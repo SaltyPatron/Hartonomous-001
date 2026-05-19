@@ -277,10 +277,29 @@ public sealed partial class UdDecomposer : BaseDecomposer
             // POS and morph feature evidence — written inline as junction rows
             // keyed by the in-batch word_form hash. No phase-wide hash list,
             // no separate FlushJunctionsAsync pass.
+            //
+            // AP-8 unified Glicko surface (Gate 1 Reopening item #33): in
+            // addition to the legacy junction row (kept as denormalized
+            // analytics cache), the per-token POS observation emits a typed
+            // has_pos edge on a content-hashed pos entity. Each UD token
+            // attestation fires one Glicko event per arena routed via
+            // EdgeArenaRouter so cross-source POS consensus accumulates on
+            // substrate.edge_significance.
             if (tok.Upos is not null && posMap.TryGetValue(tok.Upos, out int posId))
             {
                 batch.AddJunction("entity_pos", wfHandle, posId, TrustPriorMu);
                 posWritten++;
+
+                Hash32 posEntityHash = ReferenceVocabularyHashes.PosEntityHash(tok.Upos);
+                EntityHandle posHandle = batch.AddEntity(posEntityHash, "pos");
+                batch.AddEdge("has_pos", ProvenanceCode,
+                [
+                    new EdgeMemberSpec(wfHandle, "source", 0),
+                    new EdgeMemberSpec(posHandle, "target", 1),
+                ],
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_pos"));
+                edgeCount++;
             }
 
             if (tok.Feats.Count > 0)
@@ -291,6 +310,23 @@ public sealed partial class UdDecomposer : BaseDecomposer
                     {
                         batch.AddJunction("entity_morph_feature", wfHandle, mfId);
                         morphWritten++;
+
+                        // AP-8 unified Glicko surface: has_morph_feature edge
+                        // on a content-hashed morph_feature entity. Code form
+                        // "Key=Value" so Number=Sing and Gender=Fem land on
+                        // distinct entities; cross-source consensus accumulates
+                        // on each per-feature identity.
+                        string morphCode = $"{f.Key}={f.Value}";
+                        Hash32 morphEntityHash = ReferenceVocabularyHashes.MorphFeatureEntityHash(morphCode);
+                        EntityHandle morphHandle = batch.AddEntity(morphEntityHash, "morph_feature");
+                        batch.AddEdge("has_morph_feature", ProvenanceCode,
+                        [
+                            new EdgeMemberSpec(wfHandle, "source", 0),
+                            new EdgeMemberSpec(morphHandle, "target", 1),
+                        ],
+                        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                        EdgeArenaRouter.EventsFor("has_morph_feature"));
+                        edgeCount++;
                     }
                 }
             }

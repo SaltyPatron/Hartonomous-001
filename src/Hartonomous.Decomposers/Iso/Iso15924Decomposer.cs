@@ -143,7 +143,9 @@ public sealed partial class Iso15924Decomposer : BaseDecomposer
                     [
                         new EdgeMemberSpec(codeHandle, "source", 0),
                         new EdgeMemberSpec(enHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_alternate_name"));
                     edgeCount++;
                 }
 
@@ -154,7 +156,9 @@ public sealed partial class Iso15924Decomposer : BaseDecomposer
                     [
                         new EdgeMemberSpec(codeHandle, "source", 0),
                         new EdgeMemberSpec(frHandle, "target", 1),
-                    ]);
+                    ],
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_alternate_name"));
                     edgeCount++;
                 }
             }

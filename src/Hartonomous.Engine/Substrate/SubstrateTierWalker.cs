@@ -3,10 +3,12 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Data;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Ingestion;
+using Hartonomous.Core.Recomposition;
 using Hartonomous.Core.Substrate;
 using Npgsql;
 using NpgsqlTypes;
@@ -34,10 +36,9 @@ namespace Hartonomous.Engine.Substrate;
 /// </para>
 ///
 /// <para>
-/// <see cref="ReconstructTextAsync"/> delegates to
-/// <c>substrate.recompose_text(root, max_depth)</c> — the substrate-side
-/// recursive walk that concatenates leaf codepoint bytes. One round
-/// trip for the whole reconstruction.
+/// <see cref="ReconstructTextAsync"/> delegates to the C# bulk-tier walker
+/// (<see cref="BulkTierContentWalk"/>) — replaces the removed
+/// <c>substrate.recompose_text</c> per Gate 1 reopened item #36.
 /// </para>
 /// </summary>
 public sealed class SubstrateTierWalker : ITierWalker
@@ -109,21 +110,12 @@ public sealed class SubstrateTierWalker : ITierWalker
         EntityHandle root,
         CancellationToken ct)
     {
+        // Gate 1 reopened item #36: C# bulk-tier walker replaces the
+        // PG-side recursive-CTE recompose_text. ~5–6 round trips for any
+        // document size, sub-second for Bible-size content.
         await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct);
-        await using NpgsqlCommand cmd = new(
-            "SELECT substrate.recompose_text($1, 100000)",
-            conn);
-        cmd.Parameters.Add(new NpgsqlParameter
-        {
-            NpgsqlDbType = NpgsqlDbType.Bytea,
-            Value = root.Hash.ToByteArray()
-        });
-
-        object? result = await cmd.ExecuteScalarAsync(ct);
-        if (result is null || result is DBNull)
-        {
-            return null;
-        }
-        return (string)result;
+        byte[] bytes = await BulkTierContentWalk.RecomposeAsync(
+            conn, root.Hash, maxDepth: 32, ct);
+        return bytes.Length == 0 ? null : Encoding.UTF8.GetString(bytes);
     }
 }

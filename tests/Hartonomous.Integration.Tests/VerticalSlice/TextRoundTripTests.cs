@@ -1,11 +1,12 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Monitoring;
-using Hartonomous.Core.Recomposition;
 using Hartonomous.Decomposers.Text;
 using Hartonomous.Engine.Data;
 using Hartonomous.Engine.Ingestion;
@@ -41,7 +42,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
 
     private NpgsqlDataSource _dataSource = null!;
     private NpgsqlReferenceDataReader _refReader = null!;
-    private NpgsqlEntityReader _entityReader = null!;
+    private ContentRecomposer _recomposer = null!;
     private StreamingIngestionPipeline _pipeline = null!;
     private NpgsqlCodepointPropertiesCache _cpProps = null!;
     private string _tempFile = null!;
@@ -50,7 +51,7 @@ public sealed class TextRoundTripTests : IAsyncLifetime
     {
         _dataSource = NpgsqlDataSource.Create(ConnectionString());
         _refReader = new NpgsqlReferenceDataReader(_dataSource);
-        _entityReader = new NpgsqlEntityReader(_dataSource);
+        _recomposer = new ContentRecomposer(_dataSource, NullLogger<ContentRecomposer>.Instance);
         _pipeline = new StreamingIngestionPipeline(
             ConnectionString(),
             _refReader,
@@ -103,13 +104,12 @@ public sealed class TextRoundTripTests : IAsyncLifetime
         EntityHandle? docHandle = decomposer.LastDocumentHandle;
         Assert.NotNull(docHandle);
 
-        // Recompose via the new substrate.recompose_text path (walks
-        // has_constituent edges to codepoint leaves).
-        TextRecomposer recomposer = new(_entityReader);
-        string recomposed = await recomposer.RecomposeAsync(
-            docHandle.Value,
-            new RecompositionOptions(),
+        // Recompose via the C# bulk-tier ContentRecomposer (Gate 1 item #36).
+        byte[] recomposedBytes = await _recomposer.RecomposeAsync(
+            docHandle.Value.Hash,
+            maxDepth: 16,
             CancellationToken.None);
+        string recomposed = Encoding.UTF8.GetString(recomposedBytes);
 
         Assert.Equal(Input, recomposed);
     }
@@ -142,11 +142,17 @@ public sealed class TextRoundTripTests : IAsyncLifetime
         EntityHandle? docHandle = decomposer.LastDocumentHandle;
         Assert.NotNull(docHandle);
 
-        TextRecomposer recomposer = new(_entityReader);
-        string recomposed = await recomposer.RecomposeAsync(
-            docHandle.Value, new RecompositionOptions(), CancellationToken.None);
+        Stopwatch sw = Stopwatch.StartNew();
+        byte[] recomposedBytes = await _recomposer.RecomposeAsync(
+            docHandle.Value.Hash, maxDepth: 32, CancellationToken.None);
+        sw.Stop();
+        string recomposed = Encoding.UTF8.GetString(recomposedBytes);
 
         string original = await File.ReadAllTextAsync(Source);
+        Console.WriteLine($"[MobyDick] recompose elapsed={sw.ElapsedMilliseconds}ms for {original.Length:N0} bytes");
+        Assert.True(
+            sw.ElapsedMilliseconds < 1000,
+            $"Moby Dick recompose took {sw.ElapsedMilliseconds}ms; budget is 1000ms.");
         Assert.Equal(original.Length, recomposed.Length);
         Assert.Equal(original, recomposed);
 

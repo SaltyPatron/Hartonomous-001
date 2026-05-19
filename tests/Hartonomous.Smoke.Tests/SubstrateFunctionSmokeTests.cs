@@ -73,12 +73,16 @@ public sealed class SubstrateFunctionSmokeTests
         long arenas = await _fx.ExecScalarLongAsync("SELECT count(*) FROM substrate.significance_context");
         long provenance = await _fx.ExecScalarLongAsync("SELECT count(*) FROM substrate.provenance");
 
-        Assert.Equal(21, entityTypes);
-        Assert.Equal(111, edgeTypes);
+        // Counts recomputed from seed files (sql/schema/seed/) and kept in
+        // sync with sql/schema/seed/validate.sql. AP-8 correction (2026-05-14)
+        // added 5 reference-vocabulary entity_type rows (pos, lexname,
+        // morph_feature, deprel, sense) — 23 + 5 = 28.
+        Assert.Equal(28, entityTypes);
+        Assert.Equal(133, edgeTypes);
         Assert.Equal(7, edgeRoles);
-        Assert.Equal(27, attestation);
-        Assert.Equal(10, arenas);
-        Assert.Equal(10, provenance);
+        Assert.Equal(3, attestation);
+        Assert.Equal(19, arenas);
+        Assert.Equal(63, provenance);
     }
 
     [Fact]

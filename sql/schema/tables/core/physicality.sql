@@ -51,8 +51,18 @@ CREATE TABLE substrate.physicality (
     entity_hash         substrate.hash_value NOT NULL,
     content_hash        substrate.hash_value NOT NULL,
     geom                geometry(GeometryZM) NOT NULL,
-    PRIMARY KEY (physicality_type_id, entity_hash, content_hash)
+    partition_bucket    SMALLINT NOT NULL
+        CHECK (partition_bucket = (get_byte(entity_hash, 0) & 7)),
+    PRIMARY KEY (physicality_type_id, entity_hash, content_hash, partition_bucket)
 ) PARTITION BY LIST (physicality_type_id);
+-- Two-level partitioning:
+-- Tier 1: LIST(physicality_type_id) — keeps modality / role separation
+--   (entity, content, firefly, entity_shape, ingestion_trajectory, default).
+-- Tier 2: LIST(partition_bucket = entity_hash byte 0 & 7) — 8 children per
+--   tier-1 partition. Same routing key as substrate.entity / edge_member.
+--   Worker K writes to (physicality_type_X_pK) for every modality X.
+-- PostgreSQL requires the leaf-level partition key (partition_bucket) to be
+-- in the PK / UNIQUE constraint at the root level.
 
 COMMENT ON TABLE substrate.physicality IS
     'ONE substrate-level geometric expression per (physicality_type_id, entity_hash, content_hash). PostGIS geometry(GeometryZM); substrate.st_4d_* operators extend PostGIS to honor the M dimension. Atom geom = POINTZM at real content-derived centroid (no packing — atoms have no children). Composition geom = LINESTRINGZM with mantissa-packed child refs via bb_pack_hash_lo / bb_pack_ordinal_rle / bb_pack_hash_hi / bb_pack_metadata — the geometry IS the indexed child manifest at every tier. content_hash distinguishes co-typed multi-source samples per entity.';

@@ -20,7 +20,8 @@
 --
 -- Modality lives on entity_type, NOT physicality_type.
 CREATE TABLE substrate.physicality_entity
-    PARTITION OF substrate.physicality FOR VALUES IN (1);
+    PARTITION OF substrate.physicality FOR VALUES IN (1)
+    PARTITION BY LIST (partition_bucket);
 -- CHECK admits every GeometryZM subtype so future modalities (audio,
 -- image regions, video frames, model-weight tensors) land in the same
 -- partition without a schema change. Modality is determined by the

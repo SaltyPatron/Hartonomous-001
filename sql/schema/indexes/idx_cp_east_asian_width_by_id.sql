@@ -1,0 +1,1 @@
+CREATE INDEX idx_cp_east_asian_width_by_id ON substrate.cp_east_asian_width(east_asian_width_id, entity_hash);

@@ -55,6 +55,69 @@ WITH src AS (SELECT * FROM pg_temp.junction_inflight)
         ON CONFLICT (entity_hash, deprel_id, attestation_type_id) DO NOTHING
         RETURNING 1
     )
+  , ins_cp_gc AS (
+        INSERT INTO substrate.cp_general_category (entity_hash, general_category_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_general_category'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, general_category_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_script AS (
+        INSERT INTO substrate.cp_script (entity_hash, script_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_script'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, script_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_block AS (
+        INSERT INTO substrate.cp_block (entity_hash, block_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_block'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, block_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_bidi AS (
+        INSERT INTO substrate.cp_bidi_class (entity_hash, bidi_class_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_bidi_class'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, bidi_class_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_eaw AS (
+        INSERT INTO substrate.cp_east_asian_width (entity_hash, east_asian_width_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_east_asian_width'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, east_asian_width_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_gcb AS (
+        INSERT INTO substrate.cp_grapheme_break (entity_hash, break_property_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_grapheme_break'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, break_property_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_wb AS (
+        INSERT INTO substrate.cp_word_break (entity_hash, break_property_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_word_break'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, break_property_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_sb AS (
+        INSERT INTO substrate.cp_sentence_break (entity_hash, break_property_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_sentence_break'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, break_property_id) DO NOTHING
+        RETURNING 1
+    )
+  , ins_cp_lb AS (
+        INSERT INTO substrate.cp_line_break (entity_hash, break_property_id)
+        SELECT DISTINCT entity_hash, ref_id FROM src WHERE table_name = 'cp_line_break'
+         ORDER BY entity_hash, ref_id
+        ON CONFLICT (entity_hash, break_property_id) DO NOTHING
+        RETURNING 1
+    )
 SELECT COUNT(*) FROM (
     SELECT 1 FROM ins_pos UNION ALL
     SELECT 1 FROM ins_lex UNION ALL
@@ -62,5 +125,14 @@ SELECT COUNT(*) FROM (
     SELECT 1 FROM ins_morph UNION ALL
     SELECT 1 FROM ins_arch UNION ALL
     SELECT 1 FROM ins_trole UNION ALL
-    SELECT 1 FROM ins_pdep
+    SELECT 1 FROM ins_pdep UNION ALL
+    SELECT 1 FROM ins_cp_gc UNION ALL
+    SELECT 1 FROM ins_cp_script UNION ALL
+    SELECT 1 FROM ins_cp_block UNION ALL
+    SELECT 1 FROM ins_cp_bidi UNION ALL
+    SELECT 1 FROM ins_cp_eaw UNION ALL
+    SELECT 1 FROM ins_cp_gcb UNION ALL
+    SELECT 1 FROM ins_cp_wb UNION ALL
+    SELECT 1 FROM ins_cp_sb UNION ALL
+    SELECT 1 FROM ins_cp_lb
 ) all_ins

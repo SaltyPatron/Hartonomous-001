@@ -12,6 +12,7 @@ using Hartonomous.Core.Monitoring;
 using Hartonomous.Core.Orchestration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace Hartonomous.Decomposers.Ucd;
 
@@ -97,15 +98,17 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
         await VerifyExtensionCatalogAsync(connection, reporter, ct);
         await PopulateReferenceVocabulariesAsync(connection, reporter, ct);
 
-        long codepointAtoms = await EmitCodepointAtomsAsync(pipeline, reporter, ct);
+        // §3 EmitCodepointAtomsAsync emits codepoint entity + POINTZM physicality
+        // + 9 has_cp_* typed edges to content-hashed reference-vocab entities
+        // (general_category / script / block / bidi_class / east_asian_width /
+        // grapheme_break / word_break / sentence_break / line_break) + the
+        // corresponding 9 narrow per-property analytics-cache junction rows.
+        // Per Gate 1 #38 refactor (2026-05-18): the wide flat
+        // substrate.codepoint_property junction is deleted; substrate truth is
+        // the typed edges on substrate.edge, narrow junctions are denormalized
+        // for index-locality. All emission goes through IIngestionPipeline.
+        long codepointAtoms = await EmitCodepointAtomsAsync(pipeline, reporter, connection, ct);
         await pipeline.DrainPendingAsync(ct);
-
-        // codepoint_property junction: not populated server-side. Per-codepoint
-        // UAX #44 properties are available client-side via BlobUcdPropertyAccessor
-        // (native blob, O(1) lookup) and server-side via the substrate.cp_* C
-        // wrappers. The denormalized substrate.codepoint_property cache is
-        // populated lazily by downstream phases that need it.
-        long codepointProperties = 0;
 
         long simpleCaseEdges = await EmitSimpleCaseEdgesAsync(pipeline, reporter, ct);
         long fullCaseFoldEdges = await EmitFullCaseFoldEdgesAsync(pipeline, reporter, ct);
@@ -123,7 +126,7 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
         Log.Materialized(
             Logger,
             codepointAtoms,
-            codepointProperties,
+            0L,  // codepointProperties — deleted Gate 1 #38; narrow per-property junctions land inline in §3
             simpleCaseEdges,
             fullCaseFoldEdges,
             decompositionEdges,
@@ -152,30 +155,104 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
     }
 
     // ── §2 Reference vocabularies ────────────────────────────────────────
-    // Server-side populate_*_from_ext path retired 2026-05-17 (Gate 1 Task
-    // #22). Client-side population of substrate.general_category / script /
-    // block / break_property reference tables requires new native exports
-    // to enumerate the uc_general_category_name[] / uc_script_name[] /
-    // uc_block_name[] arrays from libhartonomous, which the blob accessor
-    // doesn't yet expose. Until those land, the reference tables stay
-    // empty; downstream decomposers route property lookups through
-    // BlobUcdPropertyAccessor (native blob → C# enum codes) rather than
-    // JOIN-ing against substrate.* reference rows.
+    // substrate.general_category / script / block / break_property are seeded
+    // statically by sql/schema/seed/{general_category,script,block,break_property}.sql
+    // (generated from ext/hartonomous_pg/src/generated/pg_ucd_inventory.c).
+    // The native blob's byte / ushort enum codes line up with the
+    // reference-vocabulary id by the +1 convention documented on each
+    // hartonomous_ucd_cp_* native export, so §4 codepoint_property FK
+    // resolution is a pure arithmetic shift without per-row lookups.
+    //
+    // This method's job is now verification: the reference tables MUST be
+    // populated before §4 runs. Throwing here surfaces a missing-seed
+    // configuration before the COPY would attempt to violate the NOT NULL
+    // FK constraints with garbage ids.
 
     private async Task PopulateReferenceVocabulariesAsync(
         NpgsqlConnection connection, IProgressReporter reporter, CancellationToken ct)
     {
-        _ = connection;
-        await ReportAsync(reporter, "unicode.reference_vocabularies", 0, 0, ct);
+        const string sql = @"
+SELECT
+    (SELECT count(*) FROM substrate.general_category) AS gc_rows,
+    (SELECT count(*) FROM substrate.script)           AS script_rows,
+    (SELECT count(*) FROM substrate.block)            AS block_rows,
+    (SELECT count(*) FROM substrate.bidi_class)       AS bidi_rows,
+    (SELECT count(*) FROM substrate.east_asian_width) AS eaw_rows,
+    (SELECT count(*) FROM substrate.break_property)   AS bp_rows
+";
+        await using NpgsqlCommand command = new(sql, connection);
+        command.CommandTimeout = 0;
+        await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
+        if (!await rdr.ReadAsync(ct))
+        {
+            throw new InvalidOperationException(
+                "Reference vocabulary verification returned no rows.");
+        }
+        long gc = rdr.GetInt64(0);
+        long script = rdr.GetInt64(1);
+        long block = rdr.GetInt64(2);
+        long bidi = rdr.GetInt64(3);
+        long eaw = rdr.GetInt64(4);
+        long bp = rdr.GetInt64(5);
+        if (gc == 0 || script == 0 || block == 0 || bidi == 0 || eaw == 0 || bp == 0)
+        {
+            throw new InvalidOperationException(
+                $"UCD reference vocabulary missing seed rows " +
+                $"(gc={gc}, script={script}, block={block}, bidi={bidi}, eaw={eaw}, break_property={bp}). " +
+                $"Run scripts/hart db reset --force to apply sql/schema/seed/*.sql.");
+        }
+
+        await ReportAsync(reporter, "unicode.reference_vocabularies", gc + script + block + bidi + eaw + bp, 0, ct);
     }
 
     // ── §3 Codepoint atoms ───────────────────────────────────────────────
+    //
+    // Per codepoint, §3 emits:
+    //   * The codepoint entity itself (BLAKE3 over the codepoint integer)
+    //     with centroid + hilbert index inline on substrate.entity
+    //   * Atom POINTZM physicality on the "entity" partition
+    //   * 9 generic has_classification typed edges (one per UCD property
+    //     dimension) targeting content-hashed reference-vocab entities
+    //     (Lu / Latn / "Basic Latin" / AL / W / "GCB:CR" / ...). Arena
+    //     routing per (edge_type × target_entity_type) via
+    //     EdgeArenaRouter.EventsFor overload — unicode_version_consensus
+    //     plus the universal pair fire on every classification.
+    //   * 9 narrow per-property junction rows (cp_general_category /
+    //     cp_script / cp_block / cp_bidi_class / cp_east_asian_width /
+    //     cp_grapheme_break / cp_word_break / cp_sentence_break /
+    //     cp_line_break) — denormalized analytics caches for
+    //     index-locality lookups; substrate truth is the typed edges.
+    //
+    // Reference-vocab entities (general_category / script / block /
+    // bidi_class / east_asian_width / break_property) are emitted idempotently
+    // per batch — a chunk-scoped HashSet skips duplicate AddEntity calls
+    // within a flush. Cross-batch dedup happens via the pipeline's AP-19
+    // existence probe + ON CONFLICT belt-and-suspenders.
+    //
+    // Per AP-30 / AP-38 collapse principle: one generic has_classification
+    // edge type, dimensions discriminated by target entity_type + (provenance
+    // × arena), not per-dimension edge_type proliferation.
 
     private async Task<long> EmitCodepointAtomsAsync(
-        IIngestionPipeline pipeline, IProgressReporter reporter, CancellationToken ct)
+        IIngestionPipeline pipeline,
+        IProgressReporter reporter,
+        NpgsqlConnection connection,
+        CancellationToken ct)
     {
+        // Load id→code dictionaries once at section start. Cross-products
+        // with BlobUcdPropertyAccessor's enum-code returns via +1 convention
+        // (native byte/ushort enum code + 1 = reference-vocab id).
+        Dictionary<int, string> gcCodes      = await LoadIdCodeMapAsync(connection, "substrate.general_category",  ct);
+        Dictionary<int, string> scriptCodes  = await LoadIdCodeMapAsync(connection, "substrate.script",            ct);
+        Dictionary<int, string> blockCodes   = await LoadIdCodeMapAsync(connection, "substrate.block",             ct);
+        Dictionary<int, string> bidiCodes    = await LoadIdCodeMapAsync(connection, "substrate.bidi_class",        ct);
+        Dictionary<int, string> eawCodes     = await LoadIdCodeMapAsync(connection, "substrate.east_asian_width",  ct);
+        Dictionary<(string Cat, int EnumId), (int Id, string Code)> breakProps =
+            await LoadBreakPropertyMapAsync(connection, ct);
+
         long entityCount = 0;
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
+        HashSet<Hash32> chunkSeenRefVocab = new();
         List<Hash32> pendingHashes = new(PreDedupeChunk);
         List<int> pendingCodepoints = new(PreDedupeChunk);
 
@@ -189,12 +266,15 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             if (pendingHashes.Count >= PreDedupeChunk)
             {
                 entityCount += await FlushCodepointAtomsAsync(
-                    pipeline, batch, pendingHashes, pendingCodepoints, ct);
+                    pipeline, batch, pendingHashes, pendingCodepoints,
+                    gcCodes, scriptCodes, blockCodes, bidiCodes, eawCodes, breakProps,
+                    chunkSeenRefVocab, ct);
 
-                if (batch.EntityCount >= BatchFlushSize)
+                if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
                 {
                     await pipeline.SubmitBatchAsync(batch, ct);
                     batch = pipeline.CreateBatch(ProvenanceCode);
+                    chunkSeenRefVocab.Clear();
                 }
             }
         }
@@ -202,9 +282,11 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
         if (pendingHashes.Count > 0)
         {
             entityCount += await FlushCodepointAtomsAsync(
-                pipeline, batch, pendingHashes, pendingCodepoints, ct);
+                pipeline, batch, pendingHashes, pendingCodepoints,
+                gcCodes, scriptCodes, blockCodes, bidiCodes, eawCodes, breakProps,
+                chunkSeenRefVocab, ct);
         }
-        if (batch.EntityCount > 0)
+        if (batch.EntityCount > 0 || batch.EdgeCount > 0)
         {
             await pipeline.SubmitBatchAsync(batch, ct);
         }
@@ -214,14 +296,19 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
         return entityCount;
     }
 
-    private static async Task<long> FlushCodepointAtomsAsync(
-        IIngestionPipeline pipeline,
+    private long FlushCodepointAtomsInner(
         IIngestionBatch batch,
         List<Hash32> hashes,
         List<int> codepoints,
-        CancellationToken ct)
+        HashSet<HashKey> existing,
+        Dictionary<int, string> gcCodes,
+        Dictionary<int, string> scriptCodes,
+        Dictionary<int, string> blockCodes,
+        Dictionary<int, string> bidiCodes,
+        Dictionary<int, string> eawCodes,
+        Dictionary<(string Cat, int EnumId), (int Id, string Code)> breakProps,
+        HashSet<Hash32> chunkSeenRefVocab)
     {
-        HashSet<HashKey> existing = await pipeline.GetExistingEntityHashesAsync(hashes, ct);
         long emitted = 0;
         for (int i = 0; i < hashes.Count; i++)
         {
@@ -230,7 +317,40 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             (double x, double y, double z, double m) = PhysicalityEmitter.CodepointS3Position(cp);
             double[] point4 = [x, y, z, m];
             ulong hilbert = Hilbert.Index(point4, 16);
-            batch.AddEntity(hashes[i], "codepoint", x, y, z, m, (long)hilbert);
+            EntityHandle cpHandle = batch.AddEntity(hashes[i], "codepoint", x, y, z, m, (long)hilbert);
+            batch.AddPhysicalityPoint4d(cpHandle, "entity", x, y, z, m);
+
+            // 5 categorical UCD-property classifications via has_classification
+            // typed edges + narrow per-property junctions.
+            EmitClassification(batch, cpHandle, _ucd.GetGeneralCategoryCode(cp) + 1, gcCodes,
+                ReferenceVocabularyHashes.GeneralCategoryEntityHash,
+                "general_category", "cp_general_category", chunkSeenRefVocab);
+            EmitClassification(batch, cpHandle, _ucd.GetScriptCode(cp) + 1, scriptCodes,
+                ReferenceVocabularyHashes.ScriptEntityHash,
+                "script", "cp_script", chunkSeenRefVocab);
+            EmitClassification(batch, cpHandle, _ucd.GetBlockCode(cp) + 1, blockCodes,
+                ReferenceVocabularyHashes.BlockEntityHash,
+                "block", "cp_block", chunkSeenRefVocab);
+            EmitClassification(batch, cpHandle, _ucd.GetBidiClassCode(cp) + 1, bidiCodes,
+                ReferenceVocabularyHashes.BidiClassEntityHash,
+                "bidi_class", "cp_bidi_class", chunkSeenRefVocab);
+            EmitClassification(batch, cpHandle, _ucd.GetEastAsianWidthCode(cp) + 1, eawCodes,
+                ReferenceVocabularyHashes.EastAsianWidthEntityHash,
+                "east_asian_width", "cp_east_asian_width", chunkSeenRefVocab);
+
+            // 4 break-property classifications (GCB / WB / SB / LB). The
+            // break_property reference table uses composite (category, enum_id)
+            // → id lookup because the per-category enum value space overlaps
+            // across categories.
+            EmitBreakClassification(batch, cpHandle, "GCB", (int)_ucd.GetGcb(cp),
+                breakProps, "cp_grapheme_break", chunkSeenRefVocab);
+            EmitBreakClassification(batch, cpHandle, "WB", (int)_ucd.GetWb(cp),
+                breakProps, "cp_word_break", chunkSeenRefVocab);
+            EmitBreakClassification(batch, cpHandle, "SB", (int)_ucd.GetSb(cp),
+                breakProps, "cp_sentence_break", chunkSeenRefVocab);
+            EmitBreakClassification(batch, cpHandle, "LB", (int)_ucd.GetLb(cp),
+                breakProps, "cp_line_break", chunkSeenRefVocab);
+
             emitted++;
         }
         hashes.Clear();
@@ -238,13 +358,128 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
         return emitted;
     }
 
-    // §4 Codepoint properties — deleted 2026-05-17 per Gate 1 Task #22.
-    // The server-side populate_codepoint_property_range_from_ext path was
-    // wrong-direction (SQL reading the client-side perf-cache blob to
-    // populate substrate). Per-codepoint UAX #44 properties live in the
-    // native blob, accessed via BlobUcdPropertyAccessor (C#) or
-    // substrate.cp_* C wrappers (SQL). The denormalized
-    // substrate.codepoint_property cache is no longer populated.
+    private async Task<long> FlushCodepointAtomsAsync(
+        IIngestionPipeline pipeline,
+        IIngestionBatch batch,
+        List<Hash32> hashes,
+        List<int> codepoints,
+        Dictionary<int, string> gcCodes,
+        Dictionary<int, string> scriptCodes,
+        Dictionary<int, string> blockCodes,
+        Dictionary<int, string> bidiCodes,
+        Dictionary<int, string> eawCodes,
+        Dictionary<(string Cat, int EnumId), (int Id, string Code)> breakProps,
+        HashSet<Hash32> chunkSeenRefVocab,
+        CancellationToken ct)
+    {
+        HashSet<HashKey> existing = await pipeline.GetExistingEntityHashesAsync(hashes, ct);
+        return FlushCodepointAtomsInner(
+            batch, hashes, codepoints, existing,
+            gcCodes, scriptCodes, blockCodes, bidiCodes, eawCodes, breakProps,
+            chunkSeenRefVocab);
+    }
+
+    private void EmitClassification(
+        IIngestionBatch batch,
+        EntityHandle cpHandle,
+        int refId,
+        Dictionary<int, string> codeMap,
+        Func<string, Hash32> hashFn,
+        string targetEntityTypeCode,
+        string junctionTable,
+        HashSet<Hash32> chunkSeenRefVocab)
+    {
+        if (!codeMap.TryGetValue(refId, out string? code)) { return; }
+        Hash32 refHash = hashFn(code);
+        EntityHandle refHandle;
+        if (chunkSeenRefVocab.Add(refHash))
+        {
+            refHandle = batch.AddEntity(refHash, targetEntityTypeCode);
+        }
+        else
+        {
+            refHandle = new EntityHandle(refHash, targetEntityTypeCode);
+        }
+        batch.AddEdge(
+            "has_classification",
+            ProvenanceCode,
+            [
+                new EdgeMemberSpec(cpHandle, "source", 0),
+                new EdgeMemberSpec(refHandle, "target", 1),
+            ],
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor("has_classification", targetEntityTypeCode));
+        batch.AddJunction(junctionTable, cpHandle, refId);
+    }
+
+    private void EmitBreakClassification(
+        IIngestionBatch batch,
+        EntityHandle cpHandle,
+        string category,
+        int enumId,
+        Dictionary<(string Cat, int EnumId), (int Id, string Code)> breakProps,
+        string junctionTable,
+        HashSet<Hash32> chunkSeenRefVocab)
+    {
+        if (!breakProps.TryGetValue((category, enumId), out var bp)) { return; }
+        Hash32 refHash = ReferenceVocabularyHashes.BreakPropertyEntityHash(category, bp.Code);
+        EntityHandle refHandle;
+        if (chunkSeenRefVocab.Add(refHash))
+        {
+            refHandle = batch.AddEntity(refHash, "break_property");
+        }
+        else
+        {
+            refHandle = new EntityHandle(refHash, "break_property");
+        }
+        batch.AddEdge(
+            "has_classification",
+            ProvenanceCode,
+            [
+                new EdgeMemberSpec(cpHandle, "source", 0),
+                new EdgeMemberSpec(refHandle, "target", 1),
+            ],
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor("has_classification", "break_property"));
+        batch.AddJunction(junctionTable, cpHandle, bp.Id);
+    }
+
+    private static async Task<Dictionary<int, string>> LoadIdCodeMapAsync(
+        NpgsqlConnection connection, string tableName, CancellationToken ct)
+    {
+        Dictionary<int, string> map = new(256);
+        await using NpgsqlCommand command =
+            new($"SELECT id, code FROM {tableName}", connection);
+        command.CommandTimeout = 0;
+        await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
+        while (await rdr.ReadAsync(ct))
+        {
+            int id = rdr.GetInt32(0);
+            string code = rdr.GetString(1);
+            map[id] = code;
+        }
+        return map;
+    }
+
+    private static async Task<Dictionary<(string Cat, int EnumId), (int Id, string Code)>>
+        LoadBreakPropertyMapAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        Dictionary<(string, int), (int, string)> map = new(128);
+        await using NpgsqlCommand command =
+            new("SELECT id, category, enum_id, code FROM substrate.break_property", connection);
+        command.CommandTimeout = 0;
+        await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
+        while (await rdr.ReadAsync(ct))
+        {
+            int id = rdr.GetInt32(0);
+            string category = rdr.GetString(1);
+            int enumId = rdr.GetInt32(2);
+            string code = rdr.GetString(3);
+            map[(category, enumId)] = (id, code);
+        }
+        return map;
+    }
+
 
     // ── §5 Simple case edges ─────────────────────────────────────────────
 
@@ -299,7 +534,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             new EdgeMemberSpec(srcHandle, "source", 0),
             new EdgeMemberSpec(tgtHandle, "target", 1),
         ];
-        batch.AddEdge(edgeTypeCode, ProvenanceCode, members);
+        batch.AddEdge(
+            edgeTypeCode,
+            ProvenanceCode,
+            members,
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor(edgeTypeCode));
         return 1;
     }
 
@@ -332,7 +572,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                 new EdgeMemberSpec(srcHandle, "source", 0),
                 new EdgeMemberSpec(compHandle, "target", 1),
             ];
-            batch.AddEdge("has_full_case_mapping", ProvenanceCode, members);
+            batch.AddEdge(
+                "has_full_case_mapping",
+                ProvenanceCode,
+                members,
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_full_case_mapping"));
             edgeCount++;
 
             if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
@@ -384,7 +629,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                 new EdgeMemberSpec(srcHandle, "source", 0),
                 new EdgeMemberSpec(compHandle, "target", 1),
             ];
-            batch.AddEdge(edgeCode, ProvenanceCode, members);
+            batch.AddEdge(
+                edgeCode,
+                ProvenanceCode,
+                members,
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor(edgeCode));
             edgeCount++;
 
             // canonical_composes_to reverse edge: canonical 2-element decompositions
@@ -399,7 +649,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                     new EdgeMemberSpec(compHandle, "source", 0),
                     new EdgeMemberSpec(srcHandle, "target", 1),
                 ];
-                batch.AddEdge("canonical_composes_to", ProvenanceCode, composeMembers);
+                batch.AddEdge(
+                    "canonical_composes_to",
+                    ProvenanceCode,
+                    composeMembers,
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("canonical_composes_to"));
                 edgeCount++;
             }
 
@@ -448,7 +703,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                 new EdgeMemberSpec(srcComp, "source", 0),
                 new EdgeMemberSpec(tgtComp, "target", 1),
             ];
-            batch.AddEdge("confusable_with", ProvenanceCode, members);
+            batch.AddEdge(
+                "confusable_with",
+                ProvenanceCode,
+                members,
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("confusable_with"));
             edges++;
 
             if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
@@ -496,7 +756,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                 new EdgeMemberSpec(nameComp, "source", 0),
                 new EdgeMemberSpec(seqComp, "target", 1),
             ];
-            batch.AddEdge("has_named_sequence", ProvenanceCode, members);
+            batch.AddEdge(
+                "has_named_sequence",
+                ProvenanceCode,
+                members,
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_named_sequence"));
             edges++;
 
             if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
@@ -594,7 +859,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             new EdgeMemberSpec(nameComp, "source", 0),
             new EdgeMemberSpec(seqComp, "target", 1),
         ];
-        batch.AddEdge(edgeCode, ProvenanceCode, members);
+        batch.AddEdge(
+            edgeCode,
+            ProvenanceCode,
+            members,
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor(edgeCode));
         return 1;
     }
 
@@ -634,7 +904,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                     new EdgeMemberSpec(baseHandle, "source", 0),
                     new EdgeMemberSpec(comp, "target", 1),
                 ];
-                batch.AddEdge("has_standardized_variant", ProvenanceCode, members);
+                batch.AddEdge(
+                    "has_standardized_variant",
+                    ProvenanceCode,
+                    members,
+                    ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                    EdgeArenaRouter.EventsFor("has_standardized_variant"));
                 edges++;
 
                 if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
@@ -685,7 +960,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                 new EdgeMemberSpec(srcHandle, "source", 0),
                 new EdgeMemberSpec(comp, "target", 1),
             ];
-            batch.AddEdge("has_radical_stroke", ProvenanceCode, members);
+            batch.AddEdge(
+                "has_radical_stroke",
+                ProvenanceCode,
+                members,
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_radical_stroke"));
             edges++;
 
             if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
@@ -750,7 +1030,12 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
                 new EdgeMemberSpec(baseHandle, "source", 0),
                 new EdgeMemberSpec(variantHandle, "target", 1),
             ];
-            batch.AddEdge("has_ideographic_variant_in_collection", provenance, members);
+            batch.AddEdge(
+                "has_ideographic_variant_in_collection",
+                provenance,
+                members,
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_ideographic_variant_in_collection"));
             edges++;
 
             if (batch.EntityCount + batch.EdgeCount >= BatchFlushSize)
@@ -779,34 +1064,51 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
     }
 
     // ── §14 Materialization validation ───────────────────────────────────
+    // Inline COUNT queries against substrate.* directly. The prior SQL
+    // function (substrate.ucd_materialization_counts) was deleted with the
+    // populate_*_from_ext catalog (Gate 1 Task #22). codepoint_property
+    // population is deferred (the denormalized cache is no longer populated;
+    // properties live in the native blob); the codepoint-property check is
+    // therefore removed from the validation set.
 
     private async Task ValidateMaterializationAsync(
         NpgsqlConnection connection, IProgressReporter reporter, CancellationToken ct)
     {
-        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
-            connection, SubstrateFunctionNames.UcdMaterializationCounts);
+        const string sql = @"
+SELECT
+    (SELECT count(*) FROM substrate.entity_classification ec
+        JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+        JOIN substrate.provenance p ON p.id = ec.provenance_id
+        WHERE et.code = 'codepoint' AND p.code = 'unicode_consortium')              AS codepoint_classifications,
+    (SELECT count(*) FROM substrate.edge e
+        JOIN substrate.edge_type et ON et.id = e.edge_type_id
+        WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')) AS simple_case_edges,
+    (SELECT count(*) FROM substrate.edge e
+        JOIN substrate.edge_type et ON et.id = e.edge_type_id
+        WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')
+              AND e.geom IS NULL)                                                    AS simple_case_edges_without_geom,
+    (SELECT count(*) FROM substrate.significance_context)                            AS arenas,
+    (SELECT count(*) FROM substrate.edge_significance es
+        JOIN substrate.edge_type et ON et.id = es.edge_type_id
+        WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')) AS simple_case_edge_significance
+";
+        await using NpgsqlCommand command = new(sql, connection);
         command.CommandTimeout = 0;
         await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
         if (!await rdr.ReadAsync(ct))
         {
-            throw new InvalidOperationException("substrate.ucd_materialization_counts() returned no rows.");
+            throw new InvalidOperationException("ucd materialization validation: no rows.");
         }
         long codepointClassifications = rdr.GetInt64(0);
-        long codepointProperties = rdr.GetInt64(1);
-        long simpleCaseEdges = rdr.GetInt64(2);
-        long simpleCaseEdgesWithoutGeometry = rdr.GetInt64(3);
-        long significanceContexts = rdr.GetInt64(4);
-        long simpleCaseEdgeSignificance = rdr.GetInt64(5);
+        long simpleCaseEdges = rdr.GetInt64(1);
+        long simpleCaseEdgesWithoutGeometry = rdr.GetInt64(2);
+        long arenas = rdr.GetInt64(3);
+        long simpleCaseEdgeSignificance = rdr.GetInt64(4);
 
         if (codepointClassifications < MaxCodepoints)
         {
             throw new InvalidOperationException(
                 $"UCD/UCA materialization incomplete: expected at least {MaxCodepoints:N0} unicode_consortium codepoint classifications, found {codepointClassifications:N0}.");
-        }
-        if (codepointProperties < MaxCodepoints)
-        {
-            throw new InvalidOperationException(
-                $"UCD/UCA materialization incomplete: expected at least {MaxCodepoints:N0} codepoint_property rows, found {codepointProperties:N0}.");
         }
         if (simpleCaseEdges <= 0)
         {
@@ -818,16 +1120,16 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             throw new InvalidOperationException(
                 $"UCD/UCA materialization incomplete: {simpleCaseEdgesWithoutGeometry:N0} Unicode case mapping edges are missing trajectory geometry.");
         }
-        if (significanceContexts <= 0)
+        if (arenas <= 0)
         {
             throw new InvalidOperationException(
                 "UCD/UCA materialization incomplete: significance_context has no arenas.");
         }
-        long expectedSimpleCaseEdgeSignificance = simpleCaseEdges * significanceContexts;
-        if (simpleCaseEdgeSignificance < expectedSimpleCaseEdgeSignificance)
+        long expected = simpleCaseEdges * arenas;
+        if (simpleCaseEdgeSignificance < expected)
         {
             throw new InvalidOperationException(
-                $"UCD/UCA materialization incomplete: expected {expectedSimpleCaseEdgeSignificance:N0} Unicode case edge significance rows, found {simpleCaseEdgeSignificance:N0}.");
+                $"UCD/UCA materialization incomplete: expected {expected:N0} Unicode case edge significance rows, found {simpleCaseEdgeSignificance:N0}.");
         }
 
         await ReportAsync(reporter, "unicode.materialization_validation", codepointClassifications, 0, ct);

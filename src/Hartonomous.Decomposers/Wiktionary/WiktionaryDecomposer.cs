@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
 using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Errors;
@@ -269,36 +270,81 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
 
                 try
                 {
+                    // #32 — rating-event coverage. Every emitted edge carries
+                    // the canonical EdgeArenaRouter event array so per-arena
+                    // Glicko-2 significance accumulates inline at emit, not
+                    // via end-of-phase priming (AP-37). Per AP-1 the arena
+                    // list is whatever EdgeArenaRouter resolves for the
+                    // edge_type — domain arenas plus the two universal arenas
+                    // (source_authority + corroboration_strength).
                     void AddEdgeByCode(string edgeCode, EdgeMemberSpec[] members)
                     {
-                        batch.AddEdge(edgeCode, ProvenanceCode, members);
+                        batch.AddEdge(
+                            edgeCode,
+                            ProvenanceCode,
+                            members,
+                            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                            EdgeArenaRouter.EventsFor(edgeCode));
                         edgeCountByType.AddOrUpdate(edgeCode, 1, static (_, current) => current + 1);
                         Interlocked.Increment(ref edgeCount);
                     }
 
+                    // #35 — AP-19 chunked entity-hash pre-probe. Parse the
+                    // chunk's entries first, collect every candidate word_form
+                    // / lemma hash (entry word, inflection forms, foreign
+                    // translation targets, etymology source lemmas, relation
+                    // targets), bulk-probe substrate.entity ONCE per chunk,
+                    // then emit. Per-chunk pre-dedupe collapses the 30:1
+                    // amplification observed in 2026-05-08 telemetry: common
+                    // lexicon entities like "the" / "of" / "be" land as
+                    // handle-only refs (no full canonical-text-DAG re-walk)
+                    // for the 99.x% of chunks where the entity is already
+                    // resident. Same shape as Iso639Decomposer's
+                    // EmitLanguageNameChunkAsync helper.
+                    List<WiktEntry?> chunkParsed = new(chunk.Lines.Count);
+                    HashSet<HashKey> chunkCandidates = new();
                     foreach (string line in chunk.Lines)
                     {
                         taskCt.ThrowIfCancellationRequested();
                         WiktEntry? entry = WiktionaryJsonlParser.ParseLine(line);
-                        if (entry is null)
-                        {
-                            continue;
-                        }
-                        long entriesNow = Interlocked.Increment(ref entryCount);
+                        chunkParsed.Add(entry);
+                        if (entry is null) { continue; }
+                        Interlocked.Increment(ref entryCount);
+                        if (!LanguageAllowed(entry.LangCode)) { continue; }
+                        if (string.IsNullOrEmpty(entry.Word) || entry.Senses.Count == 0) { continue; }
+                        CollectCandidateWordFormHashes(entry, chunkCandidates);
+                    }
 
-                        if (!LanguageAllowed(entry.LangCode))
+                    HashSet<HashKey> chunkExisting;
+                    if (chunkCandidates.Count > 0)
+                    {
+                        List<Hash32> probeList = new(chunkCandidates.Count);
+                        foreach (HashKey k in chunkCandidates)
                         {
-                            continue;
+                            probeList.Add(k.Hash);
                         }
-                        if (string.IsNullOrEmpty(entry.Word) || entry.Senses.Count == 0)
-                        {
-                            continue;
-                        }
+                        chunkExisting = await pipeline.GetExistingEntityHashesAsync(probeList, taskCt)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        chunkExisting = new HashSet<HashKey>();
+                    }
 
-                        Interlocked.Add(ref entityCount, EmitEntry(batch, entry, posIdMap, langIdMap, AddEdgeByCode));
+                    foreach (WiktEntry? maybeEntry in chunkParsed)
+                    {
+                        taskCt.ThrowIfCancellationRequested();
+                        if (maybeEntry is null) { continue; }
+                        WiktEntry entry = maybeEntry;
+                        if (!LanguageAllowed(entry.LangCode)) { continue; }
+                        if (string.IsNullOrEmpty(entry.Word) || entry.Senses.Count == 0) { continue; }
+
+                        Interlocked.Add(ref entityCount,
+                            EmitEntry(batch, entry, posIdMap, langIdMap, AddEdgeByCode, chunkExisting));
 
                         FlushBatchIfFull();
 
+                        long entriesNow = Interlocked.Read(ref entryCount);
                         if (entriesNow % 250_000 == 0)
                         {
                             if (Logger.IsEnabled(LogLevel.Information))
@@ -372,6 +418,81 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         }
     }
 
+    /// <summary>
+    /// #35 — AP-19 chunk-level candidate gathering. For each entry visited
+    /// during the chunk pre-pass, collect every <c>word_form</c>-tier surface
+    /// form that the per-entry emit path will touch: the lemma, every
+    /// inflection form, every foreign translation lemma, every etymology
+    /// source lemma, every semantic-relation target. The hashes get bulk-
+    /// probed against <c>substrate.entity</c> ONCE per chunk; the emit pass
+    /// then ref-only's existing entities and emits the diff. Same shape as
+    /// Iso639's <c>EmitLanguageNameChunkAsync</c> probe + emit pattern.
+    /// </summary>
+    private static void CollectCandidateWordFormHashes(WiktEntry entry, HashSet<HashKey> chunkCandidates)
+    {
+        AddCandidate(entry.Word);
+        foreach (WiktForm f in entry.Forms)
+        {
+            if (!string.IsNullOrEmpty(f.Form) && f.Form != entry.Word)
+            {
+                AddCandidate(f.Form);
+            }
+        }
+        foreach (WiktEtymologyTemplate t in entry.EtymologyTemplates)
+        {
+            string? srcWord = ArgOrNull(t.Args, "2") ?? ArgOrNull(t.Args, "1");
+            if (!string.IsNullOrEmpty(srcWord))
+            {
+                AddCandidate(srcWord);
+            }
+        }
+        foreach (WiktTranslation tr in entry.Translations)
+        {
+            if (!string.IsNullOrEmpty(tr.Word))
+            {
+                AddCandidate(tr.Word);
+            }
+        }
+        AddRelationCandidates(entry.Synonyms);
+        AddRelationCandidates(entry.Antonyms);
+        AddRelationCandidates(entry.Hypernyms);
+        AddRelationCandidates(entry.Hyponyms);
+        AddRelationCandidates(entry.Meronyms);
+        AddRelationCandidates(entry.CoordinateTerms);
+        AddRelationCandidates(entry.Derived);
+        AddRelationCandidates(entry.Related);
+
+        void AddCandidate(string text)
+        {
+            // Skip pathological inputs that the native text decomposer rejects
+            // (whitespace-only, single-codepoint control/punctuation forms that
+            // can't materialize as a word_form). hartonomous_text_decompose
+            // returns -10 on these; treat them as honest abstention from the
+            // candidate probe rather than failing the whole chunk.
+            if (string.IsNullOrWhiteSpace(text)) { return; }
+            try
+            {
+                Hash32 h = ComputeWordFormHash(text);
+                chunkCandidates.Add(new HashKey(h));
+            }
+            catch (System.InvalidOperationException)
+            {
+                // Native decomposer rejected this surface form (e.g. -10
+                // invalid-for-word-form). Skip — emit pass also skips and
+                // the entry's other word_forms still process normally.
+            }
+        }
+
+        void AddRelationCandidates(IReadOnlyList<WiktRelation> rels)
+        {
+            foreach (WiktRelation r in rels)
+            {
+                if (string.IsNullOrEmpty(r.Word) || r.Word == "—") { continue; }
+                AddCandidate(r.Word);
+            }
+        }
+    }
+
     private static long UpdateMax(ref long target, long value)
     {
         long current;
@@ -393,7 +514,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         WiktEntry entry,
         Dictionary<string, int> posIdMap,
         Dictionary<string, int> langIdMap,
-        Action<string, EdgeMemberSpec[]> addEdge)
+        Action<string, EdgeMemberSpec[]> addEdge,
+        HashSet<HashKey> chunkExisting)
     {
         long entityCount = 0;
 
@@ -406,16 +528,91 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             return langIdMap.TryGetValue(langCode, out int id) ? id : (int?)null;
         }
 
-        (EntityHandle lemmaHandle, _, _) =
-            EmitText(batch, entry.Word, _codepointProperties, "lemma", TrustPriorMu);
-        batch.AddSignificance(lemmaHandle, "source_authority", TrustPriorMu);
-        entityCount++;
-
-        string? upos = WiktPosMap.ToUpos(entry.Pos);
-        if (upos is not null && posIdMap.TryGetValue(upos, out int posId))
+        // #35 — AP-19 chunk-local emit-or-ref. If the substrate (or a prior
+        // entry in the same chunk) already contains this word_form hash,
+        // return a handle-only ref so the full canonical-text-DAG decompose
+        // does not re-fire. Otherwise EmitText runs once and mutates the
+        // chunk-existing set so subsequent occurrences inside the chunk get
+        // the ref path. Same shape as Iso639Decomposer.EmitLanguageNameChunkAsync.
+        //
+        // Rejected (Handle == default) returns mean the native text
+        // decomposer refused to materialize this surface form as a word_form
+        // (e.g. whitespace-only / single-codepoint punctuation /
+        // hartonomous_text_decompose return -10). Callers MUST check
+        // !handle.Hash.IsZero before using the handle. Honest abstention —
+        // the surface form is not a valid word_form at the substrate's
+        // canonical-text-DAG; we skip emit + downstream edges and let other
+        // entries in the chunk process normally.
+        (EntityHandle Handle, bool Emitted) EmitOrRefWordForm(string text, string topType)
         {
-            batch.AddJunction("entity_pos", lemmaHandle, posId, TrustPriorMu);
+            if (string.IsNullOrWhiteSpace(text)) { return (default, false); }
+            Hash32 h;
+            try
+            {
+                h = ComputeWordFormHash(text);
+            }
+            catch (System.InvalidOperationException)
+            {
+                return (default, false);
+            }
+            HashKey key = new(h);
+            if (chunkExisting.Contains(key))
+            {
+                return (new EntityHandle(h, topType), false);
+            }
+            try
+            {
+                (EntityHandle handle, _, _) = EmitText(batch, text, _codepointProperties, topType, TrustPriorMu);
+                chunkExisting.Add(key);
+                return (handle, true);
+            }
+            catch (System.InvalidOperationException)
+            {
+                return (default, false);
+            }
         }
+
+        (EntityHandle lemmaHandle, bool lemmaEmitted) = EmitOrRefWordForm(entry.Word, "lemma");
+        // Lemma is the entry's primary identity. If the native decomposer
+        // rejected it (e.g. entry.Word is a 1-byte punctuation glyph or
+        // whitespace-only), abstain on the whole entry — its dependent forms,
+        // translations, etymology, relations all anchor to the lemma handle.
+        if (lemmaHandle.Hash.IsZero)
+        {
+            return 0;
+        }
+        if (lemmaEmitted)
+        {
+            batch.AddSignificance(lemmaHandle, "source_authority", TrustPriorMu);
+            entityCount++;
+        }
+
+        // #33 — AP-8 typed has_pos edge on content-hashed POS reference entity.
+        // The legacy entity_pos junction stays as a denormalized analytics
+        // cache (per AP-8 correction 2026-05-14); the authoritative Glicko-2
+        // surface is the edge_significance row on the typed has_pos edge.
+        // Same pattern as WordNetDecomposer line 332-357 and OmwDecomposer.
+        string? upos = WiktPosMap.ToUpos(entry.Pos);
+        if (upos is not null)
+        {
+            if (posIdMap.TryGetValue(upos, out int posId))
+            {
+                // Legacy junction (denormalized analytics cache per AP-8)
+                batch.AddJunction("entity_pos", lemmaHandle, posId, TrustPriorMu);
+            }
+
+            // Unified Glicko surface — has_pos edge on the content-hashed POS
+            // reference-vocabulary entity. Idempotent: same code → same hash →
+            // one substrate.entity row regardless of which decomposer attests.
+            Hash32 posHash = ReferenceVocabularyHashes.PosEntityHash(upos);
+            EntityHandle posHandle = batch.AddEntity(posHash, "pos");
+            addEdge("has_pos",
+            [
+                new EdgeMemberSpec(lemmaHandle, "source", 0),
+                new EdgeMemberSpec(posHandle,   "target", 1),
+            ]);
+        }
+
         int? sourceLangId = ResolveLangId(entry.LangCode);
         if (sourceLangId is int langId && !string.IsNullOrEmpty(entry.LangCode))
         {
@@ -428,10 +625,13 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             {
                 continue;
             }
-            (EntityHandle infHandle, _, _) =
-                EmitText(batch, form.Form, _codepointProperties, "word_form", TrustPriorMu);
-            batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
-            entityCount++;
+            (EntityHandle infHandle, bool infEmitted) = EmitOrRefWordForm(form.Form, "word_form");
+            if (infHandle.Hash.IsZero) { continue; }
+            if (infEmitted)
+            {
+                batch.AddSignificance(infHandle, "source_authority", TrustPriorMu);
+                entityCount++;
+            }
 
             if (sourceLangId is int infLang && !string.IsNullOrEmpty(entry.LangCode))
             {
@@ -513,10 +713,13 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 continue;
             }
 
-            (EntityHandle srcLemma, _, _) =
-                EmitText(batch, srcWord, _codepointProperties, "lemma", TrustPriorMu);
-            batch.AddSignificance(srcLemma, "source_authority", TrustPriorMu);
-            entityCount++;
+            (EntityHandle srcLemma, bool srcEmitted) = EmitOrRefWordForm(srcWord, "lemma");
+            if (srcLemma.Hash.IsZero) { continue; }
+            if (srcEmitted)
+            {
+                batch.AddSignificance(srcLemma, "source_authority", TrustPriorMu);
+                entityCount++;
+            }
             int? srcLangId = ResolveLangId(srcLang);
             if (srcLangId is int sl && !string.IsNullOrEmpty(srcLang))
             {
@@ -547,10 +750,13 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             {
                 continue;
             }
-            (EntityHandle foreignLemma, _, _) =
-                EmitText(batch, tr.Word, _codepointProperties, "lemma", TrustPriorMu);
-            batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
-            entityCount++;
+            (EntityHandle foreignLemma, bool foreignEmitted) = EmitOrRefWordForm(tr.Word, "lemma");
+            if (foreignLemma.Hash.IsZero) { continue; }
+            if (foreignEmitted)
+            {
+                batch.AddSignificance(foreignLemma, "source_authority", TrustPriorMu);
+                entityCount++;
+            }
             int? trLangId = ResolveLangId(tr.LangCode);
             if (trLangId is int tl && !string.IsNullOrEmpty(tr.LangCode))
             {
@@ -564,14 +770,14 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             ]);
         }
 
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, addEdge);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Related,         "related",         ResolveLangId, addEdge);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += EmitRelations(batch, lemmaHandle, entry.Related,         "related",         ResolveLangId, addEdge, EmitOrRefWordForm);
 
         foreach (WiktSense sense in entry.Senses)
         {
@@ -631,7 +837,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         IReadOnlyList<WiktRelation> relations,
         string edgeCode,
         Func<string?, int?> resolveLang,
-        Action<string, EdgeMemberSpec[]> addEdge)
+        Action<string, EdgeMemberSpec[]> addEdge,
+        Func<string, string, (EntityHandle Handle, bool Emitted)> emitOrRefWordForm)
     {
         int entityCount = 0;
 
@@ -641,10 +848,19 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             {
                 continue;
             }
-            (EntityHandle target, _, _) =
-                EmitText(batch, rel.Word, _codepointProperties, "lemma", TrustPriorMu);
-            batch.AddSignificance(target, "source_authority", TrustPriorMu);
-            entityCount++;
+            // #35 — AP-19. Route the relation target through the chunk-local
+            // emit-or-ref helper so common lexicon targets ("the" / "of" /
+            // "be") that already exist in substrate collapse to handle-only
+            // refs instead of re-walking the canonical text DAG.
+            (EntityHandle target, bool targetEmitted) = emitOrRefWordForm(rel.Word, "lemma");
+            // Honest abstention: native decomposer rejected this surface form
+            // (e.g. 1-byte punctuation rel.Word) — skip the relation edge.
+            if (target.Hash.IsZero) { continue; }
+            if (targetEmitted)
+            {
+                batch.AddSignificance(target, "source_authority", TrustPriorMu);
+                entityCount++;
+            }
 
             // If WiktRelation carried a language code on a target headword,
             // attach an entity_language junction. wiktextract's relations are

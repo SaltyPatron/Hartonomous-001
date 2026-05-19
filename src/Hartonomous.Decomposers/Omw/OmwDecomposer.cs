@@ -193,11 +193,32 @@ public sealed partial class OmwDecomposer : TextIngestingDecomposer
                         CrossLinkAttestation.EmitLanguageAttestation(batch, lemmaHandle, langCode, langId, ProvenanceCode);
                     }
 
-                    // POS junction derived from the synset code suffix.
+                    // POS attestation derived from the synset code suffix.
                     string udPos = SynsetCodeToUdPos(entry.SynsetCode);
                     if (udPos != "X" && posIdMap.TryGetValue(udPos, out int posId))
                     {
+                        // Legacy junction (denormalized analytics cache per AP-8)
                         batch.AddJunction("entity_pos", lemmaHandle, posId, trustMu);
+
+                        // Unified Glicko surface — has_pos edge on the
+                        // content-hashed POS reference-vocabulary entity.
+                        // Idempotent across decomposers via the deterministic
+                        // ReferenceVocabularyHashes.PosEntityHash; OMW's
+                        // attestation (omwn_consortium provenance) competes
+                        // with WordNet's (princeton_wordnet provenance) on
+                        // the same edge_significance row per (provenance ×
+                        // arena), tightening sigma toward cross-source
+                        // consensus.
+                        Hash32 posHash = ReferenceVocabularyHashes.PosEntityHash(udPos);
+                        EntityHandle posHandle = batch.AddEntity(posHash, "pos");
+                        batch.AddEdge("has_pos", ProvenanceCode,
+                        [
+                            new EdgeMemberSpec(lemmaHandle, "source", 0),
+                            new EdgeMemberSpec(posHandle,   "target", 1),
+                        ],
+                        ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                        EdgeArenaRouter.EventsFor("has_pos"));
+                        edgeCount++;
                     }
 
                     // aligned_to_synset edge: source = lemma (this batch), target =

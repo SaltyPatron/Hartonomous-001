@@ -97,7 +97,9 @@ public abstract partial class EncodingDecomposerBase : BaseDecomposer
                 [
                     new EdgeMemberSpec(cpHandle, "source", 0),
                     new EdgeMemberSpec(byteCompHandle, "target", 1),
-                ]);
+                ],
+                ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+                EdgeArenaRouter.EventsFor("has_encoding_position"));
                 edges++;
             }
             pending.Clear();

@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Recomposition;
 using Npgsql;
 
 namespace Hartonomous.Recomposers.Synthesizers;
@@ -13,9 +16,9 @@ namespace Hartonomous.Recomposers.Synthesizers;
 /// substrate's selected vocab with REAL surface forms.
 ///
 /// Construction:
-///   1. Call <c>substrate.recompose_text_bulk</c> with all vocab hashes →
-///      byte-for-byte UTF-8 surface form per entity (recursive composition
-///      walk to codepoint leaves).
+///   1. Resolve each vocab hash to its UTF-8 surface form via the C# bulk-tier
+///      walker (<see cref="BulkTierContentWalk"/>). Replaces the removed
+///      <c>substrate.recompose_text_bulk</c> SQL wrapper per Gate 1 item #36.
 ///   2. Reserve 5 special-token slots (PAD/UNK/CLS/SEP/MASK) at the start
 ///      of the vocab map.
 ///   3. Emit WordLevel tokenizer.json with vocab map keyed on actual
@@ -145,31 +148,24 @@ public static class TokenizerExporter
         NpgsqlDataSource dataSource,
         CancellationToken ct)
     {
-        byte[][] hashes = new byte[vocab.Count][];
-        for (int i = 0; i < vocab.Count; i++)
+        Dictionary<string, string> result = new(StringComparer.Ordinal);
+        if (vocab.Count == 0)
         {
-            hashes[i] = vocab[i].EntityHash;
+            return result;
         }
 
-        Dictionary<string, string> result = new(StringComparer.Ordinal);
-
+        // Gate 1 item #36: per-token walk via the C# bulk-tier walker.
+        // recompose_text_bulk is gone; per-token walks reuse one open
+        // connection but issue tier-batched queries per token.
         await using NpgsqlConnection conn = await dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using NpgsqlCommand cmd = new(
-            "SELECT encode(entity_hash, 'hex'), text_value "
-            + "FROM substrate.recompose_text_bulk(@hashes, 100000)",
-            conn);
-        cmd.CommandTimeout = 600;
-        NpgsqlParameter hashesParam = new("hashes", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Bytea)
+        for (int i = 0; i < vocab.Count; i++)
         {
-            Value = hashes,
-        };
-        cmd.Parameters.Add(hashesParam);
-
-        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
-        {
-            string hashHex = reader.GetString(0).ToUpperInvariant();
-            string surface = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            ct.ThrowIfCancellationRequested();
+            byte[] hashBytes = vocab[i].EntityHash;
+            string hashHex = Convert.ToHexString(hashBytes);
+            byte[] surfaceBytes = await BulkTierContentWalk.RecomposeAsync(
+                conn, new Hash32(hashBytes), maxDepth: 32, ct).ConfigureAwait(false);
+            string surface = surfaceBytes.Length == 0 ? string.Empty : Encoding.UTF8.GetString(surfaceBytes);
             result[hashHex] = surface;
         }
         return result;

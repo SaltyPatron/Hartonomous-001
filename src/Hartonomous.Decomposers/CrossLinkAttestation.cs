@@ -46,6 +46,11 @@ public static class CrossLinkAttestation
             new EdgeMemberSpec(entity, "source", 0),
             new EdgeMemberSpec(langHandle, "target", 1),
         ];
-        batch.AddEdge("has_language", provenanceCode, members);
+        batch.AddEdge(
+            "has_language",
+            provenanceCode,
+            members,
+            ReadOnlySpan<EdgeSignificanceSpec>.Empty,
+            EdgeArenaRouter.EventsFor("has_language"));
     }
 }

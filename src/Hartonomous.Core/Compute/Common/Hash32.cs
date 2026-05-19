@@ -27,6 +27,15 @@ public readonly struct Hash32 : IEquatable<Hash32>, IComparable<Hash32>
     private readonly ulong _c;
     private readonly ulong _d;
 
+    /// <summary>
+    /// True iff every byte of the hash is zero (the default / sentinel value).
+    /// Used by callers that thread a Hash32 through "rejected" return paths
+    /// where producing a real content hash failed (e.g. native text
+    /// decomposer returning -10 on a non-word-form surface form). Cheap
+    /// four-ulong OR comparison; no allocation.
+    /// </summary>
+    public bool IsZero => (_a | _b | _c | _d) == 0UL;
+
     public Hash32(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length != Length)

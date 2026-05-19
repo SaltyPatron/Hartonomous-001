@@ -109,6 +109,78 @@ public static class EdgeArenaRouter
     }
 
     /// <summary>
+    /// Generic-edge overload: returns the rating-event array for
+    /// <paramref name="edgeTypeCode"/> attesting against a target entity of
+    /// <paramref name="targetEntityTypeCode"/>. The target's entity_type is
+    /// the dimension discriminator under the AP-30 / AP-38 collapse principle
+    /// (one generic edge, dimensions distinguished by target type + provenance
+    /// × arena). Falls back to the un-typed <see cref="EventsFor(string, double)"/>
+    /// when no target-type-specific routing exists.
+    /// </summary>
+    public static EdgeRatingEvent[] EventsFor(
+        string edgeTypeCode, string targetEntityTypeCode, double weight = DefaultWeight)
+    {
+        if (_genericEdgeTargetArenas.TryGetValue(
+                (edgeTypeCode, targetEntityTypeCode), out string[]? arenas))
+        {
+            EdgeRatingEvent[] events = new EdgeRatingEvent[arenas.Length];
+            for (int i = 0; i < arenas.Length; i++)
+            {
+                events[i] = new EdgeRatingEvent(
+                    ContextTypeCode: arenas[i],
+                    AttestationTypeCode: "positive_evidence",
+                    Score: 1.0,
+                    Weight: weight);
+            }
+            return events;
+        }
+        return EventsFor(edgeTypeCode, weight);
+    }
+
+    /// <summary>
+    /// Routing matrix for generic-edge (edge_type × target_entity_type) →
+    /// arenas. The collapsed generic-edge surface (has_classification /
+    /// has_relation / has_pattern_attestation / has_attribute) keys arena
+    /// selection on the target's structural-kind entity_type instead of
+    /// inventing per-dimension edge_type rows.
+    /// </summary>
+    private static readonly Dictionary<(string Edge, string TargetType), string[]>
+        _genericEdgeTargetArenas = new()
+    {
+        // has_classification — codepoint-tier UCD properties
+        [("has_classification", "general_category")]  = Universal("unicode_version_consensus"),
+        [("has_classification", "script")]            = Universal("unicode_version_consensus", "script_membership_consensus"),
+        [("has_classification", "block")]             = Universal("unicode_version_consensus"),
+        [("has_classification", "bidi_class")]        = Universal("unicode_version_consensus"),
+        [("has_classification", "east_asian_width")]  = Universal("unicode_version_consensus"),
+        [("has_classification", "break_property")]    = Universal("unicode_version_consensus"),
+        // has_classification — text-tier corpus classifications (mirrors what
+        // legacy has_pos / has_lexname / has_morph_feature / has_deprel_pattern
+        // route to, ready for migration off those per-dimension edge types)
+        [("has_classification", "pos")]               = Universal("lexical_disambiguation", "syntactic_role_fitness"),
+        [("has_classification", "lexname")]           = Universal("semantic_relevance"),
+        [("has_classification", "morph_feature")]     = Universal("morphological_productivity"),
+        [("has_classification", "deprel")]            = Universal("syntactic_role_fitness"),
+        [("has_classification", "sense")]             = Universal("lexical_disambiguation", "semantic_relevance"),
+        [("has_classification", "language_name")]     = Universal("language_codepoint_coverage_consensus"),
+    };
+
+    /// <summary>
+    /// True iff <paramref name="edgeTypeCode"/> has an explicit routing entry
+    /// in the <see cref="_edgeArenaMap"/>. Used by tests to verify the seed
+    /// edge_type vocabulary is fully covered. Edges absent from the map fall
+    /// back to <see cref="DefaultUniversalArenas"/> at runtime (no NRE), but
+    /// auditors prefer explicit routing for documented arena attribution.
+    /// </summary>
+    public static bool IsExplicitlyRouted(string edgeTypeCode) =>
+        _edgeArenaMap.ContainsKey(edgeTypeCode);
+
+    /// <summary>
+    /// Enumerate every edge_type code that has an explicit routing entry.
+    /// </summary>
+    public static IEnumerable<string> RoutedEdgeTypeCodes => _edgeArenaMap.Keys;
+
+    /// <summary>
     /// The source_authority + corroboration_strength baseline that EVERY
     /// edge fires. Domain arenas are added on top per edge_type via the
     /// route table.
@@ -256,11 +328,187 @@ public static class EdgeArenaRouter
         ["idna_maps_to"]               = Universal("source_authority"),
         ["has_bidi_mirroring_glyph"]   = Universal("source_authority"),
 
+        // Generic has_classification edge (Gate 1 #38 refactor 2026-05-19 —
+        // collapsing per-dimension classification edges into one polymorphic
+        // kind discriminated by target entity_type). Universal arena set;
+        // domain arenas are added via EventsFor(edgeType, targetEntityType)
+        // overload (_classificationTargetArenas map below).
+        ["has_classification"]         = Universal(),
+
         // Provenance / audit
         ["has_source"]               = Universal("source_authority"),
         ["in_model"]                 = Universal("source_authority"),
 
         // Sequence-following bigram (Build-a-bear next-token prior)
         ["often_follows"]            = Universal("sequence_following", "frequency_significance"),
+
+        // ── Gate 1 Reopening item #39 — orphan edge_type routings ─────────
+        // Routes for edge_type seed codes (sql/schema/seed/edge_type.sql)
+        // that previously fell back to universal arenas only. Each target
+        // arena is verified to exist in sql/schema/seed/significance_context.sql
+        // (19 seeded arenas). Listed alphabetically by edge_type code.
+
+        // WordNet pointer: weak relatedness link between synsets.
+        ["also_see"]                 = Universal("semantic_relevance"),
+        // WordNet pointer: adjective synset ↔ noun synset attribute pairing.
+        ["attribute"]                = Universal("semantic_relevance"),
+        // Unicode case folding map (UCD CaseFolding.txt). Pure reference
+        // metadata — universal source_authority is sufficient; listed for
+        // explicit documentation per task #39.
+        ["case_folds_to"]            = DefaultUniversalArenas,
+        // WordNet pointer: causal entailment between verb synsets.
+        ["cause"]                    = Universal("semantic_relevance"),
+        // Polymorphic corpus window: word_form↔word_form within a sentence
+        // window. Feeds sequence_following + frequency_significance.
+        ["co_occurrence"]            = Universal("sequence_following", "frequency_significance"),
+        // WordNet pointer: lemmas sharing the same direct hypernym.
+        ["coordinate_term"]          = Universal("semantic_relevance"),
+        // Tokenizer vocabulary coverage edge: word_form → lemma the tokenizer
+        // covers via its vocab. Bridges morphology and disambiguation.
+        ["covers_lemma"]             = Universal("morphological_productivity", "lexical_disambiguation"),
+        // WordNet domain pointers (region / topic / usage). Semantic-domain
+        // membership of synsets.
+        ["domain_of_synset_region"]  = Universal("semantic_relevance"),
+        ["domain_of_synset_topic"]   = Universal("semantic_relevance"),
+        ["domain_of_synset_usage"]   = Universal("semantic_relevance"),
+        // WordNet pointer: verb entailment between synsets.
+        ["entailment"]               = Universal("semantic_relevance"),
+        // Etymology relations from Wiktionary etymtree.
+        ["etym_calque_of"]           = Universal("frequency_significance"),
+        ["etym_etymon"]              = Universal("frequency_significance"),
+        ["etym_link"]                = Universal("frequency_significance"),
+        ["etym_mention"]             = Universal("frequency_significance"),
+        // Unicode collation weight (DUCET / CLDR). Pure reference metadata —
+        // universal source_authority is sufficient; listed for explicit
+        // documentation per task #39.
+        ["has_collation_weight"]     = DefaultUniversalArenas,
+        // Structural: a word_form attested as a lexicalized compound of
+        // smaller word_forms (e.g. "highrise"). Drives idiomaticity geometry.
+        ["lexicalized_compound"]     = Universal("morphological_productivity", "semantic_relevance"),
+
+        // ── Gate 5 prerequisites — model attestation edges ────────────────
+        // Per docs/01-tensor-primitive-spec.md §IV, model decomposers emit
+        // these typed attestation edges between content entities. Each
+        // attestation participates in (provenance × arena) Glicko events.
+
+        // word_form ↔ word_form attention head pattern attestation. Routes
+        // through attention_pattern_confidence so cross-model attention
+        // archetype consensus accumulates on its own arena, plus
+        // semantic_relevance because attention patterns surface meaningful
+        // token-to-token relationships.
+        ["model_attention_pattern"]  = Universal("attention_pattern_confidence", "semantic_relevance"),
+        // word_form ↔ word_form embedding-space cosine attestation. The
+        // model's vote on which content entities are conceptually close.
+        ["model_concept_similarity"] = Universal("semantic_relevance", "model_trust"),
+        // word_form ↔ word_form FFN factor activation attestation. The
+        // model's KV-memory binding between tokens.
+        ["model_ffn_factor"]         = Universal("semantic_relevance", "model_trust"),
+        // Cross-modal alignment (word_form ↔ pixel_region, word_form ↔
+        // audio_chunk, decoder-token ↔ encoder-token, etc.). Translation
+        // quality is the closest existing arena for cross-modal grounding;
+        // semantic_relevance captures the meaning bridge.
+        ["model_cross_modal_pattern"]= Universal("translation_quality", "semantic_relevance"),
+        // Spatial pattern attestation (pixel_region ↔ pixel_region or
+        // audio_chunk ↔ audio_chunk). Visual-domain arena deferred to
+        // Gate 6 — frequency_significance is the closest existing arena
+        // for spatial co-occurrence.
+        ["model_spatial_pattern"]    = Universal("frequency_significance"),
+        // Detection-head class attestation (object_query → visual_concept).
+        // The model's vote on which class label binds to which detection
+        // slot.
+        ["model_detection_class"]    = Universal("semantic_relevance", "model_trust"),
+
+        // ── Completion routings for remaining seeded edge_type codes ──────
+        // Routed alongside task #39 to give every seeded edge_type explicit
+        // arena attribution. Listed in seed-file order.
+
+        // Structural details
+        ["has_morpheme"]             = Universal("morphological_productivity"),
+        ["has_name"]                 = DefaultUniversalArenas,
+        ["has_wikidata"]             = DefaultUniversalArenas,
+        ["has_frame"]                = Universal("syntactic_role_fitness"),
+        ["has_contributor"]          = DefaultUniversalArenas,
+
+        // Unicode case maps (UCD UnicodeData / SpecialCasing)
+        ["maps_to_lowercase"]        = DefaultUniversalArenas,
+        ["maps_to_uppercase"]        = DefaultUniversalArenas,
+        ["maps_to_titlecase"]        = DefaultUniversalArenas,
+        // Unicode decompositions (NormalizationProps / UnicodeData)
+        ["has_canonical_decomposition"]     = DefaultUniversalArenas,
+        ["has_compatibility_decomposition"] = DefaultUniversalArenas,
+        // Unicode ZWJ-emoji sequences (emoji-data)
+        ["has_emoji_zwj_sequence"]   = DefaultUniversalArenas,
+        // Unicode Han ideographic variants + sources
+        ["unihan_variant"]           = Universal("ivd_collection_consensus"),
+        ["unihan_source"]            = DefaultUniversalArenas,
+        // Encoding position consensus (ASCII / ISO 8859 / EBCDIC / etc.)
+        ["has_encoding_position"]    = Universal("encoding_position_consensus"),
+        // IVD collection ideographic-variant attestation
+        ["has_ideographic_variant_in_collection"] = Universal("ivd_collection_consensus"),
+
+        // Model-derived architecture metadata. These are model_architecture
+        // and tensor metadata edges; they don't carry domain-evaluation
+        // signal — they bind a model's structural facts to text content.
+        ["in_layer"]                 = Universal("model_trust"),
+        ["has_dtype"]                = Universal("model_trust"),
+        ["has_shape"]                = Universal("model_trust"),
+        ["has_hidden_size"]          = Universal("model_trust"),
+        ["has_num_layers"]           = Universal("model_trust"),
+        ["has_num_attention_heads"]  = Universal("model_trust"),
+        ["has_vocab_size"]           = Universal("model_trust"),
+        ["has_token_id"]             = Universal("model_trust"),
+        ["in_vocabulary"]            = Universal("model_trust"),
+        ["has_tensor"]               = Universal("model_trust"),
+        ["has_architecture_name"]    = Universal("model_trust"),
+        ["has_tensor_name"]          = Universal("model_trust"),
+        // model_package_tensor analytics edges (per docs/01-tensor-primitive-spec.md)
+        ["has_package_tensor_primitive"]        = Universal("model_trust"),
+        ["has_package_tensor_tuple"]            = Universal("model_trust"),
+        ["has_package_tensor_slot"]             = Universal("model_trust"),
+        ["has_package_tensor_layer_index"]      = Universal("model_trust"),
+        ["has_package_tensor_head_index"]       = Universal("model_trust"),
+        ["has_package_tensor_expert_index"]     = Universal("model_trust"),
+        ["has_package_tensor_modality"]         = Universal("model_trust"),
+        ["has_package_tensor_fused_slice"]      = Universal("model_trust"),
+        ["has_package_tensor_linearized_shape"] = Universal("model_trust"),
+        ["has_tokenizer_model"]      = Universal("model_trust"),
+        ["has_token_in_tokenizer"]   = Universal("model_trust"),
+        // Model-package text artifacts (config / tokenizer / readme / etc.)
+        ["has_config_artifact"]            = Universal("model_trust"),
+        ["has_tokenizer_artifact"]         = Universal("model_trust"),
+        ["has_tokenizer_config_artifact"]  = Universal("model_trust"),
+        ["has_special_tokens_artifact"]    = Universal("model_trust"),
+        ["has_merges_artifact"]            = Universal("model_trust"),
+        ["has_chat_template_artifact"]     = Universal("model_trust"),
+        ["has_generation_config_artifact"] = Universal("model_trust"),
+        ["has_readme_artifact"]            = Universal("model_trust"),
+
+        // WordNet meronym / holonym subtype detail. The router previously
+        // had generic `meronym` / `holonym` collapsed entries; the seed
+        // distinguishes member / substance / part variants and every variant
+        // attests on semantic_relevance.
+        ["member_holonym"]           = Universal("semantic_relevance"),
+        ["substance_holonym"]        = Universal("semantic_relevance"),
+        ["part_holonym"]             = Universal("semantic_relevance"),
+        ["member_meronym"]           = Universal("semantic_relevance"),
+        ["substance_meronym"]        = Universal("semantic_relevance"),
+        ["part_meronym"]             = Universal("semantic_relevance"),
+        // WordNet verb_group / participle_of_verb / domain-membership pointers
+        ["verb_group"]               = Universal("semantic_relevance"),
+        ["participle_of_verb"]       = Universal("semantic_relevance", "morphological_productivity"),
+        ["member_of_domain_topic"]   = Universal("semantic_relevance"),
+        ["member_of_domain_region"]  = Universal("semantic_relevance"),
+        ["member_of_domain_usage"]   = Universal("semantic_relevance"),
+
+        // ISO 639 / region cross-link edges. Identity-binding metadata that
+        // fires on the language-identity attestation arenas.
+        ["has_iso_639_1_code"]       = Universal("script_membership_consensus"),
+        ["has_iso_639_2b_code"]      = Universal("script_membership_consensus"),
+        ["has_iso_639_2t_code"]      = Universal("script_membership_consensus"),
+        ["has_region"]                = DefaultUniversalArenas,
+
+        // AP-8 unified Glicko surface — deprel / lexname classification edges
+        ["has_deprel_pattern"]       = Universal("syntactic_role_fitness"),
+        ["has_lexname"]              = Universal("lexical_disambiguation", "semantic_relevance"),
     };
 }

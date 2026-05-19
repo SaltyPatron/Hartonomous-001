@@ -192,17 +192,29 @@ public static class SubstrateModelExporter
             int headDim = arch.EffectiveHeadDim;
 
             // Per-layer arena assignment is the right design (each transformer
-            // layer reads a different substrate adjacency built from its
-            // assigned arena), but the adjacency-build SQL is inline-C# today
-            // (AP-2 violation) and slow at v>256. Pending: extract to substrate
-            // SQL function `substrate.build_synth_adjacency_csr(vocab, arenas,
-            // include_indirect)` with C/C++ kernel offload for SIMD/AVX/MKL
-            // performance. Until then, fall back to ONE global adjacency
-            // shared across all layers.
+            // Per-layer arena assignment: each transformer layer reads a
+            // different substrate adjacency built from its assigned arena
+            // subset (per SynthesisSection.DefaultLayerArenaChain). Layer-
+            // depth-driven function composition emerges from this — early
+            // layers project the substrate's lexical/morphological surface,
+            // mid layers its syntactic / semantic surface, deep layers its
+            // translation / pattern-confidence surface. Without per-layer
+            // adjacency, all 6 layers project from the same spectral
+            // decomposition and depth buys nothing.
+            //
+            // Future perf path: extract to substrate SQL function
+            // `substrate.build_synth_adjacency_csr(vocab, arenas, include_indirect)`
+            // with C/C++ kernel offload — and/or factor the per-arena
+            // breakdown out of the heavy edge_member self-join so all 6
+            // adjacencies materialize from ONE PG scan. For now: 6 serial
+            // builds, each with this layer's arena weights.
             IReadOnlyList<string> layerArena =
                 SynthesisSection.DefaultLayerArenaChain[layer % SynthesisSection.DefaultLayerArenaChain.Count];
-            Console.Out.WriteLine($"  layer {layer}: arena={string.Join(",", layerArena)} (using global adj pending substrate-side function)");
-            SubstrateAdjacency layerAdj = adj;
+            Console.Out.WriteLine($"  layer {layer}: arena={string.Join(",", layerArena)} — building per-layer adjacency");
+            RecompositionOptions layerOptions = WithLayerArenaWeights(options, layerArena);
+            SubstrateAdjacency layerAdj = await SubstrateAdjacencyBuilder.BuildAsync(
+                dataSource, vocab, layerOptions, ct).ConfigureAwait(false);
+            Console.Out.WriteLine($"    layer {layer} adj: " + SubstrateAdjacencyBuilder.DebugCsrSummary(layerAdj));
 
             // Attention.
             AttentionMatrices attn;
@@ -401,6 +413,37 @@ public static class SubstrateModelExporter
                 LayerNormSynthesizer.BetaFor(layerArena, hidden, layerNormStats),
                 new[] { hidden }, dt);
         }
+    }
+
+    /// <summary>
+    /// Build a per-layer RecompositionOptions override that weights the
+    /// layer's assigned arena(s) at 1.0 and keeps the two universal arenas
+    /// (source_authority + corroboration_strength) at 0.3 baseline so even
+    /// layers with sparse domain attestation density still produce a
+    /// non-empty adjacency. Each transformer layer's AttentionSynthesizer
+    /// then projects through a spectrum tailored to that layer's role
+    /// (lexical / morphological / syntactic / semantic / translation /
+    /// pattern-confidence / sequence-following per SynthesisSection.
+    /// DefaultLayerArenaChain).
+    /// </summary>
+    private static RecompositionOptions WithLayerArenaWeights(
+        RecompositionOptions options, IReadOnlyList<string> layerArenas)
+    {
+        var builder = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, double>(System.StringComparer.Ordinal);
+        // Universal baseline — keeps adjacency non-empty for low-attestation
+        // arenas, and preserves cross-source corroboration signal regardless
+        // of layer role.
+        builder["source_authority"] = 0.3;
+        builder["corroboration_strength"] = 0.3;
+        // Layer-specific arenas at full weight. Listed multiple times in
+        // DefaultLayerArenaChain entries get implicitly accumulated (e.g.
+        // layer 4 = [translation_quality, frequency_significance] → both
+        // weight 1.0 → adjacency reflects union of the two surfaces).
+        foreach (string arena in layerArenas)
+        {
+            builder[arena] = 1.0;
+        }
+        return options with { ArenaWeights = builder.ToImmutable() };
     }
 
     private static float[] DetInit(long n, RecompositionOptions opt, int layer, int salt, double stddev)

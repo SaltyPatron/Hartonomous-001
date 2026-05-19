@@ -31,7 +31,8 @@
 -- Companion partition: physicality_entity_shape (id 15) holds the
 -- real-coord canonical-shape geometry for the same composition entity.
 CREATE TABLE substrate.physicality_ingestion_trajectory
-    PARTITION OF substrate.physicality FOR VALUES IN (16);
+    PARTITION OF substrate.physicality FOR VALUES IN (16)
+    PARTITION BY LIST (partition_bucket);
 
 ALTER TABLE substrate.physicality_ingestion_trajectory
     ADD CONSTRAINT physicality_ingestion_trajectory_geom

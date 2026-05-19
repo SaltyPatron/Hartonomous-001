@@ -11,12 +11,14 @@ using Hartonomous.Core.Data;
 using Hartonomous.Core.Decomposition;
 using Hartonomous.Core.Orchestration;
 using Hartonomous.Core.Text;
-using Hartonomous.Decomposers.Ucd;
+using Hartonomous.Decomposers.Encodings;
+using Hartonomous.Decomposers.Iso;
 using Hartonomous.Decomposers.Iso639;
 using Hartonomous.Decomposers.Omw;
 using Hartonomous.Decomposers.Safetensors;
 using Hartonomous.Decomposers.Tatoeba;
 using Hartonomous.Decomposers.Text;
+using Hartonomous.Decomposers.Ucd;
 using Hartonomous.Decomposers.Ud;
 using Hartonomous.Decomposers.Wiktionary;
 using Hartonomous.Decomposers.WordNet;
@@ -201,6 +203,14 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         };
         DecomposerConfig wiktionaryConfig = new() { SourceDirectory = Resolve(opts.Decomposers.Wiktionary.SourcePath), ConnectionString = conn, LanguageFilter = opts.Decomposers.Wiktionary.LanguageFilter };
         DecomposerConfig tatoebaConfig = new() { SourceDirectory = Resolve(opts.Decomposers.Tatoeba.SourcePath), ConnectionString = conn, LanguageFilter = opts.Decomposers.Tatoeba.LanguageFilter };
+        // Reference / encoding decomposers (Gate 1 #41). Bcp47 + Iso15924 walk
+        // their own paths under the shared source root. Encoding decomposers
+        // are synthetic — driven by the embedded UCD blob; SourceDirectory is
+        // set for config-uniformity but unused by the encoding emit path.
+        DecomposerConfig bcp47Config       = new() { SourceDirectory = Resolve(opts.Decomposers.Bcp47.SourcePath), ConnectionString = conn };
+        DecomposerConfig iso15924Config    = new() { SourceDirectory = Resolve(opts.Decomposers.Iso15924.SourcePath), ConnectionString = conn };
+        DecomposerConfig asciiConfig       = new() { SourceDirectory = Resolve(opts.Decomposers.AsciiEncoding.SourcePath), ConnectionString = conn };
+        DecomposerConfig iso88591Config    = new() { SourceDirectory = Resolve(opts.Decomposers.Iso88591Encoding.SourcePath), ConnectionString = conn };
         string textSourceDir = Resolve(opts.Decomposers.Text.SourcePath);
 
         await using NpgsqlDataSource phaseDs = NpgsqlDataSource.Create(conn);
@@ -233,8 +243,26 @@ internal sealed class PhasesCommand(IConfiguration configuration)
 
         Dictionary<Phase, IReadOnlyList<IDecomposer>> decomposers = new()
         {
-            [Phase.UcdUca] = [new UnicodeDecomposer(ucdConfig, logFactory.CreateLogger<UnicodeDecomposer>())],
-            [Phase.Iso639] = [new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter)],
+            [Phase.UcdUca] =
+            [
+                new UnicodeDecomposer(ucdConfig, logFactory.CreateLogger<UnicodeDecomposer>()),
+                // Encoding decomposers piggyback on UcdUca per their declared
+                // Phases (EncodingDecomposerBase.Phases => [Phase.UcdUca]).
+                // They emit has_encoding_position edges from codepoint atoms
+                // to per-encoding byte positions; need codepoint atoms in
+                // place first, which UnicodeDecomposer §3 produces.
+                new AsciiEncodingDecomposer(asciiConfig, logFactory.CreateLogger<AsciiEncodingDecomposer>()),
+                new Iso88591EncodingDecomposer(iso88591Config, logFactory.CreateLogger<Iso88591EncodingDecomposer>()),
+            ],
+            [Phase.Iso639] =
+            [
+                new Iso639Decomposer(iso639Config, logFactory.CreateLogger<Iso639Decomposer>(), cpProps, refDataReader, junctionWriter, refDataWriter),
+                // Iso15924 + Bcp47 declare Phases => [Phase.Iso639] — language /
+                // script / region registries that cross-corroborate ISO 639's
+                // language_name entities with script + region metadata.
+                new Iso15924Decomposer(iso15924Config, logFactory.CreateLogger<Iso15924Decomposer>()),
+                new Bcp47Decomposer(bcp47Config, logFactory.CreateLogger<Bcp47Decomposer>()),
+            ],
             [Phase.WordNetOmw] =
             [
                 new WordNetDecomposer(wordnetConfig, substrateTextDecomposer, logFactory.CreateLogger<WordNetDecomposer>(), cpProps, wordNetSynsetBridge, refDataReader, junctionWriter, refDataWriter),

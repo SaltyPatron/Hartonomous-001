@@ -18,10 +18,16 @@ public sealed class DrainSqlOrderingTests
         // be followed by one that does, and the entity row picks it up.
         // Content identity is still hash-only; the update is content-
         // preserving denormalization.
-        yield return Requirement("entity", "order by hash", "on conflict (hash) do update");
+        // entity / edge_member / physicality conflict targets include
+        // `partition_bucket` because those tables are LIST-partitioned by
+        // (byte 0 of hash & 7). PG requires the partition key to participate
+        // in every UNIQUE / PRIMARY KEY constraint on the partitioned root;
+        // the bucket column is CHECK-enforced bijective with the hash so the
+        // composite key is semantically identical to hash-only.
+        yield return Requirement("entity", "order by hash", "on conflict (hash, partition_bucket) do update");
         yield return Requirement("entity_classification", "order by entity_hash, entity_type_id, provenance_id", "on conflict (entity_hash, entity_type_id, provenance_id) do nothing");
         yield return Requirement("edge", "order by edge_type_id, hash, (geometry_payload is null), provenance_id, geometry_payload", "on conflict (edge_type_id, hash) do nothing");
-        yield return Requirement("edge_member", "order by edge_type_id, edge_hash, entity_hash, edge_role_id, role_position", "on conflict (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position) do nothing");
+        yield return Requirement("edge_member", "order by edge_type_id, edge_hash, entity_hash, edge_role_id, role_position", "on conflict (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position, partition_bucket) do nothing");
         yield return Requirement("junction", "order by entity_hash, pos_id, attestation_type_id, mu desc", "on conflict (entity_hash, pos_id, attestation_type_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, lexname_id", "on conflict (entity_hash, lexname_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, language_id", "on conflict (entity_hash, language_id) do nothing");
@@ -29,7 +35,7 @@ public sealed class DrainSqlOrderingTests
         yield return Requirement("junction", "order by entity_hash, architecture_class_id", "on conflict (entity_hash, architecture_class_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, tensor_role_id", "on conflict (entity_hash, tensor_role_id) do nothing");
         yield return Requirement("junction", "order by entity_hash, deprel_id, attestation_type_id, mu desc", "on conflict (entity_hash, deprel_id, attestation_type_id) do nothing");
-        yield return Requirement("physicality", "order by physicality_type_id, entity_hash, content_hash, geometry_payload", "on conflict (physicality_type_id, entity_hash, content_hash) do nothing");
+        yield return Requirement("physicality", "order by physicality_type_id, entity_hash, content_hash, geometry_payload", "on conflict (physicality_type_id, entity_hash, content_hash, partition_bucket) do nothing");
         yield return Requirement("entity_significance", "order by context_type_id, entity_hash, attestation_type_id, mu desc", "on conflict (context_type_id, entity_hash, attestation_type_id) do nothing");
         yield return Requirement("edge_significance", "order by context_type_id, edge_type_id, edge_hash, attestation_type_id, mu desc", "on conflict (context_type_id, edge_type_id, edge_hash, attestation_type_id) do nothing");
         yield return Requirement("entity_model_source", "order by entity_hash, model_source_id", "on conflict (entity_hash, model_source_id) do nothing");

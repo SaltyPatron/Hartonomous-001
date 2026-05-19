@@ -25,7 +25,8 @@
 -- entity. A composition typically has both rows present — one in each
 -- partition — answering different queries.
 CREATE TABLE substrate.physicality_entity_shape
-    PARTITION OF substrate.physicality FOR VALUES IN (15);
+    PARTITION OF substrate.physicality FOR VALUES IN (15)
+    PARTITION BY LIST (partition_bucket);
 
 ALTER TABLE substrate.physicality_entity_shape
     ADD CONSTRAINT physicality_entity_shape_geom

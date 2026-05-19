@@ -53,7 +53,6 @@ public static class SubstrateFunctionNames
     public const string PopulateMorphFeatures = "substrate.populate_morph_features";
     public const string PromptDocumentReady = "substrate.prompt_document_ready";
     public const string PopulateScripts = "substrate.populate_scripts";
-    public const string RecomposeContent = "substrate.recompose_content";
     public const string PreviewTargetArch = "substrate.preview_target_arch";
     public const string QueryAttentionComponents = "substrate.query_attention_components";
     public const string QueryEntities = "substrate.query_entities";
@@ -69,7 +68,6 @@ public static class SubstrateFunctionNames
     public const string ReferenceInt64Set = "substrate.reference_int64_set";
     public const string ReferenceKeyValueMap = "substrate.reference_key_value_map";
     public const string ReferenceLanguageAliasMap = "substrate.reference_language_alias_map";
-    public const string RecomposeText = "substrate.recompose_text";
     public const string RecomposeAuditWalk = "substrate.recompose_audit_walk";
     public const string RecordAttestationsBulk = "substrate.record_attestations_bulk";
     public const string RecordOutcome = "substrate.record_outcome";
@@ -85,7 +83,6 @@ public static class SubstrateFunctionNames
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
     public const string TraversalNeighbors = "substrate.traversal_neighbors";
-    public const string UcdMaterializationCounts = "substrate.ucd_materialization_counts";
     public const string UcdVersion = "substrate.ucd_version";
     public const string UpsertArchitectureClass = "substrate.upsert_architecture_class";
     public const string UpsertHomogeneousEdgeTypes = "substrate.upsert_homogeneous_edge_types";
@@ -136,7 +133,6 @@ public static class SubstrateFunctionNames
         PopulateMorphFeatures,
         PromptDocumentReady,
         PopulateScripts,
-        RecomposeContent,
         PreviewTargetArch,
         QueryAttentionComponents,
         QueryEntities,
@@ -152,7 +148,6 @@ public static class SubstrateFunctionNames
         ReferenceInt64Set,
         ReferenceKeyValueMap,
         ReferenceLanguageAliasMap,
-        RecomposeText,
         RecomposeAuditWalk,
         RecordAttestationsBulk,
         RecordOutcome,
@@ -168,7 +163,6 @@ public static class SubstrateFunctionNames
         ResolveEntityHandles,
         SignificanceContextIds,
         TraversalNeighbors,
-        UcdMaterializationCounts,
         UcdVersion,
         UpsertArchitectureClass,
         UpsertHomogeneousEdgeTypes,

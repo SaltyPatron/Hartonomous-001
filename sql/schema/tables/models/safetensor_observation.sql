@@ -8,8 +8,10 @@ CREATE TABLE substrate.safetensor_observation (
     edge_hash               substrate.hash_value NOT NULL,
     score                  DOUBLE PRECISION NOT NULL,
     weight                 DOUBLE PRECISION NOT NULL,
-    tensor_hash             substrate.hash_value REFERENCES substrate.entity(hash),
-    package_tensor_hash     substrate.hash_value REFERENCES substrate.entity(hash),
+    -- Entity FK is application-enforced — substrate.entity is HASH-partitioned
+    -- by hash_bits_0_51 and PG does not accept FKs to a non-unique single column.
+    tensor_hash             substrate.hash_value,
+    package_tensor_hash     substrate.hash_value,
     source_tensor_name      TEXT,
     primitive_code          TEXT,
     tuple_code              TEXT,

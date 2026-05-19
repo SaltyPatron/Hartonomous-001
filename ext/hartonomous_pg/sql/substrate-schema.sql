@@ -518,7 +518,38 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     ('model_architecture', 'model_weights'),
     ('model_package',      'model_weights'),
     ('model_package_tensor','model_weights'),
-    ('tokenizer_model',    'model_weights');
+    ('tokenizer_model',    'model_weights'),
+    -- Reference-vocabulary entities (AP-8 correction, 2026-05-14):
+    -- POS / lexname / language / morph feature / deprel / sense codes
+    -- become content-hashed substrate entities. Corpus decomposers emit
+    -- typed edges (has_pos, has_lexname, has_language, has_morph_feature,
+    -- has_deprel_pattern) into these as edge targets. The unified Glicko-2
+    -- surface (substrate.edge_significance) per (provenance × arena) is
+    -- the authoritative consensus surface; legacy junction tables
+    -- (entity_pos, entity_lexname, entity_language, entity_morph_feature,
+    -- pattern_deprel) remain as denormalized analytics caches per AP-8.
+    -- Identity = BLAKE3("{kind}:{code}") via
+    -- Hartonomous.Core.Compute.Common.ReferenceVocabularyHashes.
+    ('pos',                'text'),
+    ('lexname',            'text'),
+    ('morph_feature',      'text'),
+    ('deprel',             'text'),
+    ('sense',              'text'),
+    -- Per-codepoint UCD property classifications (Gate 1 #38 refactor,
+    -- 2026-05-18): each Unicode property code (general_category Lu, script
+    -- Latn, block "Basic Latin", bidi_class AL, east_asian_width W,
+    -- break_property "GCB:CR") becomes a content-hashed substrate entity
+    -- via ReferenceVocabularyHashes.{GeneralCategory,Script,Block,BidiClass,
+    -- EastAsianWidth,BreakProperty}EntityHash. Codepoint atoms emit typed
+    -- edges (has_cp_general_category etc.) into these as edge targets.
+    -- Cross-UCD-version attestation accumulates on the same edge identities
+    -- under the unicode_version_consensus arena.
+    ('general_category',   'text'),
+    ('script',             'text'),
+    ('block',              'text'),
+    ('bidi_class',         'text'),
+    ('east_asian_width',   'text'),
+    ('break_property',     'text');
 
 -- ── sql/schema/seed/physicality_type.sql ───────────────────────────────────────
 -- Physicality types: exactly 3 rows.
@@ -885,6 +916,708 @@ SET code = EXCLUDED.code,
 
 SELECT setval('substrate.east_asian_width_id_seq', (SELECT max(id) FROM substrate.east_asian_width));
 
+-- ── sql/schema/seed/general_category.sql ───────────────────────────────────────
+-- GENERATED — Unicode General_Category property (UAX #44).
+-- Source: ext/hartonomous_pg/src/generated/pg_ucd_inventory.c (uc_inv_gc).
+-- id = native-blob byte code + 1; matches substrate.codepoint_property FK convention.
+INSERT INTO substrate.general_category (id, code, group_code, description) VALUES
+    (1, 'Cn', 'C', 'Unassigned'),
+    (2, 'Lu', 'L', 'Uppercase_Letter'),
+    (3, 'Ll', 'L', 'Lowercase_Letter'),
+    (4, 'Lt', 'L', 'Titlecase_Letter'),
+    (5, 'Lm', 'L', 'Modifier_Letter'),
+    (6, 'Lo', 'L', 'Other_Letter'),
+    (7, 'Mn', 'M', 'Nonspacing_Mark'),
+    (8, 'Mc', 'M', 'Spacing_Mark'),
+    (9, 'Me', 'M', 'Enclosing_Mark'),
+    (10, 'Nd', 'N', 'Decimal_Number'),
+    (11, 'Nl', 'N', 'Letter_Number'),
+    (12, 'No', 'N', 'Other_Number'),
+    (13, 'Pc', 'P', 'Connector_Punctuation'),
+    (14, 'Pd', 'P', 'Dash_Punctuation'),
+    (15, 'Ps', 'P', 'Open_Punctuation'),
+    (16, 'Pe', 'P', 'Close_Punctuation'),
+    (17, 'Pi', 'P', 'Initial_Punctuation'),
+    (18, 'Pf', 'P', 'Final_Punctuation'),
+    (19, 'Po', 'P', 'Other_Punctuation'),
+    (20, 'Sm', 'S', 'Math_Symbol'),
+    (21, 'Sc', 'S', 'Currency_Symbol'),
+    (22, 'Sk', 'S', 'Modifier_Symbol'),
+    (23, 'So', 'S', 'Other_Symbol'),
+    (24, 'Zs', 'Z', 'Space_Separator'),
+    (25, 'Zl', 'Z', 'Line_Separator'),
+    (26, 'Zp', 'Z', 'Paragraph_Separator'),
+    (27, 'Cc', 'C', 'Control'),
+    (28, 'Cf', 'C', 'Format'),
+    (29, 'Cs', 'C', 'Surrogate'),
+    (30, 'Co', 'C', 'Private_Use')
+ON CONFLICT (id) DO UPDATE
+SET code = EXCLUDED.code,
+    group_code = EXCLUDED.group_code,
+    description = EXCLUDED.description;
+
+SELECT setval('substrate.general_category_id_seq', (SELECT max(id) FROM substrate.general_category));
+
+-- ── sql/schema/seed/script.sql ───────────────────────────────────────
+-- GENERATED — Unicode Script property (ISO 15924).
+-- Source: ext/hartonomous_pg/src/generated/pg_ucd_inventory.c (uc_inv_scripts).
+-- id = native-blob ushort code + 1; matches substrate.codepoint_property FK convention.
+INSERT INTO substrate.script (id, code) VALUES
+    (1, 'Unknown'),
+    (2, 'Zyyy'),
+    (3, 'Latn'),
+    (4, 'Bopo'),
+    (5, 'Zinh'),
+    (6, 'Grek'),
+    (7, 'Zzzz'),
+    (8, 'Copt'),
+    (9, 'Cyrl'),
+    (10, 'Armn'),
+    (11, 'Hebr'),
+    (12, 'Arab'),
+    (13, 'Syrc'),
+    (14, 'Thaa'),
+    (15, 'Nkoo'),
+    (16, 'Samr'),
+    (17, 'Mand'),
+    (18, 'Deva'),
+    (19, 'Beng'),
+    (20, 'Guru'),
+    (21, 'Gujr'),
+    (22, 'Orya'),
+    (23, 'Taml'),
+    (24, 'Telu'),
+    (25, 'Knda'),
+    (26, 'Mlym'),
+    (27, 'Sinh'),
+    (28, 'Thai'),
+    (29, 'Laoo'),
+    (30, 'Tibt'),
+    (31, 'Mymr'),
+    (32, 'Geor'),
+    (33, 'Hang'),
+    (34, 'Ethi'),
+    (35, 'Cher'),
+    (36, 'Cans'),
+    (37, 'Ogam'),
+    (38, 'Runr'),
+    (39, 'Tglg'),
+    (40, 'Hano'),
+    (41, 'Buhd'),
+    (42, 'Tagb'),
+    (43, 'Khmr'),
+    (44, 'Mong'),
+    (45, 'Limb'),
+    (46, 'Tale'),
+    (47, 'Talu'),
+    (48, 'Bugi'),
+    (49, 'Lana'),
+    (50, 'Bali'),
+    (51, 'Sund'),
+    (52, 'Batk'),
+    (53, 'Lepc'),
+    (54, 'Olck'),
+    (55, 'Brai'),
+    (56, 'Glag'),
+    (57, 'Tfng'),
+    (58, 'Hani'),
+    (59, 'Hira'),
+    (60, 'Kana'),
+    (61, 'Yiii'),
+    (62, 'Lisu'),
+    (63, 'Vaii'),
+    (64, 'Bamu'),
+    (65, 'Sylo'),
+    (66, 'Phag'),
+    (67, 'Saur'),
+    (68, 'Kali'),
+    (69, 'Rjng'),
+    (70, 'Java'),
+    (71, 'Cham'),
+    (72, 'Tavt'),
+    (73, 'Mtei'),
+    (74, 'Linb'),
+    (75, 'Lyci'),
+    (76, 'Cari'),
+    (77, 'Ital'),
+    (78, 'Goth'),
+    (79, 'Perm'),
+    (80, 'Ugar'),
+    (81, 'Xpeo'),
+    (82, 'Dsrt'),
+    (83, 'Shaw'),
+    (84, 'Osma'),
+    (85, 'Osge'),
+    (86, 'Elba'),
+    (87, 'Aghb'),
+    (88, 'Vith'),
+    (89, 'Todr'),
+    (90, 'Lina'),
+    (91, 'Cprt'),
+    (92, 'Armi'),
+    (93, 'Palm'),
+    (94, 'Nbat'),
+    (95, 'Hatr'),
+    (96, 'Phnx'),
+    (97, 'Lydi'),
+    (98, 'Sidt'),
+    (99, 'Mero'),
+    (100, 'Merc'),
+    (101, 'Khar'),
+    (102, 'Sarb'),
+    (103, 'Narb'),
+    (104, 'Mani'),
+    (105, 'Avst'),
+    (106, 'Prti'),
+    (107, 'Phli'),
+    (108, 'Phlp'),
+    (109, 'Orkh'),
+    (110, 'Hung'),
+    (111, 'Rohg'),
+    (112, 'Gara'),
+    (113, 'Yezi'),
+    (114, 'Sogo'),
+    (115, 'Sogd'),
+    (116, 'Ougr'),
+    (117, 'Chrs'),
+    (118, 'Elym'),
+    (119, 'Brah'),
+    (120, 'Kthi'),
+    (121, 'Sora'),
+    (122, 'Cakm'),
+    (123, 'Mahj'),
+    (124, 'Shrd'),
+    (125, 'Khoj'),
+    (126, 'Mult'),
+    (127, 'Sind'),
+    (128, 'Gran'),
+    (129, 'Tutg'),
+    (130, 'Newa'),
+    (131, 'Tirh'),
+    (132, 'Sidd'),
+    (133, 'Modi'),
+    (134, 'Takr'),
+    (135, 'Ahom'),
+    (136, 'Dogr'),
+    (137, 'Wara'),
+    (138, 'Diak'),
+    (139, 'Nand'),
+    (140, 'Zanb'),
+    (141, 'Soyo'),
+    (142, 'Pauc'),
+    (143, 'Sunu'),
+    (144, 'Bhks'),
+    (145, 'Marc'),
+    (146, 'Gonm'),
+    (147, 'Gong'),
+    (148, 'Tols'),
+    (149, 'Maka'),
+    (150, 'Kawi'),
+    (151, 'Xsux'),
+    (152, 'Cpmn'),
+    (153, 'Egyp'),
+    (154, 'Hluw'),
+    (155, 'Gukh'),
+    (156, 'Mroo'),
+    (157, 'Tnsa'),
+    (158, 'Bass'),
+    (159, 'Hmng'),
+    (160, 'Krai'),
+    (161, 'Medf'),
+    (162, 'Berf'),
+    (163, 'Plrd'),
+    (164, 'Tang'),
+    (165, 'Nshu'),
+    (166, 'Kits'),
+    (167, 'Dupl'),
+    (168, 'Sgnw'),
+    (169, 'Hmnp'),
+    (170, 'Toto'),
+    (171, 'Wcho'),
+    (172, 'Nagm'),
+    (173, 'Onao'),
+    (174, 'Tayo'),
+    (175, 'Mend'),
+    (176, 'Adlm')
+ON CONFLICT (id) DO UPDATE
+SET code = EXCLUDED.code;
+
+SELECT setval('substrate.script_id_seq', (SELECT max(id) FROM substrate.script));
+
+-- ── sql/schema/seed/block.sql ───────────────────────────────────────
+-- GENERATED — Unicode Block ranges.
+-- Source: ext/hartonomous_pg/src/generated/pg_ucd_inventory.c (uc_inv_blocks).
+-- id = native-blob ushort code + 1; matches substrate.codepoint_property FK convention.
+INSERT INTO substrate.block (id, code, range_start, range_end) VALUES
+    (1, 'No_Block', 0, 0),
+    (2, 'Basic Latin', 0, 127),
+    (3, 'Latin-1 Supplement', 128, 255),
+    (4, 'Latin Extended-A', 256, 383),
+    (5, 'Latin Extended-B', 384, 591),
+    (6, 'IPA Extensions', 592, 687),
+    (7, 'Spacing Modifier Letters', 688, 767),
+    (8, 'Combining Diacritical Marks', 768, 879),
+    (9, 'Greek and Coptic', 880, 1023),
+    (10, 'Cyrillic', 1024, 1279),
+    (11, 'Cyrillic Supplement', 1280, 1327),
+    (12, 'Armenian', 1328, 1423),
+    (13, 'Hebrew', 1424, 1535),
+    (14, 'Arabic', 1536, 1791),
+    (15, 'Syriac', 1792, 1871),
+    (16, 'Arabic Supplement', 1872, 1919),
+    (17, 'Thaana', 1920, 1983),
+    (18, 'NKo', 1984, 2047),
+    (19, 'Samaritan', 2048, 2111),
+    (20, 'Mandaic', 2112, 2143),
+    (21, 'Syriac Supplement', 2144, 2159),
+    (22, 'Arabic Extended-B', 2160, 2207),
+    (23, 'Arabic Extended-A', 2208, 2303),
+    (24, 'Devanagari', 2304, 2431),
+    (25, 'Bengali', 2432, 2559),
+    (26, 'Gurmukhi', 2560, 2687),
+    (27, 'Gujarati', 2688, 2815),
+    (28, 'Oriya', 2816, 2943),
+    (29, 'Tamil', 2944, 3071),
+    (30, 'Telugu', 3072, 3199),
+    (31, 'Kannada', 3200, 3327),
+    (32, 'Malayalam', 3328, 3455),
+    (33, 'Sinhala', 3456, 3583),
+    (34, 'Thai', 3584, 3711),
+    (35, 'Lao', 3712, 3839),
+    (36, 'Tibetan', 3840, 4095),
+    (37, 'Myanmar', 4096, 4255),
+    (38, 'Georgian', 4256, 4351),
+    (39, 'Hangul Jamo', 4352, 4607),
+    (40, 'Ethiopic', 4608, 4991),
+    (41, 'Ethiopic Supplement', 4992, 5023),
+    (42, 'Cherokee', 5024, 5119),
+    (43, 'Unified Canadian Aboriginal Syllabics', 5120, 5759),
+    (44, 'Ogham', 5760, 5791),
+    (45, 'Runic', 5792, 5887),
+    (46, 'Tagalog', 5888, 5919),
+    (47, 'Hanunoo', 5920, 5951),
+    (48, 'Buhid', 5952, 5983),
+    (49, 'Tagbanwa', 5984, 6015),
+    (50, 'Khmer', 6016, 6143),
+    (51, 'Mongolian', 6144, 6319),
+    (52, 'Unified Canadian Aboriginal Syllabics Extended', 6320, 6399),
+    (53, 'Limbu', 6400, 6479),
+    (54, 'Tai Le', 6480, 6527),
+    (55, 'New Tai Lue', 6528, 6623),
+    (56, 'Khmer Symbols', 6624, 6655),
+    (57, 'Buginese', 6656, 6687),
+    (58, 'Tai Tham', 6688, 6831),
+    (59, 'Combining Diacritical Marks Extended', 6832, 6911),
+    (60, 'Balinese', 6912, 7039),
+    (61, 'Sundanese', 7040, 7103),
+    (62, 'Batak', 7104, 7167),
+    (63, 'Lepcha', 7168, 7247),
+    (64, 'Ol Chiki', 7248, 7295),
+    (65, 'Cyrillic Extended-C', 7296, 7311),
+    (66, 'Georgian Extended', 7312, 7359),
+    (67, 'Sundanese Supplement', 7360, 7375),
+    (68, 'Vedic Extensions', 7376, 7423),
+    (69, 'Phonetic Extensions', 7424, 7551),
+    (70, 'Phonetic Extensions Supplement', 7552, 7615),
+    (71, 'Combining Diacritical Marks Supplement', 7616, 7679),
+    (72, 'Latin Extended Additional', 7680, 7935),
+    (73, 'Greek Extended', 7936, 8191),
+    (74, 'General Punctuation', 8192, 8303),
+    (75, 'Superscripts and Subscripts', 8304, 8351),
+    (76, 'Currency Symbols', 8352, 8399),
+    (77, 'Combining Diacritical Marks for Symbols', 8400, 8447),
+    (78, 'Letterlike Symbols', 8448, 8527),
+    (79, 'Number Forms', 8528, 8591),
+    (80, 'Arrows', 8592, 8703),
+    (81, 'Mathematical Operators', 8704, 8959),
+    (82, 'Miscellaneous Technical', 8960, 9215),
+    (83, 'Control Pictures', 9216, 9279),
+    (84, 'Optical Character Recognition', 9280, 9311),
+    (85, 'Enclosed Alphanumerics', 9312, 9471),
+    (86, 'Box Drawing', 9472, 9599),
+    (87, 'Block Elements', 9600, 9631),
+    (88, 'Geometric Shapes', 9632, 9727),
+    (89, 'Miscellaneous Symbols', 9728, 9983),
+    (90, 'Dingbats', 9984, 10175),
+    (91, 'Miscellaneous Mathematical Symbols-A', 10176, 10223),
+    (92, 'Supplemental Arrows-A', 10224, 10239),
+    (93, 'Braille Patterns', 10240, 10495),
+    (94, 'Supplemental Arrows-B', 10496, 10623),
+    (95, 'Miscellaneous Mathematical Symbols-B', 10624, 10751),
+    (96, 'Supplemental Mathematical Operators', 10752, 11007),
+    (97, 'Miscellaneous Symbols and Arrows', 11008, 11263),
+    (98, 'Glagolitic', 11264, 11359),
+    (99, 'Latin Extended-C', 11360, 11391),
+    (100, 'Coptic', 11392, 11519),
+    (101, 'Georgian Supplement', 11520, 11567),
+    (102, 'Tifinagh', 11568, 11647),
+    (103, 'Ethiopic Extended', 11648, 11743),
+    (104, 'Cyrillic Extended-A', 11744, 11775),
+    (105, 'Supplemental Punctuation', 11776, 11903),
+    (106, 'CJK Radicals Supplement', 11904, 12031),
+    (107, 'Kangxi Radicals', 12032, 12255),
+    (108, 'Ideographic Description Characters', 12272, 12287),
+    (109, 'CJK Symbols and Punctuation', 12288, 12351),
+    (110, 'Hiragana', 12352, 12447),
+    (111, 'Katakana', 12448, 12543),
+    (112, 'Bopomofo', 12544, 12591),
+    (113, 'Hangul Compatibility Jamo', 12592, 12687),
+    (114, 'Kanbun', 12688, 12703),
+    (115, 'Bopomofo Extended', 12704, 12735),
+    (116, 'CJK Strokes', 12736, 12783),
+    (117, 'Katakana Phonetic Extensions', 12784, 12799),
+    (118, 'Enclosed CJK Letters and Months', 12800, 13055),
+    (119, 'CJK Compatibility', 13056, 13311),
+    (120, 'CJK Unified Ideographs Extension A', 13312, 19903),
+    (121, 'Yijing Hexagram Symbols', 19904, 19967),
+    (122, 'CJK Unified Ideographs', 19968, 40959),
+    (123, 'Yi Syllables', 40960, 42127),
+    (124, 'Yi Radicals', 42128, 42191),
+    (125, 'Lisu', 42192, 42239),
+    (126, 'Vai', 42240, 42559),
+    (127, 'Cyrillic Extended-B', 42560, 42655),
+    (128, 'Bamum', 42656, 42751),
+    (129, 'Modifier Tone Letters', 42752, 42783),
+    (130, 'Latin Extended-D', 42784, 43007),
+    (131, 'Syloti Nagri', 43008, 43055),
+    (132, 'Common Indic Number Forms', 43056, 43071),
+    (133, 'Phags-pa', 43072, 43135),
+    (134, 'Saurashtra', 43136, 43231),
+    (135, 'Devanagari Extended', 43232, 43263),
+    (136, 'Kayah Li', 43264, 43311),
+    (137, 'Rejang', 43312, 43359),
+    (138, 'Hangul Jamo Extended-A', 43360, 43391),
+    (139, 'Javanese', 43392, 43487),
+    (140, 'Myanmar Extended-B', 43488, 43519),
+    (141, 'Cham', 43520, 43615),
+    (142, 'Myanmar Extended-A', 43616, 43647),
+    (143, 'Tai Viet', 43648, 43743),
+    (144, 'Meetei Mayek Extensions', 43744, 43775),
+    (145, 'Ethiopic Extended-A', 43776, 43823),
+    (146, 'Latin Extended-E', 43824, 43887),
+    (147, 'Cherokee Supplement', 43888, 43967),
+    (148, 'Meetei Mayek', 43968, 44031),
+    (149, 'Hangul Syllables', 44032, 55215),
+    (150, 'Hangul Jamo Extended-B', 55216, 55295),
+    (151, 'High Surrogates', 55296, 56191),
+    (152, 'High Private Use Surrogates', 56192, 56319),
+    (153, 'Low Surrogates', 56320, 57343),
+    (154, 'Private Use Area', 57344, 63743),
+    (155, 'CJK Compatibility Ideographs', 63744, 64255),
+    (156, 'Alphabetic Presentation Forms', 64256, 64335),
+    (157, 'Arabic Presentation Forms-A', 64336, 65023),
+    (158, 'Variation Selectors', 65024, 65039),
+    (159, 'Vertical Forms', 65040, 65055),
+    (160, 'Combining Half Marks', 65056, 65071),
+    (161, 'CJK Compatibility Forms', 65072, 65103),
+    (162, 'Small Form Variants', 65104, 65135),
+    (163, 'Arabic Presentation Forms-B', 65136, 65279),
+    (164, 'Halfwidth and Fullwidth Forms', 65280, 65519),
+    (165, 'Specials', 65520, 65535),
+    (166, 'Linear B Syllabary', 65536, 65663),
+    (167, 'Linear B Ideograms', 65664, 65791),
+    (168, 'Aegean Numbers', 65792, 65855),
+    (169, 'Ancient Greek Numbers', 65856, 65935),
+    (170, 'Ancient Symbols', 65936, 65999),
+    (171, 'Phaistos Disc', 66000, 66047),
+    (172, 'Lycian', 66176, 66207),
+    (173, 'Carian', 66208, 66271),
+    (174, 'Coptic Epact Numbers', 66272, 66303),
+    (175, 'Old Italic', 66304, 66351),
+    (176, 'Gothic', 66352, 66383),
+    (177, 'Old Permic', 66384, 66431),
+    (178, 'Ugaritic', 66432, 66463),
+    (179, 'Old Persian', 66464, 66527),
+    (180, 'Deseret', 66560, 66639),
+    (181, 'Shavian', 66640, 66687),
+    (182, 'Osmanya', 66688, 66735),
+    (183, 'Osage', 66736, 66815),
+    (184, 'Elbasan', 66816, 66863),
+    (185, 'Caucasian Albanian', 66864, 66927),
+    (186, 'Vithkuqi', 66928, 67007),
+    (187, 'Todhri', 67008, 67071),
+    (188, 'Linear A', 67072, 67455),
+    (189, 'Latin Extended-F', 67456, 67519),
+    (190, 'Cypriot Syllabary', 67584, 67647),
+    (191, 'Imperial Aramaic', 67648, 67679),
+    (192, 'Palmyrene', 67680, 67711),
+    (193, 'Nabataean', 67712, 67759),
+    (194, 'Hatran', 67808, 67839),
+    (195, 'Phoenician', 67840, 67871),
+    (196, 'Lydian', 67872, 67903),
+    (197, 'Sidetic', 67904, 67935),
+    (198, 'Meroitic Hieroglyphs', 67968, 67999),
+    (199, 'Meroitic Cursive', 68000, 68095),
+    (200, 'Kharoshthi', 68096, 68191),
+    (201, 'Old South Arabian', 68192, 68223),
+    (202, 'Old North Arabian', 68224, 68255),
+    (203, 'Manichaean', 68288, 68351),
+    (204, 'Avestan', 68352, 68415),
+    (205, 'Inscriptional Parthian', 68416, 68447),
+    (206, 'Inscriptional Pahlavi', 68448, 68479),
+    (207, 'Psalter Pahlavi', 68480, 68527),
+    (208, 'Old Turkic', 68608, 68687),
+    (209, 'Old Hungarian', 68736, 68863),
+    (210, 'Hanifi Rohingya', 68864, 68927),
+    (211, 'Garay', 68928, 69007),
+    (212, 'Rumi Numeral Symbols', 69216, 69247),
+    (213, 'Yezidi', 69248, 69311),
+    (214, 'Arabic Extended-C', 69312, 69375),
+    (215, 'Old Sogdian', 69376, 69423),
+    (216, 'Sogdian', 69424, 69487),
+    (217, 'Old Uyghur', 69488, 69551),
+    (218, 'Chorasmian', 69552, 69599),
+    (219, 'Elymaic', 69600, 69631),
+    (220, 'Brahmi', 69632, 69759),
+    (221, 'Kaithi', 69760, 69839),
+    (222, 'Sora Sompeng', 69840, 69887),
+    (223, 'Chakma', 69888, 69967),
+    (224, 'Mahajani', 69968, 70015),
+    (225, 'Sharada', 70016, 70111),
+    (226, 'Sinhala Archaic Numbers', 70112, 70143),
+    (227, 'Khojki', 70144, 70223),
+    (228, 'Multani', 70272, 70319),
+    (229, 'Khudawadi', 70320, 70399),
+    (230, 'Grantha', 70400, 70527),
+    (231, 'Tulu-Tigalari', 70528, 70655),
+    (232, 'Newa', 70656, 70783),
+    (233, 'Tirhuta', 70784, 70879),
+    (234, 'Siddham', 71040, 71167),
+    (235, 'Modi', 71168, 71263),
+    (236, 'Mongolian Supplement', 71264, 71295),
+    (237, 'Takri', 71296, 71375),
+    (238, 'Myanmar Extended-C', 71376, 71423),
+    (239, 'Ahom', 71424, 71503),
+    (240, 'Dogra', 71680, 71759),
+    (241, 'Warang Citi', 71840, 71935),
+    (242, 'Dives Akuru', 71936, 72031),
+    (243, 'Nandinagari', 72096, 72191),
+    (244, 'Zanabazar Square', 72192, 72271),
+    (245, 'Soyombo', 72272, 72367),
+    (246, 'Unified Canadian Aboriginal Syllabics Extended-A', 72368, 72383),
+    (247, 'Pau Cin Hau', 72384, 72447),
+    (248, 'Devanagari Extended-A', 72448, 72543),
+    (249, 'Sharada Supplement', 72544, 72575),
+    (250, 'Sunuwar', 72640, 72703),
+    (251, 'Bhaiksuki', 72704, 72815),
+    (252, 'Marchen', 72816, 72895),
+    (253, 'Masaram Gondi', 72960, 73055),
+    (254, 'Gunjala Gondi', 73056, 73135),
+    (255, 'Tolong Siki', 73136, 73199),
+    (256, 'Makasar', 73440, 73471),
+    (257, 'Kawi', 73472, 73567),
+    (258, 'Lisu Supplement', 73648, 73663),
+    (259, 'Tamil Supplement', 73664, 73727),
+    (260, 'Cuneiform', 73728, 74751),
+    (261, 'Cuneiform Numbers and Punctuation', 74752, 74879),
+    (262, 'Early Dynastic Cuneiform', 74880, 75087),
+    (263, 'Cypro-Minoan', 77712, 77823),
+    (264, 'Egyptian Hieroglyphs', 77824, 78895),
+    (265, 'Egyptian Hieroglyph Format Controls', 78896, 78943),
+    (266, 'Egyptian Hieroglyphs Extended-A', 78944, 82943),
+    (267, 'Anatolian Hieroglyphs', 82944, 83583),
+    (268, 'Gurung Khema', 90368, 90431),
+    (269, 'Bamum Supplement', 92160, 92735),
+    (270, 'Mro', 92736, 92783),
+    (271, 'Tangsa', 92784, 92879),
+    (272, 'Bassa Vah', 92880, 92927),
+    (273, 'Pahawh Hmong', 92928, 93071),
+    (274, 'Kirat Rai', 93504, 93567),
+    (275, 'Medefaidrin', 93760, 93855),
+    (276, 'Beria Erfe', 93856, 93919),
+    (277, 'Miao', 93952, 94111),
+    (278, 'Ideographic Symbols and Punctuation', 94176, 94207),
+    (279, 'Tangut', 94208, 100351),
+    (280, 'Tangut Components', 100352, 101119),
+    (281, 'Khitan Small Script', 101120, 101631),
+    (282, 'Tangut Supplement', 101632, 101759),
+    (283, 'Tangut Components Supplement', 101760, 101887),
+    (284, 'Kana Extended-B', 110576, 110591),
+    (285, 'Kana Supplement', 110592, 110847),
+    (286, 'Kana Extended-A', 110848, 110895),
+    (287, 'Small Kana Extension', 110896, 110959),
+    (288, 'Nushu', 110960, 111359),
+    (289, 'Duployan', 113664, 113823),
+    (290, 'Shorthand Format Controls', 113824, 113839),
+    (291, 'Symbols for Legacy Computing Supplement', 117760, 118463),
+    (292, 'Miscellaneous Symbols Supplement', 118464, 118527),
+    (293, 'Znamenny Musical Notation', 118528, 118735),
+    (294, 'Byzantine Musical Symbols', 118784, 119039),
+    (295, 'Musical Symbols', 119040, 119295),
+    (296, 'Ancient Greek Musical Notation', 119296, 119375),
+    (297, 'Kaktovik Numerals', 119488, 119519),
+    (298, 'Mayan Numerals', 119520, 119551),
+    (299, 'Tai Xuan Jing Symbols', 119552, 119647),
+    (300, 'Counting Rod Numerals', 119648, 119679),
+    (301, 'Mathematical Alphanumeric Symbols', 119808, 120831),
+    (302, 'Sutton SignWriting', 120832, 121519),
+    (303, 'Latin Extended-G', 122624, 122879),
+    (304, 'Glagolitic Supplement', 122880, 122927),
+    (305, 'Cyrillic Extended-D', 122928, 123023),
+    (306, 'Nyiakeng Puachue Hmong', 123136, 123215),
+    (307, 'Toto', 123536, 123583),
+    (308, 'Wancho', 123584, 123647),
+    (309, 'Nag Mundari', 124112, 124159),
+    (310, 'Ol Onal', 124368, 124415),
+    (311, 'Tai Yo', 124608, 124671),
+    (312, 'Ethiopic Extended-B', 124896, 124927),
+    (313, 'Mende Kikakui', 124928, 125151),
+    (314, 'Adlam', 125184, 125279),
+    (315, 'Indic Siyaq Numbers', 126064, 126143),
+    (316, 'Ottoman Siyaq Numbers', 126208, 126287),
+    (317, 'Arabic Mathematical Alphabetic Symbols', 126464, 126719),
+    (318, 'Mahjong Tiles', 126976, 127023),
+    (319, 'Domino Tiles', 127024, 127135),
+    (320, 'Playing Cards', 127136, 127231),
+    (321, 'Enclosed Alphanumeric Supplement', 127232, 127487),
+    (322, 'Enclosed Ideographic Supplement', 127488, 127743),
+    (323, 'Miscellaneous Symbols and Pictographs', 127744, 128511),
+    (324, 'Emoticons', 128512, 128591),
+    (325, 'Ornamental Dingbats', 128592, 128639),
+    (326, 'Transport and Map Symbols', 128640, 128767),
+    (327, 'Alchemical Symbols', 128768, 128895),
+    (328, 'Geometric Shapes Extended', 128896, 129023),
+    (329, 'Supplemental Arrows-C', 129024, 129279),
+    (330, 'Supplemental Symbols and Pictographs', 129280, 129535),
+    (331, 'Chess Symbols', 129536, 129647),
+    (332, 'Symbols and Pictographs Extended-A', 129648, 129791),
+    (333, 'Symbols for Legacy Computing', 129792, 130047),
+    (334, 'CJK Unified Ideographs Extension B', 131072, 173791),
+    (335, 'CJK Unified Ideographs Extension C', 173824, 177983),
+    (336, 'CJK Unified Ideographs Extension D', 177984, 178207),
+    (337, 'CJK Unified Ideographs Extension E', 178208, 183983),
+    (338, 'CJK Unified Ideographs Extension F', 183984, 191471),
+    (339, 'CJK Unified Ideographs Extension I', 191472, 192095),
+    (340, 'CJK Compatibility Ideographs Supplement', 194560, 195103),
+    (341, 'CJK Unified Ideographs Extension G', 196608, 201551),
+    (342, 'CJK Unified Ideographs Extension H', 201552, 205743),
+    (343, 'CJK Unified Ideographs Extension J', 205744, 210047),
+    (344, 'Tags', 917504, 917631),
+    (345, 'Variation Selectors Supplement', 917760, 917999),
+    (346, 'Supplementary Private Use Area-A', 983040, 1048575),
+    (347, 'Supplementary Private Use Area-B', 1048576, 1114111)
+ON CONFLICT (id) DO UPDATE
+SET code = EXCLUDED.code,
+    range_start = EXCLUDED.range_start,
+    range_end = EXCLUDED.range_end;
+
+SELECT setval('substrate.block_id_seq', (SELECT max(id) FROM substrate.block));
+
+-- ── sql/schema/seed/break_property.sql ───────────────────────────────────────
+-- GENERATED — Unicode segmentation break properties (UAX #14 / UAX #29).
+-- Source: ext/hartonomous_pg/src/generated/pg_ucd_inventory.c (uc_inv_break_props).
+-- id is a serial 1-based; enum_id is the per-category native-blob byte code
+-- (UC_GCB_*, UC_WB_*, UC_SB_*, UC_LB_*, UC_INCB_* — robust against ID-offset
+-- drift when UCD versions add or reorder enum values per the table comment).
+INSERT INTO substrate.break_property (id, code, category, enum_id) VALUES
+    (1, 'Other', 'GCB', 0),
+    (2, 'CR', 'GCB', 1),
+    (3, 'LF', 'GCB', 2),
+    (4, 'Control', 'GCB', 3),
+    (5, 'Extend', 'GCB', 4),
+    (6, 'ZWJ', 'GCB', 5),
+    (7, 'Regional_Indicator', 'GCB', 6),
+    (8, 'Prepend', 'GCB', 7),
+    (9, 'SpacingMark', 'GCB', 8),
+    (10, 'L', 'GCB', 9),
+    (11, 'V', 'GCB', 10),
+    (12, 'T', 'GCB', 11),
+    (13, 'LV', 'GCB', 12),
+    (14, 'LVT', 'GCB', 13),
+    (15, 'Other', 'WB', 0),
+    (16, 'CR', 'WB', 1),
+    (17, 'LF', 'WB', 2),
+    (18, 'Newline', 'WB', 3),
+    (19, 'Extend', 'WB', 4),
+    (20, 'ZWJ', 'WB', 5),
+    (21, 'Format', 'WB', 6),
+    (22, 'Katakana', 'WB', 7),
+    (23, 'Hebrew_Letter', 'WB', 8),
+    (24, 'ALetter', 'WB', 9),
+    (25, 'Single_Quote', 'WB', 10),
+    (26, 'Double_Quote', 'WB', 11),
+    (27, 'MidNumLet', 'WB', 12),
+    (28, 'MidLetter', 'WB', 13),
+    (29, 'MidNum', 'WB', 14),
+    (30, 'Numeric', 'WB', 15),
+    (31, 'ExtendNumLet', 'WB', 16),
+    (32, 'Regional_Indicator', 'WB', 17),
+    (33, 'WSegSpace', 'WB', 18),
+    (34, 'Extended_Pictographic', 'WB', 19),
+    (35, 'Other', 'SB', 0),
+    (36, 'CR', 'SB', 1),
+    (37, 'LF', 'SB', 2),
+    (38, 'Sep', 'SB', 3),
+    (39, 'Format', 'SB', 4),
+    (40, 'Sp', 'SB', 5),
+    (41, 'Lower', 'SB', 6),
+    (42, 'Upper', 'SB', 7),
+    (43, 'OLetter', 'SB', 8),
+    (44, 'Numeric', 'SB', 9),
+    (45, 'ATerm', 'SB', 10),
+    (46, 'STerm', 'SB', 11),
+    (47, 'Close', 'SB', 12),
+    (48, 'SContinue', 'SB', 13),
+    (49, 'Extend', 'SB', 14),
+    (50, 'XX', 'LB', 0),
+    (51, 'BK', 'LB', 1),
+    (52, 'CR', 'LB', 2),
+    (53, 'LF', 'LB', 3),
+    (54, 'CM', 'LB', 4),
+    (55, 'NL', 'LB', 5),
+    (56, 'SG', 'LB', 6),
+    (57, 'WJ', 'LB', 7),
+    (58, 'ZW', 'LB', 8),
+    (59, 'GL', 'LB', 9),
+    (60, 'SP', 'LB', 10),
+    (61, 'B2', 'LB', 11),
+    (62, 'BA', 'LB', 12),
+    (63, 'BB', 'LB', 13),
+    (64, 'HY', 'LB', 14),
+    (65, 'CB', 'LB', 15),
+    (66, 'CL', 'LB', 16),
+    (67, 'CP', 'LB', 17),
+    (68, 'EX', 'LB', 18),
+    (69, 'IN', 'LB', 19),
+    (70, 'NS', 'LB', 20),
+    (71, 'OP', 'LB', 21),
+    (72, 'QU', 'LB', 22),
+    (73, 'IS', 'LB', 23),
+    (74, 'NU', 'LB', 24),
+    (75, 'PO', 'LB', 25),
+    (76, 'PR', 'LB', 26),
+    (77, 'SY', 'LB', 27),
+    (78, 'AI', 'LB', 28),
+    (79, 'AL', 'LB', 29),
+    (80, 'CJ', 'LB', 30),
+    (81, 'EB', 'LB', 31),
+    (82, 'EM', 'LB', 32),
+    (83, 'H2', 'LB', 33),
+    (84, 'H3', 'LB', 34),
+    (85, 'HL', 'LB', 35),
+    (86, 'ID', 'LB', 36),
+    (87, 'JL', 'LB', 37),
+    (88, 'JV', 'LB', 38),
+    (89, 'JT', 'LB', 39),
+    (90, 'RI', 'LB', 40),
+    (91, 'SA', 'LB', 41),
+    (92, 'ZWJ', 'LB', 42),
+    (93, 'AK', 'LB', 43),
+    (94, 'AP', 'LB', 44),
+    (95, 'AS', 'LB', 45),
+    (96, 'VF', 'LB', 46),
+    (97, 'VI', 'LB', 47),
+    (98, 'None', 'InCB', 0),
+    (99, 'Linker', 'InCB', 1),
+    (100, 'Extend', 'InCB', 2),
+    (101, 'Consonant', 'InCB', 3)
+ON CONFLICT (id) DO UPDATE
+SET code = EXCLUDED.code,
+    category = EXCLUDED.category,
+    enum_id = EXCLUDED.enum_id;
+
+SELECT setval('substrate.break_property_id_seq', (SELECT max(id) FROM substrate.break_property));
+
 -- ── sql/schema/seed/lexname.sql ───────────────────────────────────────
 -- 45 WordNet lexicographer categories.
 INSERT INTO substrate.lexname (code) VALUES
@@ -1131,7 +1864,22 @@ FROM (VALUES
     ('has_morph_feature',        'structural',    'word_form',          'text_composition'),    -- 122  (target = "Gender=Masc"/"Number=Sing"/etc. as text_composition)
     ('has_deprel_pattern',       'structural',    'word_form',          'text_composition'),    -- 123  (target = dep relation "nsubj"/"obj"/etc. as text_composition)
     ('has_lexname',              'structural',    'synset',             'text_composition'),    -- 124  (target = WordNet lexname "noun.animal"/etc. as text_composition)
-    ('has_language',             'cross_lingual', NULL,                 'language_name')        -- 125  (polymorphic source — any entity that asserts a language tag)
+    ('has_language',             'cross_lingual', NULL,                 'language_name'),       -- 125  (polymorphic source — any entity that asserts a language tag)
+    -- ── Per-codepoint UCD property classifications (Gate 1 #38 refactor) ─
+    -- Replaces the deleted wide substrate.codepoint_property junction with
+    -- per-dimension typed edges from codepoint to content-hashed
+    -- reference-vocab entity (Lu / Latn / "Basic Latin" / AL / W / "GCB:CR").
+    -- Cross-UCD-version attestation accumulates on these edges under the
+    -- unicode_version_consensus arena.
+    ('has_cp_general_category',  'unicode',       'codepoint',          'general_category'),    -- 126
+    ('has_cp_script',            'unicode',       'codepoint',          'script'),              -- 127  (distinct from has_script — language → ISO15924 string)
+    ('has_cp_block',             'unicode',       'codepoint',          'block'),               -- 128
+    ('has_cp_bidi_class',        'unicode',       'codepoint',          'bidi_class'),          -- 129
+    ('has_cp_east_asian_width',  'unicode',       'codepoint',          'east_asian_width'),    -- 130
+    ('has_cp_grapheme_break',    'unicode',       'codepoint',          'break_property'),      -- 131  (UAX #29 GCB)
+    ('has_cp_word_break',        'unicode',       'codepoint',          'break_property'),      -- 132  (UAX #29 WB)
+    ('has_cp_sentence_break',    'unicode',       'codepoint',          'break_property'),      -- 133  (UAX #29 SB)
+    ('has_cp_line_break',        'unicode',       'codepoint',          'break_property')       -- 134  (UAX #14 LB)
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;
@@ -1148,7 +1896,7 @@ DECLARE
 BEGIN
     FOR rec IN
         SELECT * FROM (VALUES
-            ('substrate.entity_type',           23),
+            ('substrate.entity_type',           34),
             ('substrate.physicality_type',       5),
             ('substrate.edge_role',              7),
             ('substrate.significance_context',  19),
@@ -1157,7 +1905,7 @@ BEGIN
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            133),
+            ('substrate.edge_type',            142),
             ('substrate.attestation_type',       3)
         ) AS t(table_name, expected)
     LOOP
@@ -1189,9 +1937,21 @@ END $$;
 -- any other classification is metadata about how the entity is consumed,
 -- not about what it IS.
 --
--- No partitioning by type. The entity table is a single index of hashes;
--- B-tree on the PK gives O(log N) lookup. Per-type query patterns now
--- JOIN substrate.entity_classification instead of partition-pruning.
+-- LIST-partitioned by partition_bucket = (hash_bits_0_51 % 8). Eight child
+-- partitions: entity_p0..entity_p7. The ingestion pipeline's N C# workers
+-- route bundles by the same expression so worker K writes exclusively to
+-- partition K (zero cross-worker row-lock contention). Worker count is
+-- independent from partition count: workers can fan in onto the 8
+-- partitions in any (workerCount, 8) ratio. We use LIST(partition_bucket)
+-- — not PG HASH partitioning — because PG's hashint8 internal hash
+-- function is hard to replicate in C#, and the spec calls for literal
+-- `hash_bits_0_51 mod N` routing so C# can address the partition child
+-- table directly by index.
+--
+-- Per-type query patterns JOIN substrate.entity_classification — the PG
+-- executor partition-prunes the entity probe via the bucket column when
+-- callers carry it in their WHERE, and B-tree on the (entity_pK).hash PK
+-- gives O(log N) lookup within a partition.
 --
 -- hash_bits_0_51 + hash_bits_52_103 expose a 104-bit BLAKE3-derived prefix
 -- as two BIGINT columns. Used for two purposes:
@@ -1230,7 +1990,7 @@ END $$;
 -- partitioned by physicality_type_id. These columns are denormalization for
 -- read speed, NOT a replacement for the physicality store.
 CREATE TABLE substrate.entity (
-    hash substrate.hash_value PRIMARY KEY,
+    hash substrate.hash_value NOT NULL,
     hash_bits_0_51 BIGINT GENERATED ALWAYS AS (
           (get_byte(hash, 0)::BIGINT)
         | (get_byte(hash, 1)::BIGINT << 8)
@@ -1249,21 +2009,69 @@ CREATE TABLE substrate.entity (
         | (get_byte(hash, 11)::BIGINT << 36)
         | (get_byte(hash, 12)::BIGINT << 44)
     ) STORED,
+    partition_bucket SMALLINT NOT NULL
+        CHECK (partition_bucket = (get_byte(hash, 0) & 7)),
     centroid_x     DOUBLE PRECISION,
     centroid_y     DOUBLE PRECISION,
     centroid_z     DOUBLE PRECISION,
     centroid_m     DOUBLE PRECISION,
-    hilbert_index  BIGINT
-);
+    hilbert_index  BIGINT,
+    PRIMARY KEY (hash, partition_bucket)
+) PARTITION BY LIST (partition_bucket);
+-- partition_bucket is a regular column rather than GENERATED because PG18
+-- still rejects generated columns as partition keys (`cannot use generated
+-- column in partition key`). The CHECK constraint enforces consistency with
+-- the hash's byte 0 lowest 3 bits — same arithmetic the C# pipeline runs to
+-- choose a worker: `(int)(hash[0] & 7)`.
+-- PostgreSQL requires the partition key to be part of every UNIQUE / PRIMARY
+-- KEY constraint on a partitioned table. The CHECK above ensures partition_bucket
+-- is a bijective function of hash, so adding partition_bucket to the PK is a
+-- no-op semantically (hash alone still uniquely identifies a row) but a hard
+-- requirement structurally.
 
 COMMENT ON TABLE substrate.entity IS
-    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. Single table — no LIST partition by type. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so composition-LINESTRINGZM vertex (X, Z) mantissas resolve to full hashes via the composite-btree composite index (entity_hash_prefix_idx). No geometry column — physicality lives in substrate.physicality, partitioned by physicality_type_id.';
+    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. LIST-partitioned by (hash_bits_0_51 % 8) over 8 children — N C# ingestion workers route bundles by the same expression so worker K writes only to entity_pK. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so composition-LINESTRINGZM vertex (X, Z) mantissas resolve to full hashes via the composite-btree composite index (entity_hash_prefix_idx). No geometry column — physicality lives in substrate.physicality, partitioned by physicality_type_id then sub-partitioned by (entity_hash byte 0 & 7).';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_0_51 IS
     'Bits 0..51 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_lo(bytea). Matches the X mantissa of composition LINESTRINGZM vertices and the X mantissa of edge.geom vertices via substrate.bb_pack_hash_lo. Used for batched lookup via substrate.entity_by_hash_prefix.';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
     'Bits 52..103 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_hi(bytea). Matches the Z mantissa of composition LINESTRINGZM vertices and the Z mantissa of edge.geom vertices via substrate.bb_pack_hash_hi.';
+
+COMMENT ON COLUMN substrate.entity.partition_bucket IS
+    'Worker / partition routing key = (hash byte 0 & 7) = (hash_bits_0_51 % 8). Eight buckets in [0..7]. C# pipeline computes the same expression to assign bundles to workers; worker K writes only to entity_pK.';
+
+-- ── sql/schema/tables/core/entity_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p0
+    PARTITION OF substrate.entity FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/entity_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p1
+    PARTITION OF substrate.entity FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/entity_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p2
+    PARTITION OF substrate.entity FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/entity_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p3
+    PARTITION OF substrate.entity FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/entity_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p4
+    PARTITION OF substrate.entity FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/entity_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p5
+    PARTITION OF substrate.entity FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/entity_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p6
+    PARTITION OF substrate.entity FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/entity_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.entity_p7
+    PARTITION OF substrate.entity FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/edge.sql ───────────────────────────────────────
 -- Edge identity = BLAKE3 of (edge_type_id, ordered participant hashes).
@@ -1390,64 +2198,74 @@ CREATE TABLE substrate.edge_default
 -- e.g. has_sense vs has_lemma vs translation_of).
 -- Entity reference is hash-only (Phase C of unification refactor —
 -- substrate.entity has hash-only PK).
+--
+-- Partitioning decision (2026-05-18, Gate 1 reopened item #34):
+-- The previous PARTITION BY LIST (edge_type_id) admitted edge-type pruning
+-- but made writes worker-contended — all workers' edges of a common type
+-- (has_sense, translation_link, has_gloss) hit the same partition. The
+-- dominant query pattern on edge_member is "find all edges referencing
+-- this entity" (e.g. SubstrateAdjacencyBuilder, FfnEdgeSlotSynthesizer,
+-- inference traversal from a seed entity hash outward), which hits the
+-- edge_member_entity_hash_idx — orthogonal to edge_type partitioning.
+-- The new shape: PARTITION BY LIST (partition_bucket) where
+-- partition_bucket = (entity_hash byte 0 & 7) = (hash_bits_0_51 % 8) of
+-- entity_hash, matching substrate.entity's partition bucket exactly.
+-- Worker K writes only to edge_member_pK for every record whose
+-- entity_hash byte 0 & 7 == K. Edge-type filter remains a planner filter
+-- on the partition probe — perfectly acceptable for the LISTs we
+-- previously defined (15-25 edge types per LIST partition), now collapsed
+-- into the hash-partition child's btree-on-PK.
 CREATE TABLE substrate.edge_member (
     edge_type_id INT  NOT NULL,
     edge_hash    substrate.hash_value NOT NULL,
     entity_hash  substrate.hash_value NOT NULL,
     edge_role_id INT  NOT NULL REFERENCES substrate.edge_role(id),
     role_position INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position)
+    partition_bucket SMALLINT NOT NULL
+        CHECK (partition_bucket = (get_byte(entity_hash, 0) & 7)),
+    PRIMARY KEY (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position, partition_bucket)
     -- FKs application-enforced. Streaming ingestion drains each record kind
     -- independently, so consumers must treat edge/entity/member visibility as
     -- eventually consistent within the phase until DrainPendingAsync/FlushAsync.
-) PARTITION BY LIST (edge_type_id);
+) PARTITION BY LIST (partition_bucket);
 
 COMMENT ON TABLE substrate.edge_member IS
-    'N-ary edge participants with roles. Edge identity: (edge_type_id, edge_hash). Entity reference: hash only (no type_id). Partitioned by edge_type_id. FKs application-enforced.';
+    'N-ary edge participants with roles. Edge identity: (edge_type_id, edge_hash). Entity reference: hash only (no type_id). LIST-partitioned by partition_bucket = (entity_hash byte 0 & 7) over 8 children — matches substrate.entity bucket exactly so N C# ingestion workers route bundles by the same expression and worker K writes only to edge_member_pK. Replaces the prior LIST(edge_type_id) partitioning which serialized writes of common edge types across workers. FKs application-enforced.';
 
--- ── sql/schema/tables/core/edge_member_structural.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_structural
-    PARTITION OF substrate.edge_member FOR VALUES IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+COMMENT ON COLUMN substrate.edge_member.partition_bucket IS
+    'Worker / partition routing key over entity_hash byte 0. Mirrors substrate.entity.partition_bucket; matched routing means worker K co-locates its entity_pK writes with its edge_member_pK writes.';
 
--- ── sql/schema/tables/core/edge_member_cross_lingual.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_cross_lingual
-    PARTITION OF substrate.edge_member FOR VALUES IN (16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29);
+-- ── sql/schema/tables/core/edge_member_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p0
+    PARTITION OF substrate.edge_member FOR VALUES IN (0);
 
--- ── sql/schema/tables/core/edge_member_cross_modal.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_cross_modal
-    PARTITION OF substrate.edge_member FOR VALUES IN (30, 31);
+-- ── sql/schema/tables/core/edge_member_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p1
+    PARTITION OF substrate.edge_member FOR VALUES IN (1);
 
--- ── sql/schema/tables/core/edge_member_unicode.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_unicode
-    PARTITION OF substrate.edge_member FOR VALUES IN (
-        32, 33, 34,
-        96, 97, 98, 99, 100, 101, 102, 103, 104,
-        105, 106, 107, 108, 109, 110, 111, 112
-    );
+-- ── sql/schema/tables/core/edge_member_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p2
+    PARTITION OF substrate.edge_member FOR VALUES IN (2);
 
--- ── sql/schema/tables/core/edge_member_model.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_model
-    PARTITION OF substrate.edge_member FOR VALUES IN (35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59);
+-- ── sql/schema/tables/core/edge_member_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p3
+    PARTITION OF substrate.edge_member FOR VALUES IN (3);
 
--- ── sql/schema/tables/core/edge_member_model_concept_similarity.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_model_concept_similarity
-    PARTITION OF substrate.edge_member FOR VALUES IN (60);
+-- ── sql/schema/tables/core/edge_member_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p4
+    PARTITION OF substrate.edge_member FOR VALUES IN (4);
 
--- ── sql/schema/tables/core/edge_member_model_attention_pattern.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_model_attention_pattern
-    PARTITION OF substrate.edge_member FOR VALUES IN (61);
+-- ── sql/schema/tables/core/edge_member_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p5
+    PARTITION OF substrate.edge_member FOR VALUES IN (5);
 
--- ── sql/schema/tables/core/edge_member_model_ffn_factor.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_model_ffn_factor
-    PARTITION OF substrate.edge_member FOR VALUES IN (62);
+-- ── sql/schema/tables/core/edge_member_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p6
+    PARTITION OF substrate.edge_member FOR VALUES IN (6);
 
--- ── sql/schema/tables/core/edge_member_model_cross_content.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_model_cross_content
-    PARTITION OF substrate.edge_member FOR VALUES IN (63, 64, 65);
-
--- ── sql/schema/tables/core/edge_member_default.sql ───────────────────────────────────────
-CREATE TABLE substrate.edge_member_default
-    PARTITION OF substrate.edge_member DEFAULT;
+-- ── sql/schema/tables/core/edge_member_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.edge_member_p7
+    PARTITION OF substrate.edge_member FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/physicality.sql ───────────────────────────────────────
 -- ONE physicality row per (physicality_type_id, entity_hash, content_hash).
@@ -1503,8 +2321,18 @@ CREATE TABLE substrate.physicality (
     entity_hash         substrate.hash_value NOT NULL,
     content_hash        substrate.hash_value NOT NULL,
     geom                geometry(GeometryZM) NOT NULL,
-    PRIMARY KEY (physicality_type_id, entity_hash, content_hash)
+    partition_bucket    SMALLINT NOT NULL
+        CHECK (partition_bucket = (get_byte(entity_hash, 0) & 7)),
+    PRIMARY KEY (physicality_type_id, entity_hash, content_hash, partition_bucket)
 ) PARTITION BY LIST (physicality_type_id);
+-- Two-level partitioning:
+-- Tier 1: LIST(physicality_type_id) — keeps modality / role separation
+--   (entity, content, firefly, entity_shape, ingestion_trajectory, default).
+-- Tier 2: LIST(partition_bucket = entity_hash byte 0 & 7) — 8 children per
+--   tier-1 partition. Same routing key as substrate.entity / edge_member.
+--   Worker K writes to (physicality_type_X_pK) for every modality X.
+-- PostgreSQL requires the leaf-level partition key (partition_bucket) to be
+-- in the PK / UNIQUE constraint at the root level.
 
 COMMENT ON TABLE substrate.physicality IS
     'ONE substrate-level geometric expression per (physicality_type_id, entity_hash, content_hash). PostGIS geometry(GeometryZM); substrate.st_4d_* operators extend PostGIS to honor the M dimension. Atom geom = POINTZM at real content-derived centroid (no packing — atoms have no children). Composition geom = LINESTRINGZM with mantissa-packed child refs via bb_pack_hash_lo / bb_pack_ordinal_rle / bb_pack_hash_hi / bb_pack_metadata — the geometry IS the indexed child manifest at every tier. content_hash distinguishes co-typed multi-source samples per entity.';
@@ -1532,7 +2360,8 @@ COMMENT ON TABLE substrate.physicality IS
 --
 -- Modality lives on entity_type, NOT physicality_type.
 CREATE TABLE substrate.physicality_entity
-    PARTITION OF substrate.physicality FOR VALUES IN (1);
+    PARTITION OF substrate.physicality FOR VALUES IN (1)
+    PARTITION BY LIST (partition_bucket);
 -- CHECK admits every GeometryZM subtype so future modalities (audio,
 -- image regions, video frames, model-weight tensors) land in the same
 -- partition without a schema change. Modality is determined by the
@@ -1545,6 +2374,38 @@ ALTER TABLE substrate.physicality_entity
               'POLYGON', 'MULTIPOLYGON', 'MULTIPOINT',
               'GEOMETRYCOLLECTION')
            AND ST_NDims(geom) = 4);
+
+-- ── sql/schema/tables/core/physicality_entity_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p0
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/physicality_entity_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p1
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/physicality_entity_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p2
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/physicality_entity_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p3
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/physicality_entity_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p4
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/physicality_entity_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p5
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/physicality_entity_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p6
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/physicality_entity_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_p7
+    PARTITION OF substrate.physicality_entity FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/physicality_firefly.sql ───────────────────────────────────────
 -- physicality_type_id = 2, code = 'firefly'.
@@ -1560,11 +2421,44 @@ ALTER TABLE substrate.physicality_entity
 -- MULTIPOINTZM also allowed for aggregated cross-model surfaces written
 -- as one row per entity (cross-model consensus reads / shape comparisons).
 CREATE TABLE substrate.physicality_firefly
-    PARTITION OF substrate.physicality FOR VALUES IN (2);
+    PARTITION OF substrate.physicality FOR VALUES IN (2)
+    PARTITION BY LIST (partition_bucket);
 ALTER TABLE substrate.physicality_firefly
     ADD CONSTRAINT physicality_firefly_geom
     CHECK (GeometryType(geom) IN ('POINT', 'MULTIPOINT')
            AND ST_NDims(geom) = 4);
+
+-- ── sql/schema/tables/core/physicality_firefly_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p0
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/physicality_firefly_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p1
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/physicality_firefly_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p2
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/physicality_firefly_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p3
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/physicality_firefly_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p4
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/physicality_firefly_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p5
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/physicality_firefly_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p6
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/physicality_firefly_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_firefly_p7
+    PARTITION OF substrate.physicality_firefly FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/physicality_content.sql ───────────────────────────────────────
 -- physicality_type_id = 3, code = 'content'.
@@ -1594,7 +2488,8 @@ ALTER TABLE substrate.physicality_firefly
 -- interlinear, etc.).
 --
 CREATE TABLE substrate.physicality_content
-    PARTITION OF substrate.physicality FOR VALUES IN (3);
+    PARTITION OF substrate.physicality FOR VALUES IN (3)
+    PARTITION BY LIST (partition_bucket);
 -- LINESTRING / MULTILINESTRING for ordered trajectories (text, audio,
 -- code). POLYGON / MULTIPOLYGON for closed-region content (image
 -- regions, video shots whose spatial extent matters more than order).
@@ -1606,6 +2501,38 @@ ALTER TABLE substrate.physicality_content
               'POLYGON', 'MULTIPOLYGON',
               'GEOMETRYCOLLECTION')
            AND ST_NDims(geom) = 4);
+
+-- ── sql/schema/tables/core/physicality_content_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p0
+    PARTITION OF substrate.physicality_content FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/physicality_content_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p1
+    PARTITION OF substrate.physicality_content FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/physicality_content_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p2
+    PARTITION OF substrate.physicality_content FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/physicality_content_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p3
+    PARTITION OF substrate.physicality_content FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/physicality_content_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p4
+    PARTITION OF substrate.physicality_content FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/physicality_content_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p5
+    PARTITION OF substrate.physicality_content FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/physicality_content_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p6
+    PARTITION OF substrate.physicality_content FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/physicality_content_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_content_p7
+    PARTITION OF substrate.physicality_content FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/physicality_entity_shape.sql ───────────────────────────────────────
 -- physicality_type_id = 15, code = 'entity_shape'.
@@ -1635,7 +2562,8 @@ ALTER TABLE substrate.physicality_content
 -- entity. A composition typically has both rows present — one in each
 -- partition — answering different queries.
 CREATE TABLE substrate.physicality_entity_shape
-    PARTITION OF substrate.physicality FOR VALUES IN (15);
+    PARTITION OF substrate.physicality FOR VALUES IN (15)
+    PARTITION BY LIST (partition_bucket);
 
 ALTER TABLE substrate.physicality_entity_shape
     ADD CONSTRAINT physicality_entity_shape_geom
@@ -1650,6 +2578,38 @@ ALTER TABLE substrate.physicality_entity_shape
 
 COMMENT ON TABLE substrate.physicality_entity_shape IS
     'Real-coord canonical-shape geometry. POINTZM for atoms at modality anchor coords; LINESTRINGZM through children identity POINTZM centroids for compositions. Modality recovered from entity_classification. Fréchet / Hausdorff matchable.';
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p0
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p1
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p2
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p3
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p4
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p5
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p6
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/physicality_entity_shape_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_entity_shape_p7
+    PARTITION OF substrate.physicality_entity_shape FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/physicality_ingestion_trajectory.sql ───────────────────────────────────────
 -- physicality_type_id = 16, code = 'ingestion_trajectory'.
@@ -1685,7 +2645,8 @@ COMMENT ON TABLE substrate.physicality_entity_shape IS
 -- Companion partition: physicality_entity_shape (id 15) holds the
 -- real-coord canonical-shape geometry for the same composition entity.
 CREATE TABLE substrate.physicality_ingestion_trajectory
-    PARTITION OF substrate.physicality FOR VALUES IN (16);
+    PARTITION OF substrate.physicality FOR VALUES IN (16)
+    PARTITION BY LIST (partition_bucket);
 
 ALTER TABLE substrate.physicality_ingestion_trajectory
     ADD CONSTRAINT physicality_ingestion_trajectory_geom
@@ -1701,9 +2662,74 @@ ALTER TABLE substrate.physicality_ingestion_trajectory
 COMMENT ON TABLE substrate.physicality_ingestion_trajectory IS
     'Mantissa-packed identity geometry. LINESTRINGZM (or MULTI* / POLYGON* / COLLECTION) vertices encode child entity hash refs via bb_pack_hash_lo / bb_pack_ordinal_rle / bb_pack_hash_hi / bb_pack_metadata. Reverse-resolve via substrate.entity_by_hash_prefix composite-btree. Companion to physicality_entity_shape (id 15).';
 
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p0
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p1
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p2
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p3
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p4
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p5
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p6
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/physicality_ingestion_trajectory_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_ingestion_trajectory_p7
+    PARTITION OF substrate.physicality_ingestion_trajectory FOR VALUES IN (7);
+
 -- ── sql/schema/tables/core/physicality_default.sql ───────────────────────────────────────
 CREATE TABLE substrate.physicality_default
-    PARTITION OF substrate.physicality DEFAULT;
+    PARTITION OF substrate.physicality DEFAULT
+    PARTITION BY LIST (partition_bucket);
+
+-- ── sql/schema/tables/core/physicality_default_p0.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p0
+    PARTITION OF substrate.physicality_default FOR VALUES IN (0);
+
+-- ── sql/schema/tables/core/physicality_default_p1.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p1
+    PARTITION OF substrate.physicality_default FOR VALUES IN (1);
+
+-- ── sql/schema/tables/core/physicality_default_p2.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p2
+    PARTITION OF substrate.physicality_default FOR VALUES IN (2);
+
+-- ── sql/schema/tables/core/physicality_default_p3.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p3
+    PARTITION OF substrate.physicality_default FOR VALUES IN (3);
+
+-- ── sql/schema/tables/core/physicality_default_p4.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p4
+    PARTITION OF substrate.physicality_default FOR VALUES IN (4);
+
+-- ── sql/schema/tables/core/physicality_default_p5.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p5
+    PARTITION OF substrate.physicality_default FOR VALUES IN (5);
+
+-- ── sql/schema/tables/core/physicality_default_p6.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p6
+    PARTITION OF substrate.physicality_default FOR VALUES IN (6);
+
+-- ── sql/schema/tables/core/physicality_default_p7.sql ───────────────────────────────────────
+CREATE TABLE substrate.physicality_default_p7
+    PARTITION OF substrate.physicality_default FOR VALUES IN (7);
 
 -- ── sql/schema/tables/core/entity_significance.sql ───────────────────────────────────────
 -- Glicko-2 ratings on entities, per arena, per attestation_type. Hash-only
@@ -1910,38 +2936,103 @@ CREATE TABLE substrate.entity_morph_feature (
 COMMENT ON TABLE substrate.entity_morph_feature IS
     'Entity → morphological feature. Hash-only entity reference.';
 
--- ── sql/schema/tables/junctions/codepoint_property.sql ───────────────────────────────────────
--- Codepoint properties indexed by entity hash. Phase C unification:
--- hash-only entity reference (substrate.entity has hash-only PK).
-CREATE TABLE substrate.codepoint_property (
-    entity_hash              substrate.hash_value PRIMARY KEY REFERENCES substrate.entity(hash),
-    codepoint_value          INT  NOT NULL,
-    general_category_id      INT  NOT NULL REFERENCES substrate.general_category(id),
-    script_id                INT  NOT NULL REFERENCES substrate.script(id),
-    block_id                 INT  NOT NULL REFERENCES substrate.block(id),
-    bidi_class_id            INT  NOT NULL REFERENCES substrate.bidi_class(id),
-    east_asian_width_id      INT  NOT NULL REFERENCES substrate.east_asian_width(id),
-    gcb_id                   INT  REFERENCES substrate.break_property(id),
-    wb_id                    INT  REFERENCES substrate.break_property(id),
-    sb_id                    INT  REFERENCES substrate.break_property(id),
-    lb_id                    INT  REFERENCES substrate.break_property(id),
-    uca_index                INT  NOT NULL DEFAULT 0,
-    hangul_syllable_type     SMALLINT NOT NULL DEFAULT 0,
-    numeric_type             SMALLINT NOT NULL DEFAULT 0,
-    is_extended_pictographic BOOLEAN NOT NULL DEFAULT FALSE,
-    ccc                      SMALLINT NOT NULL DEFAULT 0,
-    name                     TEXT,
-    decomposition_type       VARCHAR(16),
-    decomposition_mapping    INT[],
-    simple_uppercase         INT,
-    simple_lowercase         INT,
-    simple_titlecase         INT,
-    simple_case_fold         INT,
-    full_case_fold           INT[]
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
+
+-- Per-codepoint UCD property analytics caches (Gate 1 #38 refactor 2026-05-18).
+-- Replaces the deleted wide flat substrate.codepoint_property (25-column junction
+-- with 7 indexes + 9 FKs — wrong substrate shape; substrate truth lives on the
+-- has_cp_* typed edges in substrate.edge). These narrow per-property tables are
+-- denormalized for index-locality on "all codepoints of property X" queries.
+
+-- ── sql/schema/tables/junctions/cp_general_category.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_general_category (
+    entity_hash         substrate.hash_value NOT NULL,
+    general_category_id INT NOT NULL REFERENCES substrate.general_category(id),
+    PRIMARY KEY (entity_hash, general_category_id)
 );
 
-COMMENT ON TABLE substrate.codepoint_property IS
-    'Codepoint → Unicode properties. Hash-only entity reference with parent substrate.entity FK.';
+COMMENT ON TABLE substrate.cp_general_category IS
+    'Codepoint → UAX #44 General_Category narrow per-property analytics cache. AP-8 corrected: substrate truth is the has_cp_general_category typed edge on substrate.edge; this junction is the index-locality denormalization for fast "all codepoints of GC X" queries.';
+
+-- ── sql/schema/tables/junctions/cp_script.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_script (
+    entity_hash substrate.hash_value NOT NULL,
+    script_id   INT NOT NULL REFERENCES substrate.script(id),
+    PRIMARY KEY (entity_hash, script_id)
+);
+
+COMMENT ON TABLE substrate.cp_script IS
+    'Codepoint → UAX #24 / ISO 15924 Script narrow per-property analytics cache. AP-8 corrected: substrate truth is the has_cp_script typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_block.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_block (
+    entity_hash substrate.hash_value NOT NULL,
+    block_id    INT NOT NULL REFERENCES substrate.block(id),
+    PRIMARY KEY (entity_hash, block_id)
+);
+
+COMMENT ON TABLE substrate.cp_block IS
+    'Codepoint → UAX #44 Block narrow per-property analytics cache. AP-8 corrected: substrate truth is the has_cp_block typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_bidi_class.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_bidi_class (
+    entity_hash   substrate.hash_value NOT NULL,
+    bidi_class_id INT NOT NULL REFERENCES substrate.bidi_class(id),
+    PRIMARY KEY (entity_hash, bidi_class_id)
+);
+
+COMMENT ON TABLE substrate.cp_bidi_class IS
+    'Codepoint → UAX #9 Bidi_Class narrow per-property analytics cache. AP-8 corrected: substrate truth is the has_cp_bidi_class typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_east_asian_width.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_east_asian_width (
+    entity_hash         substrate.hash_value NOT NULL,
+    east_asian_width_id INT NOT NULL REFERENCES substrate.east_asian_width(id),
+    PRIMARY KEY (entity_hash, east_asian_width_id)
+);
+
+COMMENT ON TABLE substrate.cp_east_asian_width IS
+    'Codepoint → UAX #11 East_Asian_Width narrow per-property analytics cache. AP-8 corrected: substrate truth is the has_cp_east_asian_width typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_grapheme_break.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_grapheme_break (
+    entity_hash       substrate.hash_value NOT NULL,
+    break_property_id INT NOT NULL REFERENCES substrate.break_property(id),
+    PRIMARY KEY (entity_hash, break_property_id)
+);
+
+COMMENT ON TABLE substrate.cp_grapheme_break IS
+    'Codepoint → UAX #29 Grapheme_Cluster_Break (GCB) narrow per-property analytics cache. break_property_id must reference a substrate.break_property row whose category = "GCB". AP-8 corrected: substrate truth is the has_cp_grapheme_break typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_word_break.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_word_break (
+    entity_hash       substrate.hash_value NOT NULL,
+    break_property_id INT NOT NULL REFERENCES substrate.break_property(id),
+    PRIMARY KEY (entity_hash, break_property_id)
+);
+
+COMMENT ON TABLE substrate.cp_word_break IS
+    'Codepoint → UAX #29 Word_Break (WB) narrow per-property analytics cache. break_property_id must reference a substrate.break_property row whose category = "WB". AP-8 corrected: substrate truth is the has_cp_word_break typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_sentence_break.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_sentence_break (
+    entity_hash       substrate.hash_value NOT NULL,
+    break_property_id INT NOT NULL REFERENCES substrate.break_property(id),
+    PRIMARY KEY (entity_hash, break_property_id)
+);
+
+COMMENT ON TABLE substrate.cp_sentence_break IS
+    'Codepoint → UAX #29 Sentence_Break (SB) narrow per-property analytics cache. break_property_id must reference a substrate.break_property row whose category = "SB". AP-8 corrected: substrate truth is the has_cp_sentence_break typed edge.';
+
+-- ── sql/schema/tables/junctions/cp_line_break.sql ───────────────────────────────────────
+CREATE TABLE substrate.cp_line_break (
+    entity_hash       substrate.hash_value NOT NULL,
+    break_property_id INT NOT NULL REFERENCES substrate.break_property(id),
+    PRIMARY KEY (entity_hash, break_property_id)
+);
+
+COMMENT ON TABLE substrate.cp_line_break IS
+    'Codepoint → UAX #14 Line_Break (LB) narrow per-property analytics cache. break_property_id must reference a substrate.break_property row whose category = "LB". AP-8 corrected: substrate truth is the has_cp_line_break typed edge.';
 
 -- ── sql/schema/tables/junctions/model_architecture_class.sql ───────────────────────────────────────
 CREATE TABLE substrate.model_architecture_class (
@@ -2118,15 +3209,19 @@ COMMENT ON TABLE substrate.model_pass_checkpoint IS
     'Per-pass progress for safetensors decomposition. Lets a multi-pass ingestion resume after interruption.';
 
 -- ── sql/schema/tables/models/entity_model_source.sql ───────────────────────────────────────
+-- substrate.entity is HASH-partitioned by hash_bits_0_51; PG does not
+-- accept FKs to a non-unique single-column key. entity_hash FK is
+-- application-enforced (decomposers emit the entity row in the same
+-- bundle/transaction as the junction). Same pattern as substrate.physicality
+-- and substrate.edge_member.
 CREATE TABLE substrate.entity_model_source (
     entity_hash     substrate.hash_value NOT NULL,
     model_source_id INT NOT NULL REFERENCES substrate.model_source(id) ON DELETE CASCADE,
-    PRIMARY KEY (entity_hash, model_source_id),
-    FOREIGN KEY (entity_hash) REFERENCES substrate.entity(hash) ON DELETE CASCADE
+    PRIMARY KEY (entity_hash, model_source_id)
 );
 
 COMMENT ON TABLE substrate.entity_model_source IS
-    'Entity → model_source provenance. Hash-only entity reference. Same tensor in N model revisions has 1 entity row + N entity_model_source rows.';
+    'Entity → model_source provenance. Hash-only entity reference (FK to substrate.entity application-enforced — entity is HASH-partitioned). Same tensor in N model revisions has 1 entity row + N entity_model_source rows.';
 
 -- ── sql/schema/tables/models/safetensor_observation.sql ───────────────────────────────────────
 CREATE TABLE substrate.safetensor_observation (
@@ -2139,8 +3234,10 @@ CREATE TABLE substrate.safetensor_observation (
     edge_hash               substrate.hash_value NOT NULL,
     score                  DOUBLE PRECISION NOT NULL,
     weight                 DOUBLE PRECISION NOT NULL,
-    tensor_hash             substrate.hash_value REFERENCES substrate.entity(hash),
-    package_tensor_hash     substrate.hash_value REFERENCES substrate.entity(hash),
+    -- Entity FK is application-enforced — substrate.entity is HASH-partitioned
+    -- by hash_bits_0_51 and PG does not accept FKs to a non-unique single column.
+    tensor_hash             substrate.hash_value,
+    package_tensor_hash     substrate.hash_value,
     source_tensor_name      TEXT,
     primitive_code          TEXT,
     tuple_code              TEXT,
@@ -2315,23 +3412,36 @@ CREATE INDEX idx_block_range ON substrate.block(range_start, range_end);
 -- ── sql/schema/indexes/idx_break_property_category.sql ───────────────────────────────────────
 CREATE INDEX idx_break_property_category ON substrate.break_property(category);
 
--- ── sql/schema/indexes/idx_codepoint_property_block.sql ───────────────────────────────────────
-CREATE INDEX idx_codepoint_property_block     ON substrate.codepoint_property(block_id);
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
--- ── sql/schema/indexes/idx_codepoint_property_codepoint.sql ───────────────────────────────────────
-CREATE INDEX idx_codepoint_property_codepoint ON substrate.codepoint_property(codepoint_value);
+-- Per-codepoint UCD property analytics-cache reverse indexes (Gate 1 #38).
 
--- ── sql/schema/indexes/idx_codepoint_property_bidi.sql ───────────────────────────────────────
-CREATE INDEX idx_codepoint_property_bidi ON substrate.codepoint_property(bidi_class_id);
+-- ── sql/schema/indexes/idx_cp_general_category_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_general_category_by_id ON substrate.cp_general_category(general_category_id, entity_hash);
 
--- ── sql/schema/indexes/idx_codepoint_property_eaw.sql ───────────────────────────────────────
-CREATE INDEX idx_codepoint_property_eaw ON substrate.codepoint_property(east_asian_width_id);
+-- ── sql/schema/indexes/idx_cp_script_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_script_by_id ON substrate.cp_script(script_id, entity_hash);
 
--- ── sql/schema/indexes/idx_codepoint_property_gc.sql ───────────────────────────────────────
-CREATE INDEX idx_codepoint_property_gc        ON substrate.codepoint_property(general_category_id);
+-- ── sql/schema/indexes/idx_cp_block_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_block_by_id ON substrate.cp_block(block_id, entity_hash);
 
--- ── sql/schema/indexes/idx_codepoint_property_script.sql ───────────────────────────────────────
-CREATE INDEX idx_codepoint_property_script    ON substrate.codepoint_property(script_id);
+-- ── sql/schema/indexes/idx_cp_bidi_class_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_bidi_class_by_id ON substrate.cp_bidi_class(bidi_class_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_cp_east_asian_width_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_east_asian_width_by_id ON substrate.cp_east_asian_width(east_asian_width_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_cp_grapheme_break_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_grapheme_break_by_id ON substrate.cp_grapheme_break(break_property_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_cp_word_break_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_word_break_by_id ON substrate.cp_word_break(break_property_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_cp_sentence_break_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_sentence_break_by_id ON substrate.cp_sentence_break(break_property_id, entity_hash);
+
+-- ── sql/schema/indexes/idx_cp_line_break_by_id.sql ───────────────────────────────────────
+CREATE INDEX idx_cp_line_break_by_id ON substrate.cp_line_break(break_property_id, entity_hash);
 
 -- ── sql/schema/indexes/idx_comparison_event_arena.sql ───────────────────────────────────────
 CREATE INDEX idx_comparison_event_arena   ON monitor.comparison_event(arena_code, recorded_at DESC);
@@ -4371,69 +5481,17 @@ $f$;
 COMMENT ON FUNCTION substrate.composition_parents(substrate.hash_value) IS
     'Reverse lookup: every composition whose LINESTRINGZM trajectory contains p_child_hash as a child. Sequential scan version (linear-scan); native fast-path SRF replaces this in the follow-up S3 work.';
 
--- ── sql/schema/functions/recompose_text.sql ───────────────────────────────────────
--- Byte-for-byte text reconstruction by recursive composition walk.
-CREATE OR REPLACE FUNCTION substrate.recompose_text(
-    p_entity_hash BYTEA,
-    p_max_depth   INT DEFAULT 100000
-)
-RETURNS TEXT
-LANGUAGE sql STABLE PARALLEL SAFE
-AS $$
-    WITH RECURSIVE walk(entity_hash, ord_path, depth) AS (
-        SELECT p_entity_hash, ARRAY[]::int[], 0
-        UNION ALL
-        SELECT
-            s.child_hash,
-            walk.ord_path || gs.n,
-            walk.depth + 1
-          FROM walk
-          JOIN LATERAL substrate.get_composition_children(walk.entity_hash) s ON TRUE
-          CROSS JOIN LATERAL generate_series(
-              s.ordinal, s.ordinal + s.rle_count - 1
-          ) AS gs(n)
-         WHERE walk.depth < p_max_depth
-    ),
-    codepoint_leaves AS (
-        SELECT walk.ord_path, walk.entity_hash
-          FROM walk
-          JOIN substrate.codepoint_property cp ON cp.entity_hash = walk.entity_hash
-    )
-    SELECT COALESCE(
-        string_agg(
-            chr(cp.codepoint_value),
-            ''
-            ORDER BY codepoint_leaves.ord_path
-        ),
-        ''
-    )
-      FROM codepoint_leaves
-      JOIN substrate.codepoint_property cp ON cp.entity_hash = codepoint_leaves.entity_hash;
-$$;
+-- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
-COMMENT ON FUNCTION substrate.recompose_text(BYTEA, INT) IS
-    'Byte-for-byte text reconstruction via composition metadata on substrate.physicality. RLE-expanded. Hash-only signature.';
-
--- ── sql/schema/functions/recompose_text_bulk.sql ───────────────────────────────────────
--- Bulk text reconstruction: given an array of entity hashes, return the
--- byte-for-byte recomposed text for each via the same walk that
--- substrate.recompose_text performs single-target.
--- Used by Build-a-bear tokenizer construction (TokenizerExporter) to
--- materialize real UTF-8 surface forms for the vocab's word_form / lemma /
--- text_composition entities in one round-trip instead of N.
-CREATE OR REPLACE FUNCTION substrate.recompose_text_bulk(
-    p_entity_hashes BYTEA[],
-    p_max_depth     INT DEFAULT 100000
-)
-RETURNS TABLE(entity_hash BYTEA, text_value TEXT)
-LANGUAGE sql STABLE PARALLEL SAFE
-AS $$
-    SELECT h, substrate.recompose_text(h, p_max_depth)
-      FROM unnest(p_entity_hashes) AS h;
-$$;
-
-COMMENT ON FUNCTION substrate.recompose_text_bulk(BYTEA[], INT) IS
-    'Bulk wrapper around substrate.recompose_text. Hash-only signature. Returns one row per input hash with its byte-for-byte recomposed text.';
+-- substrate.recompose_text / recompose_text_bulk removed 2026-05-18 (Gate 1
+-- reopened item #36 in modular-wishing-koala plan). Document-scale
+-- recomposition is now the C# bulk-tier walker
+-- (Hartonomous.Core.Recomposition.BulkTierContentWalk; thin wrapper at
+-- Hartonomous.Recomposers.ContentRecomposer; Engine fast-path callers route
+-- via NpgsqlEntityReader.RecomposeTextAsync). PG-side recursive-CTE walkers
+-- were wrong-shape — single-query recursive CTE over physicality.geom forced
+-- the executor to materialize intermediate state at every recursion depth,
+-- multi-minute for documents. See plan §"Gate 1 Reopening" #36 + AP-29.
 
 -- ── sql/schema/functions/populate_sequence_following_edges.sql ───────────────────────────────────────
 -- Bigram extraction from content trajectories → sequence_following arena
@@ -6534,58 +7592,10 @@ BEGIN
 END;
 $$;
 
--- ── sql/schema/functions/recompose_content.sql ───────────────────────────────────────
--- substrate.recompose_content — sub-second content reconstruction from a
--- document hash. The load-bearing efficiency property of the substrate.
---
--- ONE QUERY. Tree-walks the content trajectory via pg_recompose_walk
--- (already in the C extension), filters to codepoint leaves, resolves each
--- codepoint hash to its UCA-rank index via huc_cp_from_hash (mmap'd blob),
--- assembles UTF-8 bytes in walk order.
---
--- Holistic stack:
---   - C/C++ in libhartonomous + hartonomous_pg: pg_recompose_walk DFS tree
---     walk via SPI bulk btree probes, mantissa-unpacked composition vertex
---     traversal, mmap'd O(log N) codepoint reverse lookup (no IO)
---   - SQL: this function — recursive composition + per-leaf codepoint
---     resolution + byte assembly via string_agg
---   - C# orchestration (Hartonomous.Cli RecomposeContentCommand): ONE
---     ExecuteScalarAsync call, returns the assembled bytes
---
--- Performance contract: O(tier-depth) bulk SPI probes (one per tier in
--- pg_recompose_walk's DFS), zero-allocation codepoint lookup. Bible-size
--- documents (~200K words, ~1M codepoint leaves) reconstruct in sub-second.
-CREATE OR REPLACE FUNCTION substrate.recompose_content(
-    p_root_hash substrate.hash_value,
-    p_max_depth INT DEFAULT 16
-) RETURNS bytea
-LANGUAGE sql STABLE AS $$
-    -- Walk the trajectory tree; cp_from_hash returns NULL for non-codepoint
-    -- entities (those don't have a codepoint identity in the blob). Filter
-    -- to nodes where cp_from_hash returns a valid codepoint, then emit
-    -- UTF-8 bytes in walk order.
-    SELECT COALESCE(
-        string_agg(
-            convert_to(chr(cp), 'UTF8'),
-            '' ORDER BY depth, ordinal_position
-        ),
-        ''::bytea
-    )
-    FROM (
-        SELECT
-            substrate.cp_from_hash(entity_hash) AS cp,
-            ordinal_position,
-            depth
-        FROM substrate.recompose_walk(p_root_hash, p_max_depth)
-    ) leaves
-    WHERE cp IS NOT NULL AND cp > 0;
-$$;
-
-COMMENT ON FUNCTION substrate.recompose_content(substrate.hash_value, INT) IS
-    'Reconstruct UTF-8 byte content from a document/content entity hash via tree-walk. ONE QUERY substrate-side; C# orchestration is one ExecuteScalarAsync. Demonstrates the substrate''s O(tier-depth) reconstruction property.';
-
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
+-- substrate.recompose_content removed 2026-05-18 (Gate 1 reopened item #36) —
+-- see C# ContentRecomposer comment above.
 -- (Staging drain functions deleted post-W2E refactor. The pipeline now
 --  drains within the same connection that COPY-loaded a session-local
 --  temp table — no persistent staging, no auto-discovered drain manifest.)
@@ -7302,11 +8312,18 @@ AS $$
             ) AS gloss_hash
         FROM high_mu_synsets h
     )
+    -- Gate 1 reopened item #36 (2026-05-18): substrate.recompose_text removed.
+    -- The recomposition surface is now the C# bulk-tier walker
+    -- (Hartonomous.Core.Recomposition.BulkTierContentWalk). This SQL function
+    -- returns the gloss target's entity hash + NULL answer; callers must
+    -- pass the gloss_hash through ContentRecomposer.RecomposeAsync to
+    -- materialize the surface text. p_max_depth is preserved on the
+    -- signature for compatibility (unused).
     SELECT
         ROW_NUMBER() OVER (ORDER BY w.best_mu DESC NULLS LAST, w.entity_hash)::INT AS rank,
-        w.entity_hash AS target_hash,
-        w.best_mu     AS confidence,
-        substrate.recompose_text(w.gloss_hash, p_max_depth) AS answer
+        w.gloss_hash AS target_hash,
+        w.best_mu    AS confidence,
+        NULL::TEXT   AS answer
     FROM with_gloss w
     WHERE w.gloss_hash IS NOT NULL
     ORDER BY w.best_mu DESC NULLS LAST, w.entity_hash
@@ -7314,7 +8331,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.surprise(INT, INT) IS
-    'Open-ended fact selector. Picks up to p_top_k high-mu synsets that have associated gloss text, returns each with confidence and recomposed text. Used by the brain when the prompt does not point at a specific entity.';
+    'Open-ended fact selector. Picks up to p_top_k high-mu synsets that have associated gloss text. Returns the gloss target hash and confidence; the answer column is NULL — caller materializes the surface text via the C# ContentRecomposer (Gate 1 #36, 2026-05-18). p_max_depth preserved on signature for compatibility.';
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
@@ -8271,6 +9288,25 @@ COMMENT ON FUNCTION substrate.cross_model_divergence(bytea, bytea, bytea) IS
     'Pairwise 4D distance between model A''s and model B''s fireflies for a shared token. Reads PostGIS POINTZM coords directly via ST_X / ST_Y / ST_Z / ST_M.';
 
 -- ── sql/schema/functions/codepoint_property_rows.sql ───────────────────────────────────────
+-- Per-codepoint runtime property rows for the inference-path
+-- NpgsqlCodepointPropertiesCache (text segmentation + case folding).
+--
+-- Gate 1 #38 refactor 2026-05-18: rewritten against the new narrow per-property
+-- analytics caches (substrate.cp_grapheme_break / cp_word_break /
+-- cp_sentence_break / cp_line_break) populated by UnicodeDecomposer §3.
+-- The wide flat substrate.codepoint_property junction (deleted) is replaced
+-- by typed has_cp_* edges on substrate.edge plus these narrow tables for
+-- index-locality lookups.
+--
+-- Codepoint entity identity = BLAKE3 over the codepoint integer. The JOIN
+-- reverse-resolves codepoint_value → entity hash via substrate.cp_hash(cp)
+-- (C extension binding for hartonomous_blake3_codepoint).
+--
+-- The case-fold and is_extended_pictographic fields are NULL in this
+-- function pending the case-fold narrow caches and extended_pictographic
+-- table landing. Callers fall back to the embedded UCD blob via
+-- BlobUcdPropertyAccessor.{SimpleCaseFold, FullCaseFold,
+-- IsExtendedPictographic} — siblings per Principle 1.
 CREATE OR REPLACE FUNCTION substrate.codepoint_property_rows(p_codepoints INT[] DEFAULT NULL)
 RETURNS TABLE (
     codepoint_value INT,
@@ -8283,23 +9319,29 @@ RETURNS TABLE (
     full_case_fold INT[]
 )
 LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    WITH cps AS (
+        SELECT u.cp::INT AS codepoint_value, substrate.cp_hash(u.cp::INT) AS entity_hash
+          FROM unnest(COALESCE(p_codepoints, ARRAY(SELECT generate_series(0, 1114111)))) AS u(cp)
+    )
     SELECT
-        cp.codepoint_value,
-        cp.gcb_id,
-        cp.wb_id,
-        cp.sb_id,
-        cp.lb_id,
-        cp.is_extended_pictographic,
-        cp.simple_case_fold,
-        cp.full_case_fold
-      FROM substrate.codepoint_property cp
-     WHERE p_codepoints IS NULL
-        OR cp.codepoint_value = ANY(p_codepoints)
-     ORDER BY cp.codepoint_value;
+        cps.codepoint_value,
+        gcb.break_property_id  AS gcb_id,
+        wb.break_property_id   AS wb_id,
+        sb.break_property_id   AS sb_id,
+        lb.break_property_id   AS lb_id,
+        NULL::BOOLEAN          AS is_extended_pictographic,
+        NULL::INT              AS simple_case_fold,
+        NULL::INT[]            AS full_case_fold
+      FROM cps
+      LEFT JOIN substrate.cp_grapheme_break  gcb ON gcb.entity_hash = cps.entity_hash
+      LEFT JOIN substrate.cp_word_break      wb  ON wb.entity_hash  = cps.entity_hash
+      LEFT JOIN substrate.cp_sentence_break  sb  ON sb.entity_hash  = cps.entity_hash
+      LEFT JOIN substrate.cp_line_break      lb  ON lb.entity_hash  = cps.entity_hash
+     ORDER BY cps.codepoint_value;
 $f$;
 
 COMMENT ON FUNCTION substrate.codepoint_property_rows(INT[]) IS
-    'Return codepoint_property rows for either all codepoints or an explicit requested working set.';
+    'Per-codepoint runtime properties from narrow per-property junctions. Gate 1 #38 refactor — case-fold and extended_pictographic fields are NULL pending narrow-cache landing; callers fall back to embedded UCD blob.';
 
 -- ── sql/schema/functions/break_property_code_map.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.break_property_code_map()

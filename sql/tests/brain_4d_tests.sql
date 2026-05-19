@@ -211,7 +211,7 @@ BEGIN
     -- Entities (content-addressed)
     INSERT INTO substrate.entity (hash) VALUES
         (h_cp_a), (h_cp_b), (h_word_form), (h_synset), (h_gloss_text), (h_prompt)
-    ON CONFLICT (hash) DO NOTHING;
+    ON CONFLICT (hash, hash_bits_0_51) DO NOTHING;
 
     -- Classifications (one decomposer asserts these)
     INSERT INTO substrate.entity_classification (entity_hash, entity_type_id, provenance_id) VALUES

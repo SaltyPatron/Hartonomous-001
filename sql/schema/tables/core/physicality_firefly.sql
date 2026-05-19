@@ -11,7 +11,8 @@
 -- MULTIPOINTZM also allowed for aggregated cross-model surfaces written
 -- as one row per entity (cross-model consensus reads / shape comparisons).
 CREATE TABLE substrate.physicality_firefly
-    PARTITION OF substrate.physicality FOR VALUES IN (2);
+    PARTITION OF substrate.physicality FOR VALUES IN (2)
+    PARTITION BY LIST (partition_bucket);
 ALTER TABLE substrate.physicality_firefly
     ADD CONSTRAINT physicality_firefly_geom
     CHECK (GeometryType(geom) IN ('POINT', 'MULTIPOINT')

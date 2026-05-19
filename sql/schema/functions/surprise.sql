@@ -61,11 +61,18 @@ AS $$
             ) AS gloss_hash
         FROM high_mu_synsets h
     )
+    -- Gate 1 reopened item #36 (2026-05-18): substrate.recompose_text removed.
+    -- The recomposition surface is now the C# bulk-tier walker
+    -- (Hartonomous.Core.Recomposition.BulkTierContentWalk). This SQL function
+    -- returns the gloss target's entity hash + NULL answer; callers must
+    -- pass the gloss_hash through ContentRecomposer.RecomposeAsync to
+    -- materialize the surface text. p_max_depth is preserved on the
+    -- signature for compatibility (unused).
     SELECT
         ROW_NUMBER() OVER (ORDER BY w.best_mu DESC NULLS LAST, w.entity_hash)::INT AS rank,
-        w.entity_hash AS target_hash,
-        w.best_mu     AS confidence,
-        substrate.recompose_text(w.gloss_hash, p_max_depth) AS answer
+        w.gloss_hash AS target_hash,
+        w.best_mu    AS confidence,
+        NULL::TEXT   AS answer
     FROM with_gloss w
     WHERE w.gloss_hash IS NOT NULL
     ORDER BY w.best_mu DESC NULLS LAST, w.entity_hash
@@ -73,4 +80,4 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION substrate.surprise(INT, INT) IS
-    'Open-ended fact selector. Picks up to p_top_k high-mu synsets that have associated gloss text, returns each with confidence and recomposed text. Used by the brain when the prompt does not point at a specific entity.';
+    'Open-ended fact selector. Picks up to p_top_k high-mu synsets that have associated gloss text. Returns the gloss target hash and confidence; the answer column is NULL — caller materializes the surface text via the C# ContentRecomposer (Gate 1 #36, 2026-05-18). p_max_depth preserved on signature for compatibility.';

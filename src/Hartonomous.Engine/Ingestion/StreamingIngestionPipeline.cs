@@ -442,13 +442,24 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             + b.Junctions.Count
             + b.Significances.Count
             + b.EntityModelSources.Count;
+        // Per-edge contribution bounds the inline-primer fan-out by the
+        // per-(provenance, edge_type) arena count, not the total cross-
+        // product (which can be ~63 provenances × 133 edge_types × 19 arenas
+        // ≈ 160K entries and overflows Int32 when multiplied by edges.Count).
+        // This is a List<> capacity hint only — under-estimating just defers
+        // a regrowth; over-estimating burns memory.
+        int perEdgeArenaCap = Math.Min(primer.MaxPerPair, 64);
         foreach (EdgeEntry edge in b.Edges)
         {
             estimatedCount += 2
                 + edge.Members.Length
                 + edge.SignificanceOverrides.Length
                 + edge.RatingEvents.Length
-                + primer.Count;
+                + perEdgeArenaCap;
+        }
+        if (estimatedCount < 0)
+        {
+            estimatedCount = b.Entities.Count + b.Edges.Count * 4;
         }
 
         List<IngestionRecord> records = new(estimatedCount);
@@ -1186,6 +1197,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     private static async Task ExecuteAsync(NpgsqlConnection conn, string sql, CancellationToken ct)
     {
         await using NpgsqlCommand cmd = new(sql, conn);
+        // INSERT-SELECT drains over 500K-record temp tables exceed the 30s
+        // Npgsql default under N-worker contention; cancellation flows through
+        // the CancellationToken instead of the command timeout.
+        cmd.CommandTimeout = 0;
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -1649,6 +1664,10 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     {
         "entity_pos", "entity_lexname", "entity_language", "entity_morph_feature",
         "model_architecture_class", "tensor_tensor_role", "pattern_deprel",
+        // Per-codepoint UCD property analytics caches (Gate 1 #38 refactor 2026-05-18).
+        "cp_general_category", "cp_script", "cp_block", "cp_bidi_class",
+        "cp_east_asian_width", "cp_grapheme_break", "cp_word_break",
+        "cp_sentence_break", "cp_line_break",
     };
 
     // ── Inline edge-significance primer table ───────────────────────────────
@@ -1711,7 +1730,12 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
             list.Add(new InlinePrimerEntry(arena, mu));
             total++;
         }
-        return new InlinePrimerTable(byPair, total);
+        int maxPerPair = 0;
+        foreach (List<InlinePrimerEntry> list in byPair.Values)
+        {
+            if (list.Count > maxPerPair) { maxPerPair = list.Count; }
+        }
+        return new InlinePrimerTable(byPair, total, maxPerPair);
     }
 
     private static Task<string?> TryProvenanceForEdgeAsync(EdgeRecord edge, CancellationToken ct)
@@ -1726,13 +1750,16 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         private static readonly IReadOnlyList<InlinePrimerEntry> Empty = Array.Empty<InlinePrimerEntry>();
         private readonly Dictionary<(string Provenance, string EdgeType), List<InlinePrimerEntry>> _byPair;
         public int Count { get; }
+        public int MaxPerPair { get; }
 
         public InlinePrimerTable(
             Dictionary<(string Provenance, string EdgeType), List<InlinePrimerEntry>> byPair,
-            int totalEntries)
+            int totalEntries,
+            int maxPerPair)
         {
             _byPair = byPair;
             Count = totalEntries;
+            MaxPerPair = maxPerPair;
         }
 
         public IReadOnlyList<InlinePrimerEntry> For(string provenanceCode, string edgeTypeCode)
