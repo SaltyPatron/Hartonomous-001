@@ -1865,21 +1865,22 @@ FROM (VALUES
     ('has_deprel_pattern',       'structural',    'word_form',          'text_composition'),    -- 123  (target = dep relation "nsubj"/"obj"/etc. as text_composition)
     ('has_lexname',              'structural',    'synset',             'text_composition'),    -- 124  (target = WordNet lexname "noun.animal"/etc. as text_composition)
     ('has_language',             'cross_lingual', NULL,                 'language_name'),       -- 125  (polymorphic source — any entity that asserts a language tag)
-    -- ── Per-codepoint UCD property classifications (Gate 1 #38 refactor) ─
-    -- Replaces the deleted wide substrate.codepoint_property junction with
-    -- per-dimension typed edges from codepoint to content-hashed
-    -- reference-vocab entity (Lu / Latn / "Basic Latin" / AL / W / "GCB:CR").
-    -- Cross-UCD-version attestation accumulates on these edges under the
-    -- unicode_version_consensus arena.
-    ('has_cp_general_category',  'unicode',       'codepoint',          'general_category'),    -- 126
-    ('has_cp_script',            'unicode',       'codepoint',          'script'),              -- 127  (distinct from has_script — language → ISO15924 string)
-    ('has_cp_block',             'unicode',       'codepoint',          'block'),               -- 128
-    ('has_cp_bidi_class',        'unicode',       'codepoint',          'bidi_class'),          -- 129
-    ('has_cp_east_asian_width',  'unicode',       'codepoint',          'east_asian_width'),    -- 130
-    ('has_cp_grapheme_break',    'unicode',       'codepoint',          'break_property'),      -- 131  (UAX #29 GCB)
-    ('has_cp_word_break',        'unicode',       'codepoint',          'break_property'),      -- 132  (UAX #29 WB)
-    ('has_cp_sentence_break',    'unicode',       'codepoint',          'break_property'),      -- 133  (UAX #29 SB)
-    ('has_cp_line_break',        'unicode',       'codepoint',          'break_property')       -- 134  (UAX #14 LB)
+    -- ── Generic classification attestation (Gate 1 #38 refactor 2026-05-19) ─
+    -- Collapses per-dimension classification edge proliferation into a single
+    -- polymorphic edge. Source = any classifiable content entity (codepoint,
+    -- word_form, lemma, synset, ...). Target = content-hashed classification
+    -- entity whose entity_type discriminates the dimension (general_category /
+    -- script / block / bidi_class / east_asian_width / break_property / pos /
+    -- lexname / morph_feature / deprel / language_name / ...). Arena routing
+    -- by (edge_type × target_entity_type) per AP-30/AP-38 collapse principle —
+    -- discrimination via (target_type × provenance × arena), not via
+    -- per-dimension edge_type proliferation.
+    --
+    -- Migrating existing has_pos / has_lexname / has_morph_feature /
+    -- has_deprel_pattern edges onto this generic kind is staged for a
+    -- follow-up; both surfaces will coexist transitionally until the
+    -- migration completes.
+    ('has_classification',       'structural',    NULL,                 NULL)                   -- 126
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;
@@ -1905,7 +1906,7 @@ BEGIN
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            142),
+            ('substrate.edge_type',            134),
             ('substrate.attestation_type',       3)
         ) AS t(table_name, expected)
     LOOP
@@ -1972,23 +1973,30 @@ END $$;
 -- equivalent: any change to bb_hash_lo / bb_hash_hi must mirror here.
 --
 -- entity carries the entity's own 4D centroid + Hilbert index as denormalized
--- columns. This is a deterministic projection of the entity's physicality —
--- atom POINTZM coords for codepoint atoms; mean-of-children-centroids for
--- compositions (entity_shape / ingestion_trajectory partitions). Same content
--- → same hash → same children → same centroid (Merkle invariant). The columns
--- are maintained by a trigger on substrate.physicality AFTER INSERT/UPDATE
--- (see substrate.update_entity_centroid_from_physicality). The embedding_firefly
--- partition is excluded — fireflies are per-model decorations, not the entity's
--- own identity-bearing centroid.
+-- columns. This is a deterministic projection of the entity's content — atom
+-- POINTZM coords from the pre-gen blob (codepoint Super-Fibonacci S^3 by UCA
+-- rank via hartonomous_ucd_cp_centroid; audio sample value; pixel intensity;
+-- tensor cell) for atoms; arithmetic-mean of child centroids for compositions.
+-- Law #6 guarantees byte-identical output across runs: same content → same
+-- hash → same blob-lookup-or-mean → same centroid. The columns are populated
+-- INLINE by C# at COPY time from PhysicalityEmitter (which delegates to the
+-- pre-gen native blob exports). No trigger, no reactive maintenance, no
+-- physicality-write callback path — the cache is bit-identical to the blob
+-- output by construction because nothing computes the centroid twice. The
+-- fireflies partition has no entity-row centroid because fireflies are
+-- per-model decorations attached to existing word_form entities, not the
+-- entity's own identity-bearing centroid.
 --
 -- Why on the entity row: the centroid is referenced everywhere a parent walks
 -- its child manifest (composition LINESTRINGZM vertices are children's
 -- centroids). Joining substrate.physicality on every parent-walk would be a
--- hot-path table lookup per vertex; storing on entity makes it O(1).
+-- hot-path table lookup per vertex; storing on entity makes it O(1) and
+-- eliminates the PG round-trip from the partition-pruned scan path.
 --
 -- The substrate's 4D realization itself still lives in substrate.physicality,
--- partitioned by physicality_type_id. These columns are denormalization for
--- read speed, NOT a replacement for the physicality store.
+-- partitioned by physicality_type_id. These columns are the pre-gen perf
+-- cache projected onto the identity row for partition-pruned scan locality,
+-- NOT a replacement for the physicality store.
 CREATE TABLE substrate.entity (
     hash substrate.hash_value NOT NULL,
     hash_bits_0_51 BIGINT GENERATED ALWAYS AS (
@@ -2030,7 +2038,7 @@ CREATE TABLE substrate.entity (
 -- requirement structurally.
 
 COMMENT ON TABLE substrate.entity IS
-    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. LIST-partitioned by (hash_bits_0_51 % 8) over 8 children — N C# ingestion workers route bundles by the same expression so worker K writes only to entity_pK. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so composition-LINESTRINGZM vertex (X, Z) mantissas resolve to full hashes via the composite-btree composite index (entity_hash_prefix_idx). No geometry column — physicality lives in substrate.physicality, partitioned by physicality_type_id then sub-partitioned by (entity_hash byte 0 & 7).';
+    'Content-addressed substrate nodes. Atom OR composition. Identity = BLAKE3 hash of content. Classifications via substrate.entity_classification. LIST-partitioned over 8 children entity_p0..entity_p7 by partition_bucket = (get_byte(hash, 0) & 7) = (hash_bits_0_51 % 8) — N C# ingestion workers route bundles by the same expression so worker K writes only to entity_pK. hash_bits_0_51 / hash_bits_52_103 expose a 104-bit BLAKE3 prefix as BIGINT columns so composition-LINESTRINGZM vertex (X, Z) mantissas resolve to full hashes via the composite btree entity_hash_prefix_idx. centroid_x/y/z/m + hilbert_index are denormalized pre-gen cache columns populated INLINE by C# at COPY time from PhysicalityEmitter (codepoint Super-Fibonacci S^3 by UCA rank via hartonomous_ucd_cp_centroid; arithmetic-mean of child centroids for compositions); bit-identical to the blob output by construction and equivalent to the entity-tier substrate.physicality POINTZM for the row. The authoritative 4D realization remains in substrate.physicality, partitioned by physicality_type_id.';
 
 COMMENT ON COLUMN substrate.entity.hash_bits_0_51 IS
     'Bits 0..51 of substrate.entity.hash, LE byte order, exposed as BIGINT. Mirrors substrate.bb_hash_lo(bytea). Matches the X mantissa of composition LINESTRINGZM vertices and the X mantissa of edge.geom vertices via substrate.bb_pack_hash_lo. Used for batched lookup via substrate.entity_by_hash_prefix.';
@@ -2040,6 +2048,21 @@ COMMENT ON COLUMN substrate.entity.hash_bits_52_103 IS
 
 COMMENT ON COLUMN substrate.entity.partition_bucket IS
     'Worker / partition routing key = (hash byte 0 & 7) = (hash_bits_0_51 % 8). Eight buckets in [0..7]. C# pipeline computes the same expression to assign bundles to workers; worker K writes only to entity_pK.';
+
+COMMENT ON COLUMN substrate.entity.centroid_x IS
+    'Denormalized X coordinate of the entity-tier POINTZM (atom: real content-derived coord — codepoint Super-Fibonacci S^3 component 0 by UCA rank, audio sample value, pixel intensity, tensor cell. Composition: arithmetic mean of children''s centroid_x). Populated INLINE by C# at COPY time via PhysicalityEmitter; no trigger, no reactive maintenance. Bit-identical to substrate.physicality POINTZM X for the entity-tier row of this entity by Law #6.';
+
+COMMENT ON COLUMN substrate.entity.centroid_y IS
+    'Denormalized Y coordinate of the entity-tier POINTZM. Same population path as centroid_x. Bit-identical to substrate.physicality POINTZM Y for the entity-tier row.';
+
+COMMENT ON COLUMN substrate.entity.centroid_z IS
+    'Denormalized Z coordinate of the entity-tier POINTZM. Same population path as centroid_x. Bit-identical to substrate.physicality POINTZM Z for the entity-tier row.';
+
+COMMENT ON COLUMN substrate.entity.centroid_m IS
+    'Denormalized M coordinate of the entity-tier POINTZM (atom: per-partition CHECK-declared meaning — UCD bitmask in M for codepoints, salience for fireflies, etc.). Same population path as centroid_x. Bit-identical to substrate.physicality POINTZM M for the entity-tier row.';
+
+COMMENT ON COLUMN substrate.entity.hilbert_index IS
+    'Denormalized Hilbert curve index over (centroid_x, centroid_y, centroid_z, centroid_m) at 16 bits per axis. Enables range scans that combine radial (entity_tier_hint) + angular spatial locality without LATERAL ST_4D_Centroid on every parent walk. Populated INLINE by C# from Hilbert.Index(point4, 16); reproducible by Law #6.';
 
 -- ── sql/schema/tables/core/entity_p0.sql ───────────────────────────────────────
 CREATE TABLE substrate.entity_p0
@@ -7560,12 +7583,79 @@ COMMENT ON FUNCTION substrate.create_model_trust_arena(TEXT) IS
 
 -- ── sql/schema/bootstrap.sql ───────────────────────────────────────
 
--- Server-side populate_*_from_ext + ucd_materialization_counts removed
--- 2026-05-17 (Gate 1 Task #22). Reference vocabularies + codepoint atoms
--- + edges are now emitted by UnicodeDecomposer reading the UCD source
--- directly via BlobUcdPropertyAccessor (native blob) +
--- IIngestionPipeline.CreateBatch. Per Principle 1 — blob and substrate
--- are siblings derived from the same source; neither populates the other.
+-- Server-side populate_*_from_ext removed 2026-05-17 (Gate 1 Task #22).
+-- Reference vocabularies + codepoint atoms + edges are emitted by
+-- UnicodeDecomposer reading the UCD source directly via
+-- BlobUcdPropertyAccessor (native blob) + IIngestionPipeline.CreateBatch.
+-- Per Principle 1 — blob and substrate are siblings derived from the same
+-- source; neither populates the other. The ucd_materialization_counts and
+-- ucd_reference_vocabulary_counts functions are read-only validation
+-- probes re-introduced 2026-05-19 (named-function AP-2 compliance for the
+-- decomposer's §2 / §14 verification steps); they observe substrate state,
+-- they do not populate it.
+
+-- ── sql/schema/functions/ucd_materialization_counts.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.ucd_materialization_counts()
+RETURNS TABLE (
+    codepoint_classifications      BIGINT,
+    simple_case_edges              BIGINT,
+    simple_case_edges_without_geom BIGINT,
+    arenas                         BIGINT,
+    simple_case_edge_significance  BIGINT
+)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT
+        (SELECT count(*)
+           FROM substrate.entity_classification ec
+           JOIN substrate.entity_type et ON et.id = ec.entity_type_id
+           JOIN substrate.provenance p   ON p.id  = ec.provenance_id
+          WHERE et.code = 'codepoint' AND p.code = 'unicode_consortium')
+            AS codepoint_classifications,
+        (SELECT count(*)
+           FROM substrate.edge e
+           JOIN substrate.edge_type et ON et.id = e.edge_type_id
+          WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to'))
+            AS simple_case_edges,
+        (SELECT count(*)
+           FROM substrate.edge e
+           JOIN substrate.edge_type et ON et.id = e.edge_type_id
+          WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')
+            AND e.geom IS NULL)
+            AS simple_case_edges_without_geom,
+        (SELECT count(*) FROM substrate.significance_context)
+            AS arenas,
+        (SELECT count(*)
+           FROM substrate.edge_significance es
+           JOIN substrate.edge_type et ON et.id = es.edge_type_id
+          WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to'))
+            AS simple_case_edge_significance;
+$f$;
+
+COMMENT ON FUNCTION substrate.ucd_materialization_counts() IS
+    'Single-row 5-column post-decomposition validation probe for UnicodeDecomposer §14. Verifies codepoint classifications, simple-case edges (with non-NULL geom per AP-37 drain-completion invariant), arena count, and per-arena edge_significance row counts. Re-introduced 2026-05-19 to close the AP-2 raw-SQL leak left by the Gate 1 Task #22 removal of the prior populate_*_from_ext variant.';
+
+-- ── sql/schema/functions/ucd_reference_vocabulary_counts.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.ucd_reference_vocabulary_counts()
+RETURNS TABLE (
+    general_category_rows BIGINT,
+    script_rows           BIGINT,
+    block_rows            BIGINT,
+    bidi_class_rows       BIGINT,
+    east_asian_width_rows BIGINT,
+    break_property_rows   BIGINT
+)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT
+        (SELECT count(*) FROM substrate.general_category)  AS general_category_rows,
+        (SELECT count(*) FROM substrate.script)            AS script_rows,
+        (SELECT count(*) FROM substrate.block)             AS block_rows,
+        (SELECT count(*) FROM substrate.bidi_class)        AS bidi_class_rows,
+        (SELECT count(*) FROM substrate.east_asian_width)  AS east_asian_width_rows,
+        (SELECT count(*) FROM substrate.break_property)    AS break_property_rows;
+$f$;
+
+COMMENT ON FUNCTION substrate.ucd_reference_vocabulary_counts() IS
+    'Single-row 6-column row-count probe for the UCD reference vocabularies. Used by UnicodeDecomposer §2 to verify seed presence before §3 codepoint atom emission relies on the +1 enum-code-to-id arithmetic.';
 
 -- ── sql/schema/functions/unicode_edge_hash.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.unicode_edge_hash(
@@ -9354,6 +9444,18 @@ $f$;
 
 COMMENT ON FUNCTION substrate.break_property_code_map() IS
     'Return break_property id/code rows for C# UAX #29 cache compatibility.';
+
+-- ── sql/schema/functions/break_property_full_map.sql ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION substrate.break_property_full_map()
+RETURNS TABLE (id INT, category TEXT, enum_id INT, code TEXT)
+LANGUAGE sql STABLE PARALLEL SAFE AS $f$
+    SELECT bp.id, bp.category::text, bp.enum_id, bp.code::text
+      FROM substrate.break_property bp
+     ORDER BY bp.category, bp.enum_id;
+$f$;
+
+COMMENT ON FUNCTION substrate.break_property_full_map() IS
+    'Full break_property rows (id, category, enum_id, code) keyed for composite (category, enum_id) lookup in the UCD decomposer.';
 
 -- ── sql/schema/functions/query_entities.sql ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION substrate.query_entities(

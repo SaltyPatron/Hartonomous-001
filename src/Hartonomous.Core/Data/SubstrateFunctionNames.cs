@@ -31,6 +31,7 @@ public static class SubstrateFunctionNames
     public const string BindBpeTokensToSeedMorph = "substrate.bind_bpe_tokens_to_seed_morph";
     public const string BindBpeTokensToSeedPos = "substrate.bind_bpe_tokens_to_seed_pos";
     public const string BreakPropertyCodeMap = "substrate.break_property_code_map";
+    public const string BreakPropertyFullMap = "substrate.break_property_full_map";
     public const string ClaimOrGetEmbeddingAnchor = "substrate.claim_or_get_embedding_anchor";
     public const string CodepointPropertyRows = "substrate.codepoint_property_rows";
     public const string CompositionRange = "substrate.composition_range";
@@ -83,6 +84,8 @@ public static class SubstrateFunctionNames
     public const string ResolveEntityHandles = "substrate.resolve_entity_handles";
     public const string SignificanceContextIds = "substrate.significance_context_ids";
     public const string TraversalNeighbors = "substrate.traversal_neighbors";
+    public const string UcdMaterializationCounts = "substrate.ucd_materialization_counts";
+    public const string UcdReferenceVocabularyCounts = "substrate.ucd_reference_vocabulary_counts";
     public const string UcdVersion = "substrate.ucd_version";
     public const string UpsertArchitectureClass = "substrate.upsert_architecture_class";
     public const string UpsertHomogeneousEdgeTypes = "substrate.upsert_homogeneous_edge_types";
@@ -111,6 +114,7 @@ public static class SubstrateFunctionNames
         BindBpeTokensToSeedMorph,
         BindBpeTokensToSeedPos,
         BreakPropertyCodeMap,
+        BreakPropertyFullMap,
         ClaimOrGetEmbeddingAnchor,
         CodepointPropertyRows,
         CompositionRange,
@@ -163,6 +167,8 @@ public static class SubstrateFunctionNames
         ResolveEntityHandles,
         SignificanceContextIds,
         TraversalNeighbors,
+        UcdMaterializationCounts,
+        UcdReferenceVocabularyCounts,
         UcdVersion,
         UpsertArchitectureClass,
         UpsertHomogeneousEdgeTypes,

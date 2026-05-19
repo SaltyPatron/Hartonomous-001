@@ -287,13 +287,20 @@ If lemmas have no `has_sense` outbound edges, or edge mu is uniformly default, f
 
 ### AP-31: Sign-throwing decomposers
 
-**Failure**: A decomposer reads tensor values that carry sign (Q^T·K projection, FFN response, embedding cosine), passes `Math.Abs(value)` as the attestation strength, and treats only positive correlation as evidence. Examples in the prior codebase: `TokenAttentionEdgePass`, `TokenCrossEdgePass`, `TokenFfnEdgePass`, `AttentionVoLayerDecomposer` all called `Math.Abs` and discarded sign. Negative correlation (anti-attention, suppression FFN response, antipodal embedding) is load-bearing evidence about what the model has learned to push apart — discarding it makes the substrate half-true.
+**Failure**: A decomposer reads tensor values that carry sign (Q^T·K projection, FFN response, embedding cosine), passes `Math.Abs(value)` as the attestation strength, and treats only positive correlation as evidence. Negative correlation (anti-attention, suppression FFN response, antipodal embedding) is load-bearing evidence about what the model has learned to push apart — discarding it makes the substrate half-true. The earlier `TokenAttentionEdgePass` / `TokenCrossEdgePass` / `TokenFfnEdgePass` / `AttentionVoLayerDecomposer` names called out in older spec text no longer exist; the AP-30 / AP-32 collapse merged them into the tuple passes (`AttentionBlockTuplePass`, `FfnTuplePass`, `EmbeddingLookupTuplePass`, `LoraDeltaTuplePass`), all of which now emit sign-aware events.
 
-**Rule**: Glicko-2 already encodes positive vs negative natively via `score` parameter (canonical: 0 = loss, 1 = win) plus per-event `weight`. Decomposers MUST emit sign-aware events: `Score = value > 0 ? 1.0 : 0.0; Weight = Math.Abs(value)`. Edge identity stays the same; mu drifts to consensus position symmetric around the arena's neutral 1500. The substrate distinguishes 4 states: silence (no edge) ≠ wide-sigma (uncertain consensus) ≠ tight-neutral (consensus = "weak relationship") ≠ tight-signed (positive or negative). Synthesizers' mu-to-cell transform must be symmetric around 1500 and produce signed output.
+**Rule**: Glicko-2 already encodes positive vs negative natively via `score` parameter (canonical: 0 = loss, 1 = win) plus per-event `weight`. Decomposers MUST emit sign-aware events: `Score = value > 0 ? 1.0 : 0.0; Weight = Math.Abs(value); AttestationTypeCode = signed > 0 ? "positive_evidence" : "negative_evidence"`. Sign + magnitude + arena + attribution all land on `EdgeRatingEvent` (`src/Hartonomous.Core/Ingestion/EdgeRatingEvent.cs`), emitted via the 5-arg `IIngestionBatch.AddEdge` overload. `EdgeSignificanceSpec` is a separate surface — it primes initial mu on insert; `EdgeRatingEvent` fires per emission so cross-source corroboration accumulates. Edge identity stays the same; mu drifts to consensus position symmetric around the arena's neutral 1500. The substrate distinguishes 4 states: silence (no edge) ≠ wide-sigma (uncertain consensus) ≠ tight-neutral (consensus = "weak relationship") ≠ tight-signed (positive or negative). Synthesizers' mu-to-cell transform must be symmetric around 1500 and produce signed output.
+
+**Current emission sites** (verified 2026-05-19):
+- `AttentionBlockTuplePass.cs:329-358` — Q^T·K projection on `model_attention_pattern`.
+- `FfnTuplePass.cs:351-380` — FFN response on `model_ffn_factor`.
+- `EmbeddingLookupTuplePass.cs:279-316` — embedding cosine on `model_concept_similarity`.
+
+`EdgeArenaRouter.SignedEventsFor(edgeTypeCode, signedValue, weightOverride?)` is the canonical helper for new sign-bearing call sites — it builds the per-arena `EdgeRatingEvent[]` with the right sign + attestation_type combination.
 
 **Why**: Conventional AI training has only positive gradient — negative information lives in regularization or contrastive loss, not in the model's actual recorded knowledge. The substrate's per-edge bidirectional Glicko mu IS the negative information made first-class. Throwing away sign reduces the substrate to "what models think positively" — half the truth, and the wrong half for any anti-pattern detection / antonymy / opposition / suppression query.
 
-**Citation**: [`docs/01-tensor-primitive-spec.md`](../../docs/01-tensor-primitive-spec.md) §V; the existing `inference_outcome_reject` attestation_type (already in seed line 58) demonstrates the pattern.
+**Citation**: [`docs/01-tensor-primitive-spec.md`](../../docs/01-tensor-primitive-spec.md) §V; `src/Hartonomous.Core/Ingestion/EdgeRatingEvent.cs`; `src/Hartonomous.Decomposers/EdgeArenaRouter.cs` (`SignedEventsFor`).
 
 ### AP-32: Per-architecture decomposer files
 

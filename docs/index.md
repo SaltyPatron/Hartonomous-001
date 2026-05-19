@@ -2,9 +2,9 @@
 
 Master documentation entrypoint.
 
-This file is currently a curated legacy index, not a complete inventory and not a completion tracker. The repo has 218 Markdown files under `docs/` as of 2026-05-19, while the legacy sections below still cover the older 85-doc surface. Use [audit/AUDIT-STATUS.md](audit/AUDIT-STATUS.md) as the durable cleanup ledger and recompute counts from source before citing schema or documentation totals.
+This file is currently a curated legacy index, not a complete inventory and not a completion tracker. The repo has 219 Markdown files under `docs/` as of 2026-05-19, while the legacy sections below still cover the older 85-doc surface. Use [audit/CONTRADICTION-LEDGER.md](audit/CONTRADICTION-LEDGER.md) for the schema/code-grounded repair queue, use [audit/AUDIT-STATUS.md](audit/AUDIT-STATUS.md) for the broader audit status, and recompute counts from source before citing schema or documentation totals.
 
-Canonical architectural precedence for cleanup: [00-substrate-spec.md](00-substrate-spec.md), [01-tensor-primitive-spec.md](01-tensor-primitive-spec.md), then source files under `sql/schema/` and `src/`. Older overview docs, recipes, rules, prompts, and memories update to match those sources where they conflict.
+Repair precedence for implementation-state claims: `sql/schema/` and `src/` first, then [00-substrate-spec.md](00-substrate-spec.md) and [01-tensor-primitive-spec.md](01-tensor-primitive-spec.md) as normative design only where they agree with current implementation or identify an explicit code-change target. Older overview docs, recipes, rules, prompts, and memories update to match the ledger above where they conflict.
 
 ## Status Key
 

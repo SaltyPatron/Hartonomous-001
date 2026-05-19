@@ -29,28 +29,29 @@ namespace Hartonomous.Core.Recomposition;
 /// tensor's role (Mode 2 cross-model consensus).</item>
 /// </list>
 ///
-/// Working template for synthesizers: <c>AttentionQkvLayerSynthesizer</c>
-/// (reciprocal of <see cref="Hartonomous.Decomposers.Safetensors.Passes.TokenAttentionEdgePass"/>).
+/// Working template for synthesizers: <c>AttentionSynthesizer</c>
+/// (reciprocal of <see cref="Hartonomous.Decomposers.Safetensors.Passes.AttentionBlockTuplePass"/>).
 ///
 /// Per Phase C.0 of the implementation plan.
 /// </summary>
 public interface ILayerTypeSynthesizer
 {
     /// <summary>
-    /// Tensor role codes this synthesizer can produce — values from
-    /// <c>Hartonomous.Decomposers.Safetensors.TensorRoleExtensions.ToCode()</c>
-    /// for safetensors-backed targets, or arbitrary modality-specific role
-    /// codes for other content modalities. The recomposer's dispatch table
-    /// routes target tensors with matching role code to this synthesizer.
-    /// String-keyed (rather than the C# enum) because Hartonomous.Core does
-    /// not reference Hartonomous.Decomposers — the synthesizer surface is
-    /// modality-agnostic infrastructure.
+    /// Tensor role codes this synthesizer can produce — string identifiers
+    /// derived from the <c>(PrimitiveKind, ArchetypeTuple, TupleSlot)</c>
+    /// triple per docs/01-tensor-primitive-spec.md §I-§II (e.g. the
+    /// <c>TupleSlot</c> enum value as its lowercase name, or composite codes
+    /// like "attention_q" / "ffn_down" / "embedding_table"). The recomposer's
+    /// dispatch table routes target tensors with matching role code to this
+    /// synthesizer. String-keyed (rather than the C# enum) because
+    /// Hartonomous.Core does not reference Hartonomous.Decomposers — the
+    /// synthesizer surface is modality-agnostic infrastructure.
     /// </summary>
     /// <example>
-    /// AttentionQkvLayerSynthesizer.TargetRoleCodes = ["attention_query", "attention_key"].
-    /// FfnLayerSynthesizer.TargetRoleCodes = ["ffn_gate", "ffn_up", "ffn_down"].
-    /// EmbeddingLayerSynthesizer.TargetRoleCodes = ["token_embedding", "position_embedding",
-    ///     "position_embedding_2d", "token_type_embedding"].
+    /// AttentionSynthesizer.TargetRoleCodes = ["attention_q", "attention_k", "attention_v", "attention_o"].
+    /// FfnSynthesizer.TargetRoleCodes = ["ffn_gate", "ffn_up", "ffn_down"].
+    /// EmbeddingSynthesizer.TargetRoleCodes = ["embedding_table", "position_table",
+    ///     "position_table_2d", "token_type_table"].
     /// </example>
     IReadOnlyList<string> TargetRoleCodes { get; }
 

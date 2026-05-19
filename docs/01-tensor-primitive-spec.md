@@ -387,12 +387,12 @@ Synthesizer's mu-to-cell math is symmetric around mu = 1500. `cell_value = (mu -
 
 **Required code-side changes for sign-bearing attestations:**
 
-1. `EdgeSignificanceSpec` adds `Score` field (default 1.0, i.e. positive; pass 0.0 for negative).
-2. `IIngestionBatch.AddEdge` propagates Score to the rating event.
-3. The four sign-throwing decomposers (TokenAttentionEdgePass, TokenCrossEdgePass, TokenFfnEdgePass, AttentionVo) replace `Math.Abs(value)` with `Score = value > 0 ? 1.0 : 0.0; Weight = Math.Abs(value)`.
-4. Per-arena seed defaults must allow Glicko mu to drift below 1000 without clipping. Confirm `significance_context.sql` defaults don't clip.
-5. Synthesizer mu-to-cell transform must be symmetric around 1500 and produce signed output.
-6. Coverage report distinguishes the four states above per tensor cell.
+1. ✅ **DONE** — Sign + magnitude land on `EdgeRatingEvent` (`src/Hartonomous.Core/Ingestion/EdgeRatingEvent.cs`) via the `Score` and `Weight` fields plus the `AttestationTypeCode` discriminator (`positive_evidence` / `negative_evidence` / `neutral_evidence`). `EdgeSignificanceSpec` was kept as the prior-mu surface — it primes initial mu on insert; the per-event Glicko outcome lives on `EdgeRatingEvent`, which fires on every emission so cross-source corroboration accumulates on the same `(arena, edge, attestation_type)` row. The two surfaces coexist by design; the spec previously implied a single surface but the implementation split them cleanly.
+2. ✅ **DONE** — `IIngestionBatch.AddEdge` 5-arg overload (`src/Hartonomous.Core/Ingestion/IIngestionBatch.cs:113`) takes `ReadOnlySpan<EdgeRatingEvent> events` alongside the significance specs and propagates through the `StreamingIngestionPipeline` rating event path.
+3. ✅ **DONE** — Sign-bearing emission landed in the tuple passes that subsumed the spec's earlier "four sign-throwing decomposer" names (those names — `TokenAttentionEdgePass`, `TokenCrossEdgePass`, `TokenFfnEdgePass`, `AttentionVoLayerDecomposer` — no longer exist as separate files; the AP-30 / AP-32 collapse merged them into the tuple passes). Working sites: `AttentionBlockTuplePass.cs:329-358`, `FfnTuplePass.cs:351-380`, `EmbeddingLookupTuplePass.cs:279-316`. All three emit `score = value > 0 ? 1.0 : 0.0; weight = abs(value); attestationType = positive_evidence/negative_evidence` per pair surviving the per-tensor adaptive noise floor.
+4. **PENDING** — Per-arena seed defaults verify Glicko mu can drift below 1000 without clipping. Confirm `significance_context.sql` defaults don't clip.
+5. **PENDING** — Synthesizer mu-to-cell transform symmetric around 1500 with signed output. Audit `AttentionSynthesizer`, `FfnSynthesizer`, `FfnEdgeSlotSynthesizer`, `EmbeddingSynthesizer`.
+6. **PENDING** — Coverage report distinguishes the four states (silence / wide-sigma / tight-neutral / tight-signed) per tensor cell.
 
 ---
 
@@ -475,24 +475,36 @@ The cleanup work this spec enables, in order:
 - **PENDING** — After deletion, handle any partition repartitioning per the existing seed comment.
 - Entity types `audio_chunk`, `pixel_region`, `visual_concept`, `object_query`, `codec_codevector`: ✅ all present in seed (`sql/schema/seed/entity_type.sql`).
 
-### IX.2 `TensorClassification` refactor (one batch)
+### IX.2 `TensorClassification` refactor — ✅ DONE
 
-- **Replace** `TensorRole` enum (40+ values) with `(PrimitiveKind, ArchetypeTuple, TupleSlot)` triple plus optional indices.
-- **Define** `PrimitiveKind` enum (4 values), `ArchetypeTuple` enum (~13 values), `TupleSlot` enum (~25 values).
-- **Update** `TensorClassification` record to carry the new shape.
-- **Refactor** `TensorClassifier` to dispatch via per-architecture name-pattern tables (the TupleResolver tables in §III).
-- **Verify** `tensor_role` reference table seed and `tensor_tensor_role` junction migrate cleanly to the new vocabulary.
+- ✅ **DONE** — `TensorRole` enum removed; classification triple is `(PrimitiveKind, ArchetypeTuple, TupleSlot)` plus optional indices. Source: `src/Hartonomous.Decomposers/Safetensors/TensorClassification.cs`. The only surviving `TensorRole` references are two xmldoc comments in `src/Hartonomous.Core/Recomposition/{ILayerTypeSynthesizer.cs, TargetTensorSpec.cs}` (updated 2026-05-19 to cite the triple instead).
+- ✅ **DONE** — `PrimitiveKind` (4 values: `Linear`, `LocalKernel`, `Normalization`, `Lookup`), `ArchetypeTuple` (~13 values), `TupleSlot` enums all defined in `src/Hartonomous.Decomposers/Safetensors/`.
+- ✅ **DONE** — `TensorClassification` record carries the new shape.
+- ✅ **DONE** — `TupleResolver` (`src/Hartonomous.Decomposers/Safetensors/TupleResolution/TupleResolver.cs`) dispatches via per-architecture `IArchitectureProfile` rules.
+- **PENDING** — `tensor_role` reference table seed and `tensor_tensor_role` junction migration audit.
 
-### IX.3 Decomposer collapse (one batch)
+### IX.3 Decomposer collapse — PARTIAL
 
-- **Delete** 11 in-flight `*LayerDecomposer.cs` files (AttentionVoLayerDecomposer, LmHeadLayerDecomposer, LayerNormLayerDecomposer, MoeRouterLayerDecomposer, MoeExpertLayerDecomposer, LoRAAdapterLayerDecomposer, RopeFreqLayerDecomposer, FfnLayerSynthesizer skeletons, etc.).
-- **Delete** 7 still-extant phantom pass files (ConvFilterPass, DiffusionComponentPass, BboxHeadPass, ClassHeadPass, ObjectQueryPass, AudioCodecFilterPass, ConformerComponentPass, VisionFeaturePass, ModalityBasisPass).
-- **Refactor** the 8 transitional analytics passes (Sparsity, WeightDistribution, ActivationRange, Svd, Eigenvalue, LayerSimilarity, VocabCoverage, OneDTensor) to attach analysis as physicality on the existing tensor entity instead of emitting separate analysis entities. Some might be deletable entirely if their analytics belong in the analytics-cache surface (Phase D, deferred).
-- **Write** the 4 PrimitivePasses + 5 TuplePasses + TupleResolver per §VI.
-- **Write** per-architecture tuple-resolution tables for BERT, Llama, Qwen3-MoE, BART, DaViT, Conformer, LoRA-wrap, DETR, Swin, FLUX VAE per §III.
-- **Update** `BuildPassSet` in `SafetensorsDecomposer` to dispatch only the new primitive + tuple passes (~7 entries instead of ~24).
-- **Apply** sign-bearing changes per §V to all attestation-emitting passes.
-- **Add** Score field to `EdgeSignificanceSpec`; propagate through `IIngestionBatch.AddEdge` and the StreamingIngestionPipeline rating event path.
+- ✅ **DONE** — `*LayerDecomposer.cs` files removed; no `AttentionVoLayerDecomposer`, `LmHeadLayerDecomposer`, `LayerNormLayerDecomposer`, `MoeRouterLayerDecomposer`, `MoeExpertLayerDecomposer`, `LoRAAdapterLayerDecomposer`, `RopeFreqLayerDecomposer` survive in `src/Hartonomous.Decomposers/Safetensors/Passes/`.
+- ✅ **DONE** — Phantom pass files removed; no `ConvFilterPass`, `DiffusionComponentPass`, `BboxHeadPass`, `ClassHeadPass`, `ObjectQueryPass`, `AudioCodecFilterPass`, `ConformerComponentPass`, `VisionFeaturePass`, `ModalityBasisPass` survive.
+- **PENDING** — Audit the 8 transitional analytics passes (Sparsity, WeightDistribution, ActivationRange, Svd, Eigenvalue, LayerSimilarity, VocabCoverage, OneDTensor) — current `Passes/` directory does not contain them by those names; either already deleted or renamed under the tuple-pass surface. Verify and either retire the §IX.3 line or document where the analytics moved.
+- **PARTIAL** — PrimitivePasses + TuplePasses + TupleResolver per §VI:
+  - ✅ `NormalizationPrimitivePass.cs`
+  - ✅ `AttentionBlockTuplePass.cs`
+  - ✅ `FfnTuplePass.cs`
+  - ✅ `EmbeddingLookupTuplePass.cs` (covers the Lookup-primitive role for the EmbeddingLookup tuple specifically)
+  - ✅ `LoraDeltaTuplePass.cs`
+  - ✅ `TupleResolver` + `IArchitectureProfile` + `NamePatternRule`
+  - **PENDING** `LinearProjectionPass` (primitive — may be subsumed by per-tuple work; audit needed)
+  - **PENDING** `LocalKernelPass` (primitive — required for ConvResidualBlock / ConformerBlock conv_module)
+  - **PENDING** `CrossAttentionTuplePass` — blocks cross-modal binding (CLIP/BLIP/Florence/Flux DiT cross-attn) on `model_cross_modal_pattern`
+  - **PENDING** `SpatialKernelTuplePass` — blocks pixel_region ↔ pixel_region and audio_chunk ↔ audio_chunk attestations on `model_spatial_pattern`
+- **PARTIAL** — Per-architecture profiles:
+  - ✅ `BertArchitectureProfile.cs` exists
+  - **PENDING** Llama, Qwen3-MoE, BART, DaViT, Conformer, LoRA-wrap, DETR, Swin, FLUX VAE (9 profiles)
+- ✅ **DONE** — `BuildPassSet` in `SafetensorsDecomposer` dispatches the tuple + primitive passes; legacy `*LayerDecomposer` references absent (per code inspection 2026-05-19).
+- ✅ **DONE** — Sign-bearing changes applied at all three current attestation-emitting tuple passes; see §V step 3 above.
+- ✅ **DONE** — Score / Weight / AttestationType discrimination on `EdgeRatingEvent` (not `EdgeSignificanceSpec` — see §V step 1 above) plus 5-arg `IIngestionBatch.AddEdge` overload propagating through `StreamingIngestionPipeline`.
 
 ### IX.4 Synthesizer collapse (one batch)
 

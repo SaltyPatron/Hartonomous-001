@@ -463,12 +463,18 @@
 -- @include schema/functions/consensus_token_pairs.sql
 -- @include schema/functions/create_arena.sql
 -- @include schema/functions/create_model_trust_arena.sql
--- Server-side populate_*_from_ext + ucd_materialization_counts removed
--- 2026-05-17 (Gate 1 Task #22). Reference vocabularies + codepoint atoms
--- + edges are now emitted by UnicodeDecomposer reading the UCD source
--- directly via BlobUcdPropertyAccessor (native blob) +
--- IIngestionPipeline.CreateBatch. Per Principle 1 — blob and substrate
--- are siblings derived from the same source; neither populates the other.
+-- Server-side populate_*_from_ext removed 2026-05-17 (Gate 1 Task #22).
+-- Reference vocabularies + codepoint atoms + edges are emitted by
+-- UnicodeDecomposer reading the UCD source directly via
+-- BlobUcdPropertyAccessor (native blob) + IIngestionPipeline.CreateBatch.
+-- Per Principle 1 — blob and substrate are siblings derived from the same
+-- source; neither populates the other. The ucd_materialization_counts and
+-- ucd_reference_vocabulary_counts functions are read-only validation
+-- probes re-introduced 2026-05-19 (named-function AP-2 compliance for the
+-- decomposer's §2 / §14 verification steps); they observe substrate state,
+-- they do not populate it.
+-- @include schema/functions/ucd_materialization_counts.sql
+-- @include schema/functions/ucd_reference_vocabulary_counts.sql
 -- @include schema/functions/unicode_edge_hash.sql
 -- substrate.recompose_content removed 2026-05-18 (Gate 1 reopened item #36) —
 -- see C# ContentRecomposer comment above.
@@ -501,6 +507,7 @@
 -- @include schema/functions/cross_model_divergence.sql
 -- @include schema/functions/codepoint_property_rows.sql
 -- @include schema/functions/break_property_code_map.sql
+-- @include schema/functions/break_property_full_map.sql
 -- @include schema/functions/query_entities.sql
 -- @include schema/functions/query_tensors_for_architecture.sql
 -- @include schema/functions/query_tensors_for_model_source.sql

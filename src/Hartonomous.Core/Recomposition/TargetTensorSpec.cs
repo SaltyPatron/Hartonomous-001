@@ -12,10 +12,10 @@ namespace Hartonomous.Core.Recomposition;
 /// <c>"model.layers.0.self_attn.q_proj.weight"</c>). Used as the key in the
 /// safetensors output's tensor map.</param>
 /// <param name="RoleCode">Tensor role code for synthesizer dispatch — string
-/// identifier from
-/// <c>Hartonomous.Decomposers.Safetensors.TensorRoleExtensions.ToCode()</c>
-/// (e.g. "attention_query", "ffn_down", "token_embedding"). String-keyed
-/// because Hartonomous.Core does not reference Hartonomous.Decomposers.</param>
+/// identifier derived from the <c>(PrimitiveKind, ArchetypeTuple, TupleSlot)</c>
+/// triple per docs/01-tensor-primitive-spec.md §I-§II (e.g.
+/// "attention_q", "ffn_down", "embedding_table"). String-keyed because
+/// Hartonomous.Core does not reference Hartonomous.Decomposers.</param>
 /// <param name="Dtype">Wire-format dtype: "F32", "F16", "BF16", "F64",
 /// "F8_E4M3", "F8_E5M2", "I8". Honest-abstention masking happens in f64;
 /// final pack to wire dtype occurs after synthesis returns.</param>

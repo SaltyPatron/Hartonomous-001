@@ -171,16 +171,8 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
     private async Task PopulateReferenceVocabulariesAsync(
         NpgsqlConnection connection, IProgressReporter reporter, CancellationToken ct)
     {
-        const string sql = @"
-SELECT
-    (SELECT count(*) FROM substrate.general_category) AS gc_rows,
-    (SELECT count(*) FROM substrate.script)           AS script_rows,
-    (SELECT count(*) FROM substrate.block)            AS block_rows,
-    (SELECT count(*) FROM substrate.bidi_class)       AS bidi_rows,
-    (SELECT count(*) FROM substrate.east_asian_width) AS eaw_rows,
-    (SELECT count(*) FROM substrate.break_property)   AS bp_rows
-";
-        await using NpgsqlCommand command = new(sql, connection);
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection, SubstrateFunctionNames.UcdReferenceVocabularyCounts);
         command.CommandTimeout = 0;
         await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
         if (!await rdr.ReadAsync(ct))
@@ -448,8 +440,10 @@ SELECT
         NpgsqlConnection connection, string tableName, CancellationToken ct)
     {
         Dictionary<int, string> map = new(256);
-        await using NpgsqlCommand command =
-            new($"SELECT id, code FROM {tableName}", connection);
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.ReferenceCodeMap,
+            new object?[] { tableName });
         command.CommandTimeout = 0;
         await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
         while (await rdr.ReadAsync(ct))
@@ -465,8 +459,9 @@ SELECT
         LoadBreakPropertyMapAsync(NpgsqlConnection connection, CancellationToken ct)
     {
         Dictionary<(string, int), (int, string)> map = new(128);
-        await using NpgsqlCommand command =
-            new("SELECT id, category, enum_id, code FROM substrate.break_property", connection);
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection,
+            SubstrateFunctionNames.BreakPropertyFullMap);
         command.CommandTimeout = 0;
         await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
         while (await rdr.ReadAsync(ct))
@@ -1064,35 +1059,18 @@ SELECT
     }
 
     // ── §14 Materialization validation ───────────────────────────────────
-    // Inline COUNT queries against substrate.* directly. The prior SQL
-    // function (substrate.ucd_materialization_counts) was deleted with the
-    // populate_*_from_ext catalog (Gate 1 Task #22). codepoint_property
-    // population is deferred (the denormalized cache is no longer populated;
-    // properties live in the native blob); the codepoint-property check is
-    // therefore removed from the validation set.
+    // The prior populate_*_from_ext catalog removal (Gate 1 Task #22) also
+    // dropped substrate.ucd_materialization_counts; the function has been
+    // restored as a read-only validation probe to honor AP-2 (no inline raw
+    // SQL in C#). codepoint_property population is deferred (the denormalized
+    // cache is no longer populated; properties live in the native blob); the
+    // codepoint-property check is therefore omitted from the validation set.
 
     private async Task ValidateMaterializationAsync(
         NpgsqlConnection connection, IProgressReporter reporter, CancellationToken ct)
     {
-        const string sql = @"
-SELECT
-    (SELECT count(*) FROM substrate.entity_classification ec
-        JOIN substrate.entity_type et ON et.id = ec.entity_type_id
-        JOIN substrate.provenance p ON p.id = ec.provenance_id
-        WHERE et.code = 'codepoint' AND p.code = 'unicode_consortium')              AS codepoint_classifications,
-    (SELECT count(*) FROM substrate.edge e
-        JOIN substrate.edge_type et ON et.id = e.edge_type_id
-        WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')) AS simple_case_edges,
-    (SELECT count(*) FROM substrate.edge e
-        JOIN substrate.edge_type et ON et.id = e.edge_type_id
-        WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')
-              AND e.geom IS NULL)                                                    AS simple_case_edges_without_geom,
-    (SELECT count(*) FROM substrate.significance_context)                            AS arenas,
-    (SELECT count(*) FROM substrate.edge_significance es
-        JOIN substrate.edge_type et ON et.id = es.edge_type_id
-        WHERE et.code IN ('maps_to_lowercase','maps_to_uppercase','maps_to_titlecase','case_folds_to')) AS simple_case_edge_significance
-";
-        await using NpgsqlCommand command = new(sql, connection);
+        await using NpgsqlCommand command = NpgsqlSubstrateCommand.CreateFunction(
+            connection, SubstrateFunctionNames.UcdMaterializationCounts);
         command.CommandTimeout = 0;
         await using NpgsqlDataReader rdr = await command.ExecuteReaderAsync(ct);
         if (!await rdr.ReadAsync(ct))
