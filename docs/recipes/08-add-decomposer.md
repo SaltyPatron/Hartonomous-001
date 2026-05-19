@@ -284,7 +284,7 @@ public sealed class VideoDecomposer : Decomposer<VideoSource>
                 video.AudioBytes, ModalityCode.Audio, ProvenanceCode.{Pascal}, ct);
 
             // Submit the video composition. Pipeline composes a video entity
-            // referencing the frame hashes and the audio hash via sequence rows.
+            // whose GeometryZM trajectory references the frame hashes and audio hash.
             var videoHash = await _pipeline.SubmitCompositionAsync(
                 kind: CompositionKind.Video,
                 componentHashes: frameHashes.Append(audioHash).ToArray(),

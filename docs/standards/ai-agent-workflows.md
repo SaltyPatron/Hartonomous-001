@@ -61,9 +61,13 @@ If those questions cannot be answered yet, the next step is research, not code.
 
 ## Mechanical Drift Guard
 
-Run `pwsh -File scripts/verify/AgentScaffolding.ps1` after changing `.github/`, `CLAUDE.md`, `docs/standards/`, or high-level script documentation. The verifier scans AI-facing scaffolding for retired migration-era phrases such as old entity counts, the old sense junction, the old unified significance table, active migration paths, and old `substrate.entity` shapes.
+After changing `.github/`, `.claude/`, `CLAUDE.md`, `docs/standards/`, or high-level script documentation, run Linux-native drift scans for retired migration-era phrases: old entity counts, old attestation taxonomies, active migration paths, old `substrate.entity` shapes, orchestration-boundary backfill, and sequence-table guidance. The existing `scripts/verify/AgentScaffolding.ps1` is a historical verifier and needs a Linux wrapper before it is the default on this workstation.
 
-For local Claude scaffolding, run `pwsh -File scripts/verify/AgentScaffolding.ps1 -IncludeIgnoredClaude`. The `.claude/` tree is ignored by git in this workspace, so CI checks the tracked surface and the explicit local flag checks the ignored companion surface.
+Minimum local check until that wrapper exists:
+
+```bash
+grep -RInE '[2]3 entity|[1]20 edge|[2]7 attestation|[1]3 physicality|[1]0 provenances|substrate[.]sequence|end-of-[p]hase|[p]hase end|[p]hase-end' .github .claude docs/standards --include='*.md'
+```
 
 ## Mandatory Semantic Regression Pack
 

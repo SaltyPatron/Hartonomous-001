@@ -17,7 +17,7 @@ Foundation truths (load these memories at session start, not just on reference):
 - [[project-pre-gen-not-substrate-ingestion]] — build-time deterministic-math perf cache vs runtime substrate-content ingestion (two layers; XML-flat canonical).
 - [[project-broad-unicode-scope]] — 37 GB / 23K files / 771 dirs across UCD + L2 + IRG + WG2 + Charts + IVD + reports + CLDR.
 - [[feedback-no-modality-specific-attestation-types]] — 3 generic rows; (provenance × arena) discriminates.
-- [[feedback-no-phase-boundaries-no-backfill]] — drain completion triggers post-passes, not phase ends.
+- [[feedback-no-phase-boundaries-no-backfill]] — drain completion triggers post-passes independent of orchestration phases.
 - [[feedback-unified-glicko-surface]] — POS / sense / language / morph / model_attention compete on substrate.edge_significance per arena.
 - [[feedback-no-bit-perfect-export]] — substrate is the consensus surface, not the archive; no round-trip obligation.
 - [[reference-session-state-2026-05-15]] — end-of-session snapshot with concrete next moves.

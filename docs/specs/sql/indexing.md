@@ -1,6 +1,8 @@
 # Indexing Strategy
 
-**Status**: ✅ Complete
+**Status**: STALE - superseded by current `sql/schema/indexes/`
+
+Do not implement from this file as written. It still references `substrate.entity(entity_type_id)` and `substrate.sequence` indexes. Current index definitions live as one object per file under `sql/schema/indexes/`; composition ordering is encoded in GeometryZM physicality vertices and reverse-resolved through entity hash-prefix indexes.
 
 Every CREATE INDEX statement in the system. Bulk-load strategy. Partial indexes. GiST configuration.
 

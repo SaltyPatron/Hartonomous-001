@@ -12,16 +12,16 @@ handoffs:
 
 Start with a context pass before proposing a plan. For schema or counts, read canonical `sql/schema/bootstrap.sql` and its included files under `sql/schema/`; do not reason from archived migrations or cached counts. For architecture, consult `docs/architecture.md`, `docs/specs/sql/infrastructure-vs-substrate.md`, and `docs/specs/engine/inference.md`. Return the invariants, impacted files, verification gate, and unknowns before narrowing to implementation steps.
 
-1. `substrate.entity` — atoms and compositions only. Single column: `hash substrate.hash_value PRIMARY KEY`. No surrogate `id`, no `entity_type_id`, no type partitioning.
+1. `substrate.entity` — atoms and compositions only. Semantic identity is `hash substrate.hash_value`; the physical PostgreSQL PK includes `partition_bucket` only for hash-bucket partitioning. No surrogate `id`, no `entity_type_id`, no type partitioning.
 2. `substrate.entity_classification` — structural classification metadata: `(entity_hash, entity_type_id, provenance_id)`. Same content can be both `word_form` and `lemma` without duplicating the entity.
 3. `substrate.edge` + `substrate.edge_member` — separate n-ary typed relations. Edge PK `(edge_type_id, hash)`. Members carry `edge_role_id`, `role_position`, and `entity_hash`.
 4. `substrate.physicality` — universal `geometry(GeometryZM)` table for all modalities. Use substrate 4D/S3 functions, not raw 2D PostGIS distance or centroid functions.
-5. Reference tables + junction tables — classification vocabularies and evidence infrastructure. POS, sense, language, deprel, tensor role, etc. are not entities.
+5. Reference tables + junction tables — bounded vocabulary and analytics-cache infrastructure. Classification codes can also be content-hashed substrate entities when they are targets of typed attestation edges; authoritative consensus lives on `edge_significance`, not in entity row columns or junction-only state.
 6. `substrate.entity_significance` and `substrate.edge_significance` — Glicko-2 ratings per open-vocabulary arena. New arenas must prime against all relevant existing content.
 
 ## Phase enum
 
-`CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `ModelDecomp` → `Wiktionary` → `Tatoeba` → `TextDecomp` → `SignificanceField` → `InferenceEngine` → `Validation`
+`CoreAlgebra` -> `UcdUca` -> `Iso639` -> `WordNetOmw` -> `UniversalDeps` -> `Wiktionary` -> `Tatoeba` -> `TextDecomp` -> `ModelDecomp` -> `SignificanceField` -> `InferenceEngine` -> `Validation`
 
 Defined in `src/Hartonomous.Core/Orchestration/Phase.cs`. `SequentialPhaseRunner` in `src/Hartonomous.Engine/Orchestration/`.
 
@@ -36,7 +36,7 @@ Do not plan from a cached decomposer contract table. Derive exact surfaces from 
 `ComputeMerkleHash(byte[][])` → concat child hashes → `Merkle.Hash()`. Composition identity.
 `ComputeEdgeHash(int, byte[][])` → `[edgeTypeId | participant hashes]` → `ComputeHash()`. Edge identity.
 
-Content only. Position, ordinal, filename, tensor name → `sequence`, edges, `provenance`.
+Content only. Position, ordinal, filename, and tensor name live in GeometryZM composition trajectories, typed edges, model-source tables, or provenance.
 
 ## Planning stance
 

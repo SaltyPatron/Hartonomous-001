@@ -10,7 +10,7 @@ Recomposers do NOT generate. They reconstruct. No model inference, no learned co
 
 - Output type `T` (e.g., `string` for text, `byte[]` for image, `Stream` for safetensors).
 - Decomposer for the same modality exists and produces a substrate representation that can round-trip.
-- All entity types, edge types, sequence rows, and physicalities needed are populated.
+- All entity types, edge types, composition physicalities, and significance rows needed are populated. Ordered composition children come from typed constituent edges and/or the mantissa-packed GeometryZM trajectory.
 
 ---
 
@@ -26,30 +26,28 @@ namespace Hartonomous.Recomposers;
 public sealed class {Pascal}Recomposer : BaseRecomposer<{TOutputType}>, I{Pascal}Recomposer
 {
     private readonly IEntityReader _entityReader;
-    private readonly ISequenceReader _sequenceReader;
     private readonly ITraversal _traversal;
     private readonly ILogger<{Pascal}Recomposer> _logger;
 
     public {Pascal}Recomposer(
         IEntityReader entityReader,
-        ISequenceReader sequenceReader,
         ITraversal traversal,
         ILogger<{Pascal}Recomposer> logger)
     {
         _entityReader = entityReader;
-        _sequenceReader = sequenceReader;
         _traversal = traversal;
         _logger = logger;
     }
 
     public override async Task<{TOutputType}> RecomposeAsync(
-        long rootEntityId, RecompositionOptions options, CancellationToken ct)
+        EntityHandle root, RecompositionOptions options, CancellationToken ct)
     {
         // 1. Read root entity metadata.
-        var root = await _entityReader.GetByIdAsync(rootEntityId, ct);
+        var rootInfo = await _entityReader.GetEntityInfoAsync([root], ct);
 
-        // 2. Walk the composition DAG via substrate.sequence rows.
-        var children = await _sequenceReader.GetOrderedChildrenAsync(rootEntityId, ct);
+        // 2. Walk the composition DAG via typed constituent edges and/or
+        // mantissa-packed GeometryZM trajectory order.
+        var children = await _entityReader.GetCompositionChildrenAsync(root, ct);
 
         // 3. Recursively reconstruct each child.
         var parts = new List<{TPartType}>(children.Count);
@@ -60,10 +58,10 @@ public sealed class {Pascal}Recomposer : BaseRecomposer<{TOutputType}>, I{Pascal
         }
 
         // 4. Reassemble parts into the output. Deterministic — same substrate state, same output.
-        return AssembleOutput(parts, root, options);
+        return AssembleOutput(parts, rootInfo[root], options);
     }
 
-    private async Task<{TPartType}> RecomposeChildAsync(SequenceChild child, RecompositionOptions options, CancellationToken ct)
+    private async Task<{TPartType}> RecomposeChildAsync((EntityHandle Child, int Position) child, RecompositionOptions options, CancellationToken ct)
     {
         // ... per-modality reconstruction
     }
@@ -84,10 +82,10 @@ namespace Hartonomous.Core.Recomposition;
 
 public interface I{Pascal}Recomposer
 {
-    Task<{TOutputType}> RecomposeAsync(long rootEntityId, RecompositionOptions options, CancellationToken ct);
+    Task<{TOutputType}> RecomposeAsync(EntityHandle root, RecompositionOptions options, CancellationToken ct);
 
     /// Optional streaming surface for large outputs.
-    IAsyncEnumerable<{TOutputType}> RecomposeStreamAsync(long rootEntityId, RecompositionOptions options, CancellationToken ct);
+    IAsyncEnumerable<{TOutputType}> RecomposeStreamAsync(EntityHandle root, RecompositionOptions options, CancellationToken ct);
 }
 ```
 
@@ -120,7 +118,7 @@ public class {Pascal}RecomposerTests
     [Fact]
     public async Task RecomposeAsync_KnownRoot_ProducesExpectedOutput()
     {
-        // arrange: hand-written IEntityReader / ISequenceReader returning a known DAG
+        // arrange: hand-written IEntityReader returning a known composition walk
         // act: recompose
         // assert: byte-equal expected output
     }

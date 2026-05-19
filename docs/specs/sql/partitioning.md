@@ -1,6 +1,8 @@
 # Partitioning Strategy
 
-**Status**: ✅ Complete
+**Status**: STALE - superseded by current `sql/schema/` partitioning
+
+Do not implement from this file as written. It describes partitioning `substrate.entity` by `entity_type_id`, but the current schema uses hash-bucket partitioning: semantic identity is the BLAKE3 hash, and `partition_bucket` is a deterministic routing key required by PostgreSQL partitioned-table uniqueness. Current source of truth is `sql/schema/tables/core/entity.sql` and its `entity_p0` ... `entity_p7` partitions.
 
 PostgreSQL declarative partitioning for high-volume tables. LIST partitioning by type columns. Partition pruning aligns with every common query pattern.
 

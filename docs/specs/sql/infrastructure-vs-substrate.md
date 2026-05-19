@@ -1,6 +1,8 @@
 # Infrastructure vs Substrate — The Two-Layer Discipline
 
-**Status**: ✅ Complete
+**Status**: PARTIAL - layer discipline is current; classification/sequence framing is stale
+
+Use this document for the infrastructure-vs-substrate distinction, but do not cite sections that treat classification consensus as only junction-table infrastructure or mention `substrate.sequence`. Current AP-8 framing: classification vocabulary codes can be content-hashed substrate entities reached by typed attestation edges, with authoritative consensus on `substrate.edge_significance`; junction tables are analytics caches. Current composition ordering lives in GeometryZM physicality vertex streams, not a sequence table.
 
 Hartonomous keeps two fundamentally different kinds of data strictly separated: **app-layer infrastructure** (reference vocabularies and junction tables — cached judgment, rebuildable, microsecond-lookup surfaces) and **substrate content** (entities, edges, physicality, significance, sequence — ingested digital content, content-addressed, deterministic, irreducible). Collapsing them destroys both layers' guarantees. This document specifies the line, shows what lives on each side, and walks through concrete probe queries that use both layers together.
 

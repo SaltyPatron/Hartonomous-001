@@ -38,7 +38,7 @@ Review from current repo truth, not old migration memory. For schema claims, ins
 
 ### Whole-surface review
 - If the fix touched a stale schema assumption, review code, tests, docs, prompts, and agent instructions for the same assumption.
-- If a run failed in one record kind, check producer emission, channel drain, temp-table COPY, INSERT-SELECT target, FK/order assumptions, and end-of-phase post-passes before calling it fixed.
+- If a run failed in one record kind, check producer emission, channel drain, temp-table COPY, INSERT-SELECT target, FK/order assumptions, and `DrainPendingAsync` post-passes before calling it fixed.
 
 ### C# conventions
 - One type per file. `I`+PascalCase, `Base`+PascalCase. `async Task` + `CancellationToken` on I/O.

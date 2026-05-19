@@ -61,20 +61,18 @@ Why the order of seed work follows from this: Unicode + WordNet/OMW/Wiktionary/U
 
 **App-layer infrastructure** (bounded cardinality, microsecond JOIN, rebuildable from seeds):
 - Reference vocabularies: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `provenance`, `significance_context`, `attestation_type`, `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `semantic_relation_type`, `general_category`, `script`, `block`, `break_property`, `language`, `tensor_role`, `architecture_class`.
-- Junctions: `entity_classification`, `entity_pos` (Glicko-2), `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel` (Glicko-2), `provenance_edge_authority`, `provenance_modality`.
+- Junctions: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `cp_*` property caches, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`, `provenance_modality`.
 
-Pushing classification (POS, sense, language, structural-kind) into `substrate.entity` is the most common drift. It belongs in the reference + junction layer. Macrolanguage / supersession / has_alternate_name are also NOT substrate.edge content — they're metadata between language CODES (rows in `substrate.language` reference table) and live in reference-layer junctions.
+Classification consensus is not an `entity` row attribute. Reference vocabulary codes have bounded lookup rows and, where they are attestation targets, content-hashed entity rows reached by typed edges (`has_classification`, transitional `has_pos`, `has_language`, `has_morph_feature`, `has_deprel_pattern`, etc.). The authoritative cross-source consensus is the typed edge plus `substrate.edge_significance` per provenance and arena. Junction tables are analytics caches for lookup locality, not the truth surface.
 
-## Glicko-2 on four surfaces — what each rates
+## Glicko-2 on substrate surfaces
 
 | Surface | Rates |
 |---|---|
 | `substrate.entity_significance(context_type_id, entity_hash)` | trustworthiness of THIS CONTENT in this arena |
-| `substrate.edge_significance(context_type_id, edge_type_id, edge_hash)` | strength of THIS ATTESTED RELATION in this arena |
-| `entity_pos(entity_hash, pos_id).mu` | confidence that this entity bears this POS classification |
-| `pattern_deprel(entity_hash, deprel_id).mu` | strength of this dependency pattern ↔ deprel binding |
+| `substrate.edge_significance(context_type_id, edge_type_id, edge_hash)` | strength of THIS ATTESTED RELATION in this arena, including classification claims |
 
-Substrate significance rates *what is there*. Junction Glicko rates *what we say about what is there*. Do not merge relation trust, entity trust, and classification confidence.
+The older four-surface framing is deprecated by AP-8. Classification evidence competes on the unified edge-significance surface; junction scores, where present, are denormalized analytics caches.
 
 ## Arenas — open vocabulary, no hardcoded list
 
@@ -86,13 +84,13 @@ Every text-bearing content from any seed (Wiktionary citations, WordNet glosses,
 
 ## Per-role units of Track 2 tensors = attestation EDGES, not phantom entities
 
-Every per-role unit of every Track 2 transformation tensor (each FFN row, each attention head's QK pattern, each MoE expert neuron, each LoRA rank component, each layer norm scale) **manifests as a typed attestation EDGE between existing content entities** — typically two `word_form` tokens the unit binds, resolved through the model's tokenizer to existing content. The `edge_type_id` encodes the relationship; the `attestation_type` encodes the evidence kind; the edge's `LINESTRINGZM` trajectory is the unit's spectral fingerprint; the Glicko mu derives from the tensor math. Sign is preserved via Glicko `score`.
+Every per-role unit of every Track 2 transformation tensor (each FFN row, each attention head's QK pattern, each MoE expert neuron, each LoRA rank component, each layer norm scale) **manifests as a typed attestation EDGE between existing content entities** — typically two `word_form` tokens the unit binds, resolved through the model's tokenizer to existing content. The `edge_type_id` encodes the relationship; provenance + arena + rating attribution encode source/mechanism/domain; `attestation_type` is only the sign-bearing discriminator (`positive_evidence`, `negative_evidence`, `neutral_evidence`) while the column is on the deprecation path. The edge's `LINESTRINGZM` trajectory is the unit's spectral fingerprint; the Glicko mu derives from the tensor math. Sign is preserved via Glicko `score`.
 
-Cross-model corroboration fires separate `attestation_type`-distinguished rating events on the same edge identity. Phantom per-role-unit entity types (`attention_head`, `ffn_neuron`, `embedding_position`, `attention_pattern`, `moe_expert_neuron`, `lora_component`, etc.) were fully removed from `sql/schema/seed/entity_type.sql` by the 2026-05-08 architectural correction (23 real content types remain; no phantom rows). The phantom decomposer passes have been replaced by layer-type tuple/primitive passes. Working template: `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`.
+Cross-model corroboration fires separate rating events on the same edge identity. Phantom per-role-unit entity types (`attention_head`, `ffn_neuron`, `embedding_position`, `attention_pattern`, `moe_expert_neuron`, `lora_component`, etc.) are absent from `sql/schema/seed/entity_type.sql`; current seed count is 34 including reference-vocabulary and UCD-property entity targets. The phantom decomposer passes have been replaced by layer-type tuple/primitive passes. Working template: `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs`.
 
 ## Ingestion vs inference (Law #8)
 
-- **Ingestion** (`src/Hartonomous.Decomposers/`) — deterministic; records ALL candidate senses/structures/evidence without disambiguation. Same input + same decomposer version = byte-identical state. Decomposers are pure producers; the single `StreamingIngestionPipeline` owns channels, COPY-into-temp-inflight-then-INSERT-SELECT drain, inline edge trajectory build (with end-of-phase backfill fallback), and end-of-phase significance priming across whatever arenas exist.
+- **Ingestion** (`src/Hartonomous.Decomposers/`) — deterministic; records ALL candidate senses/structures/evidence without disambiguation. Same input + same decomposer version = byte-identical state. Decomposers are pure producers; the single `StreamingIngestionPipeline` owns channels and COPY-into-temp-inflight-then-INSERT-SELECT drains. Edge trajectory population and significance priming are drain-completion work inside `DrainPendingAsync`, independent of orchestration phases.
 - **Inference** (`src/Hartonomous.Engine/`) — traverses existing edges, reweights via Glicko-2. May create session-scoped output composition entities (the answer itself, with `user_session` provenance, plus the explanation trace as substrate content). Does NOT create new structural knowledge edges. Glicko-2 updates from outcomes are not "new edges."
 
 Cross-references:

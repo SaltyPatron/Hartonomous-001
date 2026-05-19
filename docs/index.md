@@ -1,6 +1,10 @@
 # Hartonomous Documentation Index
 
-Master table of contents and completion tracker. Every document in the project is listed here. If it's not in this index, it doesn't exist.
+Master documentation entrypoint.
+
+This file is currently a curated legacy index, not a complete inventory and not a completion tracker. The repo has 218 Markdown files under `docs/` as of 2026-05-19, while the legacy sections below still cover the older 85-doc surface. Use [audit/AUDIT-STATUS.md](audit/AUDIT-STATUS.md) as the durable cleanup ledger and recompute counts from source before citing schema or documentation totals.
+
+Canonical architectural precedence for cleanup: [00-substrate-spec.md](00-substrate-spec.md), [01-tensor-primitive-spec.md](01-tensor-primitive-spec.md), then source files under `sql/schema/` and `src/`. Older overview docs, recipes, rules, prompts, and memories update to match those sources where they conflict.
 
 ## Status Key
 
@@ -201,6 +205,20 @@ Each recipe answers ONE assembly question with numbered steps, exact file paths,
 
 ## Completion Summary
 
+This legacy completion table is retained only to show the pre-audit documentation shape. It is not a valid completion claim for the current repository.
+
+Current inventory verified 2026-05-19:
+
+| Tree | Markdown files |
+|---|---:|
+| `docs/` | 218 |
+| root | 3 |
+| `.github/` | 11 |
+| `.claude/` | 17 |
+| `scripts/` | 6 |
+
+Legacy 85-doc tracker below remains stale until each row is re-read and reconciled.
+
 | Category | Total Docs | Complete | Planned |
 |----------|-----------|----------|---------|
 | Foundation | 8 | 8 | 0 |
@@ -215,4 +233,4 @@ Each recipe answers ONE assembly question with numbered steps, exact file paths,
 | Recipes — How-To Guides | 20 | 20 | 0 |
 | **Total** | **85** | **81** | **4** |
 
-81 of 85 documentation artifacts are complete. 4 are planned (🔜).
+Legacy claim retired: do not cite "81 of 85 complete" as current repository status.

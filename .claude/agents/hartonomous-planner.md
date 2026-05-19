@@ -43,15 +43,15 @@ Atoms are unicode codepoints (and other modality-atoms) with metadata. Entity-ti
 
 ## Substrate pillars
 
-1. `substrate.entity` — atoms and compositions. Single-column PK `hash`; no `id`, no `entity_type_id`, no type partitioning.
+1. `substrate.entity` — atoms and compositions. Semantic identity is `hash`; the physical PostgreSQL PK includes `partition_bucket` only for hash-bucket partitioning. No `id`, no `entity_type_id`, no type partitioning.
 2. `substrate.entity_classification` — structural type metadata `(entity_hash, entity_type_id, provenance_id)`.
 3. `substrate.edge` + `substrate.edge_member` — n-ary typed relations with role-ordered participants. Edge PK `(edge_type_id, hash)`. Trajectory geometry in `geom geometry(GeometryZM)`.
 4. `substrate.physicality` — universal `geometry(GeometryZM)` for all modalities. Use substrate 4D/S3 operators; raw 2D PostGIS distance/centroid/Fréchet/Hausdorff calls are forbidden on physicality.
-5. Reference + junction tables — open-vocabulary classification infrastructure outside the substrate. Glicko-2 junction confidence currently appears on `entity_pos` and `pattern_deprel`; substrate trust is split into `entity_significance` and `edge_significance`.
+5. Reference + junction tables — bounded lookup and analytics-cache infrastructure. Classification codes can also be content-hashed substrate entities when they are targets of typed attestation edges. Authoritative classification consensus lives on `edge_significance`; junction tables are caches.
 
 ## Phase enum order (`src/Hartonomous.Core/Orchestration/Phase.cs`)
 
-`CoreAlgebra` → `UcdUca` → `Iso639` → `WordNetOmw` → `UniversalDeps` → `ModelDecomp` → `Wiktionary` → `Tatoeba` → `TextDecomp` → `SignificanceField` → `InferenceEngine` → `Validation`
+`CoreAlgebra` -> `UcdUca` -> `Iso639` -> `WordNetOmw` -> `UniversalDeps` -> `Wiktionary` -> `Tatoeba` -> `TextDecomp` -> `ModelDecomp` -> `SignificanceField` -> `InferenceEngine` -> `Validation`
 
 The seed order constructs inherited agreement: by the time the practitioner ingests their first email, the substrate already knows every Unicode codepoint decision, every ISO 639 language identity, every Princeton WordNet sense, every cross-lingual OMW alignment, every UD dependency pattern, every ingested model's learned geometry projected into the shared 4D frame, every Wiktionary etymology, every Tatoeba attested sentence with audio. The practitioner's content aligns against this pre-agreed universe.
 
@@ -66,20 +66,21 @@ ComputeEdgeHash(int, byte[][])  → [edgeTypeId | participant hashes] → Comput
 
 Content only enters the hash. Position, ordinal, filename, tensor name, source offset live in the composition `LINESTRINGZM` physicality vertex Y mantissa (`bb_pack_ordinal_rle`), on typed edges (`has_source`, `in_model`, `edge_member.role_position`), on model-source tables, or on provenance. There is no `substrate.sequence` table.
 
-## Glicko-2 surfaces (rate four different things)
+## Glicko-2 surfaces
 
 | Surface | Rates |
 |---|---|
 | `substrate.entity_significance(context_type_id, entity_hash)` | trustworthiness of THIS CONTENT in this arena |
 | `substrate.edge_significance(context_type_id, edge_type_id, edge_hash)` | strength of THIS ATTESTED RELATION in this arena |
-| `entity_pos(entity_hash, pos_id).mu` | confidence that this entity bears this POS classification |
-| `pattern_deprel(entity_hash, deprel_id).mu` | strength of this dependency pattern ↔ deprel binding |
+| classification edges in `substrate.edge_significance` | confidence that this entity bears a POS / language / morphology / deprel / UCD-property classification in this arena |
+
+Junction-table scores, where still present, are denormalized analytics caches; they are not the authoritative cross-source consensus surface.
 
 Provenance trust priors are seeded in `sql/schema/seed/provenance.sql`; compute exact values from that file before citing them.
 
 ## Arenas are open-vocabulary
 
-`substrate.significance_context` ships 10 starter codes from `sql/schema/seed/significance_context.sql`. The architecture allows arbitrary additions — `pragmatic_register`, `English-medical-pharmacology`, `Qwen3-vs-Llama3-attention`. Plans that hardcode the 10 codes are wrong.
+`substrate.significance_context` ships current seed codes from `sql/schema/seed/significance_context.sql` and remains open vocabulary. The verified 2026-05-19 seed count is 19, but plans must not hardcode that count; practitioners can add arenas such as `pragmatic_register`, `English-medical-pharmacology`, or model-comparison arenas.
 
 ## Inference vs ingestion
 

@@ -138,6 +138,28 @@ public static class EdgeArenaRouter
     }
 
     /// <summary>
+    /// The source_authority + corroboration_strength baseline that EVERY
+    /// edge fires. Domain arenas are added on top per edge_type via the
+    /// route table. Declared before the routing dictionaries because their
+    /// field initializers call <see cref="Universal"/> which reads this
+    /// array — C# field-init order is declaration order, and a later
+    /// declaration would NRE inside cctor.
+    /// </summary>
+    private static readonly string[] DefaultUniversalArenas =
+    {
+        "source_authority",
+        "corroboration_strength",
+    };
+
+    private static string[] Universal(params string[] domain)
+    {
+        string[] result = new string[DefaultUniversalArenas.Length + domain.Length];
+        Array.Copy(DefaultUniversalArenas, result, DefaultUniversalArenas.Length);
+        Array.Copy(domain, 0, result, DefaultUniversalArenas.Length, domain.Length);
+        return result;
+    }
+
+    /// <summary>
     /// Routing matrix for generic-edge (edge_type × target_entity_type) →
     /// arenas. The collapsed generic-edge surface (has_classification /
     /// has_relation / has_pattern_attestation / has_attribute) keys arena
@@ -179,25 +201,6 @@ public static class EdgeArenaRouter
     /// Enumerate every edge_type code that has an explicit routing entry.
     /// </summary>
     public static IEnumerable<string> RoutedEdgeTypeCodes => _edgeArenaMap.Keys;
-
-    /// <summary>
-    /// The source_authority + corroboration_strength baseline that EVERY
-    /// edge fires. Domain arenas are added on top per edge_type via the
-    /// route table.
-    /// </summary>
-    private static readonly string[] DefaultUniversalArenas =
-    {
-        "source_authority",
-        "corroboration_strength",
-    };
-
-    private static string[] Universal(params string[] domain)
-    {
-        string[] result = new string[DefaultUniversalArenas.Length + domain.Length];
-        Array.Copy(DefaultUniversalArenas, result, DefaultUniversalArenas.Length);
-        Array.Copy(domain, 0, result, DefaultUniversalArenas.Length, domain.Length);
-        return result;
-    }
 
     private static readonly Dictionary<string, string[]> _edgeArenaMap = new(StringComparer.Ordinal)
     {

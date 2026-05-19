@@ -8,9 +8,46 @@ This audit's invention scope is NOT fixed. It expands as new surface is discover
 
 Current understanding: ~5% of invention surface absorbed. Scope inventory is far from complete.
 
+## Compaction-resistant continuation point
+
+This file is the durable working ledger for the cleanup. Chat memory, transcript summaries, and agent memories are not authoritative. After any conversation compaction or session restart, resume from this file plus `AUDIT-FRAME.md`, then verify claims against the source files named here before editing downstream docs.
+
+Current operational model of the invention, as loaded from `docs/00-substrate-spec.md` and `docs/01-tensor-primitive-spec.md`: Hartonomous is AI as content-addressed substrate computation. BLAKE3 identity anchors atoms and compositions; typed n-ary edges carry attestations between content entities; Glicko-2 over open arenas drives A* traversal instead of transformer matmul; inference traverses and reweights existing edges; model export is synthesis from accumulated substrate consensus; firefly physicality is a side-channel, not the inference primitive.
+
+## Current source-truth snapshot
+
+Verified 2026-05-19 from `sql/schema/bootstrap.sql` include order and files under `sql/schema/`. Do not replace these numbers from memory; recompute before changing them.
+
+| Fact | Current value | Source |
+|---|---:|---|
+| Phase enum values | 12 | `src/Hartonomous.Core/Orchestration/Phase.cs` |
+| Entity type seed rows | 34 | `sql/schema/seed/entity_type.sql` |
+| Edge type seed rows | 134 | `sql/schema/seed/edge_type.sql` |
+| Attestation type seed rows | 3 | `sql/schema/seed/attestation_type.sql` |
+| Physicality type seed rows | 5 | `sql/schema/seed/physicality_type.sql` plus included `physicality_type_trajectories.sql` |
+| Edge role seed rows | 7 | `sql/schema/seed/edge_role.sql` |
+| Significance context seed rows | 19 | `sql/schema/seed/significance_context.sql` |
+| Provenance seed rows | 63 | `sql/schema/seed/provenance.sql`, first `INSERT INTO substrate.provenance` block only |
+| Junction table files | 19 | `find sql/schema/tables/junctions -maxdepth 1 -type f -name '*.sql'` |
+| Schema `substrate.sequence` refs | 0 | `grep -RInE 'substrate\.sequence|CREATE TABLE[[:space:]].*sequence|tables/core/sequence|sequence\.sql' sql/schema` |
+
+Physicality note: the base physicality seed has three primary roles (`entity`, `firefly`, `content`); `sql/schema/bootstrap.sql` also includes `physicality_type_trajectories.sql`, adding `entity_shape` and `ingestion_trajectory`. The current total is therefore 5, not 3 and not the older 13-row modality-specific list.
+
+High-priority stale signatures found 2026-05-19: `23 entity types`, `120 edge types`, `27 attestation types`, `13 physicality types`, `10 provenances`, `11 junction table files`, `substrate.sequence`, `embedding_firefly`, and phase-boundary / end-of-phase post-pass language. These are repair targets unless they appear inside an anti-pattern description or explicit historical note.
+
 ## Inventory
 
-214 doc artifacts. Counts computed by `find` on 2026-05-19.
+Markdown artifacts. Counts computed by `find` on 2026-05-19.
+
+| Tree | Count |
+|---|---:|
+| `docs/**/*.md` | 218 |
+| root `*.md` | 3 |
+| `.github/**/*.md` | 11 |
+| `.claude/**/*.md` | 17 |
+| `scripts/**/*.md` | 6 |
+
+`docs/**/*.md` breakdown:
 
 | Tree | Count |
 |---|---|
@@ -22,23 +59,13 @@ Current understanding: ~5% of invention surface absorbed. Scope inventory is far
 | `docs/50-reference/` | 2 |
 | `docs/60-status/` | 3 |
 | `docs/90-appendix/` | 4 |
-| `docs/audit/` | 1 |
+| `docs/audit/` | 35 |
 | `docs/recipes/` | 23 |
 | `docs/reference/` | 5 |
-| `docs/specs/csharp/` | 11 |
-| `docs/specs/decomposers/` | 11 |
-| `docs/specs/engine/` | 7 |
-| `docs/specs/modalities/` | 4 |
-| `docs/specs/native/` | 7 |
-| `docs/specs/operations/` | 5 |
-| `docs/specs/recomposers/` | 4 |
-| `docs/specs/sql/` | 12 |
-| `docs/specs/` (top) | 2 |
+| `docs/specs/` | 63 |
 | `docs/standards/` | 10 |
-| `docs/` (top) | 9 |
-| `.claude/` | 17 |
-| `memory/` | 27 |
-| **Total** | **214** |
+| `docs/` (top) | 10 |
+| **Total under `docs/`** | **218** |
 
 ## Per-doc state
 
@@ -92,3 +119,4 @@ Per-claim verification against source pending. Not started.
 | 2026-05-19 (batch 2 — modularization complete) | 2026-05-19 | ~30 | 0 | 0 | 0 | All 28 per-area frame files + PENDING.md written. Index AUDIT-FRAME.md points at all. Phase B (reading docs) continues — substantial backlog in PENDING.md still to cover. |
 | 2026-05-19 (batch 3 — reading resumed after meta-corrections) | 2026-05-19 | ~33 | 0 | 0 | 0 | Drift pattern corrections from user across mid-conversation: (1) pre-gen vs substrate-ingest stale memory transcription was wrong; (2) pattern-matched to tree-sitter for UCD pre-gen which doesn't fit; (3) reactive doc generation toggling modes instead of holding invention as coherent whole. frame/28-30 written, frame/30 flagged as suspect (tree-sitter recommendation for UCD XML codegen is unfounded). Resumed reading: docs/specs/decomposers/ucd-uca.md absorbed. docs/architecture.md read (lines 1-688; 13 substrate laws + tree-sitter as universal parsing layer + cost model + phase map + Law 5 export NOT applicable to seed sources). Both have details DEPRECATED by 2026-05-08 correction + rule 15 + rule 25. |
 | 2026-05-19 (batch 4 — continuing reading) | 2026-05-19 | ~38 | 0 | 0 | 0 | Absorbed: docs/specs/sql/infrastructure-vs-substrate.md (the substrate vs infrastructure two-layer discipline; substrate.significance rates content trust, junction Glicko rates classification confidence; cheap-gate+deep-read query composition; "rake the rakes" / "dog the door" / "scurvy dog" probe case studies showing both layers in use; 5 anti-patterns specific to layer split). docs/specs/native/geometry4d-composition.md (GEOMETRY4D type hierarchy with point4d / linestring4d / multilinestring4d subtypes + entity composition geometry + Merkle DAG memoization + radial tiering with tier_hint = 1 - ‖centroid‖₄d substrate-native + Frege compositionality + 3-level idiomaticity + 7-member geometric anomaly detector family + hybrid inference + scale as geometric dispersion + cross-modal centroids + 5 anti-patterns). docs/specs/decomposers/wordnet.md (full WordNet 3.0 source format with data.{pos}, index.{pos}, index.sense, lexnames, 25+ pointer types, 35 verb frames, morph exceptions, sense frequency, sentence examples; entity model). docs/specs/decomposers/wiktionary.md (20.4GB JSONL streamed; per-entry word/lang/pos/senses/forms/sounds/etymology/translations/relations; Wikidata IDs preserved; per-sense granularity; IPA pronunciation + audio URLs; streaming with checkpointed resume; analysis passes). docs/specs/decomposers/safetensors.md (Two-track ingestion: Track 1 embeddings wholesale via Laplacian+GSO→4D firefly; Track 2 transformation weights functionally sparsity-filtered. "Assimilation, not competition at ingest." Architecture detection from config.json + per-architecture classification rules. 12 architecture classes. Consolidated tensor role coverage table. Distillation = NEW student model. Authority note acknowledges phantom entity references are deprecated per AP-25 + spec §III; corrected pattern uses model_attention_pattern between word_form entities). Major contradiction between docs/specs/native/geometry4d-composition.md (dual-type PostGIS GeometryZM + GEOMETRY4D polymorphic) and rule 25 (PostGIS GeometryZM universal with gist_geometry_ops_nd; pt4d/ls4d internal native primitives only). Spec is older; rule 25 is current. |
+| 2026-05-19 (durability pass) | 2026-05-19 | canonical SQL seeds + active config/recipes | active drift signatures fixed | source-count checks | 0 | Wrote compaction-resistant source snapshot into this file. Corrected docs/index.md so it no longer claims complete 85-doc coverage while `docs/**/*.md` is 218. Updated `.github/copilot-instructions.md` counts and AP-8/AP-37 language. Updated `.claude/rules/15-substrate-trinity-and-layers.md`, `.claude/rules/00-hartonomous-core.md`, `.claude/rules/20-sql-and-ingestion.md`, `.claude/CLAUDE.md`, `.github/agents/review-hartonomous.agent.md`. Removed live recipe guidance for `substrate.sequence` and PowerShell entrypoints in recipes 00/08/10. Added stale banners to migration-era SQL docs: stored-procedures, functions, partitioning, indexing, mantissa-exploitation, infrastructure-vs-substrate. Verification: active stale count refs in `.github`/`.claude` = 0; active phase-boundary refs outside AP-37 = 0; recipe stale sequence refs = 0; docs/index old completion claim refs = 0. |

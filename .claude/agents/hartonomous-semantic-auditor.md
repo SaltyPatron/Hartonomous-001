@@ -43,7 +43,7 @@ Atoms carry metadata via junction tables. Entity-tier compositions are reusable 
 
 ## Substrate layer classification
 
-**Entity content (atoms + compositions)** — `substrate.entity`. BLAKE3 hash covers content only. Single-column PK `hash`; no `id`, no `entity_type_id`, not partitioned by type.
+**Entity content (atoms + compositions)** — `substrate.entity`. BLAKE3 hash covers content only. Semantic identity is `hash`; the physical PostgreSQL PK includes `partition_bucket` only for hash-bucket partitioning. No `id`, no `entity_type_id`, not partitioned by type.
 
 **Entity classification** — `substrate.entity_classification(entity_hash, entity_type_id, provenance_id)`. Same content can carry multiple structural classifications.
 
@@ -51,9 +51,9 @@ Atoms carry metadata via junction tables. Entity-tier compositions are reusable 
 
 **Physicality** — `substrate.physicality`. Universal `geometry(GeometryZM)` column with `gist_geometry_ops_nd` index. Substrate-side 4D/S3 operators are the only correct distance/centroid/Fréchet/Hausdorff calls on physicality. Axis meanings are per-partition, not global.
 
-**Reference vocabulary** (open-vocabulary, app-layer infrastructure) — classification tables under `sql/schema/tables/reference/` and seeds under `sql/schema/seed/`: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `significance_context` (open), `provenance` (open), `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `language`, `general_category`, `script`, `block`, `break_property`, `architecture_class`, `tensor_role`. Small indexed vocabularies. NOT entities, NOT edges.
+**Reference vocabulary** (bounded lookup infrastructure plus attestation targets where needed) — classification tables under `sql/schema/tables/reference/` and seeds under `sql/schema/seed/`: `entity_type`, `edge_type`, `edge_role`, `physicality_type`, `significance_context` (open), `provenance` (open), `pos`, `deprel`, `morph_feature`, `sense`, `lexname`, `language`, `general_category`, `script`, `block`, `break_property`, `architecture_class`, `tensor_role`. Where classification codes are attested, they can also be content-hashed substrate entities reached by typed classification edges.
 
-**Junction surfaces** — evidence mappings under `sql/schema/tables/junctions/`: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `codepoint_property`, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`. Fast application lookups. NOT edges.
+**Junction surfaces** — evidence/cache mappings under `sql/schema/tables/junctions/`: `entity_classification`, `entity_pos`, `entity_language`, `entity_morph_feature`, `entity_lexname`, `cp_*` property caches, `model_architecture_class`, `tensor_tensor_role`, `pattern_deprel`, `provenance_edge_authority`, `provenance_modality`. Fast application lookups and analytics caches; authoritative classification consensus is the typed edge plus `edge_significance`.
 
 **Reconstruction metadata** — composition `LINESTRINGZM` physicality vertex Y mantissa carries `(ordinal, rle_count)` via `bb_pack_ordinal_rle` (no `substrate.sequence` table), `provenance` (source tracking), edges like `has_source` / `in_model` (placement). NEVER enters the identity hash.
 

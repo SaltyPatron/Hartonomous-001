@@ -1,6 +1,8 @@
 # Stored Procedures
 
-**Status**: ✅ Complete
+**Status**: STALE - migration-era procedure design
+
+Do not implement from this file as written. It predates the current hash-as-PK substrate schema in `sql/schema/`: `substrate.entity` has no surrogate `id` and no `entity_type_id` column, and there is no `substrate.sequence` table. Current write paths are the streaming ingestion pipeline plus canonical SQL functions/procedures under `sql/schema/functions/` and `sql/schema/procedures/`.
 
 Every stored procedure the C# application layer calls. No inline SQL in C# — all database interaction goes through these procedures.
 

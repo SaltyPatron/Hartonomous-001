@@ -68,7 +68,7 @@ Every centroid is **write-once-per-entity** in `substrate.physicality`. Recomput
 
 If you find yourself recomputing a centroid in a hot path, either the write-path missed populating it, or the memoization contract is being violated. Read it from `substrate.physicality`, don't recompute.
 
-`substrate.entity` carries denormalized `centroid_x/y/z/m + hilbert_index` columns maintained by the `substrate.update_entity_centroid_from_physicality` trigger AFTER INSERT/UPDATE on `substrate.physicality`. These are O(1) reads per entity row — no physicality JOIN, no LATERAL ST_4D_Centroid. The `embedding_firefly` partition is EXCLUDED from the trigger because fireflies are per-model decorations on existing entities, NOT entity identity. The columns are deterministic by Merkle invariant (same hash → same children → same centroid).
+`substrate.entity` carries denormalized `centroid_x/y/z/m + hilbert_index` columns maintained by the `substrate.update_entity_centroid_from_physicality` trigger AFTER INSERT/UPDATE on `substrate.physicality`. These are O(1) reads per entity row — no physicality JOIN, no LATERAL ST_4D_Centroid. The `firefly` physicality partition is EXCLUDED from the trigger because fireflies are per-model decorations on existing entities, NOT entity identity. The columns are deterministic by Merkle invariant (same hash -> same children -> same centroid).
 
 ## Radial tiering — substrate hierarchy IS its 4D geometry
 

@@ -15,11 +15,10 @@ This is what every operation in Hartonomous reduces to. If your work doesn't tou
 
 ## Prerequisites
 
-- Repo cloned, dependencies installed (`pwsh scripts/bootstrap/Install.ps1`)
-- Docker running
-- DB up, migrated, seeded (`pwsh scripts/docker/Up.ps1 && pwsh scripts/db/Migrate.ps1 && pwsh scripts/seed/All.ps1`)
-- Native library built (`pwsh scripts/build/Native.ps1`)
-- C# built (`pwsh scripts/build/Dotnet.ps1`)
+- Repo cloned, dependencies installed via the Linux entrypoints documented under `scripts/`.
+- Database bootstrapped from the generated `hartonomous` PostgreSQL extension: `scripts/hart db bootstrap`.
+- Native and .NET projects built: `scripts/hart build native` and `scripts/hart build dotnet`.
+- Seed data loaded for the slice being exercised: `scripts/hart seed all` or the relevant phase command.
 
 If any of those fail, fix them before continuing. The vertical slice assumes a healthy substrate.
 
@@ -42,8 +41,8 @@ The file is content. It is not yet anything to the substrate.
 
 The text decomposer (`src/Hartonomous.Decomposers/Text/TextDecomposer.cs`) is invoked via:
 
-```pwsh
-pwsh scripts/seed/Text.ps1 -Path input/example.txt
+```bash
+scripts/hart phase run TextDecomp --path input/example.txt
 ```
 
 Internally, the CLI command in `src/Hartonomous.Cli/Commands/IngestTextCommand.cs` resolves dependencies and calls:
@@ -58,8 +57,8 @@ The decomposer does NOT own the database connection. It does NOT manage transact
 - One `EntitySpec` per grapheme cluster (Merkle hash of constituent codepoint hashes)
 - One `EntitySpec` per word_form (Merkle hash of constituent grapheme hashes)
 - One `EntitySpec` for the whole text_composition (Merkle hash of word-form hashes)
-- `EdgeSpec` records connecting them via `has_lemma`, sequence ordinality on `substrate.sequence`, etc.
-- `PhysicalitySpec` records carrying centroids in `point4d` / `linestring4d`
+- `EdgeSpec` records connecting them via typed substrate edges such as `has_lemma`.
+- `PhysicalitySpec` records carrying GeometryZM physicality: entity/body shape where needed, and mantissa-packed composition trajectories whose vertex stream stores child hash prefixes plus ordinal/RLE metadata.
 
 Every record is content-addressed. Every record is deterministic.
 
@@ -68,10 +67,10 @@ Every record is content-addressed. Every record is deterministic.
 `Hartonomous.Engine.Ingestion.StreamingIngestionPipeline` (the ONE pipeline for all decomposers) receives records via `IRecordSink.EmitAsync`. It:
 
 1. Each record kind has a bounded `Channel<T>` and a long-lived drain task that COPYs into a session-scoped `pg_temp` inflight table, then `INSERT INTO substrate.X SELECT ... FROM pg_temp.X_inflight ON CONFLICT DO NOTHING` per chunk.
-2. Routes inserts to the correct partition by `edge_type_id` / `physicality_type_id` (the `substrate.entity` table itself is non-partitioned and keyed on `hash`).
+2. Routes inserts to the correct partition by hash bucket / `edge_type_id` / `physicality_type_id`. The semantic identity of `substrate.entity` is still the BLAKE3 hash; the physical primary key includes `partition_bucket` only for PostgreSQL partitioning.
 3. Producer-side dedup via per-channel `HashSet<Hash32>`; cross-session duplicates land in COPY but are discarded by `ON CONFLICT DO NOTHING`.
 4. No per-batch transaction in the producer path. Backpressure: `EmitAsync` awaits naturally when a channel is full.
-5. End-of-phase post-passes (`PopulateEdgeTrajectoriesAsync`, `PrimeAllSignificanceAsync`) are owned by `SequentialPhaseRunner` and called once per phase after all decomposers complete.
+5. `DrainPendingAsync` waits for channels to quiesce, then runs edge trajectory population and per-arena significance priming before returning. Phases are runner orchestration, not substrate consistency boundaries.
 
 The decomposer never sees entity hashes resolved through any registry. It never opens a connection. It emits records and the channels handle the rest.
 
@@ -79,12 +78,8 @@ The decomposer never sees entity hashes resolved through any registry. It never 
 
 After the commit, the database holds:
 
-- New rows in `substrate.entity_codepoint` (already there if the codepoints existed; deduplicated by hash)
-- New rows in `substrate.entity_grapheme`
-- New rows in `substrate.entity_word`
-- One new row in `substrate.entity_text` for the whole sentence
-- New rows in `substrate.sequence` recording parent → ordered children
-- New rows in `substrate.physicality` for each entity that has geometry (centroids in `point4d`, full trajectories in `linestring4d`)
+- New rows in `substrate.entity` (or no-ops for hashes that already existed), with structural classifications in `substrate.entity_classification`.
+- New rows in `substrate.physicality` for entities/compositions that have geometry. Ordered children are recorded in the composition GeometryZM vertex stream via mantissa packing; there is no sidecar ordering table.
 - New rows in `substrate.edge` for `has_lemma`, dependency relations (if UD pass ran), etc.
 - New rows in `substrate.edge_member` for edge participants
 
@@ -96,8 +91,8 @@ A practitioner asks: "What entities does the substrate know that are related to 
 
 The CLI command in `src/Hartonomous.Cli/Commands/InferCommand.cs`:
 
-```pwsh
-pwsh scripts/ops/Infer.ps1 -Query "the brown dog ran across the yard"
+```bash
+scripts/hart phase run InferenceEngine --query "the brown dog ran across the yard"
 ```
 
 Internally:

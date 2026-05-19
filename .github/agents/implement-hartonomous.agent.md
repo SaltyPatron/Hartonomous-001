@@ -56,7 +56,7 @@ public interface IDecomposer : IAsyncDisposable {
 
 | Table | Key columns | Partitioned by |
 |-------|------------|----------------|
-| `substrate.entity` | hash | not partitioned |
+| `substrate.entity` | hash, partition_bucket | partition_bucket = hash byte 0 & 7 |
 | `substrate.entity_classification` | entity_hash, entity_type_id, provenance_id | not partitioned |
 | `substrate.edge` | edge_type_id, hash, geom, provenance_id | edge_type_id |
 | `substrate.edge_member` | edge_type_id, edge_hash, entity_hash, edge_role_id, role_position | edge_type_id |

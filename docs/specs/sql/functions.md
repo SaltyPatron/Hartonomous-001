@@ -1,6 +1,8 @@
 # SQL Functions
 
-**Status**: ✅ Complete
+**Status**: STALE - migration-era function design
+
+Do not implement from this file as written. Examples that resolve `entity_id`, filter `substrate.entity.entity_type_id`, or join `substrate.sequence` conflict with the current canonical schema. Current source of truth is `sql/schema/bootstrap.sql` plus the included files under `sql/schema/functions/`.
 
 Pure SQL functions (no side effects). Used in queries, CTEs, and by stored procedures. All functions live in the `substrate` schema unless noted.
 

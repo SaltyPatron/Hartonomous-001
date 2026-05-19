@@ -186,6 +186,52 @@ public sealed class SubstrateTextDecomposerTests
         }
     }
 
+    [Fact]
+    public void ComputeRootHash_WordForm_OneByteAscii_GuardsAndFailures()
+    {
+        if (!TryUseNativeTextDecomposer())
+        {
+            return;
+        }
+
+        List<(byte B, int Rc, bool DotnetWs)> failures = [];
+        for (int b = 0; b < 128; b++)
+        {
+            byte[] one = [(byte)b];
+            string s = System.Text.Encoding.UTF8.GetString(one);
+            bool ws = string.IsNullOrWhiteSpace(s);
+            try
+            {
+                Hash32 _ = SubstrateTextDecomposer.ComputeRootHash(one.AsSpan(), "word_form");
+            }
+            catch (InvalidOperationException ex)
+            {
+                int rc = ExtractReturnCode(ex.Message);
+                failures.Add(((byte)b, rc, ws));
+            }
+        }
+
+        // Every failing byte must already be caught by string.IsNullOrWhiteSpace
+        // at the caller — otherwise the Wiktionary decomposer's filter is leaky
+        // and -10 propagates past the try/catch barrier on some path we missed.
+        List<(byte B, int Rc, bool DotnetWs)> leaks = failures.Where(f => !f.DotnetWs).ToList();
+        Assert.True(
+            leaks.Count == 0,
+            "1-byte inputs that fail ComputeRootHash but pass IsNullOrWhiteSpace: " +
+            string.Join(", ", leaks.Select(l => $"0x{l.B:X2}(rc={l.Rc})")));
+    }
+
+    private static int ExtractReturnCode(string message)
+    {
+        int idx = message.IndexOf("returned ", StringComparison.Ordinal);
+        if (idx < 0) { return 0; }
+        int start = idx + "returned ".Length;
+        int end = start;
+        if (end < message.Length && message[end] == '-') { end++; }
+        while (end < message.Length && char.IsDigit(message[end])) { end++; }
+        return int.TryParse(message.AsSpan(start, end - start), out int rc) ? rc : 0;
+    }
+
     private static bool TryUseNativeTextDecomposer()
     {
         try
