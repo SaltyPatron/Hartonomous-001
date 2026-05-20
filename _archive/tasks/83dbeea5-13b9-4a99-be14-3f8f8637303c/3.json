@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Step C: Seed expansion — new arenas + edge types for cross-link + AP-8",
+  "description": "Add 8 arenas to significance_context.sql (unicode_version_consensus, encoding_position_consensus, ivd_collection_consensus, unihan_reading_consensus, consortium_discussion_density, script_membership_consensus, language_codepoint_coverage_consensus, locale_definition_consensus). Add edges to edge_type.sql: has_iso_639_1_code/has_iso_639_2b_code/has_iso_639_2t_code/has_script/has_region (cross_lingual); has_encoding_position/has_ideographic_variant_in_collection (unicode); has_pos/has_morph_feature/has_deprel_pattern/has_lexname/has_language (structural — AP-8 migration). Add provenance rows to provenance.sql for iso_15924, iso_3166, ietf_bcp47, cldr, and ~30 encoding-standard provenances. Verify scripts/hart build extension-sql succeeds.",
+  "activeForm": "Expanding seed with new arenas/edges/provenances",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

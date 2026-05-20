@@ -1,0 +1,9 @@
+{
+  "id": "6",
+  "subject": "Remove phantom-scatter recomposer paths per spec §XII.3 + AP-28",
+  "description": "Per docs/00-substrate-spec.md §XII.3, AP-28. Three paths in SafetensorsRecomposer.AssembleTensorBytesAsync (lines 343-443): (1) 1-D contour reading + has_layer_norm_scale/has_rope_freqs unit-attached fallback (lines 343-362); (2) ≥2-D has_constituent per-role unit scatter (lines 364-406); (3) SVD reconstruction via has_rank_component (lines 408-443). ONLY remove after §VI synthesis library replaces dispatch. Before removal: verify against current substrate state that has_constituent / has_layer_norm_scale / has_rope_freqs / has_rank_component edges are not produced by any current decomposer pass and no production caller depends on the phantom-scatter output. Update SafetensorsRecomposerRoundTripTests.RecomposeAsync_ScattersCompositionContoursIntoTensorBytes test (currently passes via fake injection).",
+  "activeForm": "Deleting phantom-scatter recomposer paths",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

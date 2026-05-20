@@ -1,0 +1,9 @@
+{
+  "id": "12",
+  "subject": "Audit doc: source inventory matrix",
+  "description": "docs/audit/inventory.md — every project / class file / SQL function / SQL table / SQL index / SQL procedure / SQL view / SQL seed categorized as implemented (matches spec) / stub (interface only, no real body) / broken (references nonexistent surfaces or wrong-shape) / dangling (no callers) / wrong-shape (deviates from spec). Source data from the file enumeration already done. Cross-reference against docs/specs/ + docs/10-architecture/ for what each surface SHOULD do. This is the substrate-of-truth document the rest of the audit references.",
+  "activeForm": "Writing source inventory audit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

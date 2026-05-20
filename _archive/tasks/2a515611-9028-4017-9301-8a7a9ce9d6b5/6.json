@@ -1,0 +1,9 @@
+{
+  "id": "6",
+  "subject": "Phase F: Terminology pass",
+  "description": "Grep canonical surface for borrowed/cute/trademarked names per AUDIT-STATUS terminology table. Replace with precise technical terms. Verify no legacy AI vocabulary smuggled in without explicit reframing.",
+  "activeForm": "Phase F terminology pass",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

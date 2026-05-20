@@ -1,0 +1,9 @@
+{
+  "id": "9",
+  "subject": "Step H: Encoding-standard decomposers (~30 small files)",
+  "description": "Create src/Hartonomous.Decomposers/Encoding/ with one decomposer per standard: AsciiEncodingDecomposer, Iso8859{1..16}EncodingDecomposer, Windows125{0..8}EncodingDecomposer, Ebcdic{037,500,1047}EncodingDecomposer, Koi8{R,U}EncodingDecomposer, Gb18030EncodingDecomposer, Jis{0201,0208,0212}EncodingDecomposer, {ShiftJis,EucJp}EncodingDecomposer, {EucKr,Big5}EncodingDecomposer, MacRomanEncodingDecomposer. Each carries embedded static mapping table, emits has_encoding_position edges, fires events on encoding_position_consensus arena under per-standard provenance.",
+  "activeForm": "Creating encoding-standard decomposers",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": []
+}

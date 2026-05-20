@@ -1,0 +1,9 @@
+{
+  "id": "8",
+  "subject": "Full TupleSynthesizers per spec — universal + specialist",
+  "description": "Per docs/specs/recomposers/synthesis-library.md §IV universal + specialist. Universal: AttentionTupleSynthesizer (orchestrates LinearSynthesizer for Q/K/V/O — Q+K share SVD source so Q^T·K reproduces consensus; V+O likewise), FfnTupleSynthesizer (joint gate/up/down via SparseFfnInversion / KV-memory inversion; MoE variant scopes per expert), LoraDeltaSynthesizer (A·B factorization at target rank via SVD truncation / zero-padding of delta consensus). Specialist: CrossAttentionLayerSynthesizer, ConvLayerSynthesizer, ViTPatchAttentionLayerSynthesizer, CodecRvqLayerSynthesizer, DetectionHeadLayerSynthesizer, DiffusionUnetLayerSynthesizer. ALL with cross-source consensus across contributing source models. NO stubs, NO identity fallbacks beyond what the spec explicitly authorizes.",
+  "activeForm": "Writing TupleSynthesizers",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

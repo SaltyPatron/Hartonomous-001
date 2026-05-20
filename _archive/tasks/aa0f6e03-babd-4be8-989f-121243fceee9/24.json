@@ -1,0 +1,8 @@
+{
+  "id": "24",
+  "subject": "P5d — OMW cross-lingual content",
+  "description": "Open Multilingual WordNet across 100+ languages. gloss/definition text as content trajectories per language. Cross-lingual aligned_to_synset edges accumulate per-language attestation events.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

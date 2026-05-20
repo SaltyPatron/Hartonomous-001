@@ -1,0 +1,8 @@
+{
+  "id": "16",
+  "subject": "P1e-followup — drop attestation_type column hard removal",
+  "description": "Schema migration drops attestation_type column from substrate.edge_significance + substrate.entity_significance. Drops attestation_type reference table. Removes attestationTypeCode parameter from IIngestionBatch.AddSignificance + IngestionBatch.AddSignificance + SignificanceEntry + EdgeSignificanceSpec + EdgeRatingEvent. Updates populate functions (initialize_entity_significance, prime_unprimed_edges_chunk, populate_codepoint_atoms{_chunk}, populate_unicode_case_edges_from_properties). Audits all decomposer callers and removes attestation_type code arguments. Large-surface refactor — done once P1g classification migration has shaken out which call sites need attestation_type semantics vs (provenance × arena) sufficient.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

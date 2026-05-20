@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "Step B: Propagate P1d 27→3 attestation_type collapse into docs",
+  "description": "Edit docs/00-substrate-spec.md (lines 97, 119, 145-164), docs/01-tensor-primitive-spec.md (lines 119, 327-353, 411-413, 464-477), docs/specs/csharp/decomposers.md line 256, docs/specs/decomposers/safetensors.md lines 352+358 to remove phantom modality-specific attestation_type names (27 listed in plan) and use positive_evidence/negative_evidence/neutral_evidence + provenance/arena discrimination. Mark §IX.1 complete. Verify via grep that no stale phantom names remain outside historical/rule contexts.",
+  "activeForm": "Cleaning up phantom attestation_type references in docs",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

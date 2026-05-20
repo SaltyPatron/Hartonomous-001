@@ -1,0 +1,8 @@
+{
+  "id": "32",
+  "subject": "#32 — Corpus decomposer rating-event coverage",
+  "description": "Migrate 18 corpus AddEdge sites from 3-arg to 5-arg with EdgeArenaRouter.EventsFor(edgeCode). Files: Wiktionary, Tatoeba, Bcp47, Iso15924, Unicode, EncodingBase decomposers.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

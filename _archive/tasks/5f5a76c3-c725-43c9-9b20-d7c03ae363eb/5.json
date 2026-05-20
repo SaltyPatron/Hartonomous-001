@@ -1,0 +1,9 @@
+{
+  "id": "5",
+  "subject": "Update substrate SQL functions referencing old physicality codes",
+  "description": "populate_codepoint_atoms_chunk.sql, populate_unicode_case_edges_from_properties.sql, populate_unicode_decomposition_edges_from_ext.sql, apply_firefly_rotation.sql, cross_model_divergence.sql, model_inventory.sql — all use 's3_position' / 'ingestion_trajectory' / 'embedding_firefly' literals. Substitute to 'entity' / 'content' / 'firefly'.",
+  "activeForm": "Updating substrate SQL functions",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

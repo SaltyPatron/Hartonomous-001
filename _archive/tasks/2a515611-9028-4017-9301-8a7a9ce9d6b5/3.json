@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Phase C: Read source for verification",
+  "description": "Read sql/schema/bootstrap.sql + included seed files, src/Hartonomous.*/, ext/libhartonomous/src/ end-to-end. Verify doc claims against actual code. Update AUDIT-STATUS verification column. Recompute counts from source.",
+  "activeForm": "Phase C reading source",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

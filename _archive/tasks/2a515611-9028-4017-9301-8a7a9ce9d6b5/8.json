@@ -1,0 +1,9 @@
+{
+  "id": "8",
+  "subject": "Modularize AUDIT-FRAME into frame/*.md",
+  "description": "Per user direction: split monolithic AUDIT-FRAME.md into per-area files under docs/audit/frame/ to avoid editing pain. AUDIT-FRAME.md becomes thin index. ~29 per-area files total. Doing in batches to avoid response bloat. Index + 2 files done (00-FOUNDATIONAL + 01-SUBSTRATE-LAWS); 27 remaining.",
+  "activeForm": "Modularizing AUDIT-FRAME",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

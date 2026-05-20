@@ -1,0 +1,13 @@
+{
+  "id": "3",
+  "subject": "S3 — Concrete implementations (S3.D first: geometry pivot + array elimination + composition reads + native fast path)",
+  "description": "S3.D atomic delivery (this push): drop physicality.geom array columns; migrate physicality.geom + edge.geom from geometry4d to geometry(GeometryZM); rewrite partition CHECKs to PostGIS-native; cast helpers for geometry→point4d / linestring4d; pivot ~15 substrate functions that take geometry4d to geometry parameters; rewrite composition_* functions to read LINESTRINGZM vertices directly via bb_unpack_* (no junction table — geometry IS the relational structure); migrate provenance.modality_codes array to provenance_modality junction; collapse physicality_entity_shape + physicality_ingestion_trajectory misconception to ONE composition-trajectory physicality_type; verify build + schema concat. Subsequent S3 sub-items (C kernel + PG SRFs for performance fast path; codepoint_property array migration via composition entities; remaining S3.B / S3.C / S3.E-S3.M) follow.",
+  "activeForm": "Driving S3.D (geometry pivot, array elimination, composition reads)",
+  "status": "in_progress",
+  "blocks": [
+    "4"
+  ],
+  "blockedBy": [
+    "2"
+  ]
+}

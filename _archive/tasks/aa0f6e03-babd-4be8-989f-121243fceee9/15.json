@@ -1,0 +1,8 @@
+{
+  "id": "15",
+  "subject": "P1f-followup — INSERT-time inline geom build (no NULL-geom window)",
+  "description": "Rewrite the edge drain INSERT-SELECT to compute geom inline via JOIN against pg_temp.edge_member_inflight + substrate.entity (composite btree on hash_bits_0_51/52_103). Single-batch atomic: edge_member INSERT + edge INSERT with geom built inline + edge_significance prime via CROSS JOIN substrate.significance_context, all in one transaction. Removes even the brief NULL-geom-then-backfill window in the current P1f-minimal solution.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

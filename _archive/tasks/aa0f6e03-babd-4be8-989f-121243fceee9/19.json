@@ -1,0 +1,8 @@
+{
+  "id": "19",
+  "subject": "P3b-f — Unicode missing edges full vertical-slice completion",
+  "description": "Pre-gen consolidates on ucd.all.flat.xml (NOT grouped — flat is self-contained per-char with no group-inheritance state machine; chosen for parser simplicity over the negligible ~2MB compressed-size advantage of grouped). Replace/rename ext/libhartonomous/codegen/gen_ucd_grouped.c → gen_ucd_flat.c, drop group-default tracking, extend to emit ALL 100+ attributes per UAX #44 from ucd.all.flat.xml via SAX/pull parser walking <char> elements. Python pre-gen (generate_unicode_tables.py) handles ONLY data not in flat XML: multi-codepoint sequence files (NamedSequences, emoji-sequences, emoji-zwj-sequences, StandardizedVariants), security UTS #39 (confusables, IdentifierStatus, IdentifierType), IDNA UTS #46 (IdnaMappingTable, Idna2008), Unihan radical-stroke (CJKRadicals, EquivalentUnifiedIdeograph), UCA collation (allkeys.txt). Plus SRF wrappers in pg_ucd_*_pg.c + SRF declarations in hartonomous--1.0.sql.in + populate_unicode_*_from_ext PG functions + C# passes.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

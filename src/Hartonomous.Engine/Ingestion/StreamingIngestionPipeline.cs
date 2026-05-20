@@ -60,7 +60,13 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
     /// memory cap regardless of bundle size; bundle producers backpressure
     /// naturally when full.
     /// </summary>
-    private const int BundleChannelCapacity = 8192;
+    // 8192 lets ~100K bundles backlog across 12 workers — at ~1KB per bundle's
+    // EdgeRatingEvent payload that's the ~100GB OOM threshold model decomp
+    // hit on Qwen 3B. 256 keeps total channel-buffered memory ≤ 3GB × 12 = 36GB
+    // worst-case while preserving parallelism. Real fix is streaming IngestionBatch
+    // (AddEdge → channel.WriteAsync directly, no in-memory List accumulation) —
+    // multi-day refactor across every decomposer call site.
+    private const int BundleChannelCapacity = 256;
 
     /// <summary>
     /// Per-worker COPY chunk threshold in total-record count. The worker

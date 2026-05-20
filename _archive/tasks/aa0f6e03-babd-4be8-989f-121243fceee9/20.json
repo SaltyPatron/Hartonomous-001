@@ -1,0 +1,8 @@
+{
+  "id": "20",
+  "subject": "P3g — multi-version Unicode ingestion",
+  "description": "Ingest UCD 17.0.0 + 18.0.0 + earlier versions as separate provenance rows. Cross-version disagreement accumulates as Glicko events on shared codepoint entities under unicode_version_consensus arena.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

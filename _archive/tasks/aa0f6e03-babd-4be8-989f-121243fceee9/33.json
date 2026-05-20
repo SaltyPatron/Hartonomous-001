@@ -1,0 +1,8 @@
+{
+  "id": "33",
+  "subject": "P10 — Crystal Ball analytics + visualization surface",
+  "description": "13 analytics caches (materialized views, rebuildable). SQL primitives for mech interp / bias audit / capability tomography / provenance + contamination + theft detection / hallucination diagnosis / marketplace economics. Visualization primitives (4D mantissa-packed content_trajectory bbox query → 2D/3D projection with provenance/arena/corroboration/temporal coloring, firefly Voronoi cell viz, frayed-edge atlas heatmap, cross-model architectural similarity dendrogram).",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

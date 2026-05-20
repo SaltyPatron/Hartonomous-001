@@ -1,0 +1,8 @@
+{
+  "id": "32",
+  "subject": "P9 — Inference engine + Gödel orchestrator",
+  "description": "substrate.infer/infer_topk fixes per docs/audit/flow-inference.md GAP-1 through GAP-8 (recipe DSL, per-hop arena filter, per-hop edge_type filter, collapse infer→infer_topk, indirect-seed parent filter via recipe, path chain + inference_trace composition entity, pub/sub drain barrier, deprel-driven word-order resolution). Gödel Engine OODA three scales (micro/meso/macro). Reasoning patterns emerge from OODA. Operational boundaries. Frayed-edge surveys + ingestion proposal generation.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

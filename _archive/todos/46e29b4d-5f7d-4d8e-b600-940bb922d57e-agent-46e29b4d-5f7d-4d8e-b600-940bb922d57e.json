@@ -1,0 +1,42 @@
+[
+  {
+    "content": "Design complete system architecture (all layers)",
+    "status": "completed",
+    "activeForm": "Designing system architecture"
+  },
+  {
+    "content": "Implement C++ native library (Hilbert, PCA, Laplacian)",
+    "status": "completed",
+    "activeForm": "Implementing C++ library"
+  },
+  {
+    "content": "Build Python bindings via ctypes",
+    "status": "completed",
+    "activeForm": "Building Python bindings"
+  },
+  {
+    "content": "Create complete manifold-based ingestion pipeline",
+    "status": "completed",
+    "activeForm": "Creating ingestion pipeline"
+  },
+  {
+    "content": "Create database schema with manifold support",
+    "status": "completed",
+    "activeForm": "Creating database schema"
+  },
+  {
+    "content": "Build and test native library",
+    "status": "completed",
+    "activeForm": "Building and testing native library"
+  },
+  {
+    "content": "Run complete ingestion with real model",
+    "status": "completed",
+    "activeForm": "Running ingestion with real model"
+  },
+  {
+    "content": "Verify semantic k-NN queries work correctly",
+    "status": "in_progress",
+    "activeForm": "Verifying semantic k-NN queries"
+  }
+]

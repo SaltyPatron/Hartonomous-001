@@ -1,0 +1,8 @@
+{
+  "id": "34",
+  "subject": "P12 — Rules + docs + memory artifact alignment (continuous)",
+  "description": "Update rules 00/10/15/20/25/35/45, root CLAUDE.md, .github/copilot-instructions.md, .claude/agents/*, .github/agents/*, .claude/skills/hartonomous-semantic-eval/. Memory additions: feedback-no-modality-specific-attestation-types, feedback-no-phase-boundaries-no-backfill, project-three-role-physicality, feedback-unified-glicko-surface, feedback-no-bit-perfect-export, project-pre-gen-not-substrate-ingestion, project-universal-ingestion-via-tree-sitter-uax29, project-content-trajectories-as-universal-shape. Runs continuously alongside other priorities.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

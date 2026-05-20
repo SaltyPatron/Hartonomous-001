@@ -1,0 +1,9 @@
+{
+  "id": "4",
+  "subject": "Rewrite C# call-sites to use entity/firefly/content codes",
+  "description": "Update IngestionBatch.cs, EmbeddingLookupTuplePass.cs, SubstrateTextDecomposer.cs, NormalizationPrimitivePass.cs, VocabSelector.cs (and any others found in step 1) to emit the new 3-row codes. VocabSelector query needs to JOIN entity_classification for codepoint discrimination.",
+  "activeForm": "Rewriting C# call-sites",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

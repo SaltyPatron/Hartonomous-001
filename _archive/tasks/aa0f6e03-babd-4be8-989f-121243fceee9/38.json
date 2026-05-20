@@ -1,0 +1,8 @@
+{
+  "id": "38",
+  "subject": "P3k — UTR / UAX / UTS technical reports as content trajectories",
+  "description": "166MB at /vault/Data/Unicode/reports/ — every Unicode Technical Report (UTR), Standard Annex (UAX), Technical Standard (UTS). Each is an authoritative content trajectory. Attestations: has_source to unicode_consortium; cross-references between UAXes (UAX #29 references UAX #14, etc.); UAX → codepoints/properties it defines.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

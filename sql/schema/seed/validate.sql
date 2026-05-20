@@ -18,7 +18,7 @@ BEGIN
             ('substrate.east_asian_width',       6),
             ('substrate.lexname',               45),
             ('substrate.pos',                   17),
-            ('substrate.edge_type',            140),
+            ('substrate.edge_type',            136),
             ('substrate.attestation_type',       3)
         ) AS t(table_name, expected)
     LOOP

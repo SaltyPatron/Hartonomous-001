@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Step A: Rewrite generate_unicode_tables.py to parse ucd.all.flat.xml",
+  "description": "Replace 13 per-cp .txt parser invocations in scripts/build/generate_unicode_tables.py with a single parse_ucd_flat_xml() function that streams ucd.all.flat.zip via xml.etree.ElementTree.iterparse. Keep secondary parsers for UCA allkeys, NamedSequences, emoji sequences, StandardizedVariants, confusables, IdnaMappingTable, CJKRadicals, Blocks. Add coverage for ~10 attributes flat XML carries that .txt path was missing (scx, bc, Bidi_M, bmg, jt, jg, InSC, InPC, age, full case mappings, Comp_Ex, NFC/NFD/NFKC/NFKD_QC, hst, vo, emoji flags, case property flags, name aliases).",
+  "activeForm": "Rewriting pre-gen to parse flat XML",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

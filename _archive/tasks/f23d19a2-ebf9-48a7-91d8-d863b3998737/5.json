@@ -1,0 +1,9 @@
+{
+  "id": "5",
+  "subject": "SpatialKernelTuplePass per spec",
+  "description": "Per docs/specs/decomposers/layer-type-library.md §ConvLayerDecomposer + §ConformerBlock conv_module. Handles ConvResidualBlock (conv1, norm1, conv2, norm2, optional shortcut) AND ConformerBlock conv_module (pointwise_conv1, depthwise_conv, batch_norm BnState, pointwise_conv2). Fires model_local_kernel_evidence on model_spatial_pattern edges between pixel_region/audio_chunk neighbors. Required for ResNet backbones, VAE, U-Net, conv-based vision, Conformer audio.",
+  "activeForm": "Writing SpatialKernelTuplePass",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

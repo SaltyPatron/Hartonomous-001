@@ -1,0 +1,13 @@
+{
+  "id": "2",
+  "subject": "S2 — Build shared utilities (MantissaPacking, Blake3/PhysicalityEmitter extensions, DecomposerSinkExtensions)",
+  "description": "MantissaPacking C# class (byte-for-byte mirror of bb_* SQL functions). Blake3 extensions (ComputeAtomicStringHash, ComputeEdgeHash, HashCodepoint, HashPrefix106). PhysicalityEmitter extensions (MeanCentroid, BuildEntityShape). DecomposerSinkExtensions (Emit* methods on IIngestionBatch). Boundary: dotnet build clean; utilities callable; zero callers in production paths yet.",
+  "activeForm": "Building S2 shared utilities",
+  "status": "completed",
+  "blocks": [
+    "3"
+  ],
+  "blockedBy": [
+    "1"
+  ]
+}

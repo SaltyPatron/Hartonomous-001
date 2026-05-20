@@ -1,0 +1,27 @@
+[
+  {
+    "content": "Update setup.sh to use unified schema",
+    "status": "completed",
+    "activeForm": "Updating setup.sh for unified schema"
+  },
+  {
+    "content": "Update cmd_status for new schema",
+    "status": "completed",
+    "activeForm": "Updating cmd_status for new schema"
+  },
+  {
+    "content": "Update cmd_similar and cmd_tree for new schema",
+    "status": "completed",
+    "activeForm": "Updating commands for new schema"
+  },
+  {
+    "content": "Fix 011_unified_atom.sql to include extensions",
+    "status": "completed",
+    "activeForm": "Fixing unified schema SQL"
+  },
+  {
+    "content": "Test complete workflow",
+    "status": "in_progress",
+    "activeForm": "Testing complete workflow"
+  }
+]

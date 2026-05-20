@@ -1,0 +1,8 @@
+{
+  "id": "35",
+  "subject": "#35 — Wiktionary AP-19 compliance",
+  "description": "Add GetExistingEntityHashesAsync + GetExistingEdgesAsync per chunk before emit; emit only diff. Eliminates ~30:1 amplification.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

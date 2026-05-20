@@ -1,0 +1,9 @@
+{
+  "id": "4",
+  "subject": "Step D: C# xml_pull native binding + UcdFlatXmlReader",
+  "description": "Create src/Hartonomous.Core/Native/XmlPullNative.cs (P/Invoke binding to xml_pull_init/xml_pull_next/xml_pull_attr mirroring Blake3Native.cs). Create src/Hartonomous.Core/Text/Ucd/UcdFlatXmlReader.cs (opens ucd.all.flat.zip via System.IO.Compression.ZipArchive, streams inner XML through native parser, yields CodepointRecord structs). Create CodepointRecord.cs with all per-cp UAX #44 fields. Verify default-namespace handling in xml_pull. Write xUnit test asserting known cp properties (U+0041, U+0301, U+1F600).",
+  "activeForm": "Creating xml_pull C# binding + UcdFlatXmlReader",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

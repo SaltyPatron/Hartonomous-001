@@ -1,0 +1,9 @@
+{
+  "id": "9",
+  "subject": "ISynthesisRecomposer end-to-end per spec",
+  "description": "Per docs/specs/recomposers/synthesis-library.md §I-VII + docs/10-architecture/06-recomposer-contract.md. Both modes: Mode 1 RecomposeIngestedModelAsync(modelSourceId, options) reads stored tree, dispatches per-tensor with source filter = [modelSourceId]. Mode 2 RecomposeFromArchitectureSpecAsync(TargetArchitectureSpec, options, sourceModelIds?) walks user spec, dispatches per-tensor synthesizer, optional source filter (null = all-consensus). Output: standard safetensors via SafetensorsWriter with audit metadata in __metadata__: hartonomous_recipe_id, hartonomous_arena_codes, hartonomous_significance_threshold, hartonomous_source_filter, hartonomous_per_tensor_coverage, hartonomous_substrate_state_hash, hartonomous_provenance_chain. Determinism per Law #6: same (target_arch_spec, recipe_options, substrate_state_hash) → byte-identical output.",
+  "activeForm": "Wiring TargetArchitectureSpec dispatch",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

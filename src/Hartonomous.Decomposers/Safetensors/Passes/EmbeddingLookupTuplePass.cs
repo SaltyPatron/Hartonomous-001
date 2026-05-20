@@ -141,21 +141,9 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
             ulong tensorSeed = baseSeed ^ BitConverter.ToUInt64(table.ContentHash, 0);
             int seed = (int)(tensorSeed & 0x7FFFFFFF);
             LaplacianEigenmapOptions opts = _baseOptions with { Seed = seed };
-            LaplacianEigenmap.ProjectionResult projection = LaplacianEigenmap.ProjectWithGraph(
+            (double[] x, double[] y, double[] z) = LaplacianEigenmap.Project(
                 context.Compute, embed, vocabSize, hiddenDim, opts,
                 onStage: msg => Log.Stage(_logger, table.Info.Name, msg));
-            (double[] x, double[] y, double[] z) = projection.Coordinates;
-            Hartonomous.Core.Compute.Ingestion.KnnGraphF64 knn = projection.KnnGraph;
-
-            // Stash for downstream FFN / Attention / LoRA passes so they
-            // emit on the SAME (vocab_i, neighbor_j) pair identities. The
-            // substrate principle: one edge per word_form pair, mechanism
-            // discrimination via EdgeRatingEvent attribution + per-arena
-            // Glicko-2, not per-mechanism edge_type or per-pass identity
-            // fragmentation. Stash includes the vocab→hash map so downstream
-            // passes can look up entity handles without re-running tokenizer.
-            session.SharedState["EmbeddingKnnGraph"] = knn;
-            session.SharedState["VocabHashByIdx"] = vocabHashByIdx;
 
             // Per-row firefly POINTZM + entity_model_source + entity_significance.
             for (int row = 0; row < vocabSize; row++)
@@ -171,113 +159,6 @@ internal sealed partial class EmbeddingLookupTuplePass : IModelAnalysisPass
                 {
                     await session.MaybeFlushAsync(FlushThreshold, ct);
                 }
-            }
-
-            // Token-pair semantic_similarity emission FROM the k-NN graph
-            // already built for the Laplacian projection above. This is the
-            // model's defining local similarity structure — for each token A,
-            // the k closest tokens by cosine in this model's embedding space.
-            // NOT a top-K count cutoff on a global cosine sweep; the k-NN
-            // graph is a graph-property of the model's representation, not
-            // an arbitrary ranking truncation. The full O(vocab²) pairwise
-            // sweep (the previous shape of this section) emitted 50M+ edges,
-            // OOM-killed the producer at 100GB anon-rss, and most of the
-            // weak surviving pairs were noise at the cosine floor anyway.
-            // The k-NN edges capture the load-bearing structure that
-            // defines what each token is similar to in this model.
-            // Sign-bearing via cosine value (AP-31): positive cos →
-            // positive_evidence, negative cos → negative_evidence (antipodal).
-            Hash32?[] vocabHashByIdx = new Hash32?[vocabSize];
-            foreach (KeyValuePair<int, Hash32> kv in vocabHashes)
-            {
-                if ((uint)kv.Key < (uint)vocabSize)
-                {
-                    vocabHashByIdx[kv.Key] = kv.Value;
-                }
-            }
-
-            string tupleCode = t.Tuple.ToString();
-            string slotCode = TupleSlot.Table.ToString();
-            string modalityCode = t.Modality.ToString();
-            int? layerIdx = t.LayerIndex;
-            int? headIdx = t.HeadIndex;
-            int? expertIdx = t.ExpertIndex;
-            Hash32 tensorHash = table.Entity.Hash;
-            Hash32? packageTensorHash = table.PackageTensorEntity?.Hash;
-            string tensorName = table.Info.Name;
-            string primitiveCode = PrimitiveKind.Lookup.ToString();
-            long modelSourceId = context.Source.ModelSourceId;
-
-            for (int row = 0; row < vocabSize; row++)
-            {
-                if (row % 1024 == 0) { ct.ThrowIfCancellationRequested(); }
-                Hash32? hashA = vocabHashByIdx[row];
-                if (hashA is null) { continue; }
-                long start = knn.RowPtr[row];
-                long end = knn.RowPtr[row + 1];
-                for (long e = start; e < end; e++)
-                {
-                    int neighbor = (int)knn.ColIdx[e];
-                    if (neighbor == row || neighbor < 0 || neighbor >= vocabSize) { continue; }
-                    Hash32? hashB = vocabHashByIdx[neighbor];
-                    if (hashB is null) { continue; }
-
-                    // Canonical order so (A, B) and (B, A) collapse to the
-                    // same edge identity (symmetric similarity).
-                    EntityHandle a, b;
-                    if (hashA.Value.CompareTo(hashB.Value) <= 0)
-                    {
-                        a = new EntityHandle(hashA.Value, "word_form");
-                        b = new EntityHandle(hashB.Value, "word_form");
-                    }
-                    else
-                    {
-                        a = new EntityHandle(hashB.Value, "word_form");
-                        b = new EntityHandle(hashA.Value, "word_form");
-                    }
-
-                    double cos = knn.Values[e];
-                    double absCos = Math.Abs(cos);
-                    double score = cos > 0 ? 1.0 : 0.0;
-                    string signCode = cos > 0 ? "positive_evidence" : "negative_evidence";
-
-                    EdgeRatingEvent[] events =
-                    [
-                        new EdgeRatingEvent(
-                            "model_trust", signCode, score, absCos,
-                            ModelSourceId: modelSourceId,
-                            TensorHash: tensorHash,
-                            PackageTensorHash: packageTensorHash,
-                            SourceTensorName: tensorName,
-                            PrimitiveCode: primitiveCode,
-                            TupleCode: tupleCode,
-                            SlotCode: slotCode,
-                            ModalityCode: modalityCode,
-                            LayerIndex: layerIdx,
-                            HeadIndex: headIdx,
-                            ExpertIndex: expertIdx),
-                        new EdgeRatingEvent(
-                            "semantic_relevance", signCode, score, absCos,
-                            ModelSourceId: modelSourceId,
-                            TensorHash: tensorHash,
-                            PackageTensorHash: packageTensorHash,
-                            SourceTensorName: tensorName,
-                            PrimitiveCode: primitiveCode,
-                            TupleCode: tupleCode,
-                            SlotCode: slotCode,
-                            ModalityCode: modalityCode,
-                            LayerIndex: layerIdx,
-                            HeadIndex: headIdx,
-                            ExpertIndex: expertIdx),
-                    ];
-                    session.Batch.AddEdge("semantic_similarity", context.ProvenanceCode,
-                    [
-                        new EdgeMemberSpec(a, "source", 0),
-                        new EdgeMemberSpec(b, "target", 1),
-                    ], System.Array.Empty<EdgeSignificanceSpec>(), events);
-                    edgesEmitted++;
-                }
-                await session.MaybeFlushAsync(FlushThreshold, ct);
             }
         }
 

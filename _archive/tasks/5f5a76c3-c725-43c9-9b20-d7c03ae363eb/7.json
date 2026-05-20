@@ -1,0 +1,9 @@
+{
+  "id": "7",
+  "subject": "Retire geometry4d type and custom payload format",
+  "description": "Replace custom 33-byte / 5+N*32 byte format with PostGIS EWKB in C and C#. Update C# Geometry4dPayloadBuilder.Point/LineString + TryExtractCentroid. Update C point4d_to_geometry / linestring4d_to_geometry in pg_text_decompose.c. Switch INSERT to ST_GeomFromEWKB. Delete dead SQL files (geometry4d_to_geometryzm, point4d_from_geometry, linestring4d_from_geometry, physicality_point4d, physicality_linestring4d, geometry4d_centroid). Remove dead C source files (pg_geometry4d.c, pg_gist_geometry4d.c, pg_spgist_geometry4d.c, pg_gist_point4d.c, pg_spgist_point4d.c, pg_point4d.c, pg_linestring4d.c). Update Makefile + .sql.in CREATE TYPE statements. Rebuild + reinstall + db reset + test text_decompose recovers \"hello\".",
+  "activeForm": "Retiring geometry4d type system",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "6",
+  "subject": "Step E.5: AP-8 unified-Glicko-surface migration (3 sub-steps)",
+  "description": "E.5a: Create sql/schema/functions/seed_reference_category_entities.sql — emit substrate.entity rows for pos/morph_feature/deprel/lexname/language category codes; populate reference_category_hash_map. E.5b: Create migrate_junction_glicko_to_edge_significance.sql — convert entity_pos/pattern_deprel/entity_morph_feature/entity_lexname/entity_language rows to has_pos/has_deprel_pattern/has_morph_feature/has_lexname/has_language edges with edge_significance rows carrying existing mu/sigma/games. E.5c: Rewrite WordNetDecomposer/WiktionaryDecomposer/UniversalDependenciesDecomposer/TatoebaDecomposer to switch AddJunction→AddEdge for these classifications. Update inference paths to consult edge_significance instead of junction.mu.",
+  "activeForm": "Migrating junction Glicko to unified edge_significance",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

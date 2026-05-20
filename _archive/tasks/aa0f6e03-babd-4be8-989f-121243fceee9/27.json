@@ -1,0 +1,8 @@
+{
+  "id": "27",
+  "subject": "P7 — Firefly Procrustes alignment",
+  "description": "EmbeddingAlignmentPass per AP-35 / build-plan #51. Anchor-token Kabsch alignment per ingested model. substrate.embedding_alignment_anchor reference table. SQL surfaces (get_firefly_coords, apply_firefly_rotation, claim_or_get_embedding_anchor). Native procrustes.c + C# binding ProcrustesAlign. Unblocks Mode 1 Build-a-bear embedding synthesis.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

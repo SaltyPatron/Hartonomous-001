@@ -1,0 +1,9 @@
+{
+  "id": "16",
+  "subject": "Audit doc: recomposition flow trace",
+  "description": "docs/audit/flow-recomposition.md — end-to-end trace for both modes per docs/specs/recomposers/synthesis-library.md. Current state: SafetensorsRecomposer.RecomposeAsync → AssembleTensorBytesAsync phantom-scatter (lines 343-443). Target state: ISynthesisRecomposer dispatch through LayerTypeSynthesizerRegistry → per-role synthesizer → substrate consensus query → projection → packed bytes. Mermaid sequence diagram for both. Gap callout: phantom-scatter is reading edges that aren't in the current seed, recomposer currently produces empty buffers against real substrate state. Identify every step from CLI export-model through final safetensors output bytes.",
+  "activeForm": "Writing recomposition flow audit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

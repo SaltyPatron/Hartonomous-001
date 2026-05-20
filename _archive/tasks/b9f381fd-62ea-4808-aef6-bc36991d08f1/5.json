@@ -1,0 +1,11 @@
+{
+  "id": "5",
+  "subject": "S5 — Cleanup + verification gate (delete dead code, run determinism + build + tests)",
+  "description": "Grep gate (zero hits of deprecated surfaces). Delete BaseDecomposer helpers (~526 lines), NpgsqlCodepointPropertiesCache.cs, CompositionChildRecord.cs, AddCompositionChild from IIngestionBatch. Drop physicality.child_hashes/ordinal_starts/rle_counts columns + CHECK. Enable one-type-per-file linter. Run: dotnet build -warnaserror, make -C ext/hartonomous_pg, cmake build, dotnet test, make installcheck, determinism gate on iso639+wordnet+wiktionary+tatoeba+ud, trajectory round-trip smoke, shape-similarity smoke, mantissa-packing round-trip, tuple-pass behavioral parity, blob composition investigation report.",
+  "activeForm": "Cleaning up and verifying",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": [
+    "4"
+  ]
+}

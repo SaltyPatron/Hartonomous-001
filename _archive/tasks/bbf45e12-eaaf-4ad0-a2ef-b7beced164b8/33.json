@@ -1,0 +1,8 @@
+{
+  "id": "33",
+  "subject": "#33 — AP-8 junction → typed edges",
+  "description": "Convert AddJunction(entity_pos/lang/morph/lexname) calls to AddEdge(has_pos/has_language/etc) on content-hashed reference-vocabulary entities with EdgeArenaRouter events. Touches WordNet, UD, Wiktionary, OMW, Tatoeba.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

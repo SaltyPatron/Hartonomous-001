@@ -1,0 +1,8 @@
+{
+  "id": "29",
+  "subject": "P11 — Live ingest user prompts + uploads",
+  "description": "User prompts as content trajectories via SubstrateTextDecomposer with user_session provenance. Conversation history accumulates as substrate content. Uploaded documents (PDF after text extract, Markdown, code repos, image+caption pairs, audio recordings) ingest via tree-sitter / UAX29 / per-modality decomposers. Real-time Glicko-2 priming. Session-scoped arenas.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

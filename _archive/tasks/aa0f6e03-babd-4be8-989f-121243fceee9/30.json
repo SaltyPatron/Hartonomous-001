@@ -1,0 +1,8 @@
+{
+  "id": "30",
+  "subject": "P2 — Tree-sitter universal decomposer (refactor)",
+  "description": "Tree-sitter native binding (Hartonomous.Core.Native.TreeSitterNative). TreeSitterDecomposer class. Per-grammar tier-mapping tables (data). Replace hand-rolled parsers (WiktionaryJsonl, UdConllU, TatoebaCsv, Iso639, Omw, WordNet, ModelConfig, ModelCard). Per-language code decomposers (Python, TypeScript, Rust, C, C++, Java, Go, Ruby, Shell). Markup decomposers (HTML, Markdown, LaTeX, AsciiDoc, BibTeX, reStructuredText, org-mode). Config + IDL decomposers (JSON, YAML, TOML, XML, Protobuf, Thrift, GraphQL, SPARQL, OpenAPI). Refactor — happens after corpus + model ingestion validates the pipeline at scale.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

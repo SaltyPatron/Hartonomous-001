@@ -1,0 +1,9 @@
+{
+  "id": "11",
+  "subject": "Step J: Retire substrate-emitting populate_*_from_ext SQL functions",
+  "description": "After Step E + F replacements pass verification: remove from SubstrateFunctionNames Allowlist + bootstrap.sql @include lines + delete .sql files for: populate_codepoint_atoms_chunk, populate_codepoint_property_range_from_ext (KEEP if it's reference junction-only), populate_unicode_case_edges_from_properties, populate_unicode_decomposition_edges_from_ext, populate_unicode_full_case_mapping_edges_from_ext, populate_unicode_confusables_from_ext, populate_unicode_standardized_variants_from_ext, populate_unicode_radical_stroke_from_ext, populate_unicode_named_sequences_from_ext, populate_unicode_emoji_sequences_from_ext. KEEP reference-vocab populates: blocks, break_properties, general_categories, scripts.",
+  "activeForm": "Retiring substrate-emitting populate functions",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

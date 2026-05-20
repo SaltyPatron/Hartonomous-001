@@ -1,0 +1,9 @@
+{
+  "id": "38",
+  "subject": "#38 — Codepoint properties as typed edges + narrow per-property junctions",
+  "description": "Per user 2026-05-18: the wide 25-column substrate.codepoint_property table with 7 covering indexes is the wrong shape. Refactor to: (a) delete codepoint_property table entirely; (b) emit 9 typed edges from codepoint to content-hashed reference-vocab entities (has_general_category, has_script, has_block, has_bidi_class, has_east_asian_width, has_grapheme_cluster_break, has_word_break, has_sentence_break, has_line_break) with EdgeArenaRouter.EventsFor under unicode_version_consensus arena; (c) populate 9 narrow per-property junctions (cp_general_category, cp_script, cp_block, cp_bidi_class, cp_east_asian_width, cp_grapheme_cluster_break, cp_word_break, cp_sentence_break, cp_line_break) for index-locality analytics caches per AP-8 corrected; (d) all emission through IIngestionPipeline.AddEntity/AddEdge/AddJunction, NOT raw NpgsqlBinaryImporter (which was the corner-cut per [[feedback-pre-gen-vs-substrate-ingest-strict-split]]); (e) reference-vocab entities (Lu / Latin / \"Basic Latin\" / AL / W / CR / etc.) become content-hashed substrate entities via Blake3.HashBytes(\"general_category:Lu\") pattern through new ReferenceVocabularyHashes helpers; (f) scalar properties (uca_index, ccc, name, decomposition_mapping, simple/full case mappings) get separate narrow per-fact tables OR stay in the embedded UCD blob for microsecond hot-path lookups. Done = build clean + db reset + UcdUca phase succeeds + substrate.physicality has 1.1M atom POINTZM rows + 9 has_* edge types have rows + Glicko games > 0 on unicode_version_consensus arena.",
+  "activeForm": "Refactoring codepoint_property to substrate-canonical typed edges + narrow junctions",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

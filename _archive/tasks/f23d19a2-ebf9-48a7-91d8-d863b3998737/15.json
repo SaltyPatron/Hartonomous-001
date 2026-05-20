@@ -1,0 +1,9 @@
+{
+  "id": "15",
+  "subject": "Audit doc: inference flow trace",
+  "description": "docs/audit/flow-inference.md — end-to-end trace: CLI query → SubstrateInferenceEngine.InferAsync → SubstrateTextDecomposer (decompose prompt) → IngestionPipeline drain barrier → substrate.infer (seed activation 2-tier + cross-arena traverse_astar + max-pool + recompose_text) → InferenceResult. Also GodelEngine.RunAsync path: SubQuestionDecomposer → PromptIntentClassifier → ArenaWeightingProfile → per-sub-question forward pass → Reflexion retry → Self-Consistency synthesis. Mermaid sequence diagram. Gap callouts where micro/meso/macro OODA implementation deviates from docs/specs/engine/godel-engine.md.",
+  "activeForm": "Writing inference flow audit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

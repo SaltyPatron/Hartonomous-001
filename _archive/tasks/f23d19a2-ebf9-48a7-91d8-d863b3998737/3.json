@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Add TupleResolver profiles per spec §III",
+  "description": "Per docs/01-tensor-primitive-spec.md §III — BART (Florence-2 LM, BART, mBART, Marian: encoder_attn → CrossAttentionBlock), Conformer (canary-qwen, NeMo: ConformerBlock with embedded AttentionBlock+BertFfn+conv_module+BnState), DETR (Conditional-DETR / RT-DETR / Deformable DETR: ConvResidualBlock backbone + AttentionBlock encoder + CrossAttentionBlock decoder + DetectionHead + object_queries EmbeddingLookup), Swin (Grounding-DINO: PatchEmbed + SwinWindowAttn with relative_position_bias_table + BertFfn). Each profile = a NamePatternRule data file, conforming to IArchitectureProfile. No code, data.",
+  "activeForm": "Writing missing TupleResolver profiles",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

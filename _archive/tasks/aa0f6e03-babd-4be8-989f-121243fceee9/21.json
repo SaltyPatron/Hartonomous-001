@@ -1,0 +1,8 @@
+{
+  "id": "21",
+  "subject": "P4 — ISO639 multi-source language identity",
+  "description": "Extend Iso639Decomposer to read ISO 639-2, ISO 639-5, IANA BCP47, CLDR supplementalData/likelySubtags/validity, SIL change_requests, LoC RDF. Each source attests on language_name entities via typed edges; cross-source corroboration accumulates under language_identity_consensus arena.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

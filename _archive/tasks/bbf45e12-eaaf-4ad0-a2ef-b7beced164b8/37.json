@@ -1,0 +1,8 @@
+{
+  "id": "37",
+  "subject": "#37 — Text decomposer correctness audit",
+  "description": "Verify SubstrateTextDecomposer + native hartonomous_text_decompose emit ONLY content-addressed entities, never POS/sense/language. Delete any classification emission paths.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

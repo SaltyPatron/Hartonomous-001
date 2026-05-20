@@ -1,0 +1,9 @@
+{
+  "id": "41",
+  "subject": "#41 — Register Bcp47/Iso15924/AsciiEncoding/Iso88591Encoding in PhasesCommand",
+  "description": "Bcp47Decomposer, Iso15924Decomposer, AsciiEncodingDecomposer, Iso88591EncodingDecomposer compile + are AP-19/event-correct but PhasesCommand.cs:234-237 doesn't wire them into the orchestrator. has_script / has_encoding_position edges currently have 0 games because the decomposers never run. Add the wiring.",
+  "activeForm": "Registering Bcp47/Iso15924/AsciiEncoding/Iso88591Encoding in PhasesCommand",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

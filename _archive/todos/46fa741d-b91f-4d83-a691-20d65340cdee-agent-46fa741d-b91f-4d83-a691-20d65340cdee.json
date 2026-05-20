@@ -1,0 +1,42 @@
+[
+  {
+    "content": "Read all 140 docs to understand the complete vision",
+    "status": "completed",
+    "activeForm": "Reading documentation"
+  },
+  {
+    "content": "Audit Unicode seeding implementation against doc 137",
+    "status": "completed",
+    "activeForm": "Auditing Unicode seeding"
+  },
+  {
+    "content": "Audit atomizer for lossless reconstruction capability",
+    "status": "in_progress",
+    "activeForm": "Auditing atomizer losslessness"
+  },
+  {
+    "content": "Audit composite hashing (child hashes vs string hashing)",
+    "status": "pending",
+    "activeForm": "Auditing composite hashing"
+  },
+  {
+    "content": "Audit centroid cascade (layer N from layer N-1)",
+    "status": "pending",
+    "activeForm": "Auditing centroid cascade"
+  },
+  {
+    "content": "Audit edge creation for proper deduplication/density",
+    "status": "pending",
+    "activeForm": "Auditing edge deduplication"
+  },
+  {
+    "content": "Audit model weight ingestion for edge extraction",
+    "status": "pending",
+    "activeForm": "Auditing model weight ingestion"
+  },
+  {
+    "content": "Document all gaps between vision and implementation",
+    "status": "pending",
+    "activeForm": "Documenting gaps"
+  }
+]

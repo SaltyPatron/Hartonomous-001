@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "Phase B: Read docs end-to-end",
+  "description": "Read every doc artifact in docs/, .claude/, memory/ end-to-end (not skim). Per doc, classify each section into unique/duplicate/stale/cruft/aspirational/borrowed-vocab. Update AUDIT-STATUS row per doc as classified. Update AUDIT-FRAME with any new invention surface discovered. ~214 docs total. Batch parallel reads.",
+  "activeForm": "Phase B reading docs",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": []
+}

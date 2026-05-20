@@ -1,0 +1,9 @@
+{
+  "id": "11",
+  "subject": "Recomposer 7-gate validation per spec",
+  "description": "Per docs/10-architecture/06-recomposer-contract.md §validation-gates. 7 gates ALL must pass before recomposer claims \"FAR SUPERIOR\" output: (1) Determinism — re-run produces byte-identical output. (2) Loadability — output loads with transformers.AutoModelForCausalLM.from_pretrained without errors. (3) Sample-prompt — loaded model generates coherent output for representative prompt set, no NaN/inf/crash. (4) Architecture-preservation (Mode 1) — output config.json byte-equal to input modulo permitted metadata additions. (5) Sparsity — nonzero positions match expected (substrate edges above threshold + required defaults). (6) Provenance — every output position traces to substrate edges in chain. (7) Round-trip (Mode 1) — refined M' matches or beats M on standard benchmarks for the domain.",
+  "activeForm": "Running Build-a-bear smoke gate",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

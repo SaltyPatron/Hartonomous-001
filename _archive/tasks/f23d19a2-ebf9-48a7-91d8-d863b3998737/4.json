@@ -1,0 +1,9 @@
+{
+  "id": "4",
+  "subject": "CrossAttentionTuplePass per spec",
+  "description": "Per docs/specs/decomposers/layer-type-library.md §CrossAttentionLayerDecomposer. Q binds ModalityHint A, K/V bind ModalityHint B. Math: cross-attention QK projection-norm + top-K per side above per-tensor adaptive noise floor; sign-aware via Glicko (score = signed > 0 ? 1.0 : 0.0, weight = Math.Abs(signed)) per AP-31. Emits model_cross_modal_alignment edges on model_cross_modal_pattern (between word_form↔visual_concept, word_form↔image_token_position, word_form↔audio_chunk, decoder-token↔encoder-token). Arenas: model_trust + model_cross_modal_alignment. Required for CLIP, BLIP, Flamingo, Florence-2, FLUX DiT, SDXL, Whisper, MusicGen.",
+  "activeForm": "Writing CrossAttentionTuplePass",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

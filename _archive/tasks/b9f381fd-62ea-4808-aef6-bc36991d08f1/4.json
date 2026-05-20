@@ -1,0 +1,13 @@
+{
+  "id": "4",
+  "subject": "S4 — Wire DI composition root (Cli/Program.cs, Api/Program.cs)",
+  "description": "Register IUcdPropertyAccessor, ITierWalker, ISubstrateExistenceChecker, IEdgeTrajectoryBackfiller, ISignificancePrimer, IModelBootstrap singletons. Update ICodepointProperties target to BlobUcdPropertyAccessor. Remove NpgsqlCodepointPropertiesCache registration (file deleted in S5). Boundary: dotnet build clean, CLI + API start, iso639 seed smoke completes through new path.",
+  "activeForm": "Wiring S4 DI composition",
+  "status": "pending",
+  "blocks": [
+    "5"
+  ],
+  "blockedBy": [
+    "3"
+  ]
+}

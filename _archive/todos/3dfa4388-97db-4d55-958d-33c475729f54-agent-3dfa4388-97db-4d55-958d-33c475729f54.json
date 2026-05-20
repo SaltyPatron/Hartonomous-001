@@ -1,0 +1,47 @@
+[
+  {
+    "content": "Fix hash computation consistency - add ordinal prefix to match C API",
+    "status": "completed",
+    "activeForm": "Fixed hash computation"
+  },
+  {
+    "content": "Fix insert.cpp struct mismatch - already correct, verify N-ary support",
+    "status": "completed",
+    "activeForm": "Verified insert.cpp"
+  },
+  {
+    "content": "Implement cross-session deduplication - check database before insert",
+    "status": "completed",
+    "activeForm": "Implemented cross-session deduplication"
+  },
+  {
+    "content": "Make tokenization pluggable - create TokenizerConfig struct",
+    "status": "completed",
+    "activeForm": "Made tokenization pluggable"
+  },
+  {
+    "content": "Implement centroid depth scaling - scale inward based on depth",
+    "status": "completed",
+    "activeForm": "Implemented centroid depth scaling"
+  },
+  {
+    "content": "Unify SemanticEdge struct definitions - use double weight everywhere",
+    "status": "completed",
+    "activeForm": "Unified SemanticEdge definitions"
+  },
+  {
+    "content": "Implement partition_by_hilbert - add iterator to AtomCache and partition logic",
+    "status": "completed",
+    "activeForm": "Implemented partition_by_hilbert"
+  },
+  {
+    "content": "Batch SPI operations in hypercube_ops_pg.c - fix N+1 query pattern",
+    "status": "in_progress",
+    "activeForm": "Batching SPI operations"
+  },
+  {
+    "content": "Clean up 6 archived files - remove dead code",
+    "status": "pending",
+    "activeForm": "Cleaning up archived files"
+  }
+]

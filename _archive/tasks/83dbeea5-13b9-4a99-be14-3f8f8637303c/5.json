@@ -1,0 +1,9 @@
+{
+  "id": "5",
+  "subject": "Step E: Rewrite 13 UcdUcaDecomposer passes as producers",
+  "description": "Replace populate_*_from_ext dispatchers in src/Hartonomous.Decomposers/Ucd/*.cs (CodepointAtomPass, CodepointPropertyPass, UnicodeCaseEdgePass, UnicodeDecompositionEdgePass, UnicodeFullCaseMappingEdgePass, UnicodeConfusablePass, UnicodeStandardizedVariantPass, UnicodeRadicalStrokePass, UnicodeNamedSequencePass, UnicodeEmojiSequencePass, UnicodeReferenceVocabularyPass, ExtensionCatalogVerificationPass, UnicodeMaterializationValidationPass) with real producers mirroring the Wiktionary/Tatoeba pattern (CreateBatch → AddEntity/AddEdge/AddJunction → SubmitBatchAsync, ParallelChunkProcessor.RunAsync). Create secondary readers under Sources/. Update UnicodePassContext.cs to carry IIngestionPipeline.",
+  "activeForm": "Rewriting 13 Unicode passes as producers",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

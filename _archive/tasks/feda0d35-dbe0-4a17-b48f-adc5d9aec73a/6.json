@@ -1,0 +1,9 @@
+{
+  "id": "6",
+  "subject": "Resume RunAll triage to green",
+  "description": "./RunAll.sh --source /vault/Data --with-synth end to end green. UCD/ISO &lt; 1 minute, Wiktionary &lt; 10 minutes. All decomposer phases pass validation; safetensors decomposer ingests Qwen2.5-Coder-3B; synth produces HF-compat model via recipe.",
+  "activeForm": "Triaging RunAll to green",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": []
+}

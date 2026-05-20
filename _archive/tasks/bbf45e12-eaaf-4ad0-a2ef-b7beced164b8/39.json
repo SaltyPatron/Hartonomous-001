@@ -1,0 +1,8 @@
+{
+  "id": "39",
+  "subject": "#39 — EdgeArenaRouter orphan mappings",
+  "description": "Add routing for model_attention_pattern, model_concept_similarity, model_ffn_factor, model_cross_modal_pattern, model_spatial_pattern, model_detection_class + 16 lesser corpus orphans (also_see, attribute, cause, etc.) to proper domain arenas.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

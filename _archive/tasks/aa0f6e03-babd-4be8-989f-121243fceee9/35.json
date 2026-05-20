@@ -1,0 +1,8 @@
+{
+  "id": "35",
+  "subject": "P3h — ISO 15924 script codes + CLDR locale data ingest",
+  "description": "ISO 15924 (/vault/Data/Unicode/iso15924/) — script identity codes tied to Unicode \"sc\"/\"scx\" attributes. CLDR (/vault/Data/Unicode/Public/cldr/ + /vault/Data/Unicode/cldr/) — locale data linking language ↔ script ↔ region ↔ calendar ↔ number format. Both attest on substrate's language_name, script_name, region_name entities. Cross-source corroboration on shared codes via Glicko. Connects ISO 639 (P4) + Unicode UCD (P3b-f) + CLDR on the same content-addressed identity surface.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

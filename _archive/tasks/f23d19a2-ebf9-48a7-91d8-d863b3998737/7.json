@@ -1,0 +1,9 @@
+{
+  "id": "7",
+  "subject": "Full PrimitiveSynthesizers per spec — Linear, LocalKernel, Normalization, Lookup",
+  "description": "Per docs/specs/recomposers/synthesis-library.md §IV — full cross-source consensus aggregation, NOT identity-default-only stubs. LinearSynthesizer (handles Q/K/V/O/gate/up/down/lm_head/intermediate/output/bbox/class/base/fused-QKV/1×1-conv-reshape — low-rank SVD or KV-memory inversion per slot). LocalKernelSynthesizer (conv kernels from model_local_kernel_evidence neighbor attestations). NormalizationSynthesizer (per-cell mean across contributing source models' contour physicalities weighted by entity_significance model_layer_norm_evidence mu; identity-norm γ=1/β=0 only as no-contributors branch). LookupSynthesizer (per-row firefly POINTZM consensus per content entity, reverse-projected via InverseLaplacianEigenmap to target hidden_dim, OR PCA over per-token attestation participation). Honest abstention per spec §VI.3 only where consensus density is below threshold AND no architectural default applies. Substrate query API surface for \"find tensors by role + layer + source filter\" — build it if it doesn't exist on IEntityReader / ISubstrateQuery.",
+  "activeForm": "Building full per-spec PrimitiveSynthesizers",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

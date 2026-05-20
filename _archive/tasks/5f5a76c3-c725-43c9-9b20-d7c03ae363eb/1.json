@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Map every C# AddPhysicality* call-site to new 3-row code",
+  "description": "Comprehensive grep for AddPhysicalityPoint4d / AddPhysicalityLineString4d / AddPhysicality / physicality_type code strings. Determine actual emission set. Map each to entity / firefly / content.",
+  "activeForm": "Mapping C# call-sites",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

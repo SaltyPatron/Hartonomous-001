@@ -1,0 +1,9 @@
+{
+  "id": "4",
+  "subject": "Unify extension SQL to PostGIS pattern (CREATE EXTENSION installs everything)",
+  "description": "Rewrite scripts/build/concat_extension_sql.py to emit ONE hartonomous--1.0.sql containing CREATE SCHEMA + C-binding template + bootstrap @include walk in correct order. Delete substrate-schema.sql output. Update scripts/linux/db-bootstrap.sh to just CREATE DATABASE + CREATE EXTENSION hartonomous CASCADE (no separate substrate-schema apply).",
+  "activeForm": "Unifying extension SQL to PostGIS pattern",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

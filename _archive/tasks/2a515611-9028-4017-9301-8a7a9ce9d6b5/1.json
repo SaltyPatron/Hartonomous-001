@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Phase A: Inventory + ledger init",
+  "description": "Build full inventory of 214 doc artifacts, write AUDIT-STATUS.md skeleton, write AUDIT-FRAME.md skeleton with the known invention surface from this conversation. DONE inventory; AUDIT-STATUS.md created; AUDIT-FRAME.md pending.",
+  "activeForm": "Phase A inventory + ledger",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

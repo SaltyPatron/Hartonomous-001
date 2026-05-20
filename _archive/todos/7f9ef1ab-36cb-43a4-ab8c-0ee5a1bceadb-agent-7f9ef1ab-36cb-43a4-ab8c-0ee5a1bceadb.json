@@ -1,0 +1,17 @@
+[
+  {
+    "content": "Fix test tolerance from 200% to 30%",
+    "status": "in_progress",
+    "activeForm": "Fixing test tolerance"
+  },
+  {
+    "content": "Fix Gram-Schmidt segfault",
+    "status": "pending",
+    "activeForm": "Fixing Gram-Schmidt segfault"
+  },
+  {
+    "content": "Fix Laplacian normalized vs unnormalized mismatch",
+    "status": "pending",
+    "activeForm": "Fixing Laplacian documentation mismatch"
+  }
+]

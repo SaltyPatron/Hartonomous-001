@@ -1,0 +1,8 @@
+{
+  "id": "36",
+  "subject": "#36 — ContentRecomposer C# bulk-tier walker",
+  "description": "New src/Hartonomous.Recomposers/ContentRecomposer.cs implementing N+1 bulk PG queries (one per tier) + in-memory LINESTRINGZM walk + cp_from_hash P/Invoke. Delete pg_recompose_walk.c and the SQL recompose_text/recompose_content/get_composition_children.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

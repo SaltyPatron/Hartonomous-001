@@ -1,0 +1,8 @@
+{
+  "id": "23",
+  "subject": "P5e — UD all v2.17 treebanks ingest",
+  "description": "Ingest every Universal Dependencies treebank in v2.17 release. Each language a separate provenance row. Sentence trajectories via AddIngestionTrajectory (P1c done). Per-token POS/morph/deprel attestations.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

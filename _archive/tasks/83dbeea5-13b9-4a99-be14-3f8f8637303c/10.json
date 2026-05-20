@@ -1,0 +1,9 @@
+{
+  "id": "10",
+  "subject": "Step I: Cross-link attestation in existing text decomposers",
+  "description": "Edit WordNetDecomposer/WiktionaryDecomposer/UniversalDependenciesDecomposer/TatoebaDecomposer/SafetensorsDecomposer tokenizer pass to fire has_language attestation events per source's language tag + per-token codepoint-usage attestation events under language_codepoint_coverage_consensus arena. Already-existing edges (translation_link, etc.) need no change.",
+  "activeForm": "Adding cross-link attestation to existing decomposers",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

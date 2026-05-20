@@ -1,0 +1,9 @@
+{
+  "id": "14",
+  "subject": "Audit doc: text ingest flow trace",
+  "description": "docs/audit/flow-text-ingest.md — end-to-end trace from CLI (or seed decomposer) → SubstrateTextDecomposer.EmitStatic → IIngestionBatch → StreamingIngestionPipeline channels → drain workers → substrate tables. Cover UCD/UCA seed path, WordNet seed path, Wiktionary seed path, Tatoeba seed path, prompt ingestion path. Mermaid sequence diagram. Gap callouts where seed-uses-core or NFC normalization is violated.",
+  "activeForm": "Writing text ingest flow audit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

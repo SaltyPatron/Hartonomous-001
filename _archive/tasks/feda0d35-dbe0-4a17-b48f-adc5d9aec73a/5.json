@@ -1,0 +1,9 @@
+{
+  "id": "5",
+  "subject": "Rebuild + reinstall extension, recreate database",
+  "description": "make -C ext/hartonomous_pg clean install (deploys unified .sql + .so). createdb hartonomous. CREATE EXTENSION hartonomous CASCADE. Verify schemas exist, substrate.entity_type seed loaded, substrate.recipe + tokenizer_family tables present.",
+  "activeForm": "Rebuilding + reinstalling extension",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

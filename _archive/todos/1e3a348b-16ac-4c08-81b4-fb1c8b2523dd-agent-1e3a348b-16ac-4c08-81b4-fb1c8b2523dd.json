@@ -1,0 +1,27 @@
+[
+  {
+    "content": "Create minimal Atom schema (Hilbert as PK, geometry IS meaning)",
+    "status": "completed",
+    "activeForm": "Creating Atom schema"
+  },
+  {
+    "content": "Create C++ Unicode seeder using proper Hilbert transform",
+    "status": "completed",
+    "activeForm": "Creating Unicode seeder"
+  },
+  {
+    "content": "Create C++ encoder (LINESTRINGZM compositions)",
+    "status": "completed",
+    "activeForm": "Creating encoder"
+  },
+  {
+    "content": "Create SQL decode functions",
+    "status": "completed",
+    "activeForm": "Creating decode functions"
+  },
+  {
+    "content": "Remove old schema files and cruft",
+    "status": "in_progress",
+    "activeForm": "Cleaning up old files"
+  }
+]

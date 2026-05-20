@@ -1,0 +1,8 @@
+{
+  "id": "36",
+  "subject": "P3i — IVD (Ideographic Variation Database) ingest",
+  "description": "1.1GB at /vault/Data/Unicode/ivd/ — adobe-japan1, caaph, hanyo-denshi, krname, moji_joho, msarg collections of CJK ideograph variants. Each variant tied to a base codepoint via has_ideographic_variant edges. Plus per-variant glyph images (gif/, png/) for image-modality cross-binding.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

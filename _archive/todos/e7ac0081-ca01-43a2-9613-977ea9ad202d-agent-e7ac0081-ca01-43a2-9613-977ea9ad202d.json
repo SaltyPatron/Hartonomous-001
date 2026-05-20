@@ -1,0 +1,52 @@
+[
+  {
+    "content": "Research foundational concepts: spatial AI, geometric deep learning, PostGIS capabilities",
+    "status": "completed",
+    "activeForm": "Researching foundational concepts"
+  },
+  {
+    "content": "Design N-dimensional landmark projection system for constants",
+    "status": "completed",
+    "activeForm": "Designing landmark projection system"
+  },
+  {
+    "content": "Implement Unicode seeding with deterministic coordinates",
+    "status": "completed",
+    "activeForm": "Implementing Unicode seeding"
+  },
+  {
+    "content": "Design and implement Content Pair Encoding (CPE) cascade system",
+    "status": "completed",
+    "activeForm": "Implementing CPE cascade system"
+  },
+  {
+    "content": "Implement text ingestion pipeline with tiered n-grams",
+    "status": "completed",
+    "activeForm": "Implementing text ingestion pipeline"
+  },
+  {
+    "content": "Implement SafeTensor ingestion pipeline in C#",
+    "status": "completed",
+    "activeForm": "Implementing SafeTensor ingestion in C#"
+  },
+  {
+    "content": "Create database repository and seeding utilities",
+    "status": "completed",
+    "activeForm": "Creating database repository"
+  },
+  {
+    "content": "Create test program and validation harness",
+    "status": "completed",
+    "activeForm": "Creating test program"
+  },
+  {
+    "content": "Test with Moby Dick - validate CPE, RLE, deduplication",
+    "status": "in_progress",
+    "activeForm": "Awaiting Moby Dick file"
+  },
+  {
+    "content": "Test with small SafeTensor packages",
+    "status": "pending",
+    "activeForm": "Awaiting SafeTensor file"
+  }
+]

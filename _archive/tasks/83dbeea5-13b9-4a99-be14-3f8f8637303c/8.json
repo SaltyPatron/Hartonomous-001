@@ -1,0 +1,9 @@
+{
+  "id": "8",
+  "subject": "Step G: ISO 15924 + 3166 + BCP47 + CLDR decomposers",
+  "description": "Create src/Hartonomous.Decomposers/Iso/{Iso15924Decomposer.cs, Iso3166Decomposer.cs, Bcp47Decomposer.cs} and src/Hartonomous.Decomposers/Cldr/CldrDecomposer.cs mirroring Iso639Decomposer shape. Iso15924 parses iso15924.txt → substrate.script + has_script edges. Iso3166 parses territory data → region entities + has_region edges. Bcp47 parses tag registry → has_iso_639_*/has_script/has_region cross-link edges. Cldr parses per-locale exemplarCharacters → language_codepoint_coverage_consensus events. Add Iso15924/Iso3166/Bcp47/Cldr to Phase enum.",
+  "activeForm": "Creating ISO 15924/3166/BCP47/CLDR decomposers",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": []
+}

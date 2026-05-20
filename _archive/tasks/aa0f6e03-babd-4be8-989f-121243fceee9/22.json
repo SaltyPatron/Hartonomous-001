@@ -1,0 +1,8 @@
+{
+  "id": "22",
+  "subject": "P5c — Tatoeba 12M sentence complete ingest",
+  "description": "Validate AP-19 fix at scale. Full Tatoeba 12M sentences as content trajectories. translation_link + recording_of + has_contributor edges. Acceptance: COUNT(*) FROM substrate.entity_classification WHERE entity_type_id = text_composition AND provenance_id = tatoeba >= 12M.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

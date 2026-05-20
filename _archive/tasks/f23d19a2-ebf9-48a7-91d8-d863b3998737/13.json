@@ -1,0 +1,9 @@
+{
+  "id": "13",
+  "subject": "Audit doc: safetensors ingest flow trace",
+  "description": "docs/audit/flow-safetensors-ingest.md — end-to-end trace from `hartonomous ingest-model` CLI through SafetensorsContainerDecomposer → TupleResolver → tuple passes (AttentionBlockTuplePass, FfnTuplePass, EmbeddingLookupTuplePass, LoraDeltaTuplePass, NormalizationPrimitivePass, missing CrossAttention/SpatialKernel) → StreamingIngestionPipeline → drain → substrate tables. Mermaid sequence diagram. Per-step gap callouts where implementation deviates from docs/specs/decomposers/layer-type-library.md.",
+  "activeForm": "Writing safetensors ingest flow audit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

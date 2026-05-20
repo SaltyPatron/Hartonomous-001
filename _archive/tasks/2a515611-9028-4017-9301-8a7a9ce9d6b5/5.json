@@ -1,0 +1,9 @@
+{
+  "id": "5",
+  "subject": "Phase E: Per-canonical-doc population",
+  "description": "For each canonical doc in target surface, gather unique-signal extractions from existing docs that belong to its scope. Write canonical doc using precise terminology (no borrowed/cute/trademarked names). Cross-reference rather than duplicate.",
+  "activeForm": "Phase E populating canonical surface",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

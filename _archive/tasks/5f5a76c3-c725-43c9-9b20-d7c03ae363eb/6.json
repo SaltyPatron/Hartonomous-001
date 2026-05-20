@@ -1,0 +1,9 @@
+{
+  "id": "6",
+  "subject": "Regenerate extension SQL and build verification",
+  "description": "Run scripts/linux/build-extension-sql.sh (or scripts/build/concat_extension_sql.py directly) to regenerate ext/hartonomous_pg/sql/hartonomous--1.0.sql. Then dotnet build to confirm C# layer compiles. Report. Do NOT touch DB.",
+  "activeForm": "Regenerating extension SQL and building",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": []
+}

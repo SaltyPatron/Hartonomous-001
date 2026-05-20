@@ -1,0 +1,9 @@
+{
+  "id": "7",
+  "subject": "Phase G: Verification + retirement",
+  "description": "Every claim in canonical surface verified against source. Aspirational claims explicitly marked. Counts computed from source at build time. After verification passes, bulk-retire extracted source docs.",
+  "activeForm": "Phase G verification + retirement",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

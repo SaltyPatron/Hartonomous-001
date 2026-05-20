@@ -1,0 +1,8 @@
+{
+  "id": "17",
+  "subject": "P1g-followup — classifications as edges (large refactor)",
+  "description": "Reference vocabulary rows (pos, deprel, sense, language, morph_feature) become content-hashed substrate entities. New edge types in seed: has_pos, has_language, has_morph_feature, has_deprel (has_sense already exists). UdDecomposer / WiktionaryDecomposer / WordNetDecomposer migrate from AddJunction(entity_pos / pattern_deprel / entity_language / entity_morph_feature) to AddEdge(has_pos / has_deprel / has_language / has_morph_feature). Old junctions become analytics caches. AI model attestations on classifications fire on the same edge_significance surface as corpus attestations. Substantial multi-decomposer migration.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

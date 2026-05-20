@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Update bootstrap manifest, git rm stale partitions and add-on seeds",
+  "description": "Remove from manifest: physicality_s3.sql, physicality_hilbert.sql, physicality_audio.sql, physicality_model.sql, physicality_contour.sql, physicality_entity_shape.sql, physicality_ingestion_trajectory.sql, physicality_type_embedding_firefly.sql, physicality_type_trajectories.sql. Add new physicality_entity/firefly/content.sql. Then git rm the stale files.",
+  "activeForm": "Updating manifest and removing stale files",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

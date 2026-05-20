@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "Write 3 new partition files (entity, firefly, content)",
+  "description": "Write physicality_entity.sql FOR VALUES IN (1) accepting POINT/LINESTRING/MULTILINESTRING 4D; physicality_firefly.sql FOR VALUES IN (2) accepting POINT 4D; physicality_content.sql FOR VALUES IN (3) accepting LINESTRING/MULTILINESTRING 4D. Keep physicality_default.sql.",
+  "activeForm": "Writing new partition files",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

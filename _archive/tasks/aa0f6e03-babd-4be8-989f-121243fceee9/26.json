@@ -1,0 +1,8 @@
+{
+  "id": "26",
+  "subject": "P5a-b — Wiktionary content trajectories + tree-sitter JSONL",
+  "description": "Extract every citation/etymology/definition/example sentence as text_composition entities via SubstrateTextDecomposer. Attach via has_citation/has_etymology/has_definition/has_example edges to lemma + sense. Tree-sitter JSONL parsing (depends on P2). Per-entry tier-mapping data table for kaikki.org schema.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

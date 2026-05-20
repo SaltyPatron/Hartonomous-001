@@ -1,0 +1,9 @@
+{
+  "id": "10",
+  "subject": "Verify ingest correctness per Substrate Law 12 (semantic fidelity)",
+  "description": "Per docs/10-architecture/01-substrate-laws.md Law 12 falsification test. For each entity type, define required edge set (per docs/specs/decomposers/layer-type-library.md tuple→edge mapping). Run SQL: `SELECT entity_hash FROM substrate.entity e WHERE NOT EXISTS (SELECT 1 FROM substrate.edge_member em WHERE em.entity_hash = e.hash AND em.edge_type_id IN (required_edge_types))`. Result must be empty per Law 12. Verify Glicko priming via record_attestations_bulk fires correctly per Law 4 (open-vocabulary arenas). Verify firefly POINTZM physicality lands in embedding_firefly partition per spec §VII. Verify per Law 6 (determinism) that re-ingest of the same source produces byte-identical substrate state via hash-of-hashes comparison.",
+  "activeForm": "Verifying current ingest populates substrate state",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

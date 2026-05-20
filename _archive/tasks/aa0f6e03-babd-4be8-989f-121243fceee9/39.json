@@ -1,0 +1,8 @@
+{
+  "id": "39",
+  "subject": "P3l — Unicode charts (visualization PDFs/HTML) as content + image trajectories",
+  "description": "1.4GB at /vault/Data/Unicode/charts/ + 487MB at /vault/Data/Unicode/emoji/charts*/ — per-block / per-emoji-version visualization renderings. PDF/HTML content trajectories; PDF-extracted images attach as pixel_region content trajectories to relevant codepoint / emoji-sequence entities via has_chart_rendering edges. Multimodal binding surface.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

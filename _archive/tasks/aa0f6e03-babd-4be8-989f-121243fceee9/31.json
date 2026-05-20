@@ -1,0 +1,8 @@
+{
+  "id": "31",
+  "subject": "P8 — Build-a-bear synthesis recomposer",
+  "description": "Delete SafetensorsRecomposer.AssembleTensorBytesAsync phantom-scatter dead code. TargetArchitectureSpec + RecompositionOptions. 9 layer-type synthesizers (AttentionQkv, AttentionVo, Ffn, Embedding, LmHead, LayerNorm, MoeRouter, MoeExpert, LoRAAdapter) + specialist synthesizers (Conv, ViTPatch, CodecRVQ, DetectionHead, CrossAttention, DiffusionUnet). Honest abstention. Standard safetensors output HF/vLLM/llama.cpp compatible. Determinism per spec §XI.2.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

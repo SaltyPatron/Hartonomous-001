@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Triage and properly repair every RunAll failure",
+  "description": "Run ./RunAll.sh --source /vault/Data --with-synth; for each failing step, read the actual code/spec/seeds to understand what the invention requires, fix root cause respecting the substrate model (no shims, no MVPs, no top-K, sign preserved, threshold-only LTH, etc.), re-run. Continue until green.",
+  "activeForm": "Running RunAll.sh end-to-end",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

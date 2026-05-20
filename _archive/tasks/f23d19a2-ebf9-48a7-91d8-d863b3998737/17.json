@@ -1,0 +1,9 @@
+{
+  "id": "17",
+  "subject": "Audit doc: spec vs implementation gap matrix",
+  "description": "docs/audit/gap-matrix.md — table where each row is a spec capability (from docs/specs/* + docs/10-architecture/*) and columns are: spec citation, current implementation surface (or \"missing\"), gap classification (missing / partial / wrong-shape / dead-code-against-current-schema), blast radius (what depends on it). Every doc that names a load-bearing surface gets a row. Targets: decomposer pass coverage vs spec, synthesizer coverage vs spec, substrate query surface vs spec, cognitive function surface vs docs/10-architecture/08-cognitive-surface.md, recipe DSL implementation vs docs/10-architecture/15-recipe-dsl.md, audit chain implementation vs docs/10-architecture/17-audit-chain.md, Gödel engine macro-OODA vs docs/specs/engine/godel-engine.md, multi-tenancy vs docs/10-architecture/16-multi-tenancy.md.",
+  "activeForm": "Writing spec/impl gap matrix audit",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

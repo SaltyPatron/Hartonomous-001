@@ -1,0 +1,17 @@
+[
+  {
+    "content": "Test semantic queries (neighbors, similar)",
+    "status": "in_progress",
+    "activeForm": "Testing semantic queries"
+  },
+  {
+    "content": "Test cross-document deduplication",
+    "status": "in_progress",
+    "activeForm": "Testing cross-document deduplication"
+  },
+  {
+    "content": "Fix coordinate system (center-origin)",
+    "status": "in_progress",
+    "activeForm": "Fixing coordinate system"
+  }
+]

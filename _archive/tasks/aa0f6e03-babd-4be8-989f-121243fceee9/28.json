@@ -1,0 +1,8 @@
+{
+  "id": "28",
+  "subject": "P6 — AI model ingestion (4 primitives + 14 tuples + per-architecture resolver)",
+  "description": "SafetensorsContainerDecomposer scope-narrowed. Per-tensor dtype decode lossless to f64 (BF16/F32/F64/AWQ-Q4/GGUF/FP8). Per-architecture TupleResolver tables (data). 4 primitive passes (Linear/LocalKernel/Normalization-done/Lookup). 14 tuple-attestation passes (AttentionBlock/SwiGluFfn/BertFfn/MoeRouter/MoeExpert/EmbeddingLookup/LmHead/LoraDelta/CrossAttention/ConvResidual/Conformer/SwinWindowAttn/PatchEmbed/DetectionHead/BnState/VaeAttnBlock). Sign-preserving Glicko (AP-31). Per-tensor adaptive magnitude floor (AP-33). Direct weight decomposition only (AP-34). AWQ cross-precision verification. Multi-model corroboration validation.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

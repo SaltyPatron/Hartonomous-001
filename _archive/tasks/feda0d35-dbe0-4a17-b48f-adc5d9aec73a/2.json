@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "Confirm dotnet build baseline",
+  "description": "Build solution non-clean to surface compile errors that would block RunAll's build-dotnet step.",
+  "activeForm": "Building dotnet baseline",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

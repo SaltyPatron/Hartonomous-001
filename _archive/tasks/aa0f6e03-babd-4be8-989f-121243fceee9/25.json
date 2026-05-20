@@ -1,0 +1,8 @@
+{
+  "id": "25",
+  "subject": "P5f — WordNet complete with cross-source corroboration",
+  "description": "Synset attestations + has_gloss/has_example content trajectories. Cross-source corroboration via OMW + Wiktionary on shared lemma + synset entities tightens Glicko sigma.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

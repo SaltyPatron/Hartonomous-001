@@ -1,0 +1,9 @@
+{
+  "id": "12",
+  "subject": "Step K: Content reconstruction gate — pg_recompose_content.c + RunAll green",
+  "description": "Create ext/hartonomous_pg/src/pg_recompose_content.c (C function that takes document hash, walks LINESTRINGZM tree via bulk SPI probes to substrate.entity_by_hash_prefix, mantissa-unpacks vertices, resolves codepoint leaves via hartonomous_ucd_cp_* against mmap'd blob, assembles bytes). Register as substrate.recompose_content SQL function in bootstrap.sql. Add RecomposeContent constant to SubstrateFunctionNames. Create src/Hartonomous.Cli/Commands/RecomposeContentCommand.cs (one-line C# orchestration). Run ./RunAll.sh --source /vault/Data --with-synth. Verify substrate-state SQL assertions (codepoint count = 0x110000, IVD 5 distinct provenances, encoding-position ≥30 provenances, version-attestation ≥18 distinct provenances, attestation_type still at 3 rows, AP-1 priming coverage complete). Ingest Moby Dick + assert sub-second recompose-content from document hash.",
+  "activeForm": "Building reconstruction gate + running end-to-end verification",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

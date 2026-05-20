@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "subject": "S1 — Declare all interfaces, value types, schema additions (additive only)",
+  "description": "Declare 11 C# interfaces, TrajectoryVertex struct, additive IIngestionBatch methods, entity hash-prefix columns + index, physicality_type seed additions, bb_* mantissa SQL helpers, entity_by_hash_prefix lookup. Confirm pg_geometry4d_makeline + add pg_geometry4d_makemultiline if absent. Scaffold one-type-per-file linter (disabled). Boundary: dotnet build clean, make installcheck clean, existing tests pass, new contracts inert.",
+  "activeForm": "Declaring S1 contracts",
+  "status": "completed",
+  "blocks": [
+    "2"
+  ],
+  "blockedBy": []
+}

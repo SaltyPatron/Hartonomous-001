@@ -1,0 +1,9 @@
+{
+  "id": "7",
+  "subject": "Step F: New Unicode passes — version differencing + IVD + Unihan",
+  "description": "Create src/Hartonomous.Decomposers/Ucd/UcdVersionDifferencingPass.cs (parses 18 staged UCD versions' ucd.all.flat.xml, fires per-version attestation events on per-cp properties under unicode_version_consensus arena). Create IvdPerCollectionPass.cs (parses 5 IVD collections at /vault/Data/Unicode/ivd/, emits has_ideographic_variant_in_collection edges + per-collection attestation under ivd_collection_consensus). Create UnihanReadingPass.cs (parses ucd.unihan.flat.zip, emits unihan_reading edges per kMandarin/kCantonese/kJapanese/kVietnamese under unihan_reading_consensus). Append all 3 to UcdUcaDecomposer.CreatePasses().",
+  "activeForm": "Adding version-diff + IVD + Unihan passes",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

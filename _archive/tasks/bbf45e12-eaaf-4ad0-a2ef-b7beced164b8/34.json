@@ -1,0 +1,8 @@
+{
+  "id": "34",
+  "subject": "#34 — PG hash-partition entity/edge_member/physicality",
+  "description": "PARTITION BY HASH (hash_bits_0_51) with N=8 child partitions; pipeline writer routes worker K to partition K via per-worker pg_temp.X_inflight_pK. Eliminates row-lock contention.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

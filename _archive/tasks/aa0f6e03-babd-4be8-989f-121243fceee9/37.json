@@ -1,0 +1,8 @@
+{
+  "id": "37",
+  "subject": "P3j — L2 / IRG / WG2 Consortium working documents as content trajectories",
+  "description": "12GB L2 + 4.6GB IRG + 3.1GB WG2 = ~20GB of Unicode Consortium and ISO working-group technical documents (1990–present). Each document is a content trajectory (text_composition / paragraph / document) ingested via SubstrateTextDecomposer. Attestations: has_source to Unicode/ISO provenance; document → codepoints/scripts/blocks it discusses via has_topic edges (extracted from text); decision metadata (which proposal led to which codepoint allocation) via has_decision edges. Massive corpus for the substrate's language-evolution knowledge.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

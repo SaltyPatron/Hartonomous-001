@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Locate validate/synth/ops CLI handlers",
+  "description": "Read what `scripts/hart seed validate`, `scripts/hart ops status`, `scripts/hart synthesize-model` actually do so the gate criteria are known up front.",
+  "activeForm": "Locating validate/synth/ops handlers",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}
