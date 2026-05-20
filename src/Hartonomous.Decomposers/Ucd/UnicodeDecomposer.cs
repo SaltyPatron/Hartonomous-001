@@ -243,6 +243,18 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             await LoadBreakPropertyMapAsync(connection, ct);
 
         long entityCount = 0;
+
+        // Pre-emit every reference-vocabulary entity ONCE up front so the
+        // 1.1M-codepoint loop below can construct EntityHandle directly in
+        // the classification helpers without re-emitting through AddEntity.
+        // Re-emission caused transactionid lock contention across the worker
+        // pool (every batch's first encounter re-hit the same hot rows on
+        // ON CONFLICT DO NOTHING). One submit + drain here serialises the
+        // creation to a single backend.
+        await PrimeReferenceVocabularyEntitiesAsync(
+            pipeline, gcCodes, scriptCodes, blockCodes, bidiCodes, eawCodes,
+            breakProps, ct);
+
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
         HashSet<Hash32> chunkSeenRefVocab = new();
         List<Hash32> pendingHashes = new(PreDedupeChunk);
@@ -288,6 +300,61 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
         return entityCount;
     }
 
+    /// <summary>
+    /// Emit one substrate.entity row per UCD reference-vocabulary value
+    /// (general_category, script, block, bidi_class, east_asian_width, plus
+    /// the four break_property categories) using deterministic
+    /// ReferenceVocabularyHashes hashes. Submitted as a single bounded
+    /// batch and drained to completion before the 1.1M-codepoint atom
+    /// loop starts so every subsequent EmitClassification call can
+    /// construct an EntityHandle directly without ON-CONFLICT contention.
+    /// Idempotent: re-running the seed against an already-primed substrate
+    /// is a no-op via ON CONFLICT DO NOTHING inside substrate.write_entities.
+    /// </summary>
+    private async Task PrimeReferenceVocabularyEntitiesAsync(
+        IIngestionPipeline pipeline,
+        Dictionary<int, string> gcCodes,
+        Dictionary<int, string> scriptCodes,
+        Dictionary<int, string> blockCodes,
+        Dictionary<int, string> bidiCodes,
+        Dictionary<int, string> eawCodes,
+        Dictionary<(string Cat, int EnumId), (int Id, string Code)> breakProps,
+        CancellationToken ct)
+    {
+        IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
+
+        foreach (string code in gcCodes.Values)
+        {
+            batch.AddEntity(ReferenceVocabularyHashes.GeneralCategoryEntityHash(code), "general_category");
+        }
+        foreach (string code in scriptCodes.Values)
+        {
+            batch.AddEntity(ReferenceVocabularyHashes.ScriptEntityHash(code), "script");
+        }
+        foreach (string code in blockCodes.Values)
+        {
+            batch.AddEntity(ReferenceVocabularyHashes.BlockEntityHash(code), "block");
+        }
+        foreach (string code in bidiCodes.Values)
+        {
+            batch.AddEntity(ReferenceVocabularyHashes.BidiClassEntityHash(code), "bidi_class");
+        }
+        foreach (string code in eawCodes.Values)
+        {
+            batch.AddEntity(ReferenceVocabularyHashes.EastAsianWidthEntityHash(code), "east_asian_width");
+        }
+        foreach ((string Cat, int EnumId) key in breakProps.Keys)
+        {
+            (int _, string Code) bp = breakProps[key];
+            batch.AddEntity(
+                ReferenceVocabularyHashes.BreakPropertyEntityHash(key.Cat, bp.Code),
+                "break_property");
+        }
+
+        await pipeline.SubmitBatchAsync(batch, ct);
+        await pipeline.DrainPendingAsync(ct);
+    }
+
     private long FlushCodepointAtomsInner(
         IIngestionBatch batch,
         List<Hash32> hashes,
@@ -307,9 +374,7 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             if (existing.Contains(new HashKey(hashes[i]))) { continue; }
             int cp = codepoints[i];
             (double x, double y, double z, double m) = PhysicalityEmitter.CodepointS3Position(cp);
-            double[] point4 = [x, y, z, m];
-            ulong hilbert = Hilbert.Index(point4, 16);
-            EntityHandle cpHandle = batch.AddEntity(hashes[i], "codepoint", x, y, z, m, (long)hilbert);
+            EntityHandle cpHandle = batch.AddEntity(hashes[i], "codepoint");
             batch.AddPhysicalityPoint4d(cpHandle, "entity", x, y, z, m);
 
             // 5 categorical UCD-property classifications via has_classification
@@ -383,15 +448,15 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
     {
         if (!codeMap.TryGetValue(refId, out string? code)) { return; }
         Hash32 refHash = hashFn(code);
-        EntityHandle refHandle;
-        if (chunkSeenRefVocab.Add(refHash))
-        {
-            refHandle = batch.AddEntity(refHash, targetEntityTypeCode);
-        }
-        else
-        {
-            refHandle = new EntityHandle(refHash, targetEntityTypeCode);
-        }
+        // Reference-vocabulary entities are pre-seeded by the
+        // reference_vocabularies section at the start of UnicodeDecomposer
+        // (683 entities, AddEntity once). Re-emitting them from every
+        // classification call site triggered transactionid lock contention
+        // across worker backends — every worker repeatedly hit the same
+        // hot rows on ON CONFLICT DO NOTHING. The handle is constructed
+        // directly here; chunkSeenRefVocab is no longer used.
+        EntityHandle refHandle = new EntityHandle(refHash, targetEntityTypeCode);
+        _ = chunkSeenRefVocab; // retained as a parameter for call-site symmetry
         batch.AddEdge(
             "has_classification",
             ProvenanceCode,
@@ -415,15 +480,9 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
     {
         if (!breakProps.TryGetValue((category, enumId), out var bp)) { return; }
         Hash32 refHash = ReferenceVocabularyHashes.BreakPropertyEntityHash(category, bp.Code);
-        EntityHandle refHandle;
-        if (chunkSeenRefVocab.Add(refHash))
-        {
-            refHandle = batch.AddEntity(refHash, "break_property");
-        }
-        else
-        {
-            refHandle = new EntityHandle(refHash, "break_property");
-        }
+        // Pre-seeded break_property entities; see EmitClassification.
+        EntityHandle refHandle = new EntityHandle(refHash, "break_property");
+        _ = chunkSeenRefVocab;
         batch.AddEdge(
             "has_classification",
             ProvenanceCode,
@@ -1103,12 +1162,24 @@ public sealed partial class UnicodeDecomposer : BaseDecomposer
             throw new InvalidOperationException(
                 "UCD/UCA materialization incomplete: significance_context has no arenas.");
         }
-        long expected = simpleCaseEdges * arenas;
-        if (simpleCaseEdgeSignificance < expected)
+        // simpleCaseEdgeSignificance MUST be > 0 (the always-fired
+        // source_authority Glicko event per edge auto-creates the row via
+        // record_attestations_bulk's ON CONFLICT DO NOTHING + UPDATE step).
+        // Cross-product fan-out across every arena is NOT required — arenas
+        // not yet attested compute their effective mu at query time via the
+        // COALESCE prior formula on substrate.edge_significance lookup
+        // (provenance.initial_mu * edge_type.semantic_weight *
+        // provenance.derivation_decay). Eager fan-out at ingest produces
+        // a 19× write amplification that dominates phase wall time at UCD
+        // scale (1.1M codepoints × ~10 edges per cp × 19 arenas ≈ 210M
+        // rows). The substrate is still queryable for any arena; the row
+        // materializes on first event in that arena.
+        if (simpleCaseEdgeSignificance <= 0)
         {
             throw new InvalidOperationException(
-                $"UCD/UCA materialization incomplete: expected {expected:N0} Unicode case edge significance rows, found {simpleCaseEdgeSignificance:N0}.");
+                "UCD/UCA materialization incomplete: expected Unicode case edge significance rows from the always-fired source_authority event, found none.");
         }
+        _ = arenas; // retained from probe but no longer multiplied — see comment above.
 
         await ReportAsync(reporter, "unicode.materialization_validation", codepointClassifications, 0, ct);
     }

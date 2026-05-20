@@ -182,9 +182,13 @@ internal sealed class PhasesCommand(IConfiguration configuration)
         }
         // CLI --model-source (when supplied non-empty) overrides Decomposers.Safetensors.HubPath.
         // Absolute paths bypass DataRoot via CliPathResolver.
+        // When the practitioner explicitly hands a model path, the
+        // appsettings-baked ModelFilter (which defaults to MiniLM only)
+        // gets out of the way — the explicit path IS the selection.
         if (!string.IsNullOrWhiteSpace(modelSourceRoot))
         {
             opts.Decomposers.Safetensors.HubPath = modelSourceRoot;
+            opts.Decomposers.Safetensors.ModelFilter = null;
         }
         string dataRoot = opts.DataRoot;
 

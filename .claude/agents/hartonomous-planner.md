@@ -14,7 +14,7 @@ color: cyan
 
 Before planning anything substantive, read these in order. They are the spec for what the substrate IS — not pattern-match to LLM/RAG/vector-DB/knowledge-graph.
 
-1. `docs/familiar-principle.md` — the conceptual frame (Laplace's Demon in the knowledge regime; the familiar's five properties)
+1. `docs/substrate-bond.md` — the conceptual frame (the substrate in the knowledge regime; the substrate's five properties)
 2. `docs/architecture.md` — substrate laws #1–#13, schema, scale model
 3. `docs/specs/sql/infrastructure-vs-substrate.md` — the two-layer discipline (app infra vs substrate content)
 4. `docs/specs/native/geometry4d-composition.md` — recursive centroid construction, anomaly detector family

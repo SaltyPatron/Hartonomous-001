@@ -1,6 +1,6 @@
 -- substrate.select_knowledge_subgraph
 --
--- Knowledge-selection vocab builder for Build-a-bear synthesis. Given a
+-- Knowledge-selection vocab builder for Substrate Synthesis synthesis. Given a
 -- seed set of entity hashes (e.g. user-supplied concept names resolved
 -- via substrate.text_decompose) and a budget, BFS through substrate.edge_member
 -- weighted by edge significance mu (per-arena-weighted union) to grow a
@@ -144,4 +144,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.select_knowledge_subgraph(BYTEA[], TEXT[], DOUBLE PRECISION[], INT, INT, TEXT) IS
-    'Build-a-bear knowledge selection: BFS-expand a seed concept set through edge_member by arena-weighted edge mu. Vocab IS the bear''s brain contents. Domain-specific bears via seed-set variation; MoE experts per-seed-set.';
+    'Substrate Synthesis knowledge selection: BFS-expand a seed concept set through edge_member by arena-weighted edge mu. Vocab IS the bear''s brain contents. Domain-specific bears via seed-set variation; MoE experts per-seed-set.';

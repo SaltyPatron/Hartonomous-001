@@ -130,7 +130,7 @@
     "path": "src/Hartonomous.Core/Recomposition/BulkTierContentWalk.cs",
     "text_contains": "await using NpgsqlCommand cmd = new(Sql, conn);",
     "classification": "allowed-substrate-boundary",
-    "reason": "C# bulk-tier client-side recompose walker (Gate 1 #36). Both NpgsqlCommand instantiations are single bulk SELECT queries against substrate.* tables — one against substrate.physicality with ST_AsEWKB to fetch tier-N composition geometries by entity_hash array, one against substrate.entity to bulk-resolve child hash prefixes via the (hash_bits_0_51, hash_bits_52_103) composite-btree. Parameters bound via NpgsqlParameter (bytea[] / bigint[]); no string interpolation, no RBAR. Replaces the deleted PG-side recursive-CTE recompose_text / recompose_content / pg_recompose_walk paths."
+    "reason": "C# bulk-tier client-side recompose walker (Gate 1 #36). Both NpgsqlCommand instantiations are single bulk SELECT queries against substrate.* tables \u2014 one against substrate.physicality with ST_AsEWKB to fetch tier-N composition geometries by entity_hash array, one against substrate.entity to bulk-resolve child hash prefixes via the (hash_bits_0_51, hash_bits_52_103) composite-btree. Parameters bound via NpgsqlParameter (bytea[] / bigint[]); no string interpolation, no RBAR. Replaces the deleted PG-side recursive-CTE recompose_text / recompose_content / pg_recompose_walk paths."
   },
   {
     "rule": "inline-sql-csharp",
@@ -151,7 +151,7 @@
     "path": "src/Hartonomous.Recomposers/Synthesizers/SubstrateAdjacencyBuilder.cs",
     "text_contains": "await using NpgsqlCommand cmd = new(Sql, conn)",
     "classification": "allowed-synth-time-dynamic-query",
-    "reason": "Build-a-bear synthesis emits per-recipe dynamic queries (variable arena set, variable vocab bytea[]); the query is a single bulk SELECT, parameterized via NpgsqlParameter for both bytea[] and text[]. No RBAR, no user-string concatenation."
+    "reason": "Substrate Synthesis synthesis emits per-recipe dynamic queries (variable arena set, variable vocab bytea[]); the query is a single bulk SELECT, parameterized via NpgsqlParameter for both bytea[] and text[]. No RBAR, no user-string concatenation."
   },
   {
     "rule": "direct-npgsql-command",
@@ -207,7 +207,7 @@
     "path": "src/Hartonomous.Recomposers/Synthesizers/FfnEdgeSlotSynthesizer.cs",
     "text_contains": "await using NpgsqlCommand cmd = new(",
     "classification": "allowed-synth-time-dynamic-query",
-    "reason": "Build-a-bear FFN-as-edges synth calls substrate.select_synth_edges_for_ffn with parameterized vocab/arena set; single bulk SELECT, named substrate function, no string interpolation."
+    "reason": "Substrate Synthesis FFN-as-edges synth calls substrate.select_synth_edges_for_ffn with parameterized vocab/arena set; single bulk SELECT, named substrate function, no string interpolation."
   },
   {
     "rule": "direct-npgsql-command",
@@ -221,7 +221,7 @@
     "path": "src/Hartonomous.Recomposers/Synthesizers/LayerNormSynthesizer.cs",
     "text_contains": "await using NpgsqlCommand cmd = new(",
     "classification": "allowed-synth-time-dynamic-query",
-    "reason": "Build-a-bear LayerNorm γ/β derivation calls substrate.per_arena_entity_significance_stats with parameterized arena codes; single bulk SELECT against a named substrate function."
+    "reason": "Substrate Synthesis LayerNorm \u03b3/\u03b2 derivation calls substrate.per_arena_entity_significance_stats with parameterized arena codes; single bulk SELECT against a named substrate function."
   },
   {
     "rule": "direct-npgsql-command",
@@ -285,5 +285,75 @@
     "text_contains": "END LOOP;",
     "classification": "allowed-bounded-chunk",
     "reason": "Termination of the BFS expansion loop; same justification as the WHILE opener."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "SELECT substrate.merkle_tree_filter($1, $2)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls the named substrate.merkle_tree_filter SRF \u2014 the top-down O(tier) Merkle existence filter. The inline string IS the function-call boundary, not constructed SQL. Both bytea[] and int[] parameters bound via NpgsqlParameter."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "SELECT substrate.write_entities($1)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls the named substrate.write_entities bulk-write SRF \u2014 replaces the pg_temp.entity_inflight + COPY + INSERT-SELECT pattern. The inline string IS the function-call boundary; bytea[] parameter bound via NpgsqlParameter."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "SELECT substrate.write_entity_classifications($1, $2, $3)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls the named substrate.write_entity_classifications bulk-write SRF. The inline string IS the function-call boundary; bytea[] + int[] + int[] parameters bound via NpgsqlParameter."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "SELECT substrate.write_physicalities($1, $2, $3, $4)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls the named substrate.write_physicalities bulk-write SRF. The inline string IS the function-call boundary; int[] + bytea[] + bytea[] + bytea[] parameters bound via NpgsqlParameter."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "SELECT substrate.write_edges($1, $2, $3, $4)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls the named substrate.write_edges bulk-write SRF. The inline string IS the function-call boundary; int[] + bytea[] + int[] + bytea[] parameters bound via NpgsqlParameter."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Engine/Ingestion/StreamingIngestionPipeline.cs",
+    "text_contains": "SELECT substrate.write_edge_members($1, $2, $3, $4, $5)",
+    "classification": "allowed-substrate-boundary",
+    "reason": "Calls the named substrate.write_edge_members bulk-write SRF. The inline string IS the function-call boundary; 5 parallel int[]/bytea[]/bytea[]/int[]/int[] parameters bound via NpgsqlParameter."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/merkle_tree_filter.sql",
+    "text_contains": "FOR i IN 1..n_in LOOP",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Forward Merkle-invariant propagation pass over the input array. n_in is the caller-supplied chunk size (single bundle's flattened tree, parent-before-child sorted). Pure in-memory array walk \u2014 no DB IO, no recursion. Replaces N-round-trip per-tier BFS from clients."
+  },
+  {
+    "rule": "sql-loop-review",
+    "path": "sql/schema/functions/merkle_tree_filter.sql",
+    "text_contains": "END LOOP;",
+    "classification": "allowed-bounded-chunk",
+    "reason": "Termination of the Merkle-invariant propagation loop; same justification as the FOR opener."
+  },
+  {
+    "rule": "direct-npgsql-command",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/RecipeConfig.cs",
+    "text_contains": "await using Npgsql.NpgsqlCommand cmd = new(",
+    "classification": "allowed-synth-time-dynamic-query",
+    "reason": "Synth-time recipe lookup: calls substrate.get_recipe_by_name with a single TEXT parameter; one bulk SELECT, parameterized, no string interpolation. Loads the recipe at synth-start (one shot), not in a hot loop."
+  },
+  {
+    "rule": "inline-sql-csharp",
+    "path": "src/Hartonomous.Recomposers/Synthesizers/RecipeConfig.cs",
+    "text_contains": "\"SELECT substrate.get_recipe_by_name($1)\"",
+    "classification": "allowed-substrate-boundary",
+    "reason": "SELECT-from-substrate-function call site. The inline string IS the function-call boundary; parameterized."
   }
 ]

@@ -12,7 +12,7 @@ To state precisely how Hartonomous enforces classification-dependent policy (con
 
 This is important because:
 
-1. The familiar principle (`familiar-principle.md`) requires that judgments be auditable, deterministic, and modifiable by the practitioner. A learned classifier satisfies none of those.
+1. The substrate bond (`substrate-bond.md`) requires that judgments be auditable, deterministic, and modifiable by the practitioner. A learned classifier satisfies none of those.
 2. The substrate already has junction tables with Glicko-2-rated classification assignments. Governance uses that existing surface directly.
 3. The forward pass of decomposition is the natural enforcement surface — every level of composition is already examining entity classifications as part of normal processing.
 4. Using the substrate itself for governance eliminates the attack surface of "jailbreak the model to bypass the filter" that ML-based moderation suffers.
@@ -400,7 +400,7 @@ Don't implement governance actions that cannot be undone via session rollback. E
 
 ## Cross-references
 
-- `familiar-principle.md` — Why governance must be deterministic, auditable, and practitioner-controlled (corollaries 2, 3, 4).
+- `substrate-bond.md` — Why governance must be deterministic, auditable, and practitioner-controlled (corollaries 2, 3, 4).
 - `specs/sql/infrastructure-vs-substrate.md` — The two-layer discipline that governance JOINs depend on.
 - `specs/sql/reference-tables.md` — Reference table DDL (and the proposed `ref_pragmatic_register` extension).
 - `specs/sql/junction-tables.md` — Junction DDL (and the proposed `entity_pragmatic_register` extension).

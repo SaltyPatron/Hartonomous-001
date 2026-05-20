@@ -67,9 +67,9 @@ Authoritative definitions of every load-bearing term used in the Hartonomous doc
 
 **Junction table.** A table mapping entities to classification reference rows with significance: `entity_pos`, `entity_sense`, `entity_language`, `entity_morph_feature`, `codepoint_property`, `tensor_tensor_role`, `pattern_deprel`. Glicko-bearing for some.
 
-**Laplace.** The brand name for the model family produced by the substrate. Includes Laplace-Linguistics, Laplace-Coder, Laplace-Reason, Laplace-VL, Laplace-Vision, Laplace-Audio, Laplace-Multimodal, Laplace-Embed, Laplace-Rerank, Laplace-Diffuse, Laplace-Custom.
+**Laplace.** The brand name for the model family produced by the substrate. Includes Laplace-Linguistics, Laplace-Coder, Laplace-Reason, Laplace-VL, Laplace-Vision, Laplace-Audio, Laplace-Multimodal, Laplace-Embed, Laplace-Rerank, Laplace-Diffuse, Custom-Architecture-Synthesis.
 
-**Laplace's Demon.** Pierre-Simon Laplace's thought experiment about an intellect that knows the position and momentum of every particle in the universe. Hartonomous is Laplace's Demon for digital content: knows every codepoint, composition, edge, significance, and provenance, and can derive any past or future composition.
+**the substrate.** Pierre-Simon Laplace's thought experiment about an intellect that knows the position and momentum of every particle in the universe. Hartonomous is the substrate for digital content: knows every codepoint, composition, edge, significance, and provenance, and can derive any past or future composition.
 
 **Lazy materialization.** Strategy for `substrate.edge_significance`: rows are NOT eagerly created for every (arena, edge) pair. Queries `COALESCE(s.mu, p.initial_mu)` to use provenance trust prior as default. Rows are inserted on first outcome event for a (arena, edge) pair.
 

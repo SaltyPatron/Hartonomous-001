@@ -28,36 +28,10 @@ public interface IIngestionBatch
     /// downstream Add* calls reference this handle to express FKs. Same
     /// hash added twice is idempotent at flush via ON CONFLICT DO NOTHING
     /// on substrate.entity's hash-only PK; type code is emitted separately
-    /// as entity_classification evidence.
+    /// as entity_classification evidence. Geometry is emitted separately
+    /// via AddPhysicality* — substrate.entity is identity only.
     /// </summary>
     EntityHandle AddEntity(Hash32 hash, string entityTypeCode);
-
-    /// <summary>
-    /// Append an entity WITH precomputed 4D centroid + Hilbert index.
-    /// Producer-side computed values land directly in substrate.entity's
-    /// denormalized columns at INSERT time — eliminates the trigger-based
-    /// reactive UPDATE that the schema's
-    /// <c>substrate.update_entity_centroid_from_physicality</c> trigger
-    /// otherwise performs. Same Merkle invariant: same hash → same
-    /// children → same centroid → same hilbert.
-    ///
-    /// Native text decomposer computes these in cp_c / gc_c / w_c / comp_c
-    /// arrays during decomposition; the EmitCallback records carry them
-    /// through to <c>BufferedEmitContext</c>; from there into this overload.
-    ///
-    /// Default implementation falls through to the legacy 2-arg AddEntity
-    /// for test doubles and decomposers that don't have centroid in hand;
-    /// the trigger will populate after physicality INSERT.
-    /// </summary>
-    EntityHandle AddEntity(
-        Hash32 hash,
-        string entityTypeCode,
-        double centroidX,
-        double centroidY,
-        double centroidZ,
-        double centroidM,
-        long?  hilbertIndex)
-        => AddEntity(hash, entityTypeCode);
 
     /// <summary>
     /// Append an n-ary edge. The pipeline computes the edge hash from

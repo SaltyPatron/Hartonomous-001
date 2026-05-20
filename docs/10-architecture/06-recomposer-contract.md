@@ -52,7 +52,7 @@ Refined values incorporate cross-source corroboration that happened automaticall
 
 Anthony specifies a novel architecture. The recomposer reads the architecture spec, walks substrate edges (potentially across all provenance, weighted by the recipe's arena filter), and projects them onto the target architecture's tensor shapes. The output is a NEW model whose architecture doesn't correspond to any single ingested teacher.
 
-**Output:** Laplace-Linguistics-7B, Laplace-Coder-30B-MoE, Laplace-Custom-{customer-spec} — fresh safetensors with provenance traceable to the substrate's accumulated state.
+**Output:** Laplace-Linguistics-7B, Laplace-Coder-30B-MoE, Custom-Architecture-Synthesis-{customer-spec} — fresh safetensors with provenance traceable to the substrate's accumulated state.
 
 The two modes share infrastructure. The difference is in the architecture spec source:
 - Mode 1 reads spec from the substrate's stored metadata about an ingested model.

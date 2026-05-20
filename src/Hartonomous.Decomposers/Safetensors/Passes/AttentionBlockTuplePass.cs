@@ -40,7 +40,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> Dependencies => ["tuple.embedding_lookup"];
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
-    private const int TopSourceTokens = 2048;
+    private const int TopSourceTokens = 32;
     private const int SourceChunkSize = 512;
     private const int TargetChunkSize = 4096;
     private const double ModelDerivedTrustMu = 60_000.0;
@@ -186,7 +186,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         return await ChunkedPairScoringFromMaterialized(
             session, context, usable, vocabHashByIdx,
             pq, pk, sources, vocabSize, dProj,
-            attestationTypeCode, temperature, "model_attention_pattern", tuple, slotCode, ct);
+            attestationTypeCode, temperature, "attends_to", tuple, slotCode, ct);
     }
 
     private static async Task<long> EmitChunkedVO(
@@ -234,7 +234,7 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
         return await ChunkedPairScoringFromMaterialized(
             session, context, usable, vocabHashByIdx,
             pv, po, sources, vocabSize, vCols,
-            attestationTypeCode, temperature, "model_attention_pattern", tuple, slotCode, ct);
+            attestationTypeCode, temperature, "attends_to", tuple, slotCode, ct);
     }
 
     /// <summary>
@@ -268,9 +268,12 @@ internal sealed partial class AttentionBlockTuplePass : IModelAnalysisPass
                 int a = sources[sChunkStart + i];
                 long src = (long)a * dProj;
                 long dst = (long)i * dProj;
-                Buffer.BlockCopy(pq, (int)(src * sizeof(double)),
-                                 sourceGather, (int)(dst * sizeof(double)),
-                                 dProj * sizeof(double));
+                // Array.Copy supports long offsets; Buffer.BlockCopy's int
+                // byte-offset overflows at src * 8 > 2^31 (vocab × dProj
+                // for Qwen 3B = 151K × 128 = 19M elements = 156MB, still
+                // safe at byte level, but switch to Array.Copy for
+                // future-proof correctness across all architectures).
+                Array.Copy(pq, src, sourceGather, dst, dProj);
             }
 
             // Threshold-only LTH discrimination (AP-33): pair-score values

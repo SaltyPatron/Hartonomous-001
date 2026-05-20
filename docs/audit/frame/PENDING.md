@@ -5,7 +5,7 @@ Reading queue (Phase B continues). Anything here means the audit-frame is incomp
 ## Doc-read backlog
 
 ### docs/ root
-- `docs/familiar-principle.md` (partially absorbed; full read needed; user noted name/framing is borrowed metaphor, not foundation)
+- `docs/substrate-bond.md` (partially absorbed; full read needed; user noted name/framing is borrowed metaphor, not foundation)
 - `docs/architecture.md` — **DONE 2026-05-19** (lines 1-688; contains deprecated details flagged in AUDIT-STATUS)
 - `docs/build-plan.md`
 - `docs/index.md`
@@ -40,7 +40,7 @@ Reading queue (Phase B continues). Anything here means the audit-frame is incomp
 - Implementation status, known issues, decisions log
 
 ### docs/90-appendix/ (4 files)
-- Laplace demon context (partially absorbed; full read), related work, FAQ, bibliography
+- the substrate context (partially absorbed; full read), related work, FAQ, bibliography
 
 ### docs/audit/
 - `flow-inference.md` (existing audit doc)

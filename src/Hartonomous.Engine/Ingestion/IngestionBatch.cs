@@ -58,19 +58,6 @@ internal sealed class IngestionBatch : IIngestionBatch
         return new EntityHandle(hash, entityTypeCode);
     }
 
-    public EntityHandle AddEntity(
-        Hash32 hash,
-        string entityTypeCode,
-        double centroidX,
-        double centroidY,
-        double centroidZ,
-        double centroidM,
-        long? hilbertIndex)
-    {
-        _entities.Add(new EntityEntry(hash, entityTypeCode, centroidX, centroidY, centroidZ, centroidM, hilbertIndex));
-        return new EntityHandle(hash, entityTypeCode);
-    }
-
     public void AddEdge(string edgeTypeCode, string provenanceCode, ReadOnlySpan<EdgeMemberSpec> members)
     {
         _edges.Add(new EdgeEntry(

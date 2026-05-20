@@ -179,6 +179,21 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 Log.LanguageFilterActive(Logger, langResolver.AllowedLanguageCount);
             }
 
+            // Pre-emit pos reference-vocabulary entities ONCE, before the
+            // 10M-entry processing loop. Per-entry AddEntity for the same
+            // ~17 pos rows hits transactionid lock contention across the
+            // worker pool. Single submit + drain primes them; the entry
+            // loop constructs EntityHandle directly.
+            {
+                IIngestionBatch primingBatch = pipeline.CreateBatch(ProvenanceCode);
+                foreach (string posCode in posIdMap.Keys)
+                {
+                    primingBatch.AddEntity(ReferenceVocabularyHashes.PosEntityHash(posCode), "pos");
+                }
+                await pipeline.SubmitBatchAsync(primingBatch, ct);
+                await pipeline.DrainPendingAsync(ct);
+            }
+
             long entryCount = 0;
             long entityCount = 0;
             long edgeCount = 0;
@@ -339,8 +354,8 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                         if (!LanguageAllowed(entry.LangCode)) { continue; }
                         if (string.IsNullOrEmpty(entry.Word) || entry.Senses.Count == 0) { continue; }
 
-                        Interlocked.Add(ref entityCount,
-                            EmitEntry(batch, entry, posIdMap, langIdMap, AddEdgeByCode, chunkExisting));
+                        long entitiesAdded = await EmitEntry(pipeline, batch, entry, posIdMap, langIdMap, AddEdgeByCode, chunkExisting, taskCt).ConfigureAwait(false);
+                        Interlocked.Add(ref entityCount, entitiesAdded);
 
                         FlushBatchIfFull();
 
@@ -509,13 +524,15 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         return value;
     }
 
-    private long EmitEntry(
+    private async Task<long> EmitEntry(
+        IIngestionPipeline pipeline,
         IIngestionBatch batch,
         WiktEntry entry,
         Dictionary<string, int> posIdMap,
         Dictionary<string, int> langIdMap,
         Action<string, EdgeMemberSpec[]> addEdge,
-        HashSet<HashKey> chunkExisting)
+        HashSet<HashKey> chunkExisting,
+        CancellationToken ct)
     {
         long entityCount = 0;
 
@@ -543,7 +560,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         // the surface form is not a valid word_form at the substrate's
         // canonical-text-DAG; we skip emit + downstream edges and let other
         // entries in the chunk process normally.
-        (EntityHandle Handle, bool Emitted) EmitOrRefWordForm(string text, string topType)
+        async ValueTask<(EntityHandle Handle, bool Emitted)> EmitOrRefWordForm(string text, string topType)
         {
             if (string.IsNullOrWhiteSpace(text)) { return (default, false); }
             Hash32 h;
@@ -562,9 +579,23 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             }
             try
             {
-                (EntityHandle handle, _, _) = EmitText(batch, text, _codepointProperties, topType, TrustPriorMu);
+                // Pipeline-aware: top-down Merkle existence-check via
+                // substrate.merkle_tree_filter (one round-trip). Existing
+                // word_form / grapheme_cluster / codepoint subtrees become
+                // attestation events on the existing entities instead of
+                // re-emission storms.
+                byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(text);
+                Hartonomous.Core.Text.TextDecomposeResult r =
+                    await Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStaticAsync(
+                        pipeline, batch, utf8,
+                        new Hartonomous.Core.Text.TextDecomposeOptions(
+                            ProvenanceCode: ProvenanceCode,
+                            TopEntityType: topType,
+                            TrustMu: TrustPriorMu,
+                            EmissionCache: TextEmissionCache),
+                        ct).ConfigureAwait(false);
                 chunkExisting.Add(key);
-                return (handle, true);
+                return (r.RootHandle, true);
             }
             catch (System.InvalidOperationException)
             {
@@ -572,7 +603,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             }
         }
 
-        (EntityHandle lemmaHandle, bool lemmaEmitted) = EmitOrRefWordForm(entry.Word, "lemma");
+        (EntityHandle lemmaHandle, bool lemmaEmitted) = await EmitOrRefWordForm(entry.Word, "lemma").ConfigureAwait(false);
         // Lemma is the entry's primary identity. If the native decomposer
         // rejected it (e.g. entry.Word is a 1-byte punctuation glyph or
         // whitespace-only), abstain on the whole entry — its dependent forms,
@@ -604,8 +635,11 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             // Unified Glicko surface — has_pos edge on the content-hashed POS
             // reference-vocabulary entity. Idempotent: same code → same hash →
             // one substrate.entity row regardless of which decomposer attests.
+            // POS entities are bounded (~17 rows) and pre-seeded by an earlier
+            // decomposer; construct the handle directly to avoid transactionid
+            // lock contention on the hot rows.
             Hash32 posHash = ReferenceVocabularyHashes.PosEntityHash(upos);
-            EntityHandle posHandle = batch.AddEntity(posHash, "pos");
+            EntityHandle posHandle = new(posHash, "pos");
             addEdge("has_pos",
             [
                 new EdgeMemberSpec(lemmaHandle, "source", 0),
@@ -625,7 +659,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             {
                 continue;
             }
-            (EntityHandle infHandle, bool infEmitted) = EmitOrRefWordForm(form.Form, "word_form");
+            (EntityHandle infHandle, bool infEmitted) = await EmitOrRefWordForm(form.Form, "word_form").ConfigureAwait(false);
             if (infHandle.Hash.IsZero) { continue; }
             if (infEmitted)
             {
@@ -713,7 +747,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
                 continue;
             }
 
-            (EntityHandle srcLemma, bool srcEmitted) = EmitOrRefWordForm(srcWord, "lemma");
+            (EntityHandle srcLemma, bool srcEmitted) = await EmitOrRefWordForm(srcWord, "lemma").ConfigureAwait(false);
             if (srcLemma.Hash.IsZero) { continue; }
             if (srcEmitted)
             {
@@ -750,7 +784,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             {
                 continue;
             }
-            (EntityHandle foreignLemma, bool foreignEmitted) = EmitOrRefWordForm(tr.Word, "lemma");
+            (EntityHandle foreignLemma, bool foreignEmitted) = await EmitOrRefWordForm(tr.Word, "lemma").ConfigureAwait(false);
             if (foreignLemma.Hash.IsZero) { continue; }
             if (foreignEmitted)
             {
@@ -770,14 +804,14 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             ]);
         }
 
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, addEdge, EmitOrRefWordForm);
-        entityCount += EmitRelations(batch, lemmaHandle, entry.Related,         "related",         ResolveLangId, addEdge, EmitOrRefWordForm);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Synonyms,        "synonym",         ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Antonyms,        "antonym",         ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Hypernyms,       "hypernym",        ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Hyponyms,        "hyponym",         ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Meronyms,        "member_meronym",  ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.CoordinateTerms, "coordinate_term", ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Derived,         "derived",         ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
+        entityCount += await EmitRelations(batch, lemmaHandle, entry.Related,         "related",         ResolveLangId, addEdge, EmitOrRefWordForm).ConfigureAwait(false);
 
         foreach (WiktSense sense in entry.Senses)
         {
@@ -831,14 +865,14 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
         return entityCount;
     }
 
-    private int EmitRelations(
+    private async ValueTask<int> EmitRelations(
         IIngestionBatch batch,
         EntityHandle source,
         IReadOnlyList<WiktRelation> relations,
         string edgeCode,
         Func<string?, int?> resolveLang,
         Action<string, EdgeMemberSpec[]> addEdge,
-        Func<string, string, (EntityHandle Handle, bool Emitted)> emitOrRefWordForm)
+        Func<string, string, ValueTask<(EntityHandle Handle, bool Emitted)>> emitOrRefWordForm)
     {
         int entityCount = 0;
 
@@ -852,7 +886,7 @@ public sealed partial class WiktionaryDecomposer : TextIngestingDecomposer
             // emit-or-ref helper so common lexicon targets ("the" / "of" /
             // "be") that already exist in substrate collapse to handle-only
             // refs instead of re-walking the canonical text DAG.
-            (EntityHandle target, bool targetEmitted) = emitOrRefWordForm(rel.Word, "lemma");
+            (EntityHandle target, bool targetEmitted) = await emitOrRefWordForm(rel.Word, "lemma").ConfigureAwait(false);
             // Honest abstention: native decomposer rejected this surface form
             // (e.g. 1-byte punctuation rel.Word) — skip the relation edge.
             if (target.Hash.IsZero) { continue; }

@@ -1,4 +1,9 @@
+using System;
 using System.IO;
+using System.Text.Json;
+using System.Threading;
+using Hartonomous.Core.Compute.Common;
+using Hartonomous.Core.Geometry;
 using Hartonomous.Core.Ingestion;
 using Hartonomous.Core.Text;
 using Microsoft.Extensions.Logging;
@@ -100,13 +105,29 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
             // no SQL roundtrip. AP-9: model_source linkage is placement
             // metadata; we attach it AFTER the root entity exists in the batch.
             long modelSourceId = context.Source.ModelSourceId;
-            Hartonomous.Core.Text.TextDecomposeResult result = _substrateTextDecomposer.Emit(
-                session.Batch,
-                utf8Bytes,
-                new Hartonomous.Core.Text.TextDecomposeOptions(
-                    ProvenanceCode: context.ProvenanceCode,
-                    TopEntityType: "text_composition",
-                    TrustMu: ModelDerivedTrustMu));
+            Hartonomous.Core.Text.TextDecomposeResult result;
+            if (string.Equals(fileName, "tokenizer.json", StringComparison.Ordinal))
+            {
+                // tokenizer.json is STRUCTURED DATA — running UAX#29 on the
+                // whole 7+ MB blob (which is mostly { "id": 151643, "content":
+                // "...", "single_word": false, ... } scaffolding) takes 20+
+                // minutes per model and produces text_composition entities for
+                // every JSON brace / quote / comma. Instead: hash the raw
+                // bytes as the artifact root (so cross-model dedup still
+                // works on identical tokenizers), parse the JSON, and emit
+                // one word_form per vocab entry via the per-string text path.
+                result = EmitTokenizerJsonArtifact(session, context, utf8Bytes, ct);
+            }
+            else
+            {
+                result = _substrateTextDecomposer.Emit(
+                    session.Batch,
+                    utf8Bytes,
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: context.ProvenanceCode,
+                        TopEntityType: "text_composition",
+                        TrustMu: ModelDerivedTrustMu));
+            }
 
             EntityHandle artifactHandle = result.RootHandle;
             session.Batch.AddEntityModelSource(artifactHandle, modelSourceId);
@@ -133,6 +154,102 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
         Log.PassSummary(_logger, context.Source.ModelId, artifactsIngested, totalEntities);
     }
 
+    /// <summary>
+    /// Structural tokenizer.json emit. Hashes the raw bytes for the artifact
+    /// root (content-addressed dedup across model snapshots that ship the
+    /// same tokenizer), then parses the JSON and emits one word_form per
+    /// vocab entry + one per added_token via the per-string text path.
+    /// Avoids running UAX#29 over JSON scaffolding (braces, commas,
+    /// numeric vocab ids) and gives the substrate the actual tokenizer
+    /// vocabulary as content-addressed entities.
+    /// </summary>
+    private Hartonomous.Core.Text.TextDecomposeResult EmitTokenizerJsonArtifact(
+        IPassSession session,
+        ModelPassContext context,
+        byte[] utf8Bytes,
+        CancellationToken ct)
+    {
+        Hash32 rootHash = Blake3.Hash32(utf8Bytes);
+        EntityHandle rootHandle = new(rootHash, "tokenizer_model");
+        session.Batch.AddEntity(rootHash, "tokenizer_model");
+        long entitiesEmitted = 1;
+        long vocabEntries = 0;
+
+        using JsonDocument doc = JsonDocument.Parse(utf8Bytes);
+        JsonElement root = doc.RootElement;
+
+        // model.vocab — { token_string: vocab_id }
+        if (root.TryGetProperty("model", out JsonElement model) &&
+            model.TryGetProperty("vocab", out JsonElement vocab) &&
+            vocab.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty entry in vocab.EnumerateObject())
+            {
+                ct.ThrowIfCancellationRequested();
+                string tokenString = entry.Name;
+                if (tokenString.Length == 0)
+                {
+                    continue;
+                }
+                // Per-vocab-entry text decomposition: small input, fast path.
+                Hartonomous.Core.Text.TextDecomposeResult tokResult = _substrateTextDecomposer.Emit(
+                    session.Batch,
+                    System.Text.Encoding.UTF8.GetBytes(tokenString),
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: context.ProvenanceCode,
+                        TopEntityType: "word_form",
+                        TrustMu: ModelDerivedTrustMu));
+                entitiesEmitted += tokResult.EntitiesEmitted;
+                vocabEntries++;
+            }
+        }
+
+        // added_tokens — special tokens with kind / id fields. The
+        // app-tier tokenizer_special_token table already carries family-
+        // level rows; per-model overrides live in substrate.tokenizer_special_token
+        // with the tokenizer_model entity hash as the key. Emit the
+        // token strings as word_forms so they collapse with the vocab
+        // entries by content.
+        if (root.TryGetProperty("added_tokens", out JsonElement added) &&
+            added.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement entry in added.EnumerateArray())
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!entry.TryGetProperty("content", out JsonElement contentEl) ||
+                    contentEl.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+                string tokenString = contentEl.GetString() ?? string.Empty;
+                if (tokenString.Length == 0)
+                {
+                    continue;
+                }
+                Hartonomous.Core.Text.TextDecomposeResult tokResult = _substrateTextDecomposer.Emit(
+                    session.Batch,
+                    System.Text.Encoding.UTF8.GetBytes(tokenString),
+                    new Hartonomous.Core.Text.TextDecomposeOptions(
+                        ProvenanceCode: context.ProvenanceCode,
+                        TopEntityType: "word_form",
+                        TrustMu: ModelDerivedTrustMu));
+                entitiesEmitted += tokResult.EntitiesEmitted;
+                vocabEntries++;
+            }
+        }
+
+        Log.TokenizerJsonStructured(_logger, context.Source.ModelId, vocabEntries, entitiesEmitted);
+
+        return new Hartonomous.Core.Text.TextDecomposeResult(
+            RootHandle: rootHandle,
+            RootHash: rootHash,
+            EntitiesEmitted: entitiesEmitted,
+            CompositionChildrenEmitted: 0,
+            PhysicalityRowsEmitted: 0,
+            SignificanceRowsEmitted: 0,
+            RootCentroid: (0, 0, 0, 0));
+    }
+
     private static partial class Log
     {
         [LoggerMessage(Level = LogLevel.Warning, Message = "[text-artifacts {ModelId}] snapshot dir missing: {SnapshotDir}")]
@@ -149,6 +266,9 @@ internal sealed partial class ModelTextArtifactsPass : IModelAnalysisPass
 
         [LoggerMessage(Level = LogLevel.Information, Message = "[text-artifacts {ModelId}] {FileName} complete — {Entities} entities into substrate text DAG")]
         public static partial void ArtifactComplete(ILogger logger, string modelId, string fileName, long entities);
+
+        [LoggerMessage(Level = LogLevel.Information, Message = "[text-artifacts {ModelId}] tokenizer.json structural parse — {VocabEntries} vocab entries, {Entities} entities emitted")]
+        public static partial void TokenizerJsonStructured(ILogger logger, string modelId, long vocabEntries, long entities);
 
         [LoggerMessage(Level = LogLevel.Information, Message = "[text-artifacts {ModelId}] pass complete — {Artifacts} artifacts, {TotalEntities} total entities")]
         public static partial void PassSummary(ILogger logger, string modelId, int artifacts, long totalEntities);

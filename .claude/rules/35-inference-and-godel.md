@@ -97,7 +97,7 @@ This is not pattern matching in the degenerate sense. Every claim traces to spec
 - **No self-modification.** The engine does not alter its own code, its own heuristics, or the substrate's schema. It ingests external data through standard decomposers and reasons over existing substrate content. Reasoning improves because the substrate has more data and tighter sigma — not because anything about the engine's mechanism changed.
 - **Not a chatbot, not unsupervised learning.** The engine can surface clarifying questions to the practitioner but is not a conversational interface. No loss function, no gradient, no parameter update — arena updates via Glicko-2 comparison events are the only form of "learning."
 
-The Familiar Principle's Property 2 (subservient, not autonomous) is what these boundaries express. Within them, the engine IS a sophisticated reasoning orchestrator — it asks questions of itself, reasons of itself, tells itself to do stuff, processes queues, decomposes goals, spawns sub-tasks, surfaces clarifying questions, forms hypotheses with calibrated uncertainty. Subservience means the practitioner controls when and what; it does NOT mean the engine is a passive lookup mechanism.
+The Substrate Bond's Property 2 (subservient, not autonomous) is what these boundaries express. Within them, the engine IS a sophisticated reasoning orchestrator — it asks questions of itself, reasons of itself, tells itself to do stuff, processes queues, decomposes goals, spawns sub-tasks, surfaces clarifying questions, forms hypotheses with calibrated uncertainty. Subservience means the practitioner controls when and what; it does NOT mean the engine is a passive lookup mechanism.
 
 ## Cross-references
 - [`docs/specs/engine/godel-engine.md`](../../docs/specs/engine/godel-engine.md) — full Gödel Engine specification (this rule is a slice)
@@ -106,5 +106,5 @@ The Familiar Principle's Property 2 (subservient, not autonomous) is what these 
 - [`docs/specs/engine/embedding-physicality.md`](../../docs/specs/engine/embedding-physicality.md) — Voronoi consensus over firefly clouds
 - [`docs/specs/engine/substrate-governance.md`](../../docs/specs/engine/substrate-governance.md) — traversal-time governance via JOIN
 - [`docs/specs/engine/multi-model-perspective-query.md`](../../docs/specs/engine/multi-model-perspective-query.md) — Procrustes alignment for cross-model query
-- [`docs/familiar-principle.md`](../../docs/familiar-principle.md) Property 2 (subservient — practitioner initiates / schedules)
+- [`docs/substrate-bond.md`](../../docs/substrate-bond.md) Property 2 (subservient — practitioner initiates / schedules)
 - [`.claude/rules/45-anti-patterns.md`](45-anti-patterns.md) — AP-6 (prompt-as-query confusion), AP-10 (inference creating structural edges), AP-11 (approximation methods)

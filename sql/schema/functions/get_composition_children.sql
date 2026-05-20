@@ -103,8 +103,8 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
                c.vertex_idx
           FROM classified c
           JOIN substrate.entity e
-            ON e.hash_bits_0_51   = substrate.bb_unpack_hash_lo(c.x)
-           AND e.hash_bits_52_103 = substrate.bb_unpack_hash_hi(c.z)
+            ON substrate.bb_hash_lo(e.hash)   = substrate.bb_unpack_hash_lo(c.x)
+           AND substrate.bb_hash_hi(e.hash) = substrate.bb_unpack_hash_hi(c.z)
          WHERE c.is_mantissa
            AND EXISTS (
                SELECT 1
@@ -115,23 +115,27 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $f$
            )
     ),
     realcoord_resolved AS (
+        -- Real-coord vertex reverse-resolve via substrate.physicality_entity
+        -- (which holds the entity-tier POINTZM identity coords) replaces the
+        -- pre-revert join on substrate.entity.centroid_* (those columns are
+        -- gone — geometry lives only on substrate.physicality now).
         SELECT c.vertex_idx AS ordinal,
                1            AS rle_count,
-               e.hash       AS child_hash,
+               pe.entity_hash AS child_hash,
                c.vertex_idx
           FROM classified c
-          JOIN substrate.entity e
-            ON e.centroid_x = c.x
-           AND e.centroid_y = c.y
-           AND e.centroid_z = c.z
-           AND e.centroid_m = c.m
+          JOIN substrate.physicality_entity pe
+            ON ST_X(pe.geom) = c.x
+           AND ST_Y(pe.geom) = c.y
+           AND ST_Z(pe.geom) = c.z
+           AND ST_M(pe.geom) = c.m
          WHERE NOT c.is_mantissa
            AND EXISTS (
                SELECT 1
                  FROM substrate.entity_classification ec
                  JOIN substrate.entity_type et ON et.id = ec.entity_type_id
                  JOIN parent_tier pt ON pt.expected_child_code = et.code
-                WHERE ec.entity_hash = e.hash
+                WHERE ec.entity_hash = pe.entity_hash
            )
     )
     SELECT ordinal, child_hash, rle_count

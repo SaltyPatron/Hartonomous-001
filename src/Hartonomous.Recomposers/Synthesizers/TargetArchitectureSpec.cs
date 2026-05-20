@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// Declarative target architecture for Build-a-bear synthesis. The user
+/// Declarative target architecture for Substrate Synthesis synthesis. The user
 /// describes WHAT shape they want (vocab size, hidden dim, layer count,
 /// attention head count, FFN intermediate size, etc.); the recomposer
 /// dispatches each tensor in that target to its per-layer-type synthesizer,

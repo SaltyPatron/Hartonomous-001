@@ -1,1 +1,0 @@
-COPY pg_temp.edge_inflight (edge_type_id, hash, provenance_id, geometry_payload) FROM STDIN (FORMAT binary)

@@ -1,6 +1,6 @@
 # Hartonomous Substrate Specification
 
-**Status:** Canonical. This document is the load-bearing architectural specification for the Hartonomous substrate, scoped to the safetensors-first product slice (assimilation of HuggingFace-format model packages, Build-a-bear synthesis recomposer, crystal ball analytics surface).
+**Status:** Canonical. This document is the load-bearing architectural specification for the Hartonomous substrate, scoped to the safetensors-first product slice (assimilation of HuggingFace-format model packages, Substrate Synthesis synthesis recomposer, crystal ball analytics surface).
 
 **Audience:** Engineers, AI agents, and reviewers extending or auditing the substrate codebase.
 
@@ -16,7 +16,7 @@ The Hartonomous substrate is **AI as content-addressed graph computation**: Glic
 
 Two product surfaces emerge from one substrate:
 
-**Build-a-bear (synthesis-from-consensus).** A user specifies an arbitrary target architecture spec — any combination of MoE, LoRA, layer count, hidden dimension, modality mix; "MiniLM-as-MoE-with-Flux" is a valid input. The recomposer synthesizes new weights for that architecture from the substrate's accumulated consensus across every ingested model. Output is sparser-than-any-source (gradient jitter is not stored), stronger-than-any-source (multi-model corroboration tightens evidence), and emitted as standard safetensors that loads in HuggingFace transformers / vLLM / llama.cpp without modification.
+**Substrate Synthesis (synthesis-from-consensus).** A user specifies an arbitrary target architecture spec — any combination of MoE, LoRA, layer count, hidden dimension, modality mix; "MiniLM-as-MoE-with-Flux" is a valid input. The recomposer synthesizes new weights for that architecture from the substrate's accumulated consensus across every ingested model. Output is sparser-than-any-source (gradient jitter is not stored), stronger-than-any-source (multi-model corroboration tightens evidence), and emitted as standard safetensors that loads in HuggingFace transformers / vLLM / llama.cpp without modification.
 
 **Crystal ball (substrate-as-X-ray).** Every per-role unit of every ingested model becomes a queryable attestation edge with per-arena Glicko-2 ratings. Mechanistic interpretability becomes SQL queries across all ingested models simultaneously. Bias and safety audit becomes concept-level belief queries. Capability tomography, provenance and theft detection, hallucination diagnosis, marketplace economics — all are queries against the same substrate state, with no separate analytics product needed.
 
@@ -276,7 +276,7 @@ Cross-references: [`docs/specs/decomposers/layer-type-library.md`](specs/decompo
 
 ---
 
-## VI. Recomposer architecture (Build-a-bear synthesis)
+## VI. Recomposer architecture (Substrate Synthesis synthesis)
 
 The recomposer **synthesizes weights from substrate consensus across all ingested models**, NOT round-trip from one source's stored content. The user specifies an arbitrary target architecture spec; the recomposer projects substrate consensus into the architecture's tensor basis and emits standard safetensors.
 
@@ -313,7 +313,7 @@ This is the inference-side honest-abstention principle (no fabrication when evid
 
 ### VI.4 What the current recomposer does (and what changes)
 
-The current `src/Hartonomous.Recomposers/SafetensorsRecomposer.cs:239-373` `AssembleTensorBytesAsync` is single-source phantom-scatter: it walks `has_constituent` children of each tensor (the phantom per-role-unit entities), reads their stored `contour` physicality, and scatters the values at row positions; falls back to SVD reconstruction via `has_rank_component` edges. This works only for round-tripping a single source model whose phantoms were stored at ingest. Build-a-bear is impossible with this path.
+The current `src/Hartonomous.Recomposers/SafetensorsRecomposer.cs:239-373` `AssembleTensorBytesAsync` is single-source phantom-scatter: it walks `has_constituent` children of each tensor (the phantom per-role-unit entities), reads their stored `contour` physicality, and scatters the values at row positions; falls back to SVD reconstruction via `has_rank_component` edges. This works only for round-tripping a single source model whose phantoms were stored at ingest. Substrate Synthesis is impossible with this path.
 
 Replacement: the synthesis library above, dispatched by target tensor role from `TargetArchitectureSpec`. The phantom-scatter paths are deleted as part of phantom debt removal (§XII).
 
@@ -451,7 +451,7 @@ Each is a derived analytic surface, rebuildable from substrate state. They are N
 | Frayed-edge atlas per (arena, edge_type) | Background pass | Curiosity loop, research target identification, gap discovery |
 | Per-high-degree-token Voronoi cell | When token's attestation degree crosses threshold | Semantic-near queries |
 | Per-token attestation vocabulary materialized index | Materialized view | "What does the substrate know about token T" |
-| Per-model coverage matrix | At end of model ingestion | Build-a-bear synthesizer queries |
+| Per-model coverage matrix | At end of model ingestion | Substrate Synthesis synthesizer queries |
 | Per-model architectural fingerprint | Bootstrap pass | Architecture similarity queries |
 | Per-(model, layer, attestation_type) significance baseline | At end of pass | Z-score lookups for "is this attestation unusually strong" |
 | Per-tensor sparsity profile | Per-tensor pass (already done by `SparsityAnalysisPass`) | Lottery-ticket visualization, distillation-quality reports |
@@ -516,7 +516,7 @@ Cross-references: [`docs/10-architecture/01-substrate-laws.md`](10-architecture/
 
 ## XII. The phantom debt (deprecation list)
 
-Current code that perpetuates the pre-correction shape and must be replaced before Build-a-bear can ship. This section is the only place in the spec where phantom artifacts are enumerated as load-bearing concepts; everywhere else they appear they are deprecated.
+Current code that perpetuates the pre-correction shape and must be replaced before Substrate Synthesis can ship. This section is the only place in the spec where phantom artifacts are enumerated as load-bearing concepts; everywhere else they appear they are deprecated.
 
 ### XII.1 Phantom entity types
 
@@ -560,7 +560,7 @@ Phantom debt is removed in stages without breaking working code at any step:
 4. **DONE** — No `has_<phantom>` edge types exist in `edge_type.sql`.
 5. **DONE** — Phantom entity types removed from `entity_type.sql` (23 real content types remain).
 
-Phantom debt does not block initial Build-a-bear shipping — the synthesis recomposer can read the corrected attestation-edge surface without the phantom paths existing. Phantom debt removal is technical-debt cleanup, not a blocker for the product.
+Phantom debt does not block initial Substrate Synthesis shipping — the synthesis recomposer can read the corrected attestation-edge surface without the phantom paths existing. Phantom debt removal is technical-debt cleanup, not a blocker for the product.
 
 Cross-references: `sql/schema/seed/entity_type.sql` (23 real content types as of 2026-05-08 correction; phantom rows removed).
 
@@ -574,14 +574,14 @@ Cross-references: `sql/schema/seed/entity_type.sql` (23 real content types as of
 - The per-role-unit-as-attestation-edge architecture (the centerpiece correction)
 - The four Glicko-2 surfaces and their open-vocabulary arena set
 - The layer-type decomposer library factoring (universal + specialist + metadata + tokenizer + code + content)
-- The Build-a-bear synthesis recomposer architecture
+- The Substrate Synthesis synthesis recomposer architecture
 - The firefly value-add side-channel
 - Sparse honest recording semantics
 - Cross-modal binding via cross-attention
 - The crystal-ball analytics surface and ingestion-time pre-computation pattern
 - The three-tier determinism boundary (ingest / synthesis / analytics)
 - The phantom debt deprecation list and removal sequence
-- The product framings (Build-a-bear, crystal ball) at a level sufficient for the safetensors-first slice
+- The product framings (Substrate Synthesis, crystal ball) at a level sufficient for the safetensors-first slice
 
 ### What this spec does NOT cover
 
@@ -631,7 +631,7 @@ This document supersedes prior overview docs where they conflict. When a future 
 | **Content entity** | An atom or composition representing real-world referent content — a token, a synset, a codepoint, an image region, an audio chunk, a model artifact, etc. Content-addressed via BLAKE3. Collapses across all sources / modalities / models. |
 | **Layer-type decomposer** | A decomposer that processes one tensor layer-type (attention QKV, FFN, embedding, etc.) and emits attestation edges between content entities. Universal across architectures that use the layer type. |
 | **Synthesis recomposer** | A recomposer that synthesizes new weights for a target architecture from substrate consensus attestations across all ingested models. Per-layer-type synthesizers reciprocal to layer-type decomposers. |
-| **Build-a-bear** | The product surface where a user specifies an arbitrary target architecture spec and the synthesis recomposer produces a new model from substrate consensus. Architecture is fully arbitrary. |
+| **Substrate Synthesis** | The product surface where a user specifies an arbitrary target architecture spec and the synthesis recomposer produces a new model from substrate consensus. Architecture is fully arbitrary. |
 | **Crystal ball** | The product surface where substrate state is queryable for mechanistic interpretability, bias/safety audit, capability tomography, etc. Same substrate; different consumer. |
 | **Firefly** | A POINTZM physicality in the 4D substrate jar, representing one model's embedding row for one token, attached to that token's content entity. Cross-model fireflies for the same species form a Voronoi cluster whose tightness IS the cross-model consensus. NOT inference. |
 | **Species** | A content entity treated as a class of fireflies — all the per-model fireflies for "King" are specimens of the King species. The species is the entity; specimens are the model-specific physicalities. |

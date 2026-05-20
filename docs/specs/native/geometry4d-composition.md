@@ -163,7 +163,7 @@ The `entity.centroid_x/y/z/m + hilbert_index` columns (maintained by `substrate.
 
 - Query traversal can rank candidate edges by Glicko mu AND 4D centroid proximity simultaneously.
 - KnowledgeSelector BFS can prefer expansion toward higher-tier neighbors (deeper into a topical region) or surface-ward (toward atomic constituents) depending on recipe intent.
-- Build-a-bear synthesis can weight per-layer arena contributions by tier — early layers favor surface (atomic) signal; deep layers favor origin (abstraction) signal.
+- Substrate Synthesis synthesis can weight per-layer arena contributions by tier — early layers favor surface (atomic) signal; deep layers favor origin (abstraction) signal.
 - Polysemy / sense disambiguation has a geometric realization: different senses of the same surface land in different radial tiers because their content trajectories aggregate over different per-context entities.
 
 **Anti-pattern:** treating centroid as just an identifier or as decoration. The centroid IS the entity's position in the substrate's hierarchical geometric realization, and the radius IS the tier. Code that ignores this loses substrate-native tier query, semantic clustering, and the natural Voronoi cells the principle produces.
@@ -462,4 +462,4 @@ Don't. `frayed_edges` detects missing edges via archetype-trajectory fitting; id
 - `specs/engine/inference.md` — Standard A\* traversal; this document adds the hybrid geometric+graph mode.
 - `specs/sql/mantissa-exploitation.md` — Why some physicality types use PostGIS GeometryZM instead of GEOMETRY4D.
 - `specs/sql/infrastructure-vs-substrate.md` — Which centroid queries cross into the app layer vs stay in the substrate.
-- `familiar-principle.md` — Why the tractable-demon argument depends on the memoized geometric pyramid.
+- `substrate-bond.md` — Why the tractable-demon argument depends on the memoized geometric pyramid.

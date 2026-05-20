@@ -32,7 +32,7 @@
 - They lack ML infra teams to manage training cycles.
 
 **Substrate value:**
-- Laplace-Custom: customer specifies architecture; substrate fills it from substrate state filtered to their domain.
+- Custom-Architecture-Synthesis: customer specifies architecture; substrate fills it from substrate state filtered to their domain.
 - No GPU costs.
 - Continuous improvement via re-export.
 - Audit trail for regulatory positioning.
@@ -71,7 +71,7 @@
 
 **Pricing tier:** License + support. Typical: $1M–$10M license + $250K–$1M annual support.
 
-## Segment 5 — AI research labs (Laplace family early adopters)
+## Segment 5 — AI research labs (substrate product family early adopters)
 
 **Profile:** Academic and corporate research labs benchmarking model architectures, studying training dynamics, doing model analysis research.
 

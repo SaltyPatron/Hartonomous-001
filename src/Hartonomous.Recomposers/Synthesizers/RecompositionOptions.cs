@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// User-tunable knobs that bias Build-a-bear synthesis toward specific
+/// User-tunable knobs that bias Substrate Synthesis synthesis toward specific
 /// arenas / provenances / personalities. Two synthesis runs with different
 /// RecompositionOptions on the SAME substrate state produce DIFFERENT
 /// models — no re-training, no re-ingestion. The substrate is the common

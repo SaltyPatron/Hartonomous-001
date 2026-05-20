@@ -96,8 +96,8 @@ Borrowed / cute / trademarked names found in docs that need replacement. Populat
 
 | Term | Where used | Status | Replacement |
 |---|---|---|---|
-| Familiar / Familiar Principle | `docs/familiar-principle.md`, prior CLAUDE.md, others | flagged (user correction: explanatory device, not foundation) | (TBD — describe properties, do not name) |
-| Build-a-bear | substrate-spec, vision, others | flagged (trademark, Build-A-Bear Workshop Inc.) | (TBD — `substrate-synthesized model export` candidate) |
+| Substrate / Substrate Bond | `docs/substrate-bond.md`, prior CLAUDE.md, others | flagged (user correction: explanatory device, not foundation) | (TBD — describe properties, do not name) |
+| Substrate Synthesis | substrate-spec, vision, others | flagged (trademark, Substrate Synthesis Workshop Inc.) | (TBD — `substrate-synthesized model export` candidate) |
 | Crystal Ball | substrate-spec, others | flagged (cute; ambiguous) | (TBD — `substrate analytics surface` candidate) |
 | Lottery Ticket / LTH | substrate-spec, recomposer algos, others | citation-OK; not feature-name | "magnitude-threshold sparse recording (Frankle & Carbin 2018)" |
 | Fireflies / firefly jar | substrate-spec, embedding-physicality.md, others | flagged (cute metaphor) | (TBD — `per-model embedding POINTZM in 4D physicality`) |

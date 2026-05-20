@@ -95,7 +95,7 @@ Cross-model corroboration fires separate rating events on the same edge identity
 
 Cross-references:
 - [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) — authoritative substrate spec
-- [`docs/familiar-principle.md`](../../docs/familiar-principle.md) — conceptual frame
+- [`docs/substrate-bond.md`](../../docs/substrate-bond.md) — conceptual frame
 - [`docs/specs/sql/infrastructure-vs-substrate.md`](../../docs/specs/sql/infrastructure-vs-substrate.md) — full layer-discipline probe study
 - [`docs/specs/engine/arenas-and-significance.md`](../../docs/specs/engine/arenas-and-significance.md) — Glicko-2 mechanics
 - [`.claude/rules/25-physicality-4d.md`](25-physicality-4d.md) — the geometry layer

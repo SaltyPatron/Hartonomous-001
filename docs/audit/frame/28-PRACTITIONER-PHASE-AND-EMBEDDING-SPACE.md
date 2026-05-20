@@ -173,4 +173,4 @@ Cross-references:
 - `frame/09-RECOMPOSERS-SYNTHESIS.md` — substrate synthesis as projection OUT of 4D
 - `frame/26-MANTISSA-EXPLOITATION.md` — atom POINTZM real coords vs composition LINESTRINGZM mantissa-packed
 - `frame/22-NATIVE-COMPUTE-FACADE.md` — Procrustes / Laplacian eigenmap implementations
-- `frame/00-FOUNDATIONAL.md` — supplements the Laplace Demon + practitioner-bound properties with phase ordering + embedding-space framing
+- `frame/00-FOUNDATIONAL.md` — supplements the the substrate + practitioner-bound properties with phase ordering + embedding-space framing

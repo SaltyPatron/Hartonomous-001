@@ -28,6 +28,9 @@ internal sealed partial class PassSession : IPassSession
     private long _entitiesCreated;
     private long _edgesCreated;
     private int _batchNum;
+    private readonly System.Collections.Generic.Dictionary<string, object> _sharedState = new(System.StringComparer.Ordinal);
+
+    public System.Collections.Generic.IDictionary<string, object> SharedState => _sharedState;
 
     public PassSession(
         IIngestionPipeline pipeline,

@@ -33,7 +33,7 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
     public IReadOnlyList<string> Dependencies => ["tuple.embedding_lookup"];
     public IReadOnlyList<string> AppliesToArchitectures => [];
 
-    private const int TopSourceTokens = 1024;
+    private const int TopSourceTokens = 16;
     private const int SourceChunkSize = 256;
     private const int TargetChunkSize = 4096;
     private const double ModelDerivedTrustMu = 60_000.0;
@@ -168,6 +168,155 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
         double[] embed, int vocabSize, int hiddenDim,
         FfnTensors fn, string attestationTypeCode, ResolvedTuple tuple, CancellationToken ct)
     {
+        // Cross-mechanism k-NN walk. EmbeddingLookupTuplePass stashes the
+        // model's embedding-space k-NN graph in session.SharedState. FFN
+        // walks the SAME (vocab_i, neighbor_j) pair identities and adds
+        // its mechanism-attributed rating event to the SAME semantic_similarity
+        // edge — cross-mechanism Glicko-2 consensus on shared edge identity.
+        // Bounded by k-NN size (~1.5M pairs), not vocab² × layer count.
+        if (session.SharedState.TryGetValue("EmbeddingKnnGraph", out object? knnObj) &&
+            knnObj is KnnGraphF64 sharedKnn)
+        {
+            return await EmitFromSharedKnn(
+                session, context, vocabHashByIdx,
+                embed, vocabSize, hiddenDim,
+                fn, sharedKnn, tuple, ct);
+        }
+        // Fallback: no shared k-NN (e.g. embedding pass didn't run). Skip
+        // emission rather than fall back to O(vocab²) sweep that OOM-kills
+        // the producer. The fall-through is bounded honest abstention.
+        return 0;
+    }
+
+    private static async Task<long> EmitFromSharedKnn(
+        IPassSession session, ModelPassContext context,
+        Hash32?[] vocabHashByIdx,
+        double[] embed, int vocabSize, int hiddenDim,
+        FfnTensors fn, KnnGraphF64 knn, ResolvedTuple tuple, CancellationToken ct)
+    {
+        // Materialize the response matrix ONCE (vocab × hiddenDim). Same
+        // compute as the old shape (GEMM + activation + GEMM) — but now we
+        // only need it to compute response[i]·embed[j] for the k-NN pairs,
+        // not for the full vocab × vocab.
+        double[] response = new double[(long)vocabSize * hiddenDim];
+        double[] upFull   = new double[(long)vocabSize * fn.Intermediate];
+        context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                           vocabSize, fn.Intermediate, hiddenDim,
+                                           1.0, embed, hiddenDim, fn.Up, hiddenDim,
+                                           0.0, upFull, fn.Intermediate);
+        if (fn.IsSwiGlu && fn.Gate is not null)
+        {
+            double[] gateFull = new double[(long)vocabSize * fn.Intermediate];
+            context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                               vocabSize, fn.Intermediate, hiddenDim,
+                                               1.0, embed, hiddenDim, fn.Gate, hiddenDim,
+                                               0.0, gateFull, fn.Intermediate);
+            long actLen = (long)vocabSize * fn.Intermediate;
+            for (long i = 0; i < actLen; i++)
+            {
+                double g = gateFull[i];
+                upFull[i] *= g / (1.0 + Math.Exp(-g));
+            }
+        }
+        else
+        {
+            long actLen = (long)vocabSize * fn.Intermediate;
+            for (long i = 0; i < actLen; i++)
+            {
+                double x = upFull[i];
+                upFull[i] = x / (1.0 + Math.Exp(-1.702 * x));
+            }
+        }
+        context.Compute.Ingestion.GemmF64(TransposeOp.None, TransposeOp.Transpose,
+                                           vocabSize, hiddenDim, fn.Intermediate,
+                                           1.0, upFull, fn.Intermediate, fn.Down, fn.Intermediate,
+                                           0.0, response, hiddenDim);
+
+        // Walk shared k-NN. For each (i, neighbor_j) pair, compute the
+        // FFN-mechanism score = response[i] · embed[j] (FFN's view of pairing
+        // token i's processed representation with token j's input embedding).
+        long emitted = 0;
+        string slotCode = fn.IsSwiGlu ? "Gate,Up,Down" : "Intermediate,Output";
+        string tupleCode = tuple.Tuple.ToString();
+        string modalityCode = tuple.Modality.ToString();
+        int? layerIdx = tuple.LayerIndex;
+        int? headIdx = tuple.HeadIndex;
+        int? expertIdx = tuple.ExpertIndex;
+        long modelSourceId = context.Source.ModelSourceId;
+
+        for (int row = 0; row < vocabSize; row++)
+        {
+            if (row % 4096 == 0) { ct.ThrowIfCancellationRequested(); }
+            Hash32? hashA = vocabHashByIdx[row];
+            if (hashA is null) { continue; }
+            long start = knn.RowPtr[row];
+            long end = knn.RowPtr[row + 1];
+            for (long e = start; e < end; e++)
+            {
+                int neighbor = (int)knn.ColIdx[e];
+                if (neighbor == row || neighbor < 0 || neighbor >= vocabSize) { continue; }
+                Hash32? hashB = vocabHashByIdx[neighbor];
+                if (hashB is null) { continue; }
+
+                // FFN-mechanism score: response[row]·embed[neighbor].
+                double score = 0.0;
+                long rOff = (long)row * hiddenDim;
+                long eOff = (long)neighbor * hiddenDim;
+                for (int h = 0; h < hiddenDim; h++)
+                {
+                    score += response[rOff + h] * embed[eOff + h];
+                }
+
+                EntityHandle a, b;
+                if (hashA.Value.CompareTo(hashB.Value) <= 0)
+                {
+                    a = new EntityHandle(hashA.Value, "word_form");
+                    b = new EntityHandle(hashB.Value, "word_form");
+                }
+                else
+                {
+                    a = new EntityHandle(hashB.Value, "word_form");
+                    b = new EntityHandle(hashA.Value, "word_form");
+                }
+
+                double absScore = Math.Abs(score);
+                double glickoScore = score > 0 ? 1.0 : 0.0;
+                string signCode = score > 0 ? "positive_evidence" : "negative_evidence";
+
+                EdgeRatingEvent[] events =
+                [
+                    new EdgeRatingEvent(
+                        "model_trust", signCode, glickoScore, absScore,
+                        ModelSourceId: modelSourceId,
+                        TupleCode: tupleCode,
+                        SlotCode: slotCode,
+                        ModalityCode: modalityCode,
+                        LayerIndex: layerIdx,
+                        HeadIndex: headIdx,
+                        ExpertIndex: expertIdx),
+                ];
+                session.Batch.AddEdge("semantic_similarity", context.ProvenanceCode,
+                [
+                    new EdgeMemberSpec(a, "source", 0),
+                    new EdgeMemberSpec(b, "target", 1),
+                ], System.Array.Empty<EdgeSignificanceSpec>(), events);
+                emitted++;
+            }
+            if (row % 1024 == 0)
+            {
+                await session.MaybeFlushAsync(FlushThreshold, ct);
+            }
+        }
+        await session.MaybeFlushAsync(FlushThreshold, ct);
+        return emitted;
+    }
+
+    private static async Task<long> EmitChunkedFfnAttestationsLegacy(
+        IPassSession session, ModelPassContext context,
+        bool[] usable, Hash32?[] vocabHashByIdx,
+        double[] embed, int vocabSize, int hiddenDim,
+        FfnTensors fn, string attestationTypeCode, ResolvedTuple tuple, CancellationToken ct)
+    {
         // Source ranking via ||embed[v]||. The previous code ran the FULL
         // FFN forward on every vocab token to rank by ||response[v]|| —
         // that was vocab × intermediate × hidden × 3 FLOPs per layer
@@ -265,9 +414,10 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                 int a = sources[sChunkStart + i];
                 long src = (long)a * hiddenDim;
                 long dst = (long)i * hiddenDim;
-                Buffer.BlockCopy(response, (int)(src * sizeof(double)),
-                                 sourceGather, (int)(dst * sizeof(double)),
-                                 hiddenDim * sizeof(double));
+                // Array.Copy supports long offsets; Buffer.BlockCopy's int
+                // byte-offset overflows at src * 8 > 2^31 (vocab 151K ×
+                // hiddenDim 2048 × 8B = 2.4G, well past int.MaxValue).
+                Array.Copy(response, src, sourceGather, dst, hiddenDim);
             }
 
             // Per target chunk: pair score = sourceResponse · embed[b].
@@ -373,13 +523,25 @@ internal sealed partial class FfnTuplePass : IModelAnalysisPass
                                 HeadIndex: tuple.HeadIndex,
                                 ExpertIndex: tuple.ExpertIndex),
                         ];
-                        session.Batch.AddEdge("model_ffn_factor", context.ProvenanceCode,
+                        // FFN co-activation (tokens A and B that share
+                        // strongly-activated FFN rows) attests internal-feature
+                        // similarity. Same edge identity as embedding cosine
+                        // — cross-mechanism consensus accumulates per arena.
+                        session.Batch.AddEdge("semantic_similarity", context.ProvenanceCode,
                         [
                             new EdgeMemberSpec(aH, "source", 0),
                             new EdgeMemberSpec(bH, "target", 1),
                         ], System.Array.Empty<EdgeSignificanceSpec>(), events);
                         emitted++;
                     }
+
+                    // Per-source-row flush — without this, one source chunk
+                    // can accumulate 30M+ edges before any flush fires (1024
+                    // sources × full vocab × NoiseFraction pass-through).
+                    // That overflows Npgsql's binary writer AND OOMs the
+                    // producer at ~100GB anon-rss. Per-row keeps batches
+                    // bounded to ~vocab × NoiseFraction edges ≈ 15K.
+                    await session.MaybeFlushAsync(FlushThreshold, ct);
                 }
             }
 

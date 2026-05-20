@@ -44,7 +44,7 @@ Reason: the documentation tree contains stale bodies marked as complete, partial
 | C-009 | Significance materialization has conflicting claims. | Current pipeline and schema comments say inline priors and no end-of-phase post-pass; older ADR/docs say lazy materialization or phase-owned post-pass. | Make inline bundled-emit priming the active implementation claim; archive lazy/post-pass docs unless retained as rejected history. |
 | C-010 | Attestation-type semantics are transitional but docs treat different end states as current. | Current schema still keys significance by `attestation_type_id`; `attestation_type.sql` says the column is on a removal path. | Record this as an explicit migration decision: current = 3 generic rows with column present; target = column removal only after code no longer threads it. |
 | C-011 | Text decomposition is overclaimed as fully native. | `SubstrateTextDecomposer` says native does the entire UAX #29 pipeline; `TextDecomposeNative.SentenceBoundaries` says native sentence boundaries are stubbed and C# fallback handles it. | Mark native sentence boundary as an implementation gap; keep text path canonical only if fallback is tested and deterministic. |
-| C-012 | Build-a-bear/synthesis docs outpace code. | `VocabSelector` still emits placeholder token text from hash prefixes; comments reference a removed `substrate.recompose_text()` follow-up. | Block product-complete claims until tokenizer surface-form recovery is implemented or the placeholder path is explicitly removed. |
+| C-012 | Substrate Synthesis/synthesis docs outpace code. | `VocabSelector` still emits placeholder token text from hash prefixes; comments reference a removed `substrate.recompose_text()` follow-up. | Block product-complete claims until tokenizer surface-form recovery is implemented or the placeholder path is explicitly removed. |
 | C-013 | Windows/PowerShell runbooks conflict with current Linux/extension flow. | `BASELINE.md` and `V1-DEMO.md` still cite PowerShell bootstrap and old Docker/apply scripts; repo instructions for this workstation require `scripts/hart` on Linux. | Archive or rewrite runbooks to the Linux `scripts/hart` flow and generated extension SQL path. |
 | C-014 | Counts in instruction surfaces drift. | Current recompute after adding this ledger: 34 entity types, 134 edge types, 3 attestation types, 5 physicality types, 19 arenas, 63 provenances, 7 edge roles, 19 junction table files, 219 docs Markdown files. | Replace cached counts in docs/agents/prompts with recomputed counts or commands that compute them. |
 
@@ -80,7 +80,7 @@ Reason: the documentation tree contains stale bodies marked as complete, partial
 - Active docs outside archived history contain no `substrate.entity(id, entity_type_id)` or `UNIQUE(hash, entity_type_id)` entity design.
 - Active docs do not label migration-era SQL specs complete unless their bodies have been rewritten to current schema.
 - Agent instruction files point at the spine and schema/code authority order; they do not restate independent counts or stale schema shapes.
-- Build-a-bear completion is not claimed while placeholder tokenizer text or removed `substrate.recompose_text()` references remain in active synthesis paths.
+- Substrate Synthesis completion is not claimed while placeholder tokenizer text or removed `substrate.recompose_text()` references remain in active synthesis paths.
 
 ## Immediate Next Artifact
 

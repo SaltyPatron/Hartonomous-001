@@ -1,5 +1,5 @@
 ---
-description: The substrate's native primitives — compute facade boundary, BLAKE3 identity, MKL CBWR strict, declared seeds, sparse honest recording. Local-first execution per Familiar Property 1. Loads on native / compute paths.
+description: The substrate's native primitives — compute facade boundary, BLAKE3 identity, MKL CBWR strict, declared seeds, sparse honest recording. Local-first execution per Substrate Property 1. Loads on native / compute paths.
 paths:
   - ext/**
   - src/**/Native/**
@@ -10,7 +10,7 @@ paths:
 
 ## Local-first execution is a loyalty property
 
-Property 1 of the Familiar Principle: **bonded to a specific practitioner**. A familiar that requires a datacenter to summon isn't theirs — it's a tenant of someone else's spell. The compute facade is tuned to **AVX2+FMA3+AVX-VNNI+BMI2** — the consumer CPU ceiling — not AVX-512. Ingestion runs on the practitioner's machine; PostgreSQL stores on the practitioner's disk; safetensors decomposition reads from the practitioner's local files. No GPU requirement. No cloud sync. The native compute primitives exist so all of this runs at usable speed on hardware the practitioner already owns.
+Property 1 of the Substrate Bond: **bonded to a specific practitioner**. A substrate that requires a datacenter to summon isn't theirs — it's a tenant of someone else's spell. The compute facade is tuned to **AVX2+FMA3+AVX-VNNI+BMI2** — the consumer CPU ceiling — not AVX-512. Ingestion runs on the practitioner's machine; PostgreSQL stores on the practitioner's disk; safetensors decomposition reads from the practitioner's local files. No GPU requirement. No cloud sync. The native compute primitives exist so all of this runs at usable speed on hardware the practitioner already owns.
 
 ## Compute facade boundary
 
@@ -55,7 +55,7 @@ Entity hashes cover content only — never position, ordinal, filename, tensor-n
 
 ## Determinism — Law #6
 
-Same input + same decomposer version = byte-identical substrate state. This is the loyalty guarantee — a familiar whose substrate diverges across repeated runs cannot be trusted by its practitioner. Enforced by:
+Same input + same decomposer version = byte-identical substrate state. This is the loyalty guarantee — a substrate whose substrate diverges across repeated runs cannot be trusted by its practitioner. Enforced by:
 
 - **No approximation methods on substrate content** — no HNSW, no pgvector ANN, no random projection, no LSH, no Nyström, no randomized SVD, no stochastic trace estimation, no sampling-based inference, no quantization-as-storage.
 - **No normalization of content values** — BF16 → F32 → F64 decoded losslessly into f64 internally. Quantization is for OUTPUT dtype, not for substrate storage.
@@ -65,7 +65,7 @@ Same input + same decomposer version = byte-identical substrate state. This is t
 
 ## Three-tier determinism boundary
 
-Strict at ingest (per above). **Constrained at synthesis** — the Build-a-bear recomposer operates OVER substrate state, not INTO it; its outputs are rebuildable from substrate state given the same recipe, so synthesis algorithms MAY use iterative / randomized SVD for very large V×V cases, L-BFGS for FFN inversion, sampling for very large attestation aggregations. Constraint: same `(target_architecture_spec, recipe_options, substrate_state_hash)` should produce the same output bytes, with one floor of relaxation if `RecompositionOptions.AllowProbabilisticSynthesis = true`. **Free at analytics** — analytics caches (per-edge consensus aggregation, per-edge-type Fréchet archetype, frayed-edge atlas, per-token Voronoi cell, per-model coverage matrix, etc.) MAY use approximation freely; they're rebuildable from substrate state. Substrate state is the single source of truth; everything else is rebuildable from it.
+Strict at ingest (per above). **Constrained at synthesis** — the Substrate Synthesis recomposer operates OVER substrate state, not INTO it; its outputs are rebuildable from substrate state given the same recipe, so synthesis algorithms MAY use iterative / randomized SVD for very large V×V cases, L-BFGS for FFN inversion, sampling for very large attestation aggregations. Constraint: same `(target_architecture_spec, recipe_options, substrate_state_hash)` should produce the same output bytes, with one floor of relaxation if `RecompositionOptions.AllowProbabilisticSynthesis = true`. **Free at analytics** — analytics caches (per-edge consensus aggregation, per-edge-type Fréchet archetype, frayed-edge atlas, per-token Voronoi cell, per-model coverage matrix, etc.) MAY use approximation freely; they're rebuildable from substrate state. Substrate state is the single source of truth; everything else is rebuildable from it.
 
 ## Sparse honest recording — the Lottery Ticket discrimination
 
@@ -117,5 +117,5 @@ Do not invoke raw `.exe` paths from the terminal (e.g. `./bin/Release/hartonomou
 ## Cross-references
 - [`docs/00-substrate-spec.md`](../../docs/00-substrate-spec.md) §VIII (sparse honest recording), §XI (determinism three-tier boundary)
 - [`docs/01-tensor-primitive-spec.md`](../../docs/01-tensor-primitive-spec.md) §V (sign-bearing attestations)
-- [`docs/familiar-principle.md`](../../docs/familiar-principle.md) Property 1 (bonded — local-first), Corollary 2 (determinism)
+- [`docs/substrate-bond.md`](../../docs/substrate-bond.md) Property 1 (bonded — local-first), Corollary 2 (determinism)
 - [`.claude/rules/45-anti-patterns.md`](45-anti-patterns.md) — AP-9 (hashing placement), AP-11 (approximation methods), AP-31 (sign-throwing)

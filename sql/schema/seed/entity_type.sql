@@ -9,15 +9,41 @@
 -- Per-tensor analytical surfaces (sparsity, weight distribution, SVD spectrum,
 -- etc.) are physicality on the tensor entity (NOT separate entity types).
 INSERT INTO substrate.entity_type (code, modality) VALUES
-    -- Text
+    -- Text — proper UAX-29 + morphological + semantic tier ladder.
+    -- Trunk-to-leaf walk (per the substrate's recursive Merkle composition):
+    --   document      → trajectory through paragraph entities
+    --   paragraph     → trajectory through sentence entities (UAX-29 paragraph break)
+    --   sentence      → trajectory through phrase/word_form entities (UAX-29 SB)
+    --   phrase        → trajectory through word_form entities (syntactic, derived from
+    --                   dependency parsing where available; optional intermediate tier)
+    --   word_form     → trajectory through grapheme_cluster entities (UAX-29 WB)
+    --   morpheme      → trajectory through grapheme_cluster entities (morphological
+    --                   decomposition; subword piece of a word_form)
+    --   grapheme_cluster → trajectory through codepoint entities (UAX-29 GB)
+    --   codepoint     → POINTZM atom (Super-Fibonacci S³ by UCA rank in physicality)
+    --
+    -- Off-trunk classifications (typed edges from the trunk tiers, NOT
+    -- composition children):
+    --   lemma         — canonical form, target of has_lemma edge from word_form
+    --   synset        — semantic cluster, target of has_sense edge from lemma
+    --   collation_element — UCA collation, target of has_collation edge from grapheme/cp
+    --   language_name — ISO 639 language identity, target of has_language edge
+    --
+    -- text_composition is a generic fallback for "non-tier-specific text content"
+    -- (e.g. a named sequence emoji bundle, a multi-codepoint Unicode standardized
+    -- variant) that doesn't fit a specific UAX-29 tier. Prefer the tier-specific
+    -- types when emitting; text_composition should shrink over time as the
+    -- decomposer learns to classify content into proper tiers.
     ('codepoint',          'text'),
     ('grapheme_cluster',   'text'),
     ('word_form',          'text'),
     ('morpheme',           'text'),
     ('lemma',              'text'),
-    ('text_composition',   'text'),
+    ('phrase',             'text'),
+    ('sentence',           'text'),
     ('paragraph',          'text'),
     ('document',           'text'),
+    ('text_composition',   'text'),
     ('synset',             'text'),
     ('collation_element',  'text'),
     ('language_name',      'text'),
@@ -67,4 +93,10 @@ INSERT INTO substrate.entity_type (code, modality) VALUES
     ('block',              'text'),
     ('bidi_class',         'text'),
     ('east_asian_width',   'text'),
-    ('break_property',     'text');
+    ('break_property',     'text'),
+    -- Recipe entities: content-addressed (BLAKE3 of canonical recipe
+    -- JSON). App-tier starter recipes seeded at bootstrap; substrate-tier
+    -- auto-derived from SafetensorsDecomposer ingest; user-tier from
+    -- practitioner forks. Stored in substrate.recipe + named via
+    -- substrate.recipe_name.
+    ('recipe',             'text');

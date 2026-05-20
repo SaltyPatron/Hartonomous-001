@@ -80,4 +80,28 @@ public interface IIngestionPipeline : IAsyncDisposable
     Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(
         IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct);
 
+    /// <summary>
+    /// Top-down Merkle existence filter — ONE round-trip server-side call to
+    /// <c>substrate.merkle_tree_filter</c>. C# pre-computes the full Merkle
+    /// tree via libhartonomous (BLAKE3 + mantissa-pack, AVX2+FMA3+BMI2,
+    /// microseconds, no DB), then sends it as two parallel arrays:
+    /// <paramref name="hashesInTierOrder"/> sorted parents-before-children;
+    /// <paramref name="parentIndices"/> with parentIndices[i] = index of
+    /// hashesInTierOrder[i]'s parent, or -1 for root.
+    ///
+    /// Returns a parallel <c>bool[]</c> where <c>result[i] == true</c> means
+    /// the hash at position i is in the substrate (directly OR by Merkle
+    /// invariant via an existing ancestor) and the caller should treat this
+    /// ingestion as an attestation/observation event on the existing entity
+    /// instead of re-emitting it. <c>result[i] == false</c> means novel —
+    /// emit via substrate.write_*.
+    ///
+    /// Substrate side does the LEFT JOIN scan + Merkle-invariant propagation
+    /// in C-level array ops. One round-trip replaces N-round-trip per-tier
+    /// BFS from clients.
+    /// </summary>
+    Task<bool[]> MerkleTreeFilterAsync(
+        IReadOnlyList<Hash32> hashesInTierOrder,
+        IReadOnlyList<int> parentIndices,
+        CancellationToken ct);
 }

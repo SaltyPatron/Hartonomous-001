@@ -9,7 +9,7 @@ Working scope model for the documentation audit. Per-area details live in `docs/
 ## Per-area files
 
 Foundational + invariants:
-- `frame/00-FOUNDATIONAL.md` — Laplace's Demon framing, practitioner-bound operating properties (the metaphor formerly known as "Familiar"), invention-WHY
+- `frame/00-FOUNDATIONAL.md` — the substrate framing, practitioner-bound operating properties (the metaphor formerly known as "Substrate"), invention-WHY
 - `frame/01-SUBSTRATE-LAWS.md` — the 13 canonical laws with falsification tests
 - `frame/02-SUBSTRATE-MODEL.md` — entity / edge / physicality / arena / Glicko, mantissa packing, recursive Merkle composition, radial tiering
 - `frame/03-MODALITY-UNIVERSALITY.md` — per-modality tier ladders, cross-modal binding, application telemetry as substrate content

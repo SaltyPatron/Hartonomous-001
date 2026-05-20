@@ -359,12 +359,19 @@ SELECT p.entity_hash, ST_AsEWKB(p.geom) AS geom
             idx++;
         }
 
+        // Post-substrate.entity-revert: the GENERATED hash_bits_0_51 /
+        // hash_bits_52_103 columns are gone (substrate.entity is identity-
+        // only — hash PK). The composite btree index now indexes the
+        // functional expressions substrate.bb_hash_lo(hash) +
+        // substrate.bb_hash_hi(hash); the lookup uses those functions in
+        // the JOIN condition so the index can still drive a point-lookup.
         const string Sql = @"
-SELECT e.hash, e.hash_bits_0_51, e.hash_bits_52_103
+SELECT e.hash, substrate.bb_hash_lo(e.hash) AS hash_bits_0_51,
+       substrate.bb_hash_hi(e.hash) AS hash_bits_52_103
   FROM substrate.entity e
   JOIN unnest($1::bigint[], $2::bigint[]) AS u(lo, hi)
-    ON e.hash_bits_0_51 = u.lo
-   AND e.hash_bits_52_103 = u.hi";
+    ON substrate.bb_hash_lo(e.hash) = u.lo
+   AND substrate.bb_hash_hi(e.hash) = u.hi";
         await using NpgsqlCommand cmd = new(Sql, conn);
         cmd.Parameters.Add(new NpgsqlParameter
         {

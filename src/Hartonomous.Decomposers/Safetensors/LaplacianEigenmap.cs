@@ -19,6 +19,25 @@ public static class LaplacianEigenmap
         int d,
         LaplacianEigenmapOptions? options = null,
         Action<string>? onStage = null)
+        => ProjectWithGraph(compute, flatRows, n, d, options, onStage).Coordinates;
+
+    public readonly record struct ProjectionResult(
+        (double[] X, double[] Y, double[] Z) Coordinates,
+        KnnGraphF64 KnnGraph);
+
+    /// <summary>
+    /// Same projection as <see cref="Project"/> but ALSO returns the k-NN
+    /// cosine-affinity graph used as the Laplacian input — callers that
+    /// want to emit per-(row, neighbor) attestation edges can walk the
+    /// CSR structure without a second k-NN build.
+    /// </summary>
+    public static ProjectionResult ProjectWithGraph(
+        IComputeFacade compute,
+        double[] flatRows,
+        int n,
+        int d,
+        LaplacianEigenmapOptions? options = null,
+        Action<string>? onStage = null)
     {
         options ??= LaplacianEigenmapOptions.Default;
         ArgumentNullException.ThrowIfNull(compute);
@@ -232,6 +251,6 @@ public static class LaplacianEigenmap
         Array.Copy(basis, n, e2, 0, n);
         Array.Copy(basis, 2 * n, e3, 0, n);
 
-        return (e1, e2, e3);
+        return new ProjectionResult((e1, e2, e3), graph);
     }
 }

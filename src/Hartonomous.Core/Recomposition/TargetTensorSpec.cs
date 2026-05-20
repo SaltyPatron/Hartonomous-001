@@ -5,7 +5,7 @@ namespace Hartonomous.Core.Recomposition;
 /// <summary>
 /// Specification for one tensor of the target architecture the recomposer
 /// is materializing. Mode 1 (re-export) populates this from the substrate's
-/// stored tree for the source model_source_id; Mode 2 (build-a-bear)
+/// stored tree for the source model_source_id; Mode 2 (substrate synthesis)
 /// populates it from the user's <see cref="TargetArchitectureSpec"/>.
 /// </summary>
 /// <param name="Name">Wire-format tensor name (e.g.

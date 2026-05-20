@@ -24,11 +24,11 @@ RETURNS TABLE(
 )
 LANGUAGE SQL STABLE PARALLEL SAFE
 AS $$
-    SELECT e.hash_bits_0_51, e.hash_bits_52_103, e.hash
+    SELECT substrate.bb_hash_lo(e.hash), substrate.bb_hash_hi(e.hash), e.hash
     FROM substrate.entity e
     JOIN unnest(p_lo, p_hi) AS probe(lo, hi)
-      ON e.hash_bits_0_51   = probe.lo
-     AND e.hash_bits_52_103 = probe.hi;
+      ON substrate.bb_hash_lo(e.hash)   = probe.lo
+     AND substrate.bb_hash_hi(e.hash) = probe.hi;
 $$;
 
 COMMENT ON FUNCTION substrate.entity_by_hash_prefix(BIGINT[], BIGINT[]) IS

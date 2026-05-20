@@ -1,6 +1,6 @@
 # Recipe 21: Add a layer-type synthesizer
 
-**When to use this recipe:** You're adding the reciprocal synthesizer for a layer-type decomposer. Per Build-a-bear (spec §VI), every layer-type decomposer needs a reciprocal synthesizer that, given a target tensor's role and shape, projects substrate consensus attestations into the target tensor's basis.
+**When to use this recipe:** You're adding the reciprocal synthesizer for a layer-type decomposer. Per Substrate Synthesis (spec §VI), every layer-type decomposer needs a reciprocal synthesizer that, given a target tensor's role and shape, projects substrate consensus attestations into the target tensor's basis.
 
 **Prerequisite:** The reciprocal layer-type decomposer exists (per [`docs/recipes/20-add-layer-type-decomposer.md`](20-add-layer-type-decomposer.md)) and is documented in [`docs/specs/decomposers/layer-type-library.md`](../specs/decomposers/layer-type-library.md). The synthesizer reads the substrate state that the decomposer emitted.
 

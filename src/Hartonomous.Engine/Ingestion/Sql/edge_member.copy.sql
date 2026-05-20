@@ -1,1 +1,0 @@
-COPY pg_temp.edge_member_inflight (edge_type_id, edge_hash, entity_hash, edge_role_id, role_position) FROM STDIN (FORMAT binary)

@@ -210,7 +210,12 @@ public sealed partial class OmwDecomposer : TextIngestingDecomposer
                         // arena), tightening sigma toward cross-source
                         // consensus.
                         Hash32 posHash = ReferenceVocabularyHashes.PosEntityHash(udPos);
-                        EntityHandle posHandle = batch.AddEntity(posHash, "pos");
+                        // POS entities are content-addressed; deterministic
+                        // hash → one substrate.entity row across decomposers.
+                        // First emitter (WordNet) owns the AddEntity write;
+                        // OMW constructs the handle directly to avoid
+                        // transactionid lock contention on the ~17 hot rows.
+                        EntityHandle posHandle = new(posHash, "pos");
                         batch.AddEdge("has_pos", ProvenanceCode,
                         [
                             new EdgeMemberSpec(lemmaHandle, "source", 0),

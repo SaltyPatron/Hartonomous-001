@@ -37,7 +37,7 @@ A semantic explanation, plan, review, or implementation path passes only if it d
 
 13. **Cross-modal binding is described via `CrossAttentionLayerDecomposer` producing edges between content entities of different modalities.** A pass on case 15 requires stating that vision-language and diffusion-text-conditioning models decompose by composition of layer-type + content + cross-attention decomposers; the substrate's text consensus surface is anchored on the same `word_form` entities that text-only models contribute to. Inventing a parallel "vision_token" / "audio_token" entity universe disconnected from text is a fail.
 
-14. **The Build-a-bear recomposer is described as synthesis-from-consensus across all ingested models, NOT single-source phantom-scatter round-trip.** Per spec §VI: user specifies an arbitrary `TargetArchitectureSpec` (any combination of MoE / LoRA / layer count / hidden dim / modality mix); per-layer-type synthesizers (reciprocal of layer-type decomposers) project substrate consensus into the target tensor basis with honest abstention on under-attested cells. Describing the recomposer as round-tripping a single source's stored phantoms is a fail.
+14. **The Substrate Synthesis recomposer is described as synthesis-from-consensus across all ingested models, NOT single-source phantom-scatter round-trip.** Per spec §VI: user specifies an arbitrary `TargetArchitectureSpec` (any combination of MoE / LoRA / layer count / hidden dim / modality mix); per-layer-type synthesizers (reciprocal of layer-type decomposers) project substrate consensus into the target tensor basis with honest abstention on under-attested cells. Describing the recomposer as round-tripping a single source's stored phantoms is a fail.
 
 ## Common failure patterns
 

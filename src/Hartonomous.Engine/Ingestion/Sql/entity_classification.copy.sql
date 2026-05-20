@@ -1,1 +1,0 @@
-COPY pg_temp.entity_classification_inflight (entity_hash, entity_type_id, provenance_id) FROM STDIN (FORMAT binary)

@@ -113,10 +113,11 @@
 -- @include schema/tables/core/edge_cross_modal.sql
 -- @include schema/tables/core/edge_unicode.sql
 -- @include schema/tables/core/edge_model.sql
--- @include schema/tables/core/edge_model_concept_similarity.sql
--- @include schema/tables/core/edge_model_attention_pattern.sql
--- @include schema/tables/core/edge_model_ffn_factor.sql
--- @include schema/tables/core/edge_model_cross_content.sql
+-- (Deprecated 2026-05-20: edge_model_concept_similarity / _attention_pattern
+--  / _ffn_factor / _cross_content partitions dropped — mechanism-imprint
+--  edge types collapsed into co_occurrence per AP-38 principle. The
+--  edge_type rows remain for ID stability but no decomposer emits on
+--  them; any stale row inserts on those IDs land in edge_default.)
 -- @include schema/tables/core/edge_default.sql
 -- @include schema/tables/core/edge_member.sql
 -- @include schema/tables/core/edge_member_p0.sql
@@ -183,29 +184,30 @@
 -- @include schema/tables/core/physicality_default_p6.sql
 -- @include schema/tables/core/physicality_default_p7.sql
 -- @include schema/tables/core/entity_significance.sql
--- @include schema/tables/core/entity_significance_lexical.sql
--- @include schema/tables/core/entity_significance_syntactic.sql
--- @include schema/tables/core/entity_significance_translation.sql
--- @include schema/tables/core/entity_significance_model.sql
--- @include schema/tables/core/entity_significance_authority.sql
--- @include schema/tables/core/entity_significance_relevance.sql
--- @include schema/tables/core/entity_significance_corroboration.sql
--- @include schema/tables/core/entity_significance_frequency.sql
--- @include schema/tables/core/entity_significance_attention.sql
--- @include schema/tables/core/entity_significance_morphological.sql
--- @include schema/tables/core/entity_significance_default.sql
+-- @include schema/tables/core/entity_significance_p0.sql
+-- @include schema/tables/core/entity_significance_p1.sql
+-- @include schema/tables/core/entity_significance_p2.sql
+-- @include schema/tables/core/entity_significance_p3.sql
+-- @include schema/tables/core/entity_significance_p4.sql
+-- @include schema/tables/core/entity_significance_p5.sql
+-- @include schema/tables/core/entity_significance_p6.sql
+-- @include schema/tables/core/entity_significance_p7.sql
 -- @include schema/tables/core/edge_significance.sql
--- @include schema/tables/core/edge_significance_lexical.sql
--- @include schema/tables/core/edge_significance_syntactic.sql
--- @include schema/tables/core/edge_significance_translation.sql
--- @include schema/tables/core/edge_significance_model.sql
--- @include schema/tables/core/edge_significance_authority.sql
--- @include schema/tables/core/edge_significance_relevance.sql
--- @include schema/tables/core/edge_significance_corroboration.sql
--- @include schema/tables/core/edge_significance_frequency.sql
--- @include schema/tables/core/edge_significance_attention.sql
--- @include schema/tables/core/edge_significance_morphological.sql
--- @include schema/tables/core/edge_significance_default.sql
+-- @include schema/tables/core/edge_significance_p0.sql
+-- @include schema/tables/core/edge_significance_p1.sql
+-- @include schema/tables/core/edge_significance_p2.sql
+-- @include schema/tables/core/edge_significance_p3.sql
+-- @include schema/tables/core/edge_significance_p4.sql
+-- @include schema/tables/core/edge_significance_p5.sql
+-- @include schema/tables/core/edge_significance_p6.sql
+-- @include schema/tables/core/edge_significance_p7.sql
+-- @include schema/tables/core/recipe.sql
+-- @include schema/tables/core/recipe_name.sql
+-- @include schema/tables/reference/tokenizer_family.sql
+-- @include schema/tables/reference/tokenizer_marker_role.sql
+-- @include schema/tables/junctions/tokenizer_family_marker.sql
+-- @include schema/tables/reference/tokenizer_special_token_kind.sql
+-- @include schema/tables/core/tokenizer_special_token.sql
 
 -- (Removed 2026-05-09 per architectural correction: per-decomposition-event log was
 -- over-engineered. The Glicko-2 aggregation in edge_significance IS the consensus
@@ -316,10 +318,15 @@
 -- @include schema/indexes/idx_substrate_health_code.sql
 -- @include schema/indexes/idx_substrate_health_recent.sql
 -- @include schema/indexes/idx_tensor_role.sql
--- @include schema/indexes/entity_hash_prefix_idx.sql
+-- @include schema/indexes/tokenizer_special_token_assigned_vocab_idx.sql
+-- @include schema/indexes/tokenizer_special_token_by_kind_idx.sql
+-- entity_hash_prefix_idx is a functional index on bb_hash_lo/hi(hash); deferred to after bb_hash_lo/hi function definitions
 -- @include schema/indexes/provenance_modality_modality_idx.sql
 -- @include schema/indexes/edge_member_entity_hash_idx.sql
--- @include schema/indexes/entity_hilbert_idx.sql
+-- entity_hilbert_idx removed — substrate.entity no longer carries hilbert_index
+-- (geometry lives on substrate.physicality only). If a Hilbert ordering of
+-- centroids is needed, build the index on substrate.physicality_entity.
+-- @include schema/indexes/entity_hilbert_idx.sql  -- disabled: hilbert_index column dropped
 
 -- (Persistent staging deleted post-W2E refactor: substrate.staging_* tables and the
 --  drain_staging_*_chunk / drain_all_staging functions are gone. The
@@ -347,6 +354,7 @@
 -- entity_by_hash_prefix batched composite-btree lookup.
 -- @include schema/functions/bb_hash_lo.sql
 -- @include schema/functions/bb_hash_hi.sql
+-- @include schema/indexes/entity_hash_prefix_idx.sql
 -- @include schema/functions/bb_pack_hash_lo.sql
 -- @include schema/functions/bb_pack_hash_hi.sql
 -- @include schema/functions/bb_unpack_hash_lo.sql
@@ -440,8 +448,11 @@
 -- threads them through IngestionBatch → StreamingIngestionPipeline →
 -- entity.copy.sql column list). No trigger, no backfill — same Merkle
 -- invariant (deterministic from hash) produces same centroid on first write.
--- @include schema/functions/entity_tier_hint.sql
--- @include schema/functions/entity_tier_hints.sql
+-- entity_tier_hint / entity_tier_hints disabled — they read centroid_*
+-- columns that no longer live on substrate.entity. Rewrite to read from
+-- substrate.physicality_entity if/when the tier-hint surface is wanted.
+-- @include schema/functions/entity_tier_hint.sql   -- disabled: centroid columns dropped
+-- @include schema/functions/entity_tier_hints.sql  -- disabled: centroid columns dropped
 -- Significance machinery — per-arena initial-mu rows are inserted inline
 -- at edge-emit by the bundled-emit pipeline, cross-producted against every
 -- arena currently in substrate.significance_context at pipeline startup
@@ -457,6 +468,22 @@
 -- @include schema/functions/record_outcomes_bulk.sql
 -- @include schema/functions/record_attestation.sql
 -- @include schema/functions/record_attestations_bulk.sql
+-- Substrate-native bulk-write surface (replaces pg_temp staging + drain
+-- SQL). The pipeline pre-processes records in-process via libhartonomous
+-- (BLAKE3, Merkle, mantissa-pack — AVX2+FMA3+BMI2), asks the substrate
+-- which PKs are novel via the existing GetExisting* probes, then sends
+-- only the diff to these functions via Npgsql array parameters.
+-- ON CONFLICT DO NOTHING in each function is race-safety net only;
+-- producer-side existence-check is the primary dedup path per AP-19.
+-- @include schema/functions/write_entities.sql
+-- @include schema/functions/write_entity_classifications.sql
+-- @include schema/functions/write_physicalities.sql
+-- @include schema/functions/write_edges.sql
+-- @include schema/functions/write_edge_members.sql
+-- Top-down Merkle tree existence filter — ONE call replaces N-round-trip
+-- per-tier BFS from C#. Substrate side does the LEFT JOIN scan +
+-- Merkle-invariant propagation in C-level array ops.
+-- @include schema/functions/merkle_tree_filter.sql
 -- @include schema/functions/initialize_edge_significance.sql
 -- @include schema/functions/initialize_entity_significance.sql
 -- @include schema/functions/blended_edge_mu.sql
@@ -521,6 +548,10 @@
 -- @include schema/functions/tensor_provenance_chain.sql
 -- @include schema/functions/recompose_audit_walk.sql
 -- @include schema/functions/significance_context_ids.sql
+-- @include schema/functions/save_recipe.sql
+-- @include schema/functions/get_recipe_by_name.sql
+-- @include schema/functions/get_recipe_by_hash.sql
+-- @include schema/functions/list_recipes.sql
 -- Monitor write functions
 -- @include schema/functions/monitor_create_session.sql
 -- @include schema/functions/monitor_close_session.sql
@@ -554,6 +585,18 @@
 -- @include schema/functions/monitor_active_session_rows.sql
 -- @include schema/functions/monitor_entity_type_count_rows.sql
 -- @include schema/functions/monitor_ingestion_status_rows.sql
+
+-- ── Phase 15.5: app-tier substrate-content seeds (after all tables /
+--                 functions / refvocab seeds are in place) ────────────
+-- Starter recipes populated via substrate.save_recipe; depends on
+-- substrate.recipe + substrate.entity_classification + substrate.entity_type
+-- ('recipe' row) + substrate.provenance ('app_starter' row) all existing.
+-- @include schema/seed/recipe_starter.sql
+-- @include schema/seed/tokenizer_family.sql
+-- @include schema/seed/tokenizer_marker_role.sql
+-- @include schema/seed/tokenizer_family_marker.sql
+-- @include schema/seed/tokenizer_special_token_kind.sql
+-- @include schema/seed/tokenizer_special_token.sql
 
 -- (No Phase 16 hartonomous CREATE EXTENSION. The hartonomous-pg/sql/
 --  hartonomous--1.0.sql.in template — containing all C-binding type

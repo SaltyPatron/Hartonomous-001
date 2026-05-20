@@ -1,4 +1,4 @@
-# Product Line — Laplace Family
+# Product Line — Substrate Family
 
 **Status:** Canonical
 **Last verified:** 2026-04-29
@@ -88,7 +88,7 @@ Five product surfaces today. Each is a SQL function with documented signature, c
 
 ---
 
-## Product 4 — Custom Architecture Synthesis (Laplace-Custom)
+## Product 4 — Custom Architecture Synthesis (Custom-Architecture-Synthesis)
 
 **Description:** Customer specifies a target architecture (any shape, any modality combination, any size) and a substrate selection recipe. The substrate produces a model matching the spec.
 

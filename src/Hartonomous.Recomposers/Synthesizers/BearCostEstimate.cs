@@ -1,11 +1,11 @@
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// Pre-build cost estimate for a Build-a-bear synthesis. Deterministic
+/// Pre-build cost estimate for a Substrate Synthesis synthesis. Deterministic
 /// projection from the recipe + substrate readiness — does NOT touch the
 /// substrate state, does NOT allocate, runs in microseconds.
 ///
-/// Returned by <see cref="BearCostEstimator.EstimateAsync"/> before the
+/// Returned by <see cref="SynthesisCostEstimator.EstimateAsync"/> before the
 /// user commits to a synth run. The synth-time-seconds projection feeds
 /// the website's pricing/quota API (per-tier monthly bear cap, per-bear
 /// surcharge, enterprise custom quoting).
@@ -13,7 +13,7 @@ namespace Hartonomous.Recomposers.Synthesizers;
 /// All fields are derived analytically from the recipe — no machine
 /// learning, no historical-data lookup. Same recipe → same estimate.
 /// </summary>
-public sealed record BearCostEstimate(
+public sealed record SynthesisCostEstimate(
     // Recipe-derived shape (deterministic from architecture spec)
     long ParameterCount,
     long EmbeddingParameters,

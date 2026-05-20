@@ -8,7 +8,7 @@
 -- updated in place via record_attestations_bulk-equivalent INSERT-SELECT
 -- with sum aggregation.
 --
--- Build-a-bear's next-token prior comes from this. Without it the
+-- Substrate Synthesis's next-token prior comes from this. Without it the
 -- synthesizer's per-layer adjacency captures classification + semantic +
 -- syntactic structure but not sequence-following — model knows "Hello"
 -- clusters with greetings but doesn't know "Hello" is followed by
@@ -155,4 +155,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION substrate.populate_sequence_following_edges(TEXT, INT) IS
-    'Walks substrate text_composition / paragraph / document content trajectories, extracts adjacent (A, B) bigrams, aggregates frequency, emits often_follows edges in the sequence_following arena weighted by ln(1+freq). Build-a-bear next-token prior source.';
+    'Walks substrate text_composition / paragraph / document content trajectories, extracts adjacent (A, B) bigrams, aggregates frequency, emits often_follows edges in the sequence_following arena weighted by ln(1+freq). Substrate Synthesis next-token prior source.';

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace Hartonomous.Core.Recomposition;
 
 /// <summary>
-/// User-specified target architecture for Mode 2 build-a-bear synthesis.
+/// User-specified target architecture for Mode 2 substrate synthesis synthesis.
 /// Every aspect choosable: monolith ↔ MoE, expert count, LoRA ranks,
 /// routing strategy, layer count, hidden dim, attention heads (incl. GQA
 /// num_kv_heads), normalization style, modality mix, attention-bias style,

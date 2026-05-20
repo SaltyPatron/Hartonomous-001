@@ -13,7 +13,7 @@ namespace Hartonomous.Core.Recomposition;
 /// row-major f64 weight matrix that the recomposer packs into the safetensors
 /// output's wire dtype.
 ///
-/// Per spec §VI Build-a-bear synthesis recomposer + docs/specs/recomposers/
+/// Per spec §VI Substrate Synthesis synthesis recomposer + docs/specs/recomposers/
 /// algorithms/. The contract:
 /// <list type="bullet">
 /// <item>Exact math, no approximation. SVD / linear-system / centroid-aggregate

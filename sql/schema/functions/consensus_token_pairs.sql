@@ -95,7 +95,11 @@ AS $$
             ) AS token_b_hash
           FROM aggregated a
           JOIN substrate.edge_type et ON et.id = a.edge_type_id
-         WHERE et.code IN ('model_concept_similarity', 'model_attention_pattern', 'model_ffn_factor', 'co_occurrence')
+         WHERE et.code IN ('semantic_similarity', 'attends_to', 'predicts_next', 'grounds_in', 'co_occurrence',
+                           -- Deprecated mechanism-imprint edge types kept for back-compat with
+                           -- substrate state seeded before the 2026-05-20 collapse. New
+                           -- ingest writes to the meaning-bearing edge types above.
+                           'model_concept_similarity', 'model_attention_pattern', 'model_ffn_factor')
     )
     SELECT
         edge_type_code,

@@ -139,7 +139,7 @@ Add a row to the appropriate table (Universal layer decomposers OR Specialist la
 
 ### Step 6: Add the reciprocal synthesizer
 
-Per Build-a-bear: every layer-type decomposer needs a reciprocal synthesizer in [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md). Use [`docs/recipes/21-add-layer-type-synthesizer.md`](21-add-layer-type-synthesizer.md).
+Per Substrate Synthesis: every layer-type decomposer needs a reciprocal synthesizer in [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md). Use [`docs/recipes/21-add-layer-type-synthesizer.md`](21-add-layer-type-synthesizer.md).
 
 ---
 

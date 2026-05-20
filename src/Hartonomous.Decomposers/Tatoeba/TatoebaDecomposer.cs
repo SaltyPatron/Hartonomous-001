@@ -287,7 +287,11 @@ public sealed partial class TatoebaDecomposer : TextIngestingDecomposer
         // the prior 3-arg form that produced no Glicko games.
         Hartonomous.Core.Compute.Common.Hash32 langHash =
             Hartonomous.Core.Compute.Common.Blake3.Hash32(System.Text.Encoding.UTF8.GetBytes(row.Lang));
-        EntityHandle langHandle = batch.AddEntity(langHash, "language_name");
+        // language_name entities are pre-seeded by Iso639 phase (seed phase 2,
+        // before Tatoeba). Constructing the handle directly avoids transactionid
+        // lock contention from millions of per-sentence ON CONFLICT DO NOTHING
+        // attempts on the same ~7K hot rows.
+        EntityHandle langHandle = new(langHash, "language_name");
         batch.AddEdge("has_language", ProvenanceCode,
         [
             new EdgeMemberSpec(sentEntity, "source", 0),

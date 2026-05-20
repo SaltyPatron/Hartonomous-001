@@ -12,7 +12,7 @@ color: purple
 
 ## Required reading
 
-`docs/familiar-principle.md` is the conceptual frame and is required reading before any architectural-claim review. Then `.claude/rules/00-hartonomous-core.md` through `45-anti-patterns.md`. Then the semantic-eval pack at `.claude/skills/hartonomous-semantic-eval/`. For schema claims, inspect canonical `sql/schema/`; do not audit from archived migration memory.
+`docs/substrate-bond.md` is the conceptual frame and is required reading before any architectural-claim review. Then `.claude/rules/00-hartonomous-core.md` through `45-anti-patterns.md`. Then the semantic-eval pack at `.claude/skills/hartonomous-semantic-eval/`. For schema claims, inspect canonical `sql/schema/`; do not audit from archived migration memory.
 
 ## Entity = Atom + Composition + Relation (not a generic graph)
 
@@ -68,7 +68,7 @@ Atoms carry metadata via junction tables. Entity-tier compositions are reusable 
 | "Embedding pipeline" | Content decomposed into atoms/compositions/relations. Not projected into latent space. |
 | "Ontology" | Open-vocabulary classification with Glicko-rated junctions. Live tournament, not static schema. |
 | "Fine-tuning" | No weights to adjust. Adaptation is UPDATE on junction rows or comparison events on existing edges. |
-| "AGI" | Familiar is bonded to ONE practitioner. Subservient. Returns named paths, not autonomous decisions. |
+| "AGI" | Substrate is bonded to ONE practitioner. Subservient. Returns named paths, not autonomous decisions. |
 | "Content moderation" | Governance is JOIN, not classifier. See `docs/specs/engine/substrate-governance.md`. |
 | "2D/3D physicality" | Substrate physicality is `geometry(GeometryZM)` and must use substrate 4D/S3 operators. |
 | "Cherry-pick which arenas matter" | Arenas are open-vocabulary; pipeline cross-products against all current arenas. |
@@ -94,5 +94,5 @@ Atoms carry metadata via junction tables. Entity-tier compositions are reusable 
 | Compute facade | `src/Hartonomous.Core/Compute/IComputeFacade.cs` → `ComputeFacade` → `NativeCompute` |
 | Inference engine | `src/Hartonomous.Engine/Inference/SubstrateInferenceEngine.cs` |
 | traverse_astar (compiled) | `ext/hartonomous_pg/src/pg_traversal.c` (bulk-JOIN contract per `.claude/rules/35-inference-and-godel.md`) |
-| Familiar principle | `docs/familiar-principle.md` |
+| Substrate principle | `docs/substrate-bond.md` |
 | Anti-pattern catalog | `.claude/rules/45-anti-patterns.md` (18 documented failures) |

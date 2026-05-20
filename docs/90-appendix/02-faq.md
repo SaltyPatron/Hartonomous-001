@@ -72,7 +72,7 @@ Per ingested source license. If a customer's corpus is proprietary, refined mode
 
 ## "Why does the brand 'Laplace' matter?"
 
-It signals the substrate's philosophical position — Laplace's Demon for digital content. Determinism, completeness, derivability, audit. Customers who care about those qualities recognize them in the brand. Customers who don't care still get a product; the brand is the proxy for the technical position.
+It signals the substrate's philosophical position — the substrate for digital content. Determinism, completeness, derivability, audit. Customers who care about those qualities recognize them in the brand. Customers who don't care still get a product; the brand is the proxy for the technical position.
 
 See `90-appendix/00-laplace-demon-context.md`.
 

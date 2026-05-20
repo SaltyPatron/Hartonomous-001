@@ -332,6 +332,7 @@ public sealed class SequentialPhaseRunnerTests
         public Task<HashSet<EdgeKey>> GetExistingEdgesAsync(IReadOnlyCollection<EdgeKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeKey>());
         public Task<HashSet<EdgeMemberKey>> GetExistingEdgeMembersAsync(IReadOnlyCollection<EdgeMemberKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<EdgeMemberKey>());
         public Task<HashSet<PhysicalityKey>> GetExistingPhysicalitiesAsync(IReadOnlyCollection<PhysicalityKey> tuples, CancellationToken ct) => Task.FromResult(new HashSet<PhysicalityKey>());
+        public Task<bool[]> MerkleTreeFilterAsync(IReadOnlyList<Hash32> hashesInTierOrder, IReadOnlyList<int> parentIndices, CancellationToken ct) => Task.FromResult(new bool[hashesInTierOrder.Count]);
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

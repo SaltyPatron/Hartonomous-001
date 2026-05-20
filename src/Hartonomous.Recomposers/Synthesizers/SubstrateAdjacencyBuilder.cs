@@ -79,53 +79,39 @@ public static class SubstrateAdjacencyBuilder
         //   - word_form intermediates would form 3-cycles in DIRECT.
         // The classification intermediate set is bounded-cardinality
         // (~thousands per type, not millions) so the join stays planar.
+        // Adjacency walk: starts from the vocab (≤ few-hundred entries),
+        // probes substrate.edge_member by entity_hash for vocab member rows
+        // (uses the edge_member_entity_hash_idx, one partition per vocab
+        // entry — partition_bucket = byte0 & 7), then INNER JOIN to itself
+        // matching on (edge_type_id, edge_hash) and INNER JOIN to vocab
+        // on the other participant. PG materialises the vocab_edges CTE
+        // (~vocab_size × avg edges per vocab entry), then does a hash
+        // self-join across the small materialised set. Avoids the prior
+        // shape where the full 8M-row substrate.edge_member self-joined
+        // itself and then filtered by vocab post-hoc.
+        //
+        // The indirect-via-classification channel is disabled by default
+        // because for small vocabs (256) it generates a quadratic blow-up
+        // through ~600K classification entities. Re-enable by passing a
+        // future @include_indirect flag once the SRF lives in
+        // libhartonomous.
         const string Sql = @"
 WITH vocab(hash) AS (
     SELECT DISTINCT unnest(@hashes)
 ),
-classification_intermediates AS (
-    SELECT entity_hash AS inter_hash
-      FROM substrate.entity_classification
-     WHERE entity_type_id IN (
-         SELECT id FROM substrate.entity_type
-          WHERE code IN ('pos', 'synset', 'lemma', 'language_name',
-                         'morph_feature', 'lexname', 'sense', 'deprel')
-     )
+vocab_edges AS (
+    SELECT em.edge_type_id, em.edge_hash, em.entity_hash, em.role_position
+      FROM substrate.edge_member em
+      JOIN vocab v ON v.hash = em.entity_hash
 ),
 direct_edges AS (
-    SELECT em0.entity_hash AS hash_a, em1.entity_hash AS hash_b,
-           em0.edge_type_id, em0.edge_hash
-      FROM substrate.edge_member em0
-      JOIN substrate.edge_member em1
-        ON em1.edge_type_id = em0.edge_type_id
-       AND em1.edge_hash = em0.edge_hash
-       AND em1.role_position > em0.role_position
-      JOIN vocab va ON va.hash = em0.entity_hash
-      JOIN vocab vb ON vb.hash = em1.entity_hash
-),
--- For the indirect channel, first restrict to edges whose at least one
--- participant is in vocab AND whose other participant is a classification
--- entity. Then self-join via the classification intermediate.
-vocab_to_classification AS (
-    SELECT em_v.entity_hash AS vocab_hash,
-           em_c.entity_hash AS inter_hash,
-           em_v.edge_type_id, em_v.edge_hash
-      FROM substrate.edge_member em_v
-      JOIN substrate.edge_member em_c
-        ON em_c.edge_type_id = em_v.edge_type_id
-       AND em_c.edge_hash = em_v.edge_hash
-       AND em_c.entity_hash <> em_v.entity_hash
-      JOIN vocab v ON v.hash = em_v.entity_hash
-      JOIN classification_intermediates ci ON ci.inter_hash = em_c.entity_hash
-),
-indirect_edges AS (
-    SELECT vca.vocab_hash AS hash_a, vcb.vocab_hash AS hash_b,
-           vca.edge_type_id AS edge_type_id_a, vca.edge_hash AS edge_hash_a,
-           vcb.edge_type_id AS edge_type_id_b, vcb.edge_hash AS edge_hash_b
-      FROM vocab_to_classification vca
-      JOIN vocab_to_classification vcb
-        ON vcb.inter_hash = vca.inter_hash
-       AND vcb.vocab_hash > vca.vocab_hash
+    SELECT a.entity_hash AS hash_a, b.entity_hash AS hash_b,
+           a.edge_type_id, a.edge_hash
+      FROM vocab_edges a
+      JOIN vocab_edges b
+        ON b.edge_type_id = a.edge_type_id
+       AND b.edge_hash    = a.edge_hash
+       AND b.role_position > a.role_position
 )
 SELECT 'direct'::text AS channel, de.hash_a, de.hash_b, sc.code AS arena_code,
        es.mu AS mu_a, es.games AS games_a,
@@ -133,26 +119,10 @@ SELECT 'direct'::text AS channel, de.hash_a, de.hash_b, sc.code AS arena_code,
   FROM direct_edges de
   JOIN substrate.edge_significance es
     ON es.edge_type_id = de.edge_type_id
-   AND es.edge_hash = de.edge_hash
+   AND es.edge_hash    = de.edge_hash
   JOIN substrate.significance_context sc ON sc.id = es.context_type_id
  WHERE sc.code = ANY(@arenas)
    AND es.games > 0
-UNION ALL
-SELECT 'indirect'::text AS channel, ie.hash_a, ie.hash_b, sc_a.code AS arena_code,
-       es_a.mu AS mu_a, es_a.games AS games_a,
-       es_b.mu AS mu_b, es_b.games AS games_b
-  FROM indirect_edges ie
-  JOIN substrate.edge_significance es_a
-    ON es_a.edge_type_id = ie.edge_type_id_a
-   AND es_a.edge_hash = ie.edge_hash_a
-  JOIN substrate.edge_significance es_b
-    ON es_b.edge_type_id = ie.edge_type_id_b
-   AND es_b.edge_hash = ie.edge_hash_b
-   AND es_b.context_type_id = es_a.context_type_id
-  JOIN substrate.significance_context sc_a ON sc_a.id = es_a.context_type_id
- WHERE sc_a.code = ANY(@arenas)
-   AND es_a.games > 0
-   AND es_b.games > 0
 ";
 
         string[] arenaCodes = new string[arenaWeights.Count];

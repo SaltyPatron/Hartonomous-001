@@ -50,7 +50,7 @@ Analytics caches (`frame/10-CRYSTAL-BALL-ANALYTICS.md`) MAY use approximation fr
 | Tier | Determinism budget | Examples |
 |---|---|---|
 | **Ingest** | Strict (no approximation, byte-identical reproducibility) | Decomposer math, content hashing, attestation event recording |
-| **Synthesis** | Constrained (same recipe + same state → same output bytes; opt-in relaxation) | Build-a-bear / refinement / synthesis recomposer output |
+| **Synthesis** | Constrained (same recipe + same state → same output bytes; opt-in relaxation) | Substrate Synthesis / refinement / synthesis recomposer output |
 | **Analytics** | Free (rebuildable from substrate state) | Materialized views, frayed-edge atlases, per-edge consensus aggregations |
 
 This three-tier pattern is what makes substrate's content-addressed identity claims defensible while letting derived surfaces use the right tool for the scale.

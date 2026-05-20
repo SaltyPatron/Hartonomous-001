@@ -24,6 +24,13 @@ VALUES
     ('huggingface_model',      'model_derived',           60000, 350, NULL,                1.00),
     ('system_computed',        'system_computed',         40000, 350, NULL,                1.00),
     ('user_session',           'user_input',              20000, 500, NULL,                1.00),
+    -- App-tier provenance for starter recipes seeded at db-bootstrap.
+    -- The starter recipes are part of the system catalog (minilm-base,
+    -- bert-base, llama-7b, mistral-7b, qwen-7b), populated as
+    -- substrate.entity rows with substrate.recipe payloads at install
+    -- time. Distinct from huggingface_model (which is per-ingested-model
+    -- provenance) and from user_session (which is per-practitioner forks).
+    ('app_starter',            'authoritative_standard',  60000, 250, NULL,                1.00),
     -- ISO / IETF / CLDR per-registry provenances (each is a separate publisher; cross-source consensus accumulates per arena)
     ('iso_15924',              'authoritative_standard',  95000, 100, NULL,                1.00),
     ('iso_3166',               'authoritative_standard',  95000, 100, NULL,                1.00),
@@ -107,6 +114,8 @@ SELECT p.id, m.modality_code
         ('user_session',           'image'::substrate.modality_code),
         ('user_session',           'audio'::substrate.modality_code),
         ('user_session',           'video'::substrate.modality_code),
-        ('user_session',           'model_weights'::substrate.modality_code)
+        ('user_session',           'model_weights'::substrate.modality_code),
+        ('app_starter',            'model_weights'::substrate.modality_code),
+        ('app_starter',            'text'::substrate.modality_code)
   ) AS m(code, modality_code)
     ON p.code = m.code;

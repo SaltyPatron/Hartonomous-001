@@ -3,8 +3,8 @@
 Operational pointer. Substantive guidance lives elsewhere:
 
 - [Root `CLAUDE.md`](../CLAUDE.md) — Communication Constraint, Work Execution Constraint, coding conventions.
-- [`.claude/rules/00-hartonomous-core.md`](rules/00-hartonomous-core.md) — substrate overlay (always-on): universal Merkle DAG, four pillars, primitive + tuple standard, safetensors-in / Build-a-bear safetensors-out, open-vocabulary arenas, the ingest / infer / synthesize / learn loop, the Familiar Principle as the *why*.
-- [`docs/familiar-principle.md`](../docs/familiar-principle.md) — full conceptual frame (bonded, subservient, auditable, learns-from-service, goes-where-the-practitioner-cannot).
+- [`.claude/rules/00-hartonomous-core.md`](rules/00-hartonomous-core.md) — substrate overlay (always-on): universal Merkle DAG, four pillars, primitive + tuple standard, safetensors-in / Substrate Synthesis safetensors-out, open-vocabulary arenas, the ingest / infer / synthesize / learn loop, the Substrate Bond as the *why*.
+- [`docs/substrate-bond.md`](../docs/substrate-bond.md) — full conceptual frame (bonded, subservient, auditable, learns-from-service, goes-where-the-practitioner-cannot).
 - [`docs/00-substrate-spec.md`](../docs/00-substrate-spec.md) — substrate model. Normative.
 - [`docs/01-tensor-primitive-spec.md`](../docs/01-tensor-primitive-spec.md) — canonical tensor form. Normative.
 - [`.claude/rules/45-anti-patterns.md`](rules/45-anti-patterns.md) — anti-pattern catalog with citations (AP-1..AP-38, including AP-37 no-phase-backfill and AP-38 no-modality-specific-attestation-type).

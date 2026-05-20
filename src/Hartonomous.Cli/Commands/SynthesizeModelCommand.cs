@@ -11,7 +11,7 @@ using Npgsql;
 namespace Hartonomous.Cli.Commands;
 
 /// <summary>
-/// Substrate-derived Build-a-bear model synthesis. Distinct from
+/// Substrate-derived Substrate Synthesis model synthesis. Distinct from
 /// <c>export-model</c> which exports an already-ingested model from its
 /// stored phantom-scatter entities (deprecated path, AP-28). This command
 /// SYNTHESIZES a target architecture from the substrate's accumulated
@@ -38,14 +38,24 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
         // MiniLM); arbitrary custom architectures pass --recipe.
         Option<string?> recipePathOpt = new(
             "--recipe",
-            description: "Path to a recipe JSON file (the Build-a-bear spec). "
-                       + "Mutually exclusive with --template.");
+            description: "Path to a recipe JSON file (legacy file-load path; "
+                       + "prefer --recipe-name to pull from substrate). "
+                       + "Mutually exclusive with --template and --recipe-name.");
+
+        Option<string?> recipeNameOpt = new(
+            "--recipe-name",
+            description: "Recipe code registered in substrate.recipe_name. "
+                       + "App-starter recipes seeded at db-bootstrap: minilm-base, "
+                       + "bert-base, llama-1b, llama-3b, mistral-7b, qwen-7b, "
+                       + "qwen-2.5-coder-3b. Ingest-derived recipes appear after "
+                       + "running 'hart seed ModelDecomp'. Mutually exclusive with "
+                       + "--recipe and --template.");
 
         Option<string?> templateOpt = new(
             "--template",
             description: "Pre-cut template name: minilm-base | bert-base | "
                        + "llama-small | llama-1b | llama-3b | qwen-7b | mistral-7b. "
-                       + "Mutually exclusive with --recipe.");
+                       + "Mutually exclusive with --recipe and --recipe-name.");
 
         Option<string?> archOpt = new(
             "--arch",
@@ -101,10 +111,11 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
 
         Command cmd = new(
             "synthesize-model",
-            "Substrate-derived Build-a-bear model synthesis. Pass --recipe <path> for "
+            "Substrate-derived Substrate Synthesis model synthesis. Pass --recipe <path> for "
           + "a custom bear, or --template <name> for a pre-cut famous architecture. "
           + "CLI overrides apply on top of either.");
         cmd.AddOption(recipePathOpt);
+        cmd.AddOption(recipeNameOpt);
         cmd.AddOption(templateOpt);
         cmd.AddOption(archOpt);
         cmd.AddOption(vocabSizeOpt);
@@ -120,6 +131,7 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
         cmd.SetHandler(async (InvocationContext ctx) =>
         {
             string? recipePath = ctx.ParseResult.GetValueForOption(recipePathOpt);
+            string? recipeName = ctx.ParseResult.GetValueForOption(recipeNameOpt);
             string? templateName = ctx.ParseResult.GetValueForOption(templateOpt)
                                  ?? ctx.ParseResult.GetValueForOption(archOpt);
             int? vocabOverride = ctx.ParseResult.GetValueForOption(vocabSizeOpt);
@@ -133,18 +145,26 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
             bool estimateCost = ctx.ParseResult.GetValueForOption(estimateCostOpt);
             CancellationToken ct = ctx.GetCancellationToken();
 
-            if (recipePath is null && templateName is null)
+            int selectedCount = (recipePath is not null ? 1 : 0)
+                              + (recipeName is not null ? 1 : 0)
+                              + (templateName is not null ? 1 : 0);
+            if (selectedCount > 1)
             {
-                templateName = "minilm-base";
+                throw new ArgumentException(
+                    "--recipe, --recipe-name, and --template are mutually exclusive.");
             }
-            if (recipePath is not null && templateName is not null)
+            if (selectedCount == 0)
             {
-                throw new ArgumentException("--recipe and --template are mutually exclusive.");
+                // No source declared — fall back to substrate's seeded
+                // app-tier minilm-base recipe (substrate.recipe_name lookup).
+                recipeName = "minilm-base";
             }
 
-            RecipeConfig recipe = recipePath is not null
-                ? await RecipeConfig.LoadAsync(recipePath, ct).ConfigureAwait(false)
-                : RecipeTemplates.Resolve(templateName!, vocabOverride);
+            RecipeConfig recipe = recipeName is not null
+                ? await RecipeConfig.LoadFromSubstrateAsync(dataSource, recipeName, ct).ConfigureAwait(false)
+                : recipePath is not null
+                    ? await RecipeConfig.LoadAsync(recipePath, ct).ConfigureAwait(false)
+                    : RecipeTemplates.Resolve(templateName!, vocabOverride);
 
             // CLI overrides on top of the loaded recipe.
             if (vocabOverride is int vo)
@@ -173,8 +193,8 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
             // Pre-build cost estimate. If --estimate-cost is set, print + exit.
             if (estimateCost)
             {
-                BearCostEstimate est = await BearCostEstimator.EstimateAsync(recipe, ct).ConfigureAwait(false);
-                System.Console.Out.WriteLine($"Bear-cost estimate for {recipe.Name}:");
+                SynthesisCostEstimate est = await SynthesisCostEstimator.EstimateAsync(recipe, ct).ConfigureAwait(false);
+                System.Console.Out.WriteLine($"Synthesis-cost estimate for {recipe.Name}:");
                 System.Console.Out.WriteLine($"  Architecture        : {recipe.Architecture.Family} vocab={recipe.Architecture.VocabSize} hidden={recipe.Architecture.HiddenDim} layers={recipe.Architecture.NumHiddenLayers}");
                 System.Console.Out.WriteLine($"  Parameter count     : {est.ParameterCount:N0}");
                 System.Console.Out.WriteLine($"    embedding         : {est.EmbeddingParameters:N0}");
@@ -199,7 +219,7 @@ internal sealed class SynthesizeModelCommand(NpgsqlDataSource dataSource)
             RecompositionOptions options = recipe.ToRecompositionOptions();
 
             // Knowledge selection: if --seed-concepts is supplied, vocab is the
-            // BFS subgraph around those concepts (Build-a-bear product mechanism).
+            // BFS subgraph around those concepts (Substrate Synthesis product mechanism).
             // Otherwise the legacy VocabSelector runs.
             if (!string.IsNullOrWhiteSpace(seedConcepts))
             {

@@ -163,7 +163,7 @@ All operations on Linux via the `scripts/hart` wrapper. No PowerShell scripts on
 - Do not cherry-pick arena codes; cross-product against all current arenas.
 - Do not invoke crisis-line / safety messaging when the user expresses distress (per persistent user instruction in memory; AP-16).
 - Do not declare work complete on `dotnet build` success or single-query demo. State the explicit semantic gate (SQL counts, distribution checks, round-trip validation) and verify it.
-- Do not pattern-match Hartonomous to LLM/RAG/vector-DB/knowledge-graph/ontology/semantic-search/fine-tuning. See `docs/familiar-principle.md` § "What Hartonomous is NOT".
+- Do not pattern-match Hartonomous to LLM/RAG/vector-DB/knowledge-graph/ontology/semantic-search/fine-tuning. See `docs/substrate-bond.md` § "What Hartonomous is NOT".
 - Do not edit `substrate.schema_version` to bypass migration checksum drift. Write a superseding migration.
 - Do not spawn agents unless the user asks. Do the work inline.
 - Do not stop at one fixed stack trace. Check producer, pipeline, SQL, schema, docs, tests, and agent scaffolding for the same wrong assumption.

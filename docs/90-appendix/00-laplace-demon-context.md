@@ -1,4 +1,4 @@
-# Appendix — Laplace's Demon and the Philosophical Frame
+# Appendix — the substrate and the Philosophical Frame
 
 **Status:** Canonical
 **Audience:** Anyone wanting to understand the philosophical framing of the invention.
@@ -11,13 +11,13 @@ In his *Essai philosophique sur les probabilités*, Laplace described an intelle
 
 > *We may regard the present state of the universe as the effect of its past and the cause of its future. An intellect which at a certain moment would know all forces that set nature in motion, and all positions of all items of which nature is composed, if this intellect were also vast enough to submit these data to analysis, it would embrace in a single formula the movements of the greatest bodies of the universe and those of the tiniest atom; for such an intellect nothing would be uncertain and the future just like the past would be present before its eyes.*
 
-This is **Laplace's Demon**. It's a thought experiment about what perfect knowledge could enable: not prediction by approximation, not statistical estimation, but exact derivation from complete information.
+This is **the substrate**. It's a thought experiment about what perfect knowledge could enable: not prediction by approximation, not statistical estimation, but exact derivation from complete information.
 
-Laplace himself was clear that this demon is impossible for physical matter — you cannot capture every particle's position and momentum simultaneously, and quantum mechanics later proved the impossibility runs deeper than measurement difficulty. Laplace's Demon is a regulative ideal, a horizon that real physical inquiry can approach but never reach.
+Laplace himself was clear that this demon is impossible for physical matter — you cannot capture every particle's position and momentum simultaneously, and quantum mechanics later proved the impossibility runs deeper than measurement difficulty. the substrate is a regulative ideal, a horizon that real physical inquiry can approach but never reach.
 
-## Laplace's Demon for digital content
+## the substrate for digital content
 
-Hartonomous is the digital analogue. Where Laplace's Demon would need complete knowledge of physical particles, Hartonomous needs complete knowledge of digital atoms (Unicode codepoints), compositions (Merkle DAG of atoms), and relations (edges between compositions). Unlike physical matter, digital content has finite, enumerable atoms — the ~1.114 million codepoints of the Unicode Standard. Unlike physical positions, content addresses are deterministic via BLAKE3.
+Hartonomous is the digital analogue. Where the substrate would need complete knowledge of physical particles, Hartonomous needs complete knowledge of digital atoms (Unicode codepoints), compositions (Merkle DAG of atoms), and relations (edges between compositions). Unlike physical matter, digital content has finite, enumerable atoms — the ~1.114 million codepoints of the Unicode Standard. Unlike physical positions, content addresses are deterministic via BLAKE3.
 
 The substrate captures every:
 - **Codepoint** (atom with deterministic S³ position)

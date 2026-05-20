@@ -274,6 +274,251 @@ public sealed class SubstrateTextDecomposer
         return new Hash32(rootHashBuf);
     }
 
+    /// <summary>
+    /// Pipeline-aware top-down hierarchical text decomposition with O(tier)
+    /// existence-check. The Merkle invariant — parent hash exists ⟹ every
+    /// child + grandchild hash exists — lets us skip entire subtrees on a
+    /// single indexed BYTEA equality probe at the root.
+    ///
+    /// Order of operations:
+    ///   1. Compute trunk entity hash via no-emit native walk (UAX #15 NFC
+    ///      normalize + UAX #29 grapheme/word/sentence segmentation + bottom-up
+    ///      Merkle hash via libhartonomous BLAKE3 — all in-process, AVX2+FMA3+BMI2,
+    ///      microseconds, no DB).
+    ///   2. Single-row existence probe: pipeline.GetExistingEntityHashesAsync([trunk]).
+    ///   3. If trunk exists, the whole subtree exists. Skip subtree emission.
+    ///      Still register the new provenance's classification on the existing
+    ///      trunk entity (server-side dedups (hash, type, provenance) on
+    ///      conflict; new provenance = new classification row, existing
+    ///      provenance = no-op).
+    ///   4. If trunk is novel, run the full EmitStatic walk. Per-tier
+    ///      hierarchical descent (probe word_form / grapheme hashes when
+    ///      trunk is novel but children may exist) is a follow-up — for now
+    ///      the root-tier hit is the dominant case for recurring content
+    ///      (Wiktionary example sentences, quoted famous lines, common
+    ///      boilerplate, recurring corpus content).
+    ///
+    /// Cost model:
+    ///   - Recurring content (`"Sam I am"` ingested for the Nth time): one
+    ///     ComputeRootHash (microseconds in libhartonomous) + one BYTEA
+    ///     equality probe (sub-millisecond via btree) + one classification
+    ///     row insert. O(1) regardless of content length.
+    ///   - Novel content: ComputeRootHash + probe + full EmitStatic. Two
+    ///     native walks; the second walk is unavoidable in this cut because
+    ///     the first emits nothing. Acceptable cost when steady-state
+    ///     recurrence rate exceeds 50%; for Wiktionary (~99% recurring after
+    ///     first ingest of common content), the recurring case dominates.
+    ///
+    /// Per AP-19. Eliminates the COPY-everything-then-conflict-DO-NOTHING
+    /// trap that makes Wiktionary's 3GB ingest take 3+ hours via the drain
+    /// path. Same code path serves every text-bearing decomposer (Wiktionary,
+    /// WordNet, OMW, UD, Tatoeba, model tokenizers, practitioner content)
+    /// because they all route through this method.
+    /// </summary>
+    public static async ValueTask<TextDecomposeResult> EmitStaticAsync(
+        IIngestionPipeline pipeline,
+        IIngestionBatch batch,
+        byte[] utf8,
+        TextDecomposeOptions options,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(pipeline);
+        ArgumentNullException.ThrowIfNull(batch);
+        ArgumentNullException.ThrowIfNull(utf8);
+        EnsureUcdLoaded();
+
+        if (utf8.Length == 0)
+        {
+            Hash32 emptyHash = Hash32.Zero;
+            return new TextDecomposeResult(
+                RootHandle: new EntityHandle(emptyHash, options.TopEntityType),
+                RootHash: emptyHash,
+                EntitiesEmitted: 0, CompositionChildrenEmitted: 0,
+                PhysicalityRowsEmitted: 0, SignificanceRowsEmitted: 0,
+                RootCentroid: (0, 0, 0, 0));
+        }
+
+        // Step 1: one native walk → buffer all records + tree structure.
+        // libhartonomous does NFC + UAX #29 segmentation + bottom-up Merkle
+        // via SIMD BLAKE3 + blob-served codepoint atoms — entirely in-process,
+        // microseconds, zero DB calls. After this step we have the FULL hash
+        // tree in hand without touching the database.
+        BufferedEmitContext context = new(options);
+        TextDecomposeNative.EmitCallback cb = context.OnRecord;
+        byte[] rootHashBuf = new byte[32];
+        double[] rootCentroidBuf = new double[4];
+        GCHandle utf8Pin = GCHandle.Alloc(utf8, GCHandleType.Pinned);
+        GCHandle rootPin = GCHandle.Alloc(rootHashBuf, GCHandleType.Pinned);
+        GCHandle rootCentroidPin = GCHandle.Alloc(rootCentroidBuf, GCHandleType.Pinned);
+        int rc;
+        try
+        {
+            rc = TextDecomposeNative.TextDecompose(
+                utf8Pin.AddrOfPinnedObject(), (nuint) utf8.Length,
+                NativeKindFor(options.TopEntityType), options.TrustMu,
+                cb, IntPtr.Zero,
+                rootPin.AddrOfPinnedObject(), out _, rootCentroidPin.AddrOfPinnedObject());
+        }
+        finally
+        {
+            utf8Pin.Free();
+            rootPin.Free();
+            rootCentroidPin.Free();
+            GC.KeepAlive(cb);
+        }
+        if (rc != 0)
+        {
+            throw new InvalidOperationException(
+                $"hartonomous_text_decompose returned {rc} (input {utf8.Length} bytes, top_kind={options.TopEntityType})");
+        }
+
+        Hash32 rootHash = new(rootHashBuf);
+
+        // Step 2: build parent → children map from buffered CompositionChild
+        // records. This is the Merkle tree the native walk produced.
+        Dictionary<Hash32, List<Hash32>> childrenOf = new();
+        foreach (IngestionRecord r in context.Records)
+        {
+            if (r is CompositionChildRecord cc)
+            {
+                if (!childrenOf.TryGetValue(cc.ParentEntityHash, out List<Hash32>? kids))
+                {
+                    kids = new List<Hash32>();
+                    childrenOf[cc.ParentEntityHash] = kids;
+                }
+                kids.Add(cc.ChildEntityHash);
+            }
+        }
+
+        // Step 3: top-down Merkle existence filter — ONE substrate-side call
+        // replaces per-tier BFS round-tripping. substrate.merkle_tree_filter
+        // does the LEFT JOIN scan + Merkle-invariant propagation in C-level
+        // array ops, returns parallel BOOL[]: true = exists (directly or by
+        // ancestor), false = novel.
+        //
+        // Build flat arrays in BFS tier order (parents before children) so
+        // the substrate function's forward pass propagates correctly. Codepoint
+        // tier is omitted entirely from the probe — codepoints are blob-resident
+        // and known to exist after UCD seed.
+        List<Hash32> tierOrderedHashes = new();
+        List<int> tierOrderedParentIndex = new();
+        Dictionary<Hash32, int> hashIndex = new();
+        Queue<(Hash32 hash, int parentIdx)> bfs = new();
+        bfs.Enqueue((rootHash, -1));
+        while (bfs.Count > 0)
+        {
+            (Hash32 h, int parentIdx) = bfs.Dequeue();
+            if (hashIndex.ContainsKey(h)) { continue; }
+            string typeCode = context.KindByHash.TryGetValue(h, out string? tc) ? tc : "text_composition";
+            if (typeCode == "codepoint") { continue; } // blob-resident; never probe
+
+            int myIdx = tierOrderedHashes.Count;
+            hashIndex[h] = myIdx;
+            tierOrderedHashes.Add(h);
+            tierOrderedParentIndex.Add(parentIdx);
+
+            if (childrenOf.TryGetValue(h, out List<Hash32>? kids))
+            {
+                foreach (Hash32 child in kids) { bfs.Enqueue((child, myIdx)); }
+            }
+        }
+
+        HashSet<Hash32> emitSet = new();
+        HashSet<Hash32> skipSet = new();
+
+        if (tierOrderedHashes.Count > 0)
+        {
+            // ONE substrate-side call: LEFT JOIN scan + Merkle-invariant
+            // propagation in C-level array ops. Replaces N-round-trip per-tier
+            // BFS with a single round-trip. Caller-side responsibility was just
+            // to compute hashes via libhartonomous (already done by the native
+            // walk above) and sort parents-before-children (the BFS above
+            // produces tier order naturally).
+            bool[] effectiveExists = await pipeline.MerkleTreeFilterAsync(
+                tierOrderedHashes, tierOrderedParentIndex, ct).ConfigureAwait(false);
+            for (int i = 0; i < tierOrderedHashes.Count; i++)
+            {
+                if (effectiveExists[i]) { skipSet.Add(tierOrderedHashes[i]); }
+                else                     { emitSet.Add(tierOrderedHashes[i]); }
+            }
+        }
+
+        // Step 4: replay buffered records with per-tier skip filter.
+        // Existing entities: emit AddEntity only (classification registration
+        // for the new provenance; server-side dedup by (hash, type, provenance)).
+        // Geometry/composition-children/etc. don't re-emit for existing entities.
+        // Novel entities: emit everything (entity + physicality + sequence).
+        // Significance events always fire — Glicko-2 accumulates per arena
+        // regardless of entity novelty (existing entity + new attestation event
+        // = cross-source corroboration tightens sigma on the existing edge_significance row).
+        long entitiesEmitted = 0;
+        long physRowsEmitted = 0;
+        long compChildrenEmitted = 0;
+        long sigRowsEmitted = 0;
+        foreach (IngestionRecord r in context.Records)
+        {
+            switch (r)
+            {
+                case EntityRecord e:
+                    // Both emit AND skip paths call AddEntity — for novel
+                    // entities it's the actual entity write; for existing
+                    // it's the classification-registration UPSERT (which
+                    // server-side dedups on (hash, type, provenance) so
+                    // re-registration is a no-op while a new provenance
+                    // records the new attestation context).
+                    batch.AddEntity(e.Hash, e.EntityTypeCode);
+                    if (emitSet.Contains(e.Hash)) { entitiesEmitted++; }
+                    break;
+
+                case PhysicalityRecord p:
+                    if (emitSet.Contains(p.EntityHash))
+                    {
+                        batch.AddPhysicality(
+                            new EntityHandle(p.EntityHash, context.KindByHash.TryGetValue(p.EntityHash, out string? c) ? c : "text_composition"),
+                            p.PhysicalityTypeCode, p.Geometry);
+                        physRowsEmitted++;
+                    }
+                    // Existing entity: physicality already in substrate.physicality.
+                    break;
+
+                case CompositionChildRecord cc:
+                    // Trajectory vertex — only emit for novel parents.
+                    // Existing parents already have their trajectory recorded.
+                    if (emitSet.Contains(cc.ParentEntityHash))
+                    {
+                        string parentCode = context.KindByHash.TryGetValue(cc.ParentEntityHash, out string? pc) ? pc : "text_composition";
+                        string childCode = context.KindByHash.TryGetValue(cc.ChildEntityHash, out string? ck) ? ck : "text_composition";
+                        batch.AddCompositionChild(
+                            new EntityHandle(cc.ParentEntityHash, parentCode),
+                            cc.Ordinal,
+                            new EntityHandle(cc.ChildEntityHash, childCode),
+                            cc.RleCount);
+                        compChildrenEmitted++;
+                    }
+                    break;
+
+                case EntitySignificanceRecord s:
+                    // Always fire: cross-source Glicko-2 attestation accumulation
+                    // on per-arena consensus. Existing entity + new attestation
+                    // event = sigma tightens / mu drifts toward consensus.
+                    batch.AddSignificance(
+                        new EntityHandle(s.EntityHash, context.KindByHash.TryGetValue(s.EntityHash, out string? cs) ? cs : "text_composition"),
+                        s.ContextTypeCode, s.InitialMu, s.AttestationTypeCode);
+                    sigRowsEmitted++;
+                    break;
+            }
+        }
+
+        return new TextDecomposeResult(
+            RootHandle: new EntityHandle(rootHash, options.TopEntityType),
+            RootHash: rootHash,
+            EntitiesEmitted: entitiesEmitted,
+            CompositionChildrenEmitted: compChildrenEmitted,
+            PhysicalityRowsEmitted: physRowsEmitted,
+            SignificanceRowsEmitted: sigRowsEmitted,
+            RootCentroid: (rootCentroidBuf[0], rootCentroidBuf[1], rootCentroidBuf[2], rootCentroidBuf[3]));
+    }
+
     public static async ValueTask<TextDecomposeResult> EmitStaticAsync(
         IRecordSink sink,
         byte[] utf8,
@@ -478,14 +723,10 @@ public sealed class SubstrateTextDecomposer
                     KindByHash[hash] = code;
                     if (ShouldEmitEntity(Options, code, hash))
                     {
-                        // Native kernel populates record.CentroidX/Y/Z/M on entity
-                        // records (cp_c / gc_c / w_c / comp_c arrays). Pass to the
-                        // 7-arg AddEntity overload so the centroid + Hilbert land
-                        // on substrate.entity at INSERT time — no trigger, no
-                        // backfill, no reactive UPDATE.
-                        long? hilbert = SubstrateTextDecomposer.ComputeHilbertIndex(
-                            record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM);
-                        Batch.AddEntity(hash, code, record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM, hilbert);
+                        // substrate.entity is identity only; geometry lands on
+                        // substrate.physicality via the RecPhysicality records
+                        // the native walk emits separately.
+                        Batch.AddEntity(hash, code);
                         EntityCount++;
                     }
                     break;
@@ -634,12 +875,10 @@ public sealed class SubstrateTextDecomposer
                     KindByHash[hash] = code;
                     if (ShouldEmitEntity(Options, code, hash))
                     {
-                        long? hilbert = ComputeHilbertIndex(
-                            record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM);
-                        Records.Add(new EntityRecord(
-                            code, hash, Options.ProvenanceCode,
-                            record.CentroidX, record.CentroidY, record.CentroidZ, record.CentroidM,
-                            hilbert));
+                        // substrate.entity is identity only; geometry comes
+                        // via the RecPhysicality records the native walk
+                        // emits separately for this entity.
+                        Records.Add(new EntityRecord(code, hash, Options.ProvenanceCode));
                         EntityCount++;
                     }
                     break;

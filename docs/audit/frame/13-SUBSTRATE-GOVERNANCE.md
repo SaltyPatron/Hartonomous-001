@@ -203,7 +203,7 @@ Open question: automated rule discovery. Statistical methods (association mining
 - **AP-gov-5**: Irreversible governance actions. Every governance write must be session-scoped and reversible. Content permanently quarantined with no recovery path violates practitioner sovereignty.
 
 Cross-references:
-- `frame/00-FOUNDATIONAL.md` — practitioner sovereignty (Familiar Property 4: practitioner-controlled)
+- `frame/00-FOUNDATIONAL.md` — practitioner sovereignty (Substrate Property 4: practitioner-controlled)
 - `frame/07-INFERENCE-ENGINE.md` — traversal-time governance consultation
 - `frame/15-AUDIT-CHAIN.md` — governance violation logging via audit traces
 - `frame/14-MULTI-TENANCY.md` — per-tenant rule sets

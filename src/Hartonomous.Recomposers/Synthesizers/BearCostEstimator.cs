@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// Pre-build cost estimator for Build-a-bear synthesis. Projects parameter
+/// Pre-build cost estimator for Substrate Synthesis synthesis. Projects parameter
 /// count, output safetensors size, peak memory, and per-phase synth time
 /// from the recipe — deterministic, no substrate state required for the
 /// shape projections. Per-arena edge-count signals come from optional
@@ -24,7 +24,7 @@ namespace Hartonomous.Recomposers.Synthesizers;
 /// fitted coefficients. Coefficients live in private constants below;
 /// recalibrate when the host CPU or compute facade primitives change.
 /// </summary>
-public static class BearCostEstimator
+public static class SynthesisCostEstimator
 {
     // Calibration constants. Derived from the minilm-base v=256 reference
     // synth on the workstation (14900KS class, MKL CBWR=AUTO,STRICT). Adjust
@@ -40,7 +40,7 @@ public static class BearCostEstimator
     // allocation during synth; CSR adjacency is bounded by nnz.
     private const long DoubleSize = 8;
 
-    public static Task<BearCostEstimate> EstimateAsync(
+    public static Task<SynthesisCostEstimate> EstimateAsync(
         RecipeConfig recipe,
         CancellationToken ct = default)
     {
@@ -102,7 +102,7 @@ public static class BearCostEstimator
         long ritzMemory       = (long)vocab * hidden * DoubleSize;            // eigenvectors during synth
         long peakMemory       = embeddingMemory + adjacencyMemory + ritzMemory;
 
-        BearCostEstimate estimate = new(
+        SynthesisCostEstimate estimate = new(
             ParameterCount:              totalParams,
             EmbeddingParameters:         embeddingParams,
             PerLayerAttentionParameters: attentionPerLayer,

@@ -1,12 +1,12 @@
 # Hartonomous — Canonical Documentation
 
-This is the authoritative source of truth for the Hartonomous invention, the substrate it runs on, and the Laplace product family it produces. Where this documentation tree disagrees with code, prior repos (`Fail_A`, `Fail_B`), or any other written artifact, **this tree is correct and the others are stale**.
+This is the authoritative source of truth for the Hartonomous invention, the substrate it runs on, and the substrate product family it produces. Where this documentation tree disagrees with code, prior repos (`Fail_A`, `Fail_B`), or any other written artifact, **this tree is correct and the others are stale**.
 
 ## What this is
 
 Hartonomous is a content-addressed graph that runs as an AI model on PostgreSQL + PostGIS + a native compute extension. Identity is BLAKE3 of content. Geometry is 4D. Significance is Glicko-2 per arena. Inference is bounded indexed A\* over typed edges with cost = 1/μ. Every "AI operation" — inference, refinement, distillation, generation, translation, cross-model comparison, idiomaticity, frayed-edge research — is a SQL function over the substrate. The substrate ingests existing AI models and curated knowledge sources, and the substrate's accumulated state is queryable, recomposable, and exportable as conventional safetensors files that deploy to vLLM, llama.cpp, transformers, and any other standard inference stack.
 
-The invention is the **Laplace's Demon for digital content**: a system that knows every codepoint, every grapheme cluster, every word, every relation, every model attestation, and from that state can derive any past composition (lossless reconstruction) or generate any future composition (inference). Determinism is structural, not aspirational.
+The invention is the **the substrate for digital content**: a system that knows every codepoint, every grapheme cluster, every word, every relation, every model attestation, and from that state can derive any past composition (lossless reconstruction) or generate any future composition (inference). Determinism is structural, not aspirational.
 
 The commercial wedge is **refinement-as-service**: a customer hands over their model and proprietary corpus; the substrate ingests both; cross-source corroboration through arena-Glicko mechanics automatically refines the model's attestations against curated knowledge and other ingested teachers; the substrate exports a refined version with the SAME architecture, smaller (sparse), denser (cleaner signal), faster, and more accurate. Drop-in replacement. No retraining. No GPU. The substrate is the factory; refined safetensors files are the product.
 

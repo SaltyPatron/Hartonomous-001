@@ -87,7 +87,7 @@ Three categories of input, all going through the same substrate-shaped decompose
 Every output is the result of a SQL query against substrate state. The major product surfaces:
 
 1. **Refinement exports** — customer's model, refined. Same architecture, sparse/denser weights, identical deployment surface.
-2. **Laplace originals** — Anthony-designed architectures populated by substrate state. Family includes Laplace-Linguistics, Laplace-Coder, Laplace-Reason, Laplace-VL, Laplace-Audio, Laplace-Multimodal, Laplace-Embed, Laplace-Rerank, Laplace-Diffuse, Laplace-Custom.
+2. **Laplace originals** — Anthony-designed architectures populated by substrate state. Family includes Laplace-Linguistics, Laplace-Coder, Laplace-Reason, Laplace-VL, Laplace-Audio, Laplace-Multimodal, Laplace-Embed, Laplace-Rerank, Laplace-Diffuse, Custom-Architecture-Synthesis.
 3. **Live inference** — customer connects to substrate, issues SQL queries, receives answers with provenance traces. Per-hop filtering means each customer can have their own inference recipe.
 4. **Domain-specific student models** — `WHERE clause` produces a custom-shaped, custom-domain model from substrate state.
 5. **Lossless reconstruction** — any ingested non-model content can be exported byte-for-byte from substrate state.

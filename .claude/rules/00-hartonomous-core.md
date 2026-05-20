@@ -38,11 +38,11 @@ description: Hartonomous substrate — core invariants and normative pointers. A
 
 **No orchestration-boundary backfill** (AP-37): Drain completion triggers post-passes (`PopulateEdgeTrajectoriesAsync` + `PrimeAllSignificanceAsync` invoked inside `StreamingIngestionPipeline.DrainPendingAsync`) independent of runner phases. Decomposers run independently; the pipeline ingests / corroborates / primes continuously. P1f-followup target: fully inline at INSERT-SELECT with no NULL-geom window even briefly.
 
-**No bit-perfect export**: The substrate is the consensus surface, not the archive. No round-trip obligation for any source. Build-a-bear synthesizes NEW outputs from accumulated multi-source consensus. Re-emission gives canonical-decomposition output (denser than any source on signal, sparser than any source on noise via LTH), not byte-equal-to-the-specific-file-ingested.
+**No bit-perfect export**: The substrate is the consensus surface, not the archive. No round-trip obligation for any source. Substrate Synthesis synthesizes NEW outputs from accumulated multi-source consensus. Re-emission gives canonical-decomposition output (denser than any source on signal, sparser than any source on noise via LTH), not byte-equal-to-the-specific-file-ingested.
 
 ## Normative specs — when any rule, plan, or code disagrees, the spec is correct
 
-- `docs/00-substrate-spec.md` — substrate model (four pillars, attestation edges, Glicko-2 surfaces, layer-type decomposer library, Build-a-bear synthesis, fireflies, sparse honest recording, phantom debt deprecation list)
+- `docs/00-substrate-spec.md` — substrate model (four pillars, attestation edges, Glicko-2 surfaces, layer-type decomposer library, Substrate Synthesis synthesis, fireflies, sparse honest recording, phantom debt deprecation list)
 - `docs/01-tensor-primitive-spec.md` — canonical tensor form (4 primitives, ~13 tuples, per-architecture TupleResolver tables, sign-bearing attestations, decomposer library shape)
 
 ## Schema source of truth

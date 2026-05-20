@@ -395,7 +395,7 @@ The app layer must remain rebuildable from seeds + decomposer runs. If you write
 
 ## Cross-references
 
-- `familiar-principle.md` — The conceptual frame that motivates the separation (Corollary 5: Infrastructure is not substrate).
+- `substrate-bond.md` — The conceptual frame that motivates the separation (Corollary 5: Infrastructure is not substrate).
 - `architecture.md` — Schema overview.
 - `type-system.md` — Complete classification vocabulary enumeration.
 - `specs/sql/reference-tables.md` — DDL for all reference tables.

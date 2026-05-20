@@ -168,7 +168,11 @@ internal sealed partial class LoraDeltaTuplePass : IModelAnalysisPass
                         new EdgeSignificanceSpec("semantic_relevance", "positive_evidence", mu),
                     ];
 
-                    session.Batch.AddEdge("model_concept_similarity", context.ProvenanceCode,
+                    // LoRA delta projects a low-rank correction onto the base
+                    // tensor's behavior. For embedding / FFN base tensors that
+                    // means correction to semantic similarity. Same edge
+                    // identity; mechanism (lora_A / lora_B) on EdgeRatingEvent.
+                    session.Batch.AddEdge("semantic_similarity", context.ProvenanceCode,
                     [
                         new EdgeMemberSpec(aH, "source", 0),
                         new EdgeMemberSpec(bH, "target", 1),

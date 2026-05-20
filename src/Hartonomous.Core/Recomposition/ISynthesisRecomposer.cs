@@ -7,7 +7,7 @@ using Hartonomous.Core.Ingestion;
 namespace Hartonomous.Core.Recomposition;
 
 /// <summary>
-/// Two-mode synthesis recomposer per spec §VI Build-a-bear product slice.
+/// Two-mode synthesis recomposer per spec §VI Substrate Synthesis product slice.
 /// The dispatch surface that walks a target tensor list (substrate-sourced
 /// in Mode 1; user-spec-sourced in Mode 2), routes each tensor to the
 /// matching <see cref="ILayerTypeSynthesizer"/>, and packages the result
@@ -23,7 +23,7 @@ namespace Hartonomous.Core.Recomposition;
 /// dispatches per-tensor with source filter restricted to that model's id.
 /// "Llama-4-Maverick goes in, Llama-4-Maverick comes out, ready for HF
 /// upload."</item>
-/// <item><b>Mode 2 (build-a-bear):</b>
+/// <item><b>Mode 2 (substrate synthesis):</b>
 /// <see cref="RecomposeFromArchitectureSpecAsync"/> walks the user's target
 /// architecture spec, dispatches per-tensor with optional source filter
 /// (default: all ingested models contribute to consensus). Output's
@@ -59,7 +59,7 @@ public interface ISynthesisRecomposer
         CancellationToken ct);
 
     /// <summary>
-    /// Mode 2: build-a-bear from a custom target architecture spec. Walks
+    /// Mode 2: substrate synthesis from a custom target architecture spec. Walks
     /// the spec's tensor list, dispatches each tensor by role to the matching
     /// synthesizer with optional source filter. Default source filter is null
     /// (all-consensus); user can restrict via

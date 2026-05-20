@@ -10,7 +10,7 @@
 
 ## Why this library exists
 
-The Build-a-bear product surface (spec §I) requires synthesizing arbitrary target architectures from substrate consensus attestations across all ingested models. The current `SafetensorsRecomposer.AssembleTensorBytesAsync` is single-source phantom-scatter: it walks `has_constituent` children of a tensor (deprecated phantom per-role-unit entities) and scatters their stored contours into target row positions. This works only for round-tripping a model whose phantoms were stored at ingest, with the same shape, from one source. **It cannot do Build-a-bear.**
+The Substrate Synthesis product surface (spec §I) requires synthesizing arbitrary target architectures from substrate consensus attestations across all ingested models. The current `SafetensorsRecomposer.AssembleTensorBytesAsync` is single-source phantom-scatter: it walks `has_constituent` children of a tensor (deprecated phantom per-role-unit entities) and scatters their stored contours into target row positions. This works only for round-tripping a model whose phantoms were stored at ingest, with the same shape, from one source. **It cannot do Substrate Synthesis.**
 
 The replacement is a per-layer-type synthesizer library: each layer-type decomposer's reciprocal that, given a target tensor's role and shape and the consensus attestations the substrate has accumulated for that role, projects the consensus into the target tensor's basis. User specifies an arbitrary `TargetArchitectureSpec`; the recomposer dispatches each tensor to its layer-type synthesizer; output is standard safetensors loadable in HF transformers / vLLM / llama.cpp.
 
@@ -275,7 +275,7 @@ The output is byte-compatible with HuggingFace transformers, vLLM, llama.cpp, di
 ## What this library is FORBIDDEN from doing
 
 - **Read phantom per-role-unit entities** (`ffn_neuron`, `attention_head`, `embedding_position`, etc., on the spec §XII removal list). The synthesis surface reads attestation edges between content entities; the phantom-scatter recomposer paths in `SafetensorsRecomposer.AssembleTensorBytesAsync:239-373` are the deprecated alternative.
-- **Round-trip from one source.** Build-a-bear synthesizes from consensus across all ingested models filtered by `RecompositionOptions.SourceFilter`. The trivial single-source filter is allowed (recomposes a model from its own attestations only) but is not the default product surface; the default surface is multi-source consensus.
+- **Round-trip from one source.** Substrate Synthesis synthesizes from consensus across all ingested models filtered by `RecompositionOptions.SourceFilter`. The trivial single-source filter is allowed (recomposes a model from its own attestations only) but is not the default product surface; the default surface is multi-source consensus.
 - **Invent weights to cover gaps.** Honest abstention: under-attested cells stay at zero. The output is genuinely sparse. See AP-29 (no fabrication-from-incomplete-evidence).
 - **Use approximation methods that compromise the substrate's content-addressed truth claims.** Approximation in synthesis is permitted (spec §XI.2) but must not corrupt the substrate read; substrate reads themselves are exact.
 - **Output non-standard formats.** Output is always loadable safetensors. Audit metadata in the header is the only proprietary information.
@@ -289,4 +289,4 @@ The output is byte-compatible with HuggingFace transformers, vLLM, llama.cpp, di
 - [`docs/specs/csharp/recomposers.md`](../csharp/recomposers.md) — C# recomposer interface and implementation
 - [`docs/10-architecture/06-recomposer-contract.md`](../../10-architecture/06-recomposer-contract.md) — refinement vs origination contract
 - [`src/Hartonomous.Recomposers/SafetensorsRecomposer.cs`](../../../src/Hartonomous.Recomposers/SafetensorsRecomposer.cs) — current single-source phantom-scatter implementation (to be replaced by this synthesis library)
-- [`.claude/rules/45-anti-patterns.md`](../../../.claude/rules/45-anti-patterns.md) — AP-5 (recomposer is distillation not round-trip), AP-28 (round-trip-recomposer-as-Build-a-bear), AP-29 (fireflies-as-inference)
+- [`.claude/rules/45-anti-patterns.md`](../../../.claude/rules/45-anti-patterns.md) — AP-5 (recomposer is distillation not round-trip), AP-28 (round-trip-recomposer-as-Substrate Synthesis), AP-29 (fireflies-as-inference)

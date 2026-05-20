@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// The Build-a-bear recipe. A single structured JSON document defining
+/// The Substrate Synthesis recipe. A single structured JSON document defining
 /// every choice that goes into a substrate-derived model export:
 ///
 ///   • Container format (safetensors single / safetensors sharded / GGUF).
@@ -142,6 +142,38 @@ public sealed class RecipeConfig
         RecipeConfig? cfg = await JsonSerializer.DeserializeAsync<RecipeConfig>(
             fs, JsonOpts, ct).ConfigureAwait(false);
         return cfg ?? throw new InvalidDataException($"Recipe file at {path} parsed to null.");
+    }
+
+    /// <summary>
+    /// Load a recipe by its substrate-content name (registered via
+    /// substrate.recipe_name). The substrate is the source of truth for
+    /// recipes per the three-tier data model — app-starter rows are
+    /// seeded at db-bootstrap, ingest-derived rows are emitted by the
+    /// SafetensorsDecomposer end-pass, and practitioner forks are user-
+    /// tier. The CLI's --recipe-name option flows through this method
+    /// instead of reading from a file.
+    /// </summary>
+    public static async Task<RecipeConfig> LoadFromSubstrateAsync(
+        Npgsql.NpgsqlDataSource dataSource, string recipeName, CancellationToken ct = default)
+    {
+        await using Npgsql.NpgsqlConnection conn = await dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using Npgsql.NpgsqlCommand cmd = new(
+            "SELECT substrate.get_recipe_by_name($1)", conn);
+        cmd.Parameters.Add(new Npgsql.NpgsqlParameter { Value = recipeName });
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        if (result is null || result == DBNull.Value)
+        {
+            throw new InvalidOperationException(
+                $"Recipe '{recipeName}' not found in substrate.recipe_name. "
+              + "Available recipes: SELECT code FROM substrate.recipe_name. "
+              + "App-starter recipes are seeded at db-bootstrap (minilm-base, "
+              + "bert-base, llama-1b, llama-3b, mistral-7b, qwen-7b, qwen-2.5-coder-3b). "
+              + "Ingest-derived recipes appear after running 'hart seed ModelDecomp'.");
+        }
+        byte[] canonicalJson = (byte[])result;
+        RecipeConfig? cfg = JsonSerializer.Deserialize<RecipeConfig>(canonicalJson, JsonOpts);
+        return cfg ?? throw new InvalidDataException(
+            $"Recipe '{recipeName}' canonical_json parsed to null.");
     }
 
     public async Task SaveAsync(string path, CancellationToken ct = default)

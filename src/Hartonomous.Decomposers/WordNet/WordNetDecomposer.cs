@@ -168,6 +168,27 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                 frameIdsBySenseKey[vsi.SenseKey] = vsi.SentenceIds;
             }
 
+            // Pre-emit pos + lexname reference-vocabulary entities ONCE,
+            // before the parallel synset loop. The synset loop runs across
+            // up to N workers each emitting per-synset has_pos / has_lexname
+            // edges; without this pre-emit the same ~17 pos hashes and ~45
+            // lexname hashes get re-emitted from every worker's batch and
+            // hit ON CONFLICT DO NOTHING with transactionid lock contention.
+            // One submit + drain serialises the creation.
+            {
+                IIngestionBatch primingBatch = pipeline.CreateBatch(ProvenanceCode);
+                foreach (string posCode in posIdMap.Keys)
+                {
+                    primingBatch.AddEntity(ReferenceVocabularyHashes.PosEntityHash(posCode), "pos");
+                }
+                foreach (string lexnameCode in lexnameIdMap.Keys)
+                {
+                    primingBatch.AddEntity(ReferenceVocabularyHashes.LexnameEntityHash(lexnameCode), "lexname");
+                }
+                await pipeline.SubmitBatchAsync(primingBatch, ct);
+                await pipeline.DrainPendingAsync(ct);
+            }
+
             long entityCount = 0;
             long edgeCount = 0;
             int batchNum = 0;
@@ -292,24 +313,13 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                         // return centroid alongside handle). Same Merkle
                         // determinism: same content → same hash → same mean
                         // centroid.
-                        double sumX = 0, sumY = 0, sumZ = 0, sumM = 0;
-                        int memberCount = sortedMemberPhysicalityComponents.Length;
-                        for (int i = 0; i < memberCount; i++)
-                        {
-                            sumX += sortedMemberPhysicalityComponents[i].Centroid.X;
-                            sumY += sortedMemberPhysicalityComponents[i].Centroid.Y;
-                            sumZ += sortedMemberPhysicalityComponents[i].Centroid.Z;
-                            sumM += sortedMemberPhysicalityComponents[i].Centroid.M;
-                        }
-                        double cx = memberCount > 0 ? sumX / memberCount : double.NaN;
-                        double cy = memberCount > 0 ? sumY / memberCount : double.NaN;
-                        double cz = memberCount > 0 ? sumZ / memberCount : double.NaN;
-                        double cm = memberCount > 0 ? sumM / memberCount : double.NaN;
-                        long? hilbert = memberCount > 0
-                            ? Hartonomous.Core.Text.SubstrateTextDecomposer.ComputeHilbertIndex(cx, cy, cz, cm)
-                            : null;
-
-                        EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset", cx, cy, cz, cm, hilbert);
+                        // synset is identity only on substrate.entity. Geometric
+                        // identity for synsets is intentionally absent — synsets
+                        // are attested concepts, not content trajectories with
+                        // canonical order. Their presence is captured by
+                        // has_sense / hypernym / hyponym / holonym / meronym /
+                        // antonym / has_gloss / has_example edges below.
+                        EntityHandle synsetHandle = localBatch.AddEntity(synsetHash, "synset");
                         // No physicality emission for synsets — a synset is an
                         // attested concept (a claim that these member lemmas
                         // share one meaning), not a content trajectory with
@@ -345,7 +355,10 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                             // arenas; cross-source POS attestations
                             // accumulate on the same edge_significance row.
                             Hash32 posHash = ReferenceVocabularyHashes.PosEntityHash(udPos);
-                            EntityHandle posHandle = localBatch.AddEntity(posHash, "pos");
+                            // Pre-emitted at the start of the decomposer; direct
+                            // handle construction here avoids transactionid lock
+                            // contention on the ~17 hot pos rows.
+                            EntityHandle posHandle = new(posHash, "pos");
                             localBatch.AddEdge("has_pos", ProvenanceCode,
                             [
                                 new EdgeMemberSpec(synsetHandle, "source", 0),
@@ -365,7 +378,8 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                             // Unified Glicko surface — has_lexname edge on the
                             // content-hashed lexname reference-vocabulary entity.
                             Hash32 lexnameHash = ReferenceVocabularyHashes.LexnameEntityHash(lexnameCode);
-                            EntityHandle lexnameHandle = localBatch.AddEntity(lexnameHash, "lexname");
+                            // Pre-emitted at the start of the decomposer.
+                            EntityHandle lexnameHandle = new(lexnameHash, "lexname");
                             localBatch.AddEdge("has_lexname", ProvenanceCode,
                             [
                                 new EdgeMemberSpec(synsetHandle,  "source", 0),
@@ -563,7 +577,8 @@ public sealed partial class WordNetDecomposer : TextIngestingDecomposer
                     // Unified Glicko surface — has_pos edge on the
                     // content-hashed POS reference-vocabulary entity.
                     Hash32 infPosHash = ReferenceVocabularyHashes.PosEntityHash(infUdPos);
-                    EntityHandle infPosHandle = batch.AddEntity(infPosHash, "pos");
+                    // Pre-emitted at the start of the decomposer.
+                    EntityHandle infPosHandle = new(infPosHash, "pos");
                     batch.AddEdge("has_pos", ProvenanceCode,
                     [
                         new EdgeMemberSpec(inflectedHandle, "source", 0),

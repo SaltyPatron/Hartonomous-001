@@ -1,1 +1,0 @@
-TRUNCATE pg_temp.edge_member_inflight

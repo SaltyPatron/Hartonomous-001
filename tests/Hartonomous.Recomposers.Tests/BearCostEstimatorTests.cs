@@ -5,14 +5,14 @@ using Hartonomous.Recomposers.Synthesizers;
 
 namespace Hartonomous.Recomposers.Tests;
 
-public sealed class BearCostEstimatorTests
+public sealed class SynthesisCostEstimatorTests
 {
     [Fact]
     public async Task Estimate_MinilmBase_v256_MatchesExpectedShape()
     {
         RecipeConfig recipe = RecipeTemplates.Resolve("minilm-base", 256);
 
-        BearCostEstimate est = await BearCostEstimator.EstimateAsync(recipe, CancellationToken.None);
+        SynthesisCostEstimate est = await SynthesisCostEstimator.EstimateAsync(recipe, CancellationToken.None);
 
         // Architecture-derived counts (deterministic from recipe)
         // vocab=256, hidden=384, layers=6, intermediate=1536, max_pos=512
@@ -40,8 +40,8 @@ public sealed class BearCostEstimatorTests
         RecipeConfig small = RecipeTemplates.Resolve("minilm-base", 256);
         RecipeConfig large = RecipeTemplates.Resolve("minilm-base", 1024);
 
-        BearCostEstimate s = await BearCostEstimator.EstimateAsync(small, CancellationToken.None);
-        BearCostEstimate l = await BearCostEstimator.EstimateAsync(large, CancellationToken.None);
+        SynthesisCostEstimate s = await SynthesisCostEstimator.EstimateAsync(small, CancellationToken.None);
+        SynthesisCostEstimate l = await SynthesisCostEstimator.EstimateAsync(large, CancellationToken.None);
 
         // Embedding params include vocab×hidden + position×hidden + type×hidden.
         // Only vocab×hidden scales with vocab; the others are vocab-independent.
@@ -61,8 +61,8 @@ public sealed class BearCostEstimatorTests
         RecipeConfig f16 = RecipeTemplates.Resolve("minilm-base", 256);
         f16.OutputDtype = QuantizationTarget.F16;
 
-        BearCostEstimate eF32 = await BearCostEstimator.EstimateAsync(f32, CancellationToken.None);
-        BearCostEstimate eF16 = await BearCostEstimator.EstimateAsync(f16, CancellationToken.None);
+        SynthesisCostEstimate eF32 = await SynthesisCostEstimator.EstimateAsync(f32, CancellationToken.None);
+        SynthesisCostEstimate eF16 = await SynthesisCostEstimator.EstimateAsync(f16, CancellationToken.None);
 
         // Same param count; output size halves at F16.
         Assert.Equal(eF32.ParameterCount, eF16.ParameterCount);

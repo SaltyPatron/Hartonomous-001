@@ -28,7 +28,7 @@ Pricing reflects this. Up-front commitments fund substrate-build. Per-export fee
 
 ## Laplace originals (open-source vs commercial)
 
-**Open-source releases:** Selected Laplace family models released under permissive licenses (Apache 2.0 or similar). Drives ecosystem adoption.
+**Open-source releases:** Selected substrate product family models released under permissive licenses (Apache 2.0 or similar). Drives ecosystem adoption.
 
 **Commercial releases:** Premium variants (frontier-scale, custom-architecture) released under commercial license. Pricing per organizational deployment:
 
@@ -75,7 +75,7 @@ Pricing structurally lower than competitive LLM APIs ($0.01–$0.10 per token) b
 
 **Discounted licensing:**
 
-- Academic Laplace family: $25K–$100K annually
+- Academic substrate product family: $25K–$100K annually
 - Substrate-as-research-tool (per-query API): $5K/month flat with research SLA
 - Custom research engagements: case-by-case
 

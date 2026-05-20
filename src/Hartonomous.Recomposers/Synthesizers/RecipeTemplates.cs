@@ -3,7 +3,7 @@ using System;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// Pre-cut Build-a-bear templates: complete <see cref="RecipeConfig"/>
+/// Pre-cut Substrate Synthesis templates: complete <see cref="RecipeConfig"/>
 /// instances for known architecture families. Each template loads an
 /// editable starting point — the user customizes arena weights, MoE/LoRA
 /// knobs, vocab strategy, and dtype to assemble their bear.

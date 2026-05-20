@@ -32,4 +32,15 @@ public interface IPassSession
 
     /// <summary>Unconditional flush. Caller may continue using the session afterwards — a fresh batch is started.</summary>
     Task FlushAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Cross-pass shared state. Earlier passes (e.g. EmbeddingLookupTuplePass)
+    /// stash the model's k-NN graph here so downstream passes (Ffn, Attention,
+    /// LoraDelta) can emit their mechanism-attributed attestation edges on
+    /// the SAME (vocab_i, neighbor_j) pair identities, accumulating cross-
+    /// mechanism Glicko-2 consensus on shared edge identities (the substrate
+    /// principle). Keys: arbitrary; convention is fully-qualified class name +
+    /// purpose ("EmbeddingKnn" etc.). Pass-lifetime; cleared between models.
+    /// </summary>
+    System.Collections.Generic.IDictionary<string, object> SharedState { get; }
 }

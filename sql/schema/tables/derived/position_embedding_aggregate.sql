@@ -7,7 +7,7 @@
 -- the AP-37 drain-as-state-change pattern: prompt ingestion IS a state
 -- change, so derived state must update incrementally — NOT a static view.
 --
--- Consumed by Build-a-bear PositionEmbeddingSynthesizer to derive
+-- Consumed by Substrate Synthesis PositionEmbeddingSynthesizer to derive
 -- substrate-native positional embeddings. Replaces the per-synth
 -- substrate.position_embedding_stats() LATERAL walk (which was 4.3M
 -- get_composition_children calls = ~71 min single-threaded).
@@ -32,4 +32,4 @@ CREATE TABLE IF NOT EXISTS substrate.position_embedding_aggregate (
 -- coordinates from this aggregate.
 
 COMMENT ON TABLE substrate.position_embedding_aggregate IS
-    'Drain-maintained per-ordinal word_form frequency. Maintained incrementally by substrate.update_position_embedding_aggregate_from_drain per new content trajectory. Build-a-bear PositionEmbeddingSynthesizer reads from here in <100ms instead of the previous 71-min LATERAL walk.';
+    'Drain-maintained per-ordinal word_form frequency. Maintained incrementally by substrate.update_position_embedding_aggregate_from_drain per new content trajectory. Substrate Synthesis PositionEmbeddingSynthesizer reads from here in <100ms instead of the previous 71-min LATERAL walk.';

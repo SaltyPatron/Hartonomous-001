@@ -1,8 +1,8 @@
 # Hartonomous: Universal Substrate Architecture
 
-> **Authority note (2026-05-09):** For the safetensors-first product slice (Build-a-bear synthesis recomposer + crystal-ball analytics), the canonical architectural reference is now [`docs/00-substrate-spec.md`](00-substrate-spec.md). This `architecture.md` document remains useful for the broader substrate context but several entries (the entity_type code list at line 260, the `pattern_deprel` description at line 440, the `attention_pattern` references throughout) describe the pre-correction phantom shape and have been updated inline with DEPRECATED markers and redirects. Where this document and the spec disagree on architecture (per-role units, layer-type decomposer factoring, recomposer synthesis, phantom debt), the spec is correct.
+> **Authority note (2026-05-09):** For the safetensors-first product slice (Substrate Synthesis synthesis recomposer + crystal-ball analytics), the canonical architectural reference is now [`docs/00-substrate-spec.md`](00-substrate-spec.md). This `architecture.md` document remains useful for the broader substrate context but several entries (the entity_type code list at line 260, the `pattern_deprel` description at line 440, the `attention_pattern` references throughout) describe the pre-correction phantom shape and have been updated inline with DEPRECATED markers and redirects. Where this document and the spec disagree on architecture (per-role units, layer-type decomposer factoring, recomposer synthesis, phantom debt), the spec is correct.
 
-This document is the authoritative architecture reference. Individual decomposer specs live in `specs/decomposers/`. Engine specs live in `specs/engine/`. Modality specs live in `specs/modalities/`. The canonical layer-type decomposer library is at [`specs/decomposers/layer-type-library.md`](specs/decomposers/layer-type-library.md); the canonical Build-a-bear synthesizer library is at [`specs/recomposers/synthesis-library.md`](specs/recomposers/synthesis-library.md).
+This document is the authoritative architecture reference. Individual decomposer specs live in `specs/decomposers/`. Engine specs live in `specs/engine/`. Modality specs live in `specs/modalities/`. The canonical layer-type decomposer library is at [`specs/decomposers/layer-type-library.md`](specs/decomposers/layer-type-library.md); the canonical Substrate Synthesis synthesizer library is at [`specs/recomposers/synthesis-library.md`](specs/recomposers/synthesis-library.md).
 
 ## What This Is
 
@@ -77,15 +77,15 @@ A conventional model carries billions of parameters, most of which are gradient 
 
 The substrate discards all of it at ingestion. SVD strips gradient jitter; near-zero singular values never enter the substrate. Content-addressable hashing stores each pattern once regardless of how many heads encoded it with slightly different noise profiles. Arena competition against authoritative seeds drops the significance of hallucinated relationships below export threshold. The exported model encodes the same knowledge in fewer parameters with no noise floor. This is what deduplication, sparsity, and significance rating do to any content — models just benefit dramatically because they carry so much dead weight.
 
-## The Knowledge Demon
+## The the substrate
 
-Laplace's Demon is a thought experiment: an intellect that knows the precise position and momentum of every particle in the universe could derive any past state and predict any future state. It is impossible for physical matter because you cannot capture every particle.
+the substrate is a thought experiment: an intellect that knows the precise position and momentum of every particle in the universe could derive any past state and predict any future state. It is impossible for physical matter because you cannot capture every particle.
 
 Hartonomous is the knowledge equivalent. Not for particles — for semantics. Every Unicode codepoint. Every syntactic structure across 100+ languages. Every word sense and cross-lingual alignment. Every morphological form and inflection. Every attention pattern and semantic relation extracted from every ingested model. Ingested deterministically, stored losslessly, traversed mechanically.
 
 The transformer *predicts*. It assigns probability to the next token based on statistical patterns in training data. It does not know — it guesses, confidently. The substrate *knows*. It traverses edges that exist, with significance ratings earned through competition against ground truth. The answer is not sampled from a distribution — it is extracted from a structure. The distinction is not rhetorical. A prediction can be wrong in ways that are undetectable from inside the system. A traversal either reaches a destination or it doesn't — and the path it took is the proof.
 
-This is the familiar. Not a tool you query. Not a service you rent. A system that runs on your hardware, contains the knowledge, shows its work, never forgets, never hallucinates, and gets denser every time you feed it another model. The knowledge version of Laplace's Demon, domesticated.
+This is the substrate. Not a tool you query. Not a service you rent. A system that runs on your hardware, contains the knowledge, shows its work, never forgets, never hallucinates, and gets denser every time you feed it another model. The knowledge version of the substrate, domesticated.
 
 ## What This Is NOT
 

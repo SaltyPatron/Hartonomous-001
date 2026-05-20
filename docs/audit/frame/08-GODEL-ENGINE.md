@@ -106,7 +106,7 @@ Engine traversals produce `inference_trace` entities with provenance `user_sessi
 
 Audit chain is substrate-internal artifact, NOT a separate logging system. `provenance.audit_chain($trace_id)` walks edges from trace back to source provenance via standard graph traversal.
 
-## Operational boundaries — subservience (Familiar Property 2)
+## Operational boundaries — subservience (Substrate Property 2)
 
 - **Practitioner initiates or schedules.** Tasked mode runs on practitioner directives; Scheduled mode runs on practitioner-set crons. No mode in which engine starts work without practitioner setup.
 - **Human approval gate for macro-Act ingestion.** Engine can survey, orient, decide autonomously at all scales — but actual ingestion of new sources at macro requires practitioner approval until system has track record of accurate gap prediction. Gate is removable, not architectural.

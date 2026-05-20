@@ -342,7 +342,7 @@ public static class EdgeArenaRouter
         ["has_source"]               = Universal("source_authority"),
         ["in_model"]                 = Universal("source_authority"),
 
-        // Sequence-following bigram (Build-a-bear next-token prior)
+        // Sequence-following bigram (Substrate Synthesis next-token prior)
         ["often_follows"]            = Universal("sequence_following", "frequency_significance"),
 
         // ── Gate 1 Reopening item #39 — orphan edge_type routings ─────────

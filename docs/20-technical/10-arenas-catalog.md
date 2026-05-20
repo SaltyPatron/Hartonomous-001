@@ -130,7 +130,7 @@ These arenas are seeded by migration `0005_reference_seed`. They are the canonic
 
 **Allowed edge types:** `model_attention_pattern` edges between `word_form` content entities (per `sql/schema/seed/edge_type.sql:84-90`), with sign-aware `positive_evidence`/`negative_evidence` events (P1d 2026-05-14 collapse) and `EdgeRatingEvent` attribution `(Linear, AttentionBlock, {Q,K} or {V,O})` plus layer/head/model_source metadata on the rating event. Cross-model corroboration accumulates as separate (provenance, EdgeRatingEvent-attribution) events on the same edge hash. **The previous "attention_pattern entities" reference is deprecated** per the 2026-05-08 architectural correction — attention patterns are edges between content entities, NOT phantom `attention_pattern` entities. See [`docs/00-substrate-spec.md`](../00-substrate-spec.md) §III and AP-25.
 
-**Use:** Distillation/transformation recipes that depend on attention-pattern accuracy filter by this arena. The Build-a-bear `AttentionQkvLayerSynthesizer` and `AttentionVoLayerSynthesizer` query this arena's mu when synthesizing target attention tensors (per [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md)).
+**Use:** Distillation/transformation recipes that depend on attention-pattern accuracy filter by this arena. The Substrate Synthesis `AttentionQkvLayerSynthesizer` and `AttentionVoLayerSynthesizer` query this arena's mu when synthesizing target attention tensors (per [`docs/specs/recomposers/synthesis-library.md`](../specs/recomposers/synthesis-library.md)).
 
 ### `morphological_productivity`
 

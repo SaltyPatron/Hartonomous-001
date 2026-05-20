@@ -1,1 +1,0 @@
-TRUNCATE pg_temp.entity_classification_inflight

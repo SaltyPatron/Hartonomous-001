@@ -425,14 +425,13 @@ public abstract partial class BaseDecomposer : IDecomposer
         foreach (Rune rune in surfaceForm.EnumerateRunes())
         {
             Hash32 cpHash = HashCodepoint(rune.Value);
-            // Codepoint centroid is deterministic: Super-Fibonacci S³ projection
-            // by UCA collation rank, baked into the UCD blob (huc_cp_centroid).
-            // Pass through the 7-arg AddEntity overload so substrate.entity gets
-            // centroid + Hilbert on first write — no trigger, no backfill.
+            // Codepoint is identity only on substrate.entity. Geometry (S³
+            // Super-Fibonacci POINTZM, deterministic via the UCD blob) lives
+            // on substrate.physicality and is emitted via AddPhysicalityPoint4d.
+            EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint");
             (double cx, double cy, double cz, double cm) =
                 Hartonomous.Core.Compute.Common.PhysicalityEmitter.CodepointS3Position(rune.Value);
-            long? hilbert = Hartonomous.Core.Text.SubstrateTextDecomposer.ComputeHilbertIndex(cx, cy, cz, cm);
-            EntityHandle cpHandle = batch.AddEntity(cpHash, "codepoint", cx, cy, cz, cm, hilbert);
+            batch.AddPhysicalityPoint4d(cpHandle, "entity", cx, cy, cz, cm);
             position++;
         }
     }

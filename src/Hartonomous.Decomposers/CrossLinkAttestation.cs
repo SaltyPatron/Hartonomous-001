@@ -39,8 +39,11 @@ public static class CrossLinkAttestation
         batch.AddJunction("entity_language", entity, languageReferenceId);
 
         // Unified Glicko surface — has_language edge
+        // language_name entities are pre-seeded by the Iso639 phase. Direct
+        // handle construction avoids transactionid lock contention on the
+        // ~7K hot rows from per-attestation ON CONFLICT DO NOTHING attempts.
         Hash32 langHash = Blake3.Hash32(Encoding.UTF8.GetBytes(isoCode));
-        EntityHandle langHandle = batch.AddEntity(langHash, "language_name");
+        EntityHandle langHandle = new(langHash, "language_name");
         EdgeMemberSpec[] members =
         [
             new EdgeMemberSpec(entity, "source", 0),

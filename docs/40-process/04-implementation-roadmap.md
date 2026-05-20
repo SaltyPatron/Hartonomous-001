@@ -445,7 +445,7 @@ SELECT * FROM hartonomous.compare.cross_model_consensus('cat');
 
 ---
 
-## M14 — Custom architecture synthesis (Laplace-Custom)
+## M14 — Custom architecture synthesis (Custom-Architecture-Synthesis)
 
 **Goal:** Customers specify novel architectures; substrate produces them. The third commercial product.
 
@@ -475,7 +475,7 @@ The MINIMUM path to first commercial revenue is M0 → M1 → M2 → M3 → **M3
 
 That's 10 milestones. Each is gated. Failure of any gate halts progression until resolved. With focused engineering, this path is approximately 12-18 months. M3.5 (tree-sitter/Kaitai decomposer infrastructure) saves substantially more time downstream than it costs — every subsequent decomposer becomes a grammar+mapping rather than a custom parser.
 
-M10–M12 are required for full Laplace family launch.
+M10–M12 are required for full substrate product family launch.
 
 M13–M14 are productization milestones; technically possible with M9 substrate but commercially weak until M10–M12 fill substrate breadth.
 

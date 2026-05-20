@@ -11,9 +11,9 @@ paths:
 
 | Path | Purpose |
 |------|---------|
-| `docs/00-substrate-spec.md` | Substrate model, normative. The substrate's WHAT (four pillars, per-role attestation edges, Glicko-2 surfaces, layer-type decomposer library, Build-a-bear recomposer, fireflies, cross-modal binding, three-tier determinism, phantom debt). |
+| `docs/00-substrate-spec.md` | Substrate model, normative. The substrate's WHAT (four pillars, per-role attestation edges, Glicko-2 surfaces, layer-type decomposer library, Substrate Synthesis recomposer, fireflies, cross-modal binding, three-tier determinism, phantom debt). |
 | `docs/01-tensor-primitive-spec.md` | Canonical tensor form, normative. The standardization (4 primitives, ~13 tuples, per-architecture TupleResolver tables, tuple → attestation mapping, sign-bearing attestations, decomposer/synthesizer collapse). |
-| `docs/familiar-principle.md` | The substrate's WHY. The Familiar Principle (bonded, subservient, auditable, learns-from-service, goes-where-the-practitioner-cannot). |
+| `docs/substrate-bond.md` | The substrate's WHY. The Substrate Bond (bonded, subservient, auditable, learns-from-service, goes-where-the-practitioner-cannot). |
 | `docs/architecture.md` | Architecture reference (substrate laws, schema, cost model, scale). |
 | `docs/index.md` | Master table of contents — every doc listed with accurate status. |
 | `docs/type-system.md` | Complete classification vocabulary. All reference tables and values. |
@@ -42,7 +42,7 @@ Two parallel surfaces that stay aligned:
 | `CLAUDE.md` (root) | Communication Constraint + Work Execution Constraint + coding standards (one-type-per-file, set-based DB, MKL CBWR strict, BLAKE3 content-only, compute facade, Lottery Ticket sparsity). |
 | `.claude/CLAUDE.md` | Slim pointer to root + specs + rules. |
 | `.claude/settings.json` | Claude Code settings. |
-| `.claude/rules/00-hartonomous-core.md` | Always-on substrate overlay: universal Merkle DAG, four pillars, primitive + tuple standard, safetensors in/out, open-vocabulary arenas, the loop, the Familiar Principle as the *why*. |
+| `.claude/rules/00-hartonomous-core.md` | Always-on substrate overlay: universal Merkle DAG, four pillars, primitive + tuple standard, safetensors in/out, open-vocabulary arenas, the loop, the Substrate Bond as the *why*. |
 | `.claude/rules/{10,15,20,25,30,35,40,45}-*.md` | Path-scoped rules: text, substrate trinity, sql, physicality, native, inference, docs config, anti-patterns. Load only when matching files are touched (use `paths:` frontmatter). |
 | `.claude/agents/*.md` | Subagents (planner, implementer, reviewer, semantic-auditor). |
 | `.claude/skills/hartonomous-semantic-eval/` | Semantic regression pack (cases.md, rubric.md). |

@@ -19,12 +19,14 @@ internal static class IngestionSql
     public static string GetExistingPhysicalities { get; } = Read("get_existing_physicalities.sql");
     public static string InsertSafetensorObservations { get; } = Read("safetensor_observation.insert.sql");
 
-    public static DrainSqlSpec Entity { get; } = Drain("entity");
-    public static DrainSqlSpec EntityClassification { get; } = Drain("entity_classification");
-    public static DrainSqlSpec Edge { get; } = Drain("edge");
-    public static DrainSqlSpec EdgeMember { get; } = Drain("edge_member");
+    // Substrate-native bulk-write surfaces (no pg_temp, no drain SQL):
+    //   entity, entity_classification, physicality, edge, edge_member
+    // Those go through substrate.write_entities / write_entity_classifications /
+    // write_physicalities / write_edges / write_edge_members directly via
+    // bulk array params from StreamingIngestionPipeline.SubmitXAsync.
+    //
+    // Surfaces still on the legacy pg_temp + COPY + INSERT-SELECT path:
     public static DrainSqlSpec Junction { get; } = Drain("junction");
-    public static DrainSqlSpec Physicality { get; } = Drain("physicality");
     public static DrainSqlSpec EntitySignificance { get; } = Drain("entity_significance");
     public static DrainSqlSpec EdgeSignificance { get; } = Drain("edge_significance");
     public static DrainSqlSpec EntityModelSource { get; } = Drain("entity_model_source");

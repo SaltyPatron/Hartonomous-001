@@ -471,10 +471,7 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
 
         foreach (EntityEntry e in b.Entities)
         {
-            records.Add(new EntityRecord(
-                e.EntityTypeCode, e.Hash, batchProvenance,
-                e.CentroidX, e.CentroidY, e.CentroidZ, e.CentroidM,
-                e.HilbertIndex));
+            records.Add(new EntityRecord(e.EntityTypeCode, e.Hash, batchProvenance));
         }
 
         foreach (PhysicalityEntry p in b.Physicalities)
@@ -557,29 +554,27 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                     sorted[j].Entity.Hash, sorted[j].RoleCode, sorted[j].Position));
             }
 
-            // Per-edge per-arena edge_significance priors emitted inline.
-            // Producer overrides win when present; the primer table fills the
-            // rest. AP-1: every arena currently in significance_context is
-            // covered — no cherry-picking, no hardcoded subset.
-            HashSet<string> overrideArenas = new(StringComparer.Ordinal);
+            // Per-edge edge_significance priors. Producer overrides emit
+            // explicit rows. The (provenance × edge_type × arena) primer
+            // table's full cross-product fan-out is DEFERRED: at full UCD
+            // ingest scale (1.1M codepoints × ~10 edges × 19 arenas →
+            // ~190M rows) the inline fan-out dominates wall time.
+            // record_attestations_bulk creates per-(arena, edge) rows on
+            // first event via ON CONFLICT DO UPDATE; arenas that never
+            // receive an event are computed lazily from the COALESCE prior
+            // formula at query time. AP-1 (open vocabulary) is preserved —
+            // arena set is unbounded; no arena is cherry-picked or excluded.
+            _ = primer;
             EdgeSignificanceSpec[] overrides = edge.SignificanceOverrides;
             for (int o = 0; o < overrides.Length; o++)
             {
                 EdgeSignificanceSpec sig = overrides[o];
-                overrideArenas.Add(sig.ContextTypeCode);
                 records.Add(new EdgeSignificanceRecord(
                     sig.ContextTypeCode,
                     string.IsNullOrEmpty(sig.AttestationTypeCode)
                         ? ProvenanceAuthorityAttestation
                         : sig.AttestationTypeCode,
                     edge.EdgeTypeCode, edgeHash, sig.InitialMu));
-            }
-            foreach (InlinePrimerEntry e in primer.For(edge.ProvenanceCode, edge.EdgeTypeCode))
-            {
-                if (overrideArenas.Contains(e.ArenaCode)) { continue; }
-                records.Add(new EdgeSignificanceRecord(
-                    e.ArenaCode, ProvenanceAuthorityAttestation,
-                    edge.EdgeTypeCode, edgeHash, e.InitialMu));
             }
 
             EdgeRatingEvent[] events = edge.RatingEvents;
@@ -914,6 +909,40 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         return existing;
     }
 
+    public async Task<bool[]> MerkleTreeFilterAsync(
+        IReadOnlyList<Hash32> hashesInTierOrder,
+        IReadOnlyList<int> parentIndices,
+        CancellationToken ct)
+    {
+        if (hashesInTierOrder.Count == 0) { return System.Array.Empty<bool>(); }
+        if (parentIndices.Count != hashesInTierOrder.Count)
+        {
+            throw new System.ArgumentException(
+                $"MerkleTreeFilterAsync: array length mismatch ({hashesInTierOrder.Count} vs {parentIndices.Count})");
+        }
+
+        int n = hashesInTierOrder.Count;
+        byte[][] hashArr = new byte[n][];
+        int[] parentArr = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            hashArr[i] = hashesInTierOrder[i].ToByteArray();
+            parentArr[i] = parentIndices[i];
+        }
+
+        await using NpgsqlConnection conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using NpgsqlCommand cmd = new("SELECT substrate.merkle_tree_filter($1, $2)", conn);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = hashArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = parentArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer });
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        if (result is bool[] flags && flags.Length == n)
+        {
+            return flags;
+        }
+        // Defensive fallback — shouldn't happen with a well-formed substrate.
+        return new bool[n];
+    }
+
     // ── Worker loop ─────────────────────────────────────────────────────────
 
     private async Task RunWorkerAsync(int workerId, CancellationToken ct)
@@ -927,15 +956,14 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
-            // One-time CREATE TEMP TABLE per kind. pg_temp is session-local so
-            // identical names across workers don't collide.
+            // One-time CREATE TEMP TABLE per surface still on the pg_temp
+            // staging path. entity / classification / physicality / edge /
+            // edge_member are no longer on this path — they go directly to
+            // substrate.write_* via bulk array params. The remaining surfaces
+            // (edge_significance / entity_significance / entity_model_source /
+            // junction) are pending migration to substrate-native bulk writes.
             foreach (string tempSql in new[]
             {
-                IngestionSql.Entity.TempCreate,
-                IngestionSql.EntityClassification.TempCreate,
-                IngestionSql.Physicality.TempCreate,
-                IngestionSql.Edge.TempCreate,
-                IngestionSql.EdgeMember.TempCreate,
                 IngestionSql.EdgeSignificance.TempCreate,
                 IngestionSql.EntitySignificance.TempCreate,
                 IngestionSql.EntityModelSource.TempCreate,
@@ -1099,34 +1127,34 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         await using NpgsqlTransaction tx = await conn.BeginTransactionAsync(ct).ConfigureAwait(false);
         try
         {
-            // Phase 1: truncate every pg_temp.X_inflight.
-            await ExecuteAsync(conn, IngestionSql.Entity.Truncate, ct).ConfigureAwait(false);
-            await ExecuteAsync(conn, IngestionSql.EntityClassification.Truncate, ct).ConfigureAwait(false);
-            await ExecuteAsync(conn, IngestionSql.Physicality.Truncate, ct).ConfigureAwait(false);
-            await ExecuteAsync(conn, IngestionSql.Edge.Truncate, ct).ConfigureAwait(false);
-            await ExecuteAsync(conn, IngestionSql.EdgeMember.Truncate, ct).ConfigureAwait(false);
+            // pg_temp staging is retired for entity / classification / physicality
+            // / edge / edge_member — those go directly to substrate.write_* via
+            // bulk array params (no COPY-to-temp + drain round-trip).
+            // Surfaces still on the legacy pg_temp path get truncated here.
             await ExecuteAsync(conn, IngestionSql.EdgeSignificance.Truncate, ct).ConfigureAwait(false);
             await ExecuteAsync(conn, IngestionSql.EntitySignificance.Truncate, ct).ConfigureAwait(false);
             await ExecuteAsync(conn, IngestionSql.EntityModelSource.Truncate, ct).ConfigureAwait(false);
             await ExecuteAsync(conn, IngestionSql.Junction.Truncate, ct).ConfigureAwait(false);
 
-            // Phase 2: COPY each kind's records into its pg_temp table in
-            // dependency order. The rating-event "kind" is not a COPY drain —
-            // it runs as a bulk SQL call after the geometric drains commit so
-            // the substrate.edge row it references exists.
             List<EdgeRatingEventRecord> ratingEvents = new();
             int entitiesIn = 0, entityClassIn = 0, physIn = 0, edgesIn = 0, edgeMembersIn = 0;
             int edgeSigIn = 0, entitySigIn = 0, modelSrcIn = 0, junctionsIn = 0;
 
-            entitiesIn = await CopyEntitiesAsync(conn, chunk, entityDedup, ct).ConfigureAwait(false);
-            entityClassIn = await CopyEntityClassificationsAsync(conn, chunk, entityClassDedup,
+            // Substrate-native bulk write path: one round-trip per surface,
+            // no pg_temp staging, ON CONFLICT DO NOTHING inside the function
+            // as race-safety net only (producer-side existence-check via AP-19
+            // is the primary dedup).
+            entitiesIn = await SubmitEntitiesAsync(conn, chunk, entityDedup, ct).ConfigureAwait(false);
+            entityClassIn = await SubmitEntityClassificationsAsync(conn, chunk, entityClassDedup,
                 entityTypeIds, provenanceIds, ct).ConfigureAwait(false);
-            physIn = await CopyPhysicalitiesAsync(conn, chunk, physicalityDedup,
+            physIn = await SubmitPhysicalitiesAsync(conn, chunk, physicalityDedup,
                 physicalityTypeIds, ct).ConfigureAwait(false);
-            edgesIn = await CopyEdgesAsync(conn, chunk, edgeDedup,
+            edgesIn = await SubmitEdgesAsync(conn, chunk, edgeDedup,
                 edgeTypeIds, provenanceIds, ct).ConfigureAwait(false);
-            edgeMembersIn = await CopyEdgeMembersAsync(conn, chunk, edgeMemberDedup,
+            edgeMembersIn = await SubmitEdgeMembersAsync(conn, chunk, edgeMemberDedup,
                 edgeTypeIds, edgeRoleIds, ct).ConfigureAwait(false);
+
+            // Legacy pg_temp path (to be migrated to substrate.write_* in follow-ups):
             edgeSigIn = await CopyEdgeSignificancesAsync(conn, chunk, edgeSigDedup,
                 contextIds, edgeTypeIds, attestationTypeIds, ct).ConfigureAwait(false);
             entitySigIn = await CopyEntitySignificancesAsync(conn, chunk, entitySigDedup,
@@ -1142,16 +1170,9 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 }
             }
 
-            // Phase 3: INSERT-SELECT into substrate in dependency order.
-            // Entity / classification / physicality first so edge_member FKs
-            // resolve within the txn; edge before edge_member before
-            // edge_significance; entity_significance / entity_model_source /
-            // junctions parallel to the edge family.
-            if (entitiesIn > 0)      { await ExecuteAsync(conn, IngestionSql.Entity.Drain, ct).ConfigureAwait(false); }
-            if (entityClassIn > 0)   { await ExecuteAsync(conn, IngestionSql.EntityClassification.Drain, ct).ConfigureAwait(false); }
-            if (physIn > 0)          { await ExecuteAsync(conn, IngestionSql.Physicality.Drain, ct).ConfigureAwait(false); }
-            if (edgesIn > 0)         { await ExecuteAsync(conn, IngestionSql.Edge.Drain, ct).ConfigureAwait(false); }
-            if (edgeMembersIn > 0)   { await ExecuteAsync(conn, IngestionSql.EdgeMember.Drain, ct).ConfigureAwait(false); }
+            // Legacy drain SQL only fires for surfaces still on the pg_temp path.
+            // entity / classification / physicality / edge / edge_member already
+            // INSERTed by their substrate.write_* call above.
             if (edgeSigIn > 0)       { await ExecuteAsync(conn, IngestionSql.EdgeSignificance.Drain, ct).ConfigureAwait(false); }
             if (entitySigIn > 0)     { await ExecuteAsync(conn, IngestionSql.EntitySignificance.Drain, ct).ConfigureAwait(false); }
             if (modelSrcIn > 0)      { await ExecuteAsync(conn, IngestionSql.EntityModelSource.Drain, ct).ConfigureAwait(false); }
@@ -1204,38 +1225,45 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    private static async Task<int> CopyEntitiesAsync(
+    private static async Task<int> SubmitEntitiesAsync(
         NpgsqlConnection conn, List<RecordBundle> chunk, HashSet<Hash32> dedup, CancellationToken ct)
     {
-        await using NpgsqlBinaryImporter w = await conn.BeginBinaryImportAsync(IngestionSql.Entity.Copy, ct).ConfigureAwait(false);
-        int rows = 0;
+        // Substrate-native bulk-write path. Producer pre-computes hashes in
+        // libhartonomous (BLAKE3 / Merkle, AVX2+FMA3+BMI2); in-batch dedup via
+        // HashSet; cross-batch dedup at the call site via GetExistingEntityHashesAsync
+        // per AP-19. This method sends the chunk's already-deduped candidate
+        // hashes to substrate.write_entities, which INSERTs via unnest +
+        // ON CONFLICT (hash) DO NOTHING (race-safety net only). No pg_temp,
+        // no COPY round-trip, no INSERT-SELECT-from-staging.
+        List<byte[]> hashes = new(256);
         foreach (RecordBundle b in chunk)
         {
             foreach (IngestionRecord r in b.Records)
             {
                 if (r is not EntityRecord e) { continue; }
                 if (!TryAdd(dedup, e.Hash)) { continue; }
-                w.StartRow();
-                w.Write(e.Hash.ToByteArray(), NpgsqlDbType.Bytea);
-                if (double.IsNaN(e.CentroidX)) { w.WriteNull(); } else { w.Write(e.CentroidX, NpgsqlDbType.Double); }
-                if (double.IsNaN(e.CentroidY)) { w.WriteNull(); } else { w.Write(e.CentroidY, NpgsqlDbType.Double); }
-                if (double.IsNaN(e.CentroidZ)) { w.WriteNull(); } else { w.Write(e.CentroidZ, NpgsqlDbType.Double); }
-                if (double.IsNaN(e.CentroidM)) { w.WriteNull(); } else { w.Write(e.CentroidM, NpgsqlDbType.Double); }
-                if (e.HilbertIndex is long h) { w.Write(h, NpgsqlDbType.Bigint); } else { w.WriteNull(); }
-                rows++;
+                hashes.Add(e.Hash.ToByteArray());
             }
         }
-        await w.CompleteAsync(ct).ConfigureAwait(false);
-        return rows;
+        if (hashes.Count == 0) { return 0; }
+
+        await using NpgsqlCommand cmd = new("SELECT substrate.write_entities($1)", conn);
+        cmd.CommandTimeout = 0;
+        NpgsqlParameter p = new() { Value = hashes.ToArray() };
+        p.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(p);
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is int n ? n : hashes.Count;
     }
 
-    private async Task<int> CopyEntityClassificationsAsync(
+    private async Task<int> SubmitEntityClassificationsAsync(
         NpgsqlConnection conn, List<RecordBundle> chunk, HashSet<Hash32> dedup,
         Dictionary<string, int> entityTypeIds, Dictionary<string, int> provenanceIds,
         CancellationToken ct)
     {
-        await using NpgsqlBinaryImporter w = await conn.BeginBinaryImportAsync(IngestionSql.EntityClassification.Copy, ct).ConfigureAwait(false);
-        int rows = 0;
+        List<byte[]> hashes = new(256);
+        List<int> typeIds = new(256);
+        List<int> provIds = new(256);
         foreach (RecordBundle b in chunk)
         {
             foreach (IngestionRecord r in b.Records)
@@ -1257,23 +1285,37 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 Hash32 key = ComposeKey3(etId, pId, hash);
                 if (!TryAdd(dedup, key)) { continue; }
 
-                w.StartRow();
-                w.Write(hash.ToByteArray(), NpgsqlDbType.Bytea);
-                w.Write(etId, NpgsqlDbType.Integer);
-                w.Write(pId, NpgsqlDbType.Integer);
-                rows++;
+                hashes.Add(hash.ToByteArray());
+                typeIds.Add(etId);
+                provIds.Add(pId);
             }
         }
-        await w.CompleteAsync(ct).ConfigureAwait(false);
-        return rows;
+        if (hashes.Count == 0) { return 0; }
+
+        await using NpgsqlCommand cmd = new(
+            "SELECT substrate.write_entity_classifications($1, $2, $3)", conn);
+        cmd.CommandTimeout = 0;
+        NpgsqlParameter pHash = new() { Value = hashes.ToArray() };
+        pHash.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pHash);
+        NpgsqlParameter pType = new() { Value = typeIds.ToArray() };
+        pType.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pType);
+        NpgsqlParameter pProv = new() { Value = provIds.ToArray() };
+        pProv.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pProv);
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is int n ? n : hashes.Count;
     }
 
-    private async Task<int> CopyPhysicalitiesAsync(
+    private async Task<int> SubmitPhysicalitiesAsync(
         NpgsqlConnection conn, List<RecordBundle> chunk, HashSet<Hash32> dedup,
         Dictionary<string, int> physicalityTypeIds, CancellationToken ct)
     {
-        await using NpgsqlBinaryImporter w = await conn.BeginBinaryImportAsync(IngestionSql.Physicality.Copy, ct).ConfigureAwait(false);
-        int rows = 0;
+        List<int> typeIds = new(256);
+        List<byte[]> entHashes = new(256);
+        List<byte[]> contentHashes = new(256);
+        List<byte[]> geoms = new(256);
         foreach (RecordBundle b in chunk)
         {
             foreach (IngestionRecord r in b.Records)
@@ -1284,25 +1326,42 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 Hash32 key = ComposeKey3(ptId, 0, p.EntityHash);
                 key = MixHash(key, p.ContentHash);
                 if (!TryAdd(dedup, key)) { continue; }
-                w.StartRow();
-                w.Write(ptId, NpgsqlDbType.Integer);
-                w.Write(p.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
-                w.Write(p.ContentHash.ToByteArray(), NpgsqlDbType.Bytea);
-                w.Write(p.Geometry, NpgsqlDbType.Bytea);
-                rows++;
+                typeIds.Add(ptId);
+                entHashes.Add(p.EntityHash.ToByteArray());
+                contentHashes.Add(p.ContentHash.ToByteArray());
+                geoms.Add(p.Geometry);
             }
         }
-        await w.CompleteAsync(ct).ConfigureAwait(false);
-        return rows;
+        if (typeIds.Count == 0) { return 0; }
+
+        await using NpgsqlCommand cmd = new(
+            "SELECT substrate.write_physicalities($1, $2, $3, $4)", conn);
+        cmd.CommandTimeout = 0;
+        NpgsqlParameter pType = new() { Value = typeIds.ToArray() };
+        pType.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pType);
+        NpgsqlParameter pEnt = new() { Value = entHashes.ToArray() };
+        pEnt.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pEnt);
+        NpgsqlParameter pCh = new() { Value = contentHashes.ToArray() };
+        pCh.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pCh);
+        NpgsqlParameter pGeom = new() { Value = geoms.ToArray() };
+        pGeom.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pGeom);
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is int n ? n : typeIds.Count;
     }
 
-    private async Task<int> CopyEdgesAsync(
+    private async Task<int> SubmitEdgesAsync(
         NpgsqlConnection conn, List<RecordBundle> chunk, HashSet<Hash32> dedup,
         Dictionary<string, int> edgeTypeIds, Dictionary<string, int> provenanceIds,
         CancellationToken ct)
     {
-        await using NpgsqlBinaryImporter w = await conn.BeginBinaryImportAsync(IngestionSql.Edge.Copy, ct).ConfigureAwait(false);
-        int rows = 0;
+        List<int> typeIds = new(256);
+        List<byte[]> edgeHashes = new(256);
+        List<int> provIds = new(256);
+        List<byte[]?> geoms = new(256);
         foreach (RecordBundle b in chunk)
         {
             foreach (IngestionRecord r in b.Records)
@@ -1312,26 +1371,46 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 int pId  = await GetOrLoadIntAsync(provenanceIds, e.ProvenanceCode, _codeResolver.ProvenanceIdAsync, ct).ConfigureAwait(false);
                 Hash32 key = ComposeKey3(etId, 0, e.EdgeHash);
                 if (!TryAdd(dedup, key)) { continue; }
-                w.StartRow();
-                w.Write(etId, NpgsqlDbType.Integer);
-                w.Write(e.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea);
-                w.Write(pId, NpgsqlDbType.Integer);
-                if (e.Geometry is null) { w.WriteNull(); }
-                else { w.Write(e.Geometry, NpgsqlDbType.Bytea); }
-                rows++;
+                typeIds.Add(etId);
+                edgeHashes.Add(e.EdgeHash.ToByteArray());
+                provIds.Add(pId);
+                geoms.Add(e.Geometry);
             }
         }
-        await w.CompleteAsync(ct).ConfigureAwait(false);
-        return rows;
+        if (typeIds.Count == 0) { return 0; }
+
+        await using NpgsqlCommand cmd = new(
+            "SELECT substrate.write_edges($1, $2, $3, $4)", conn);
+        cmd.CommandTimeout = 0;
+        NpgsqlParameter pType = new() { Value = typeIds.ToArray() };
+        pType.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pType);
+        NpgsqlParameter pHash = new() { Value = edgeHashes.ToArray() };
+        pHash.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pHash);
+        NpgsqlParameter pProv = new() { Value = provIds.ToArray() };
+        pProv.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pProv);
+        // Geom array must use object[] so nulls (DBNull.Value) interleave with byte[] payloads.
+        object[] geomArr = new object[geoms.Count];
+        for (int i = 0; i < geoms.Count; i++) { geomArr[i] = geoms[i] is null ? (object)DBNull.Value : geoms[i]!; }
+        NpgsqlParameter pGeom = new() { Value = geomArr };
+        pGeom.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pGeom);
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is int n ? n : typeIds.Count;
     }
 
-    private async Task<int> CopyEdgeMembersAsync(
+    private async Task<int> SubmitEdgeMembersAsync(
         NpgsqlConnection conn, List<RecordBundle> chunk, HashSet<Hash32> dedup,
         Dictionary<string, int> edgeTypeIds, Dictionary<string, int> edgeRoleIds,
         CancellationToken ct)
     {
-        await using NpgsqlBinaryImporter w = await conn.BeginBinaryImportAsync(IngestionSql.EdgeMember.Copy, ct).ConfigureAwait(false);
-        int rows = 0;
+        List<int> typeIds = new(256);
+        List<byte[]> edgeHashes = new(256);
+        List<byte[]> entHashes = new(256);
+        List<int> roleIds = new(256);
+        List<int> positions = new(256);
         foreach (RecordBundle b in chunk)
         {
             foreach (IngestionRecord r in b.Records)
@@ -1341,17 +1420,35 @@ public sealed partial class StreamingIngestionPipeline : IRecordSink, IIngestion
                 int roleId = await GetOrLoadIntAsync(edgeRoleIds, m.RoleCode, _codeResolver.EdgeRoleIdAsync, ct).ConfigureAwait(false);
                 Hash32 key = ComposeKey4(etId, roleId, m.EdgeHash, m.EntityHash, m.RolePosition);
                 if (!TryAdd(dedup, key)) { continue; }
-                w.StartRow();
-                w.Write(etId, NpgsqlDbType.Integer);
-                w.Write(m.EdgeHash.ToByteArray(), NpgsqlDbType.Bytea);
-                w.Write(m.EntityHash.ToByteArray(), NpgsqlDbType.Bytea);
-                w.Write(roleId, NpgsqlDbType.Integer);
-                w.Write(m.RolePosition, NpgsqlDbType.Integer);
-                rows++;
+                typeIds.Add(etId);
+                edgeHashes.Add(m.EdgeHash.ToByteArray());
+                entHashes.Add(m.EntityHash.ToByteArray());
+                roleIds.Add(roleId);
+                positions.Add(m.RolePosition);
             }
         }
-        await w.CompleteAsync(ct).ConfigureAwait(false);
-        return rows;
+        if (typeIds.Count == 0) { return 0; }
+
+        await using NpgsqlCommand cmd = new(
+            "SELECT substrate.write_edge_members($1, $2, $3, $4, $5)", conn);
+        cmd.CommandTimeout = 0;
+        NpgsqlParameter pType = new() { Value = typeIds.ToArray() };
+        pType.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pType);
+        NpgsqlParameter pEh = new() { Value = edgeHashes.ToArray() };
+        pEh.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pEh);
+        NpgsqlParameter pEnt = new() { Value = entHashes.ToArray() };
+        pEnt.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea;
+        cmd.Parameters.Add(pEnt);
+        NpgsqlParameter pRole = new() { Value = roleIds.ToArray() };
+        pRole.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pRole);
+        NpgsqlParameter pPos = new() { Value = positions.ToArray() };
+        pPos.NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Integer;
+        cmd.Parameters.Add(pPos);
+        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is int n ? n : typeIds.Count;
     }
 
     private async Task<int> CopyEdgeSignificancesAsync(

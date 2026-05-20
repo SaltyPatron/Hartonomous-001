@@ -19,7 +19,7 @@ Use this skill before planning, implementing, or reviewing work that can drift f
 
 ## Authoritative references
 
-- **[`docs/00-substrate-spec.md`](../../../docs/00-substrate-spec.md)** — canonical substrate specification. Where any other doc / rule / recipe / memory / in-source comment conflicts, the spec is correct. Sections I-XIII cover invention, substrate model, per-role attestation edges, Glicko-2 surfaces, layer-type decomposer factoring, Build-a-bear synthesis recomposer, fireflies as side-channel, sparse honest recording, cross-modal binding, crystal ball analytics, determinism, phantom debt deprecation, scope boundaries.
+- **[`docs/00-substrate-spec.md`](../../../docs/00-substrate-spec.md)** — canonical substrate specification. Where any other doc / rule / recipe / memory / in-source comment conflicts, the spec is correct. Sections I-XIII cover invention, substrate model, per-role attestation edges, Glicko-2 surfaces, layer-type decomposer factoring, Substrate Synthesis synthesis recomposer, fireflies as side-channel, sparse honest recording, cross-modal binding, crystal ball analytics, determinism, phantom debt deprecation, scope boundaries.
 - `docs/10-architecture/01-substrate-laws.md` — substrate laws (1–13).
 - `CLAUDE.md` (root) — coding standards, batching rules, hashing rules, compute facade, determinism.
 - `src/Hartonomous.Core/Decomposition/BaseDecomposer.cs` — `ComputeHash()`, `ComputeMerkleHash()`, `ComputeEdgeHash()` (content-only identity).
@@ -32,7 +32,7 @@ Use this skill before planning, implementing, or reviewing work that can drift f
 - `sql/schema/seed/edge_type.sql:84-90` — the token↔token attestation edge types (`model_concept_similarity`, `model_attention_pattern`, `model_ffn_factor`).
 - `src/Hartonomous.Decomposers/Safetensors/Passes/TokenAttentionEdgePass.cs` — the working template for layer-type decomposers (cases 11, 14).
 - [`docs/specs/decomposers/layer-type-library.md`](../../../docs/specs/decomposers/layer-type-library.md) — canonical layer-type decomposer library spec.
-- [`docs/specs/recomposers/synthesis-library.md`](../../../docs/specs/recomposers/synthesis-library.md) — canonical synthesis library spec for Build-a-bear.
+- [`docs/specs/recomposers/synthesis-library.md`](../../../docs/specs/recomposers/synthesis-library.md) — canonical synthesis library spec for Substrate Synthesis.
 - `.claude/rules/45-anti-patterns.md` — canonical anti-patterns list (AP-1 through AP-29; AP-25 through AP-29 cover the corrected vision).
 
 ## What to return

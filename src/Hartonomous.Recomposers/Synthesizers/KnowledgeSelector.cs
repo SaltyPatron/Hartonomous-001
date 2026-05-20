@@ -10,7 +10,7 @@ using Npgsql;
 namespace Hartonomous.Recomposers.Synthesizers;
 
 /// <summary>
-/// Build-a-bear knowledge selection: take user-supplied seed concepts
+/// Substrate Synthesis knowledge selection: take user-supplied seed concepts
 /// (e.g. <c>"Science"</c>, <c>"Mathematics"</c>, <c>"Physics"</c>), resolve them
 /// to substrate word_form entities, then BFS-expand through edge_member by
 /// arena-weighted edge mu to grow a coherent vocab subgraph that becomes

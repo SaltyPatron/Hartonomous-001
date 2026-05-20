@@ -133,16 +133,61 @@ FROM (VALUES
     ('has_chat_template_artifact',      'model_derived', 'model_architecture', 'text_composition'),  -- 57
     ('has_generation_config_artifact',  'model_derived', 'model_architecture', 'text_composition'),  -- 58
     ('has_readme_artifact',             'model_derived', 'model_architecture', 'text_composition'),  -- 59
-    -- ── Model-derived: content-entity attestation surfaces ─────────────
-    -- These are the load-bearing token↔token / patch↔patch / frame↔frame
-    -- edges that accumulate per-tuple attestation events from every
-    -- ingested model. Per docs/01-tensor-primitive-spec.md §IV.
-    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),           -- 52
-    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),           -- 53
-    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),           -- 54
-    ('model_spatial_pattern',    'model_derived', NULL,                 NULL),                  -- 55  (polymorphic: pixel_region↔pixel_region or audio_chunk↔audio_chunk)
-    ('model_cross_modal_pattern','model_derived', NULL,                 NULL),                  -- 56  (polymorphic: word_form↔pixel_region, word_form↔audio_chunk, decoder-token↔encoder-token, etc.)
+    -- ── Model-derived content-entity attestations ────────────────────
+    -- All model tensor evidence about content-entity pairs (embedding
+    -- cosine, attention pattern, FFN co-activation, LoRA delta, cross-
+    -- modal alignment) routes into the EXISTING `co_occurrence` edge
+    -- type (id 51 above) — polymorphic source/target. The mechanism
+    -- (embedding vs attention vs FFN vs LoRA) lives on EdgeRatingEvent
+    -- attribution (PrimitiveCode / TupleCode / SlotCode / TensorHash /
+    -- LayerIndex / HeadIndex / ExpertIndex / ModalityCode).
+    --
+    -- The 4 mechanism-imprint rows below (model_concept_similarity,
+    -- model_attention_pattern, model_ffn_factor, model_cross_modal_pattern)
+    -- are DEPRECATED — kept for ID stability of downstream partition
+    -- ranges, but no decomposer emits on them anymore. Cross-mechanism +
+    -- cross-model consensus accumulates on the SAME `co_occurrence` edge
+    -- identity via Glicko-2 per-arena edge_significance. Same anti-pattern
+    -- AP-38 collapsed for attestation_type, now collapsed here too.
+    --
+    -- Per-tensor MEANING extraction (model attention pattern → has_pos
+    -- attestation, FFN co-activation → has_sense propagation, lm_head
+    -- + final-position bias → directed next-token edges) is the canonical
+    -- target; it lands evidence on existing semantic edge identities
+    -- (has_pos / has_sense / antonym / similar_to / etc.) so corpora
+    -- attestations and model attestations compete on the same Glicko-2
+    -- surface per AP-8.
+    ('model_concept_similarity', 'model_derived', 'word_form',          'word_form'),           -- 52  DEPRECATED — emit semantic_similarity
+    ('model_attention_pattern',  'model_derived', 'word_form',          'word_form'),           -- 53  DEPRECATED — emit predicts_next + semantic_similarity per-head
+    ('model_ffn_factor',         'model_derived', 'word_form',          'word_form'),           -- 54  DEPRECATED — emit semantic_similarity
+    ('model_spatial_pattern',    'model_derived', NULL,                 NULL),                  -- 55  DEPRECATED — emit semantic_similarity polymorphic
+    ('model_cross_modal_pattern','model_derived', NULL,                 NULL),                  -- 56  DEPRECATED — emit grounds_in (cross-modal alignment) — NEW edge
     ('model_detection_class',    'model_derived', 'object_query',       'visual_concept'),      -- 57
+    -- ── Meaning-bearing pairwise edges that model tensors actually attest ──
+    -- semantic_similarity: signed undirected pair similarity. Embedding-row
+    --   cosine attests here. FFN co-activation (when tokens A, B share
+    --   activated FFN rows) attests here. Cross-source consensus: corpus
+    --   collocation evidence and model-derived embedding-space similarity
+    --   compete on the same edge identity per arena. Sign via attestation_type:
+    --   positive_evidence for cos > floor, negative_evidence for cos << -floor
+    --   (antipodal / antonymic). Mechanism on EdgeRatingEvent attribution.
+    ('semantic_similarity',      'model_derived', 'word_form',          'word_form'),           -- 58
+    -- attends_to: directed contextual relevance. Attention Q^T·K attests
+    --   that when token A (query) appears, token B (key) is contextually
+    --   relevant in the model's learned representation. NOT sequential
+    --   (could be backward / lateral attention). Per-head + per-layer
+    --   attribution on EdgeRatingEvent.
+    ('attends_to',               'model_derived', 'word_form',          'word_form'),           -- 59
+    -- predicts_next: directed sequential next-token transition. lm_head
+    --   + final-position bias attests here (logit of token B given
+    --   hidden state from token A). The model's "language model" surface.
+    --   Source = current token, target = predicted next token.
+    ('predicts_next',            'model_derived', 'word_form',          'word_form'),           -- 60
+    -- grounds_in: cross-modal alignment. CLIP / BLIP / Florence text encoder
+    --   attests here between word_form ↔ pixel_region. Whisper / audio-text
+    --   attest between word_form ↔ audio_chunk. Polymorphic; participant
+    --   types differ but the relation is the same.
+    ('grounds_in',               'model_derived', NULL,                 NULL),                  -- 61
     -- ── Semantic: WordNet pointers (synset ↔ synset) ────────────────────
     ('hypernym',                 'semantic',      'synset', 'synset'),                          -- 58
     ('hyponym',                  'semantic',      'synset', 'synset'),                          -- 59
@@ -193,7 +238,7 @@ FROM (VALUES
     ('unihan_reading',           'unicode',       'codepoint',          'text_composition'),    -- 110
     ('unihan_source',            'unicode',       'codepoint',          'text_composition'),    -- 111
     ('has_radical_stroke',       'unicode',       'codepoint',          'text_composition'),    -- 112
-    -- Sequence-following bigram (Build-a-bear next-token prior). Populated
+    -- Sequence-following bigram (Substrate Synthesis next-token prior). Populated
     -- by substrate.populate_sequence_following_edges from content trajectory
     -- ordinals. Source role = preceding token; target role = following token.
     -- Weighted by ln(1+freq) in sequence_following arena.
@@ -234,7 +279,16 @@ FROM (VALUES
     -- has_deprel_pattern edges onto this generic kind is staged for a
     -- follow-up; both surfaces will coexist transitionally until the
     -- migration completes.
-    ('has_classification',       'structural',    NULL,                 NULL)                   -- 126
+    ('has_classification',       'structural',    NULL,                 NULL),                  -- 126
+    -- Recipe linking edges (substrate-content recipes per alt-phase flow).
+    -- recipe_for_model_source: SafetensorsDecomposer emits at end of
+    -- ingest. Source = recipe entity (auto-derived from observed config +
+    -- tensor shapes), target = NULL (provenance_id on substrate.edge
+    -- already carries the model_source identity). Resolves
+    -- --recipe-from-model <code> → recipe entity_hash.
+    -- recipe_derived_from: practitioner-fork → parent recipe lineage.
+    ('recipe_for_model_source',  'structural',    'recipe',             NULL),                  -- 127
+    ('recipe_derived_from',      'structural',    'recipe',             'recipe')               -- 128
 ) AS s(code, category, source_code, target_code)
 LEFT JOIN substrate.entity_type src ON src.code = s.source_code
 LEFT JOIN substrate.entity_type tgt ON tgt.code = s.target_code;

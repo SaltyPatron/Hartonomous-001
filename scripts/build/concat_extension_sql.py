@@ -1,49 +1,57 @@
 #!/usr/bin/env python3
 """
-concat_extension_sql.py — assemble two outputs that together install the
-Hartonomous substrate:
+concat_extension_sql.py — assemble the single unified extension install
+script the substrate ships under PostGIS-pattern packaging:
 
-  (1) ext/hartonomous_pg/sql/hartonomous--1.0.sql
-      = the hand-written `.sql.in` template, lightly cleaned (psql meta /
-        raw transaction control stripped). This file is C-binding declarations
-        ONLY — CREATE TYPE / CREATE FUNCTION ... LANGUAGE C / operators /
-        opclasses / aggregates / casts / domains / views over those types /
-        thin plpgsql wrappers. NO substrate tables. NO seed INSERTs. NO
-        substrate.* SQL functions that operate on substrate tables.
-        `CREATE EXTENSION hartonomous` runs this script, which installs the
-        .so's exposed surface into the database.
+    ext/hartonomous_pg/sql/hartonomous--1.0.sql
 
-  (2) ext/hartonomous_pg/sql/substrate-schema.sql
-      = the bootstrap.sql `@include` walk expanded — substrate / monitor
-        schemas, domains, composite types, reference + core + junction +
-        model + monitor + meta tables, indexes, seed inserts, substrate.*
-        SQL/plpgsql functions, procedures, views. Applied via plain
-        `psql -f` in user mode (no sudo). This file contains everything
-        that does NOT depend on creating an extension — i.e. everything
-        the user owns under their own role rather than the extension's
-        owner.
+Layout of the generated script (in apply order):
 
-Pipeline:
-  1. Read bootstrap.sql; for each `-- @include path` directive, expand
-     recursively. Same semantics as the original.
-  2. Skip extensions/*.sql files — those become `requires` in the control
-     file. Cannot CREATE EXTENSION inside an extension script. (For (2),
-     they ALSO skip, because the runtime apply path installs CREATE
-     EXTENSION hartonomous separately and its prerequisites cascade.)
-  3. Strip psql meta-commands and raw transaction control.
-  4. Output (1) = the .sql.in template (cleaned). NO bootstrap content.
-  5. Output (2) = the bootstrap @include walk. NO .sql.in content.
+    (a) CREATE SCHEMA IF NOT EXISTS substrate;
+        CREATE SCHEMA IF NOT EXISTS monitor;
+        — the substrate / monitor schemas must exist before any
+          substrate.* function or type is declared. The bootstrap walk
+          also includes the schema/schemas/*.sql files, so this is
+          belt-and-suspenders; both forms use IF NOT EXISTS and are
+          idempotent.
 
-Splitting the install:
-  - `CREATE EXTENSION hartonomous` previously dragged in all substrate
-    table definitions as extension-owned objects, which (a) required root
-    to copy the consolidated SQL into PG share, and (b) caused at least
-    one PG-extension-ownership quirk that stripped GENERATED columns from
-    substrate.entity. With this split, the extension only owns the .so's
-    declarative surface (4D types, operators, BLAKE3, traversal, UCD
-    catalog accessors) and the substrate schema is owned by the user.
+    (b) The hand-written `hartonomous--1.0.sql.in` C-binding template,
+        lightly cleaned (psql meta-commands + raw transaction control
+        stripped). This installs:
+          - public.point4d, public.box4d (shell types → I/O fns → full
+            CREATE TYPE → constructors → operators → opclasses →
+            aggregates)
+          - BLAKE3 functions
+          - A* traversal in pg_traversal.c
+          - substrate.text_decompose_summary composite type
+          - substrate.text_decompose / text_decompose_batch (SPI C)
+          - substrate.cp_* lookup wrappers over the embedded UCD blob
+          - substrate.codepoint_atom composite type + atom enumerators
+          - Glicko-2 bulk update in pg_glicko_bulk.c
 
-Determinism: same source tree → byte-identical outputs.
+    (c) The bootstrap.sql `@include` walk, expanded recursively:
+          - domains (hash_value, significance_mu, significance_sigma,
+            significance_volatility, code_value, tier_number,
+            modality_code)
+          - composite types
+          - reference / core / junction / model / monitor tables
+          - indexes (one per file)
+          - seed inserts
+          - substrate.* SQL / plpgsql functions, procedures, views
+        Extension prerequisites (postgis, btree_gist, pg_trgm) are
+        declared in hartonomous.control's `requires` and CASCADE'd by
+        `CREATE EXTENSION hartonomous` — they're skipped here.
+        Top-level BEGIN/COMMIT/ROLLBACK is stripped because the extension
+        script runs inside CREATE EXTENSION's implicit transaction.
+
+Packaging contract (PostGIS-pattern):
+  - `make install` copies hartonomous.control + hartonomous--1.0.sql
+    into $(pg_sharedir)/extension/.
+  - `CREATE EXTENSION hartonomous CASCADE` installs the full substrate
+    in one transaction. DROP EXTENSION hartonomous CASCADE removes
+    everything cleanly. No separate `psql -f substrate-schema.sql` step.
+
+Determinism: same source tree → byte-identical output.
 """
 
 from __future__ import annotations
@@ -61,7 +69,7 @@ BOOTSTRAP_FILE = SCHEMA_ROOT / "bootstrap.sql"
 EXT_SRC        = REPO_ROOT / "ext" / "hartonomous_pg" / "sql"
 EXT_TEMPLATE   = EXT_SRC / "hartonomous--1.0.sql.in"
 EXT_OUTPUT     = EXT_SRC / "hartonomous--1.0.sql"
-SUBSTRATE_OUTPUT = EXT_SRC / "substrate-schema.sql"
+LEGACY_SUBSTRATE_OUTPUT = EXT_SRC / "substrate-schema.sql"
 
 
 INCLUDE_RE = re.compile(r"^\s*--\s*@include\s+(?P<path>\S+)\s*$", re.MULTILINE)
@@ -69,17 +77,14 @@ META_LINE_RE = re.compile(
     r"^\s*\\(?:set|echo|connect|quit|timing|pset|c|cd|conninfo|encoding|password|gset)\b.*$",
     re.MULTILINE | re.IGNORECASE,
 )
-# Top-level transaction-control statements that are forbidden inside an
-# extension script (extensions run in an implicit transaction). The runtime
-# substrate-schema apply uses an outer BEGIN/COMMIT around the psql -f so
-# stripping these here is still correct — the wrapper provides the
-# transaction.
+# Top-level transaction-control statements are forbidden inside an extension
+# script (extensions run in an implicit transaction).
 TXN_LINE_RE = re.compile(
     r"^\s*(?:BEGIN|COMMIT|ROLLBACK|START\s+TRANSACTION)\s*;\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
-# Extension prerequisites — these become `requires` in the control file
+# Extension prerequisites — become `requires` in the control file
 # instead of being CREATE EXTENSION'd inside our script.
 PREREQUISITE_EXTENSIONS = {"postgis", "btree_gist", "pg_trgm"}
 
@@ -92,7 +97,8 @@ def strip_psql_meta(content: str) -> str:
 
 
 def is_extension_creation_file(rel_include_path: str) -> bool:
-    """Files under schema/extensions/ that wrap CREATE EXTENSION calls."""
+    """Files under schema/extensions/ wrap CREATE EXTENSION calls — declared
+    via control `requires`, skipped here."""
     norm = rel_include_path.replace("\\", "/")
     return norm.startswith("schema/extensions/") and norm.endswith(".sql")
 
@@ -129,8 +135,8 @@ def expand_file(path: Path, depth: int = 0) -> list[tuple[Path, str]]:
     return parts
 
 
-def render_parts(parts: list[tuple[Path, str]], header: str) -> str:
-    chunks: list[str] = [header]
+def render_parts(parts: list[tuple[Path, str]]) -> str:
+    chunks: list[str] = []
     last_src: Path | None = None
     for src, content in parts:
         cleaned = strip_psql_meta(content)
@@ -150,76 +156,90 @@ def render_parts(parts: list[tuple[Path, str]], header: str) -> str:
     return "".join(chunks)
 
 
-def assemble_extension_sql() -> str:
-    """Output (1) — C-binding declarations only.
+def assemble_unified_extension_sql() -> str:
+    """Produce the single unified hartonomous--1.0.sql script.
 
-    Just the .sql.in template, cleaned. Installed by `CREATE EXTENSION
-    hartonomous` as the .so's declarative surface in PostgreSQL.
+    Order: (a) CREATE SCHEMA — (b) C-binding template — (c) bootstrap
+    @include walk. See module docstring for rationale.
     """
     if not EXT_TEMPLATE.is_file():
         raise FileNotFoundError(
             f".sql.in template not found at {EXT_TEMPLATE} — should contain "
             "C-binding declarations (point4d, traversal, BLAKE3, etc.)"
         )
-
-    template_text = EXT_TEMPLATE.read_text(encoding="utf-8")
-    template_text = strip_psql_meta(template_text)
-
-    header = (
-        "/* GENERATED — do not edit by hand. Source: "
-        f"{EXT_TEMPLATE.name}.\n"
-        " * Concatenated by: scripts/build/concat_extension_sql.py\n"
-        " *\n"
-        " * This script is C-binding declarations ONLY. Installed by\n"
-        " *   CREATE EXTENSION hartonomous\n"
-        " * which runs this script under the extension owner. Substrate\n"
-        " * schema (tables, indexes, junctions, seed, plpgsql functions,\n"
-        " * views) is owned by the user and applied separately via\n"
-        " *   psql -f ext/hartonomous_pg/sql/substrate-schema.sql\n"
-        " * after CREATE EXTENSION succeeds. See\n"
-        " * scripts/linux/db-bootstrap.sh for the runtime apply path.\n"
-        " *\n"
-        " * Prerequisite extensions (postgis, btree_gist, pg_trgm) are\n"
-        " * declared in hartonomous.control's `requires` and installed\n"
-        " * automatically by CREATE EXTENSION ... CASCADE. */\n"
-    )
-    if not template_text.endswith("\n"):
-        template_text += "\n"
-    return header + template_text
-
-
-def assemble_substrate_schema() -> str:
-    """Output (2) — substrate schema (no C bindings).
-
-    Bootstrap.sql @include walk expanded. Applied via plain psql -f after
-    CREATE EXTENSION hartonomous installs the C-binding surface. This file
-    references public.point4d, substrate.cp_hash, etc. — those C bindings
-    must exist in the database before this script runs.
-    """
     if not BOOTSTRAP_FILE.is_file():
         raise FileNotFoundError(f"bootstrap.sql not found at {BOOTSTRAP_FILE}")
 
-    parts = expand_file(BOOTSTRAP_FILE)
-
     header = (
-        "/* GENERATED — do not edit by hand. Source: "
-        "sql/schema/bootstrap.sql + included files.\n"
+        "/* GENERATED — do not edit by hand.\n"
+        " *\n"
+        " * Source: ext/hartonomous_pg/sql/hartonomous--1.0.sql.in\n"
+        " *       + sql/schema/bootstrap.sql + included files.\n"
         " * Concatenated by: scripts/build/concat_extension_sql.py\n"
         " *\n"
-        " * This script is substrate schema content — substrate / monitor\n"
-        " * schemas, domains, composite types, tables, indexes, seed inserts,\n"
-        " * substrate.* SQL/plpgsql functions, procedures, views. Applied\n"
-        " * via plain psql -f under the user's database role (no sudo).\n"
+        " * Single unified extension install script — PostGIS-pattern\n"
+        " * packaging. CREATE EXTENSION hartonomous CASCADE installs the\n"
+        " * complete substrate (C-binding types/operators/functions +\n"
+        " * substrate / monitor schemas + domains + tables + indexes +\n"
+        " * seeds + substrate.* SQL/plpgsql functions) in one transaction.\n"
+        " * DROP EXTENSION hartonomous CASCADE removes everything cleanly.\n"
         " *\n"
-        " * Prerequisite — the hartonomous extension must already be\n"
-        " * installed via CREATE EXTENSION hartonomous (which cascades the\n"
-        " * postgis + btree_gist + pg_trgm prerequisites and installs the\n"
-        " * .so's C-binding declarations). The substrate / monitor schemas\n"
-        " * must also exist before this script runs — the extension's\n"
-        " * C-binding script creates functions inside substrate.*. See\n"
-        " * scripts/linux/db-bootstrap.sh for the runtime apply path. */\n"
+        " * Prerequisite extensions (postgis, btree_gist, pg_trgm) are\n"
+        " * declared in hartonomous.control's `requires` and installed\n"
+        " * automatically by CREATE EXTENSION ... CASCADE.\n"
+        " */\n"
+        "\n"
+        "\\echo Use \"CREATE EXTENSION hartonomous CASCADE\" to load this extension. \\quit\n"
+        "\n"
+        "-- ════════════════════════════════════════════════════════════════════\n"
+        "-- (a) Schemas — created up front so subsequent substrate.* declarations\n"
+        "-- have a home. The bootstrap walk re-includes schema/schemas/*.sql\n"
+        "-- below; both forms use IF NOT EXISTS and are idempotent.\n"
+        "-- ════════════════════════════════════════════════════════════════════\n"
+        "CREATE SCHEMA IF NOT EXISTS substrate;\n"
+        "CREATE SCHEMA IF NOT EXISTS monitor;\n"
+        "COMMENT ON SCHEMA substrate IS\n"
+        "    'Content-addressed substrate. Every table here is keyed on BLAKE3 hashes; no surrogate IDs.';\n"
+        "COMMENT ON SCHEMA monitor IS\n"
+        "    'Substrate health, ingestion progress, phase status, inference metrics.';\n"
     )
-    return render_parts(parts, header)
+
+    # (b) C-binding template — strip the .sql.in's own `\echo … \quit`
+    # preamble; we already emitted one above.
+    template_text = EXT_TEMPLATE.read_text(encoding="utf-8")
+    template_text = strip_psql_meta(template_text)
+    # Trim any leading whitespace produced by the meta-strip.
+    template_text = template_text.lstrip("\n")
+
+    template_section = (
+        "\n-- ════════════════════════════════════════════════════════════════════\n"
+        "-- (b) C-binding declarations — public.point4d / box4d types and ops,\n"
+        "-- BLAKE3, traversal, substrate.text_decompose_summary, substrate.cp_*,\n"
+        "-- substrate.text_decompose / text_decompose_batch, substrate.codepoint_atom,\n"
+        "-- substrate.glicko2_bulk_update. From hartonomous--1.0.sql.in.\n"
+        "-- ════════════════════════════════════════════════════════════════════\n"
+        f"\n-- ── ext/hartonomous_pg/sql/{EXT_TEMPLATE.name} ───────────────────────────────────────\n"
+        f"{template_text}"
+    )
+    if not template_section.endswith("\n"):
+        template_section += "\n"
+
+    # (c) Bootstrap walk — substrate schema content (domains, types, tables,
+    # indexes, seeds, substrate.* SQL/plpgsql functions, procedures, views).
+    parts = expand_file(BOOTSTRAP_FILE)
+    bootstrap_text = render_parts(parts)
+
+    bootstrap_section = (
+        "\n-- ════════════════════════════════════════════════════════════════════\n"
+        "-- (c) Substrate schema content — domains, composite types, reference\n"
+        "-- + core + junction + model + monitor + meta tables, indexes, seed\n"
+        "-- inserts, substrate.* SQL/plpgsql functions, procedures, views.\n"
+        "-- Bootstrap.sql @include walk expanded recursively.\n"
+        "-- ════════════════════════════════════════════════════════════════════\n"
+        f"{bootstrap_text}"
+    )
+
+    return header + template_section + bootstrap_section
 
 
 def main() -> int:
@@ -227,54 +247,47 @@ def main() -> int:
     ap.add_argument(
         "--ext-output",
         default=str(EXT_OUTPUT),
-        help="Output path for the C-binding extension script.",
-    )
-    ap.add_argument(
-        "--substrate-output",
-        default=str(SUBSTRATE_OUTPUT),
-        help="Output path for the substrate schema script.",
+        help="Output path for the unified extension install script.",
     )
     ap.add_argument(
         "--check",
         action="store_true",
-        help="Verify both outputs exist and are non-empty without rewriting",
+        help="Verify the output exists and is non-empty without rewriting",
     )
     args = ap.parse_args()
 
     ext_path = Path(args.ext_output)
-    substrate_path = Path(args.substrate_output)
 
     if args.check:
         ok = True
-        for label, p, min_size in (
-            ("extension", ext_path, 1024),
-            ("substrate", substrate_path, 1024),
-        ):
-            if not p.is_file() or p.stat().st_size < min_size:
-                print(
-                    f"[concat_extension_sql] FAIL ({label}): missing or too small: {p}",
-                    file=sys.stderr,
-                )
-                ok = False
-            else:
-                print(
-                    f"[concat_extension_sql] OK ({label}): {p} ({p.stat().st_size:,} bytes)"
-                )
+        if not ext_path.is_file() or ext_path.stat().st_size < 1024:
+            print(
+                f"[concat_extension_sql] FAIL: missing or too small: {ext_path}",
+                file=sys.stderr,
+            )
+            ok = False
+        else:
+            print(
+                f"[concat_extension_sql] OK: {ext_path} ({ext_path.stat().st_size:,} bytes)"
+            )
         return 0 if ok else 1
 
-    ext_text = assemble_extension_sql()
-    substrate_text = assemble_substrate_schema()
+    ext_text = assemble_unified_extension_sql()
 
     ext_path.parent.mkdir(parents=True, exist_ok=True)
-    substrate_path.parent.mkdir(parents=True, exist_ok=True)
     ext_path.write_text(ext_text, encoding="utf-8")
-    substrate_path.write_text(substrate_text, encoding="utf-8")
     print(
         f"[concat_extension_sql] wrote {ext_path} ({len(ext_text):,} chars)"
     )
-    print(
-        f"[concat_extension_sql] wrote {substrate_path} ({len(substrate_text):,} chars)"
-    )
+
+    # Retire the legacy split output if it's still on disk — it's no longer
+    # part of the install path; leaving it around invites confusion.
+    if LEGACY_SUBSTRATE_OUTPUT.is_file():
+        LEGACY_SUBSTRATE_OUTPUT.unlink()
+        print(
+            f"[concat_extension_sql] removed legacy split output {LEGACY_SUBSTRATE_OUTPUT}"
+        )
+
     return 0
 
 

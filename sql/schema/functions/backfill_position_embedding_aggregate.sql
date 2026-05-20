@@ -55,8 +55,8 @@ BEGIN
             count(*)::BIGINT AS occurrences
           FROM walked w
           JOIN substrate.entity e
-            ON e.hash_bits_0_51 = w.hb_lo
-           AND e.hash_bits_52_103 = w.hb_hi
+            ON substrate.bb_hash_lo(e.hash) = w.hb_lo
+           AND substrate.bb_hash_hi(e.hash) = w.hb_hi
          GROUP BY w.ordinal, e.hash
     )
     INSERT INTO substrate.position_embedding_aggregate (ordinal, child_hash, occurrences)

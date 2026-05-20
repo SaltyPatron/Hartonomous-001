@@ -54,7 +54,7 @@ public static class SubstrateModelExporter
         Directory.CreateDirectory(outputDir);
 
         // 1. Pick vocab. If the recipe supplies seed concepts, use the
-        //    knowledge-selection BFS (the Build-a-bear product mechanism —
+        //    knowledge-selection BFS (the Substrate Synthesis product mechanism —
         //    domain-targeted vocab from user-chosen concepts). Otherwise
         //    fall back to the legacy top-by-edge-degree VocabSelector.
         IReadOnlyList<VocabToken> vocab;

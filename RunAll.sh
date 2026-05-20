@@ -19,6 +19,8 @@ skip_codegen=false
 skip_build=false
 skip_db_reset=false
 skip_seed=false
+seed_set=full
+fast_ucd=false
 skip_status=false
 with_model=false
 with_tests=false
@@ -37,6 +39,7 @@ synth_output="${HARTONOMOUS_RUNALL_SYNTH_OUTPUT:-}"  # default set after RUN_DIR
 synth_dtype="${HARTONOMOUS_RUNALL_SYNTH_DTYPE:-f32}"
 synth_blend="${HARTONOMOUS_RUNALL_SYNTH_BLEND:-}"
 synth_recipe=""
+synth_recipe_name=""
 
 usage() {
         sed 's/^|//' <<'USAGE'
@@ -89,6 +92,13 @@ usage() {
 |  --tee                  Stream stdout as well as stderr while logging.
 |  --dry-run              Print and log the step plan without executing commands.
 |
+|Seed-set selector:
+|  --seed-set SET         full | minimal | none.
+|                         full    = UcdUca, Iso639, WordNetOmw, UniversalDeps, Wiktionary, Tatoeba (default).
+|                         minimal = UcdUca + Iso639 only (foundational text identity for model ingest/synth).
+|                         none    = skip every corpus seed.
+|  --minimal-seed         Shorthand for --seed-set minimal.
+|
 |Skip flags:
 |  --skip-preflight
 |  --skip-clean
@@ -109,6 +119,9 @@ usage() {
 |  ./RunAll.sh --install-mode symlink --with-tests
 |  ./RunAll.sh --user --with-synth                                # user-mode + auto-export
 |  ./RunAll.sh --with-synth --synth-template llama-small --synth-vocab-size 512
+|  ./RunAll.sh --source /vault/Data --minimal-seed --with-model --with-synth   # UCD/ISO + model ingest + export
+|     --synth-template qwen-2.5-coder-3b
+|     --model-source /vault/models/qwen-2.5-coder-3b-instruct
 USAGE
 }
 
@@ -217,6 +230,7 @@ while (($#)); do
         --synth-dtype) synth_dtype="${2:?missing dtype}"; shift 2 ;;
         --synth-blend) synth_blend="${2:?missing blend}"; shift 2 ;;
         --synth-recipe) synth_recipe="${2:?missing recipe path}"; shift 2 ;;
+        --synth-recipe-name) synth_recipe_name="${2:?missing recipe name}"; shift 2 ;;
         --synth-output) synth_output="${2:?missing synth output path}"; shift 2 ;;
         --log-root) LOG_ROOT="${2:?missing log root}"; RUN_DIR="$LOG_ROOT/$RUN_ID"; SUMMARY="$RUN_DIR/summary.tsv"; shift 2 ;;
         --run-id) RUN_ID="${2:?missing run id}"; RUN_DIR="$LOG_ROOT/$RUN_ID"; SUMMARY="$RUN_DIR/summary.tsv"; shift 2 ;;
@@ -228,6 +242,12 @@ while (($#)); do
         --skip-build) skip_build=true; shift ;;
         --skip-db-reset) skip_db_reset=true; shift ;;
         --skip-seed) skip_seed=true; shift ;;
+        --seed-set)
+            seed_set="${2:?missing seed-set name}"
+            shift 2
+            ;;
+        --minimal-seed) seed_set=minimal; shift ;;
+        --fast-ucd) fast_ucd=true; shift ;;
         --skip-status) skip_status=true; shift ;;
         --no-codegen-force) codegen_force=false; shift ;;
         --no-build-clean) build_clean=false; shift ;;
@@ -315,17 +335,55 @@ if [[ "$skip_seed" == false ]]; then
     [[ -n "$effective_model_source" ]] && seed_common+=(--model-source "$effective_model_source")
     [[ "$skip_build" == false ]] && seed_common+=(--no-build)
 
-    for phase_spec in \
-        UcdUca:seed-ucd-uca \
-        Iso639:seed-iso-639 \
-        WordNetOmw:seed-wordnet-omw \
-        UniversalDeps:seed-universal-deps \
-        Wiktionary:seed-wiktionary \
-        Tatoeba:seed-tatoeba
-    do
+    # Seed-set selector. `full` runs every text-corpus seed; `minimal`
+    # runs only the foundational text identity needed for AI-model ingest
+    # + tokenizer-vocab grounding (Unicode codepoints, UCA, ISO 639). The
+    # corpora seeds (WordNet, UD, Wiktionary, Tatoeba) enrich the substrate
+    # but are NOT required to ingest a safetensors model and re-export via
+    # a recipe.
+    case "$seed_set" in
+        full)
+            seed_phase_specs=(
+                UcdUca:seed-ucd-uca
+                Iso639:seed-iso-639
+                WordNetOmw:seed-wordnet-omw
+                UniversalDeps:seed-universal-deps
+                Wiktionary:seed-wiktionary
+                Tatoeba:seed-tatoeba
+            )
+            ;;
+        minimal)
+            seed_phase_specs=(
+                UcdUca:seed-ucd-uca
+                Iso639:seed-iso-639
+            )
+            ;;
+        none)
+            seed_phase_specs=()
+            ;;
+        *)
+            die "unknown seed-set: $seed_set (expected full|minimal|none)"
+            ;;
+    esac
+
+    for phase_spec in "${seed_phase_specs[@]}"; do
         phase="${phase_spec%%:*}"
         step="${phase_spec#*:}"
-        run_step "$step" "$HART" seed "$phase" "${seed_common[@]}"
+        if [[ "$phase" == "UcdUca" && "$fast_ucd" == true ]]; then
+            # Blob-driven UCD codepoint atom seed (~tens of seconds for all
+            # 1,114,112 codepoints + 9 cp_* property junctions + entity
+            # classifications + per-cp POINTZM physicalities). Uses the
+            # embedded UCD blob baked into the hartonomous extension at
+            # build time — substrate.cp_hash / cp_centroid / cp_*property
+            # are single-cp C lookups against the blob, run as bulk
+            # INSERT-SELECT inside one PG transaction. Every codepoint
+            # gets a physicality (the blob's pre-gen handles all 1.1M
+            # deterministically, not just the 38K UCA-ranked ones).
+            run_step "$step" psql -h /var/run/postgresql -d hartonomous \
+                -v ON_ERROR_STOP=1 -f "$ROOT/scripts/seed-ucd-fast.sql"
+        else
+            run_step "$step" "$HART" seed "$phase" "${seed_common[@]}"
+        fi
     done
 
     if [[ "$with_model" == true ]]; then
@@ -348,6 +406,8 @@ if [[ "$with_synth" == true ]]; then
     synth_args=(synthesize-model --output "$synth_output" --dtype "$synth_dtype")
     if [[ -n "$synth_recipe" ]]; then
         synth_args+=(--recipe "$synth_recipe")
+    elif [[ -n "$synth_recipe_name" ]]; then
+        synth_args+=(--recipe-name "$synth_recipe_name")
     else
         synth_args+=(--template "$synth_template")
     fi

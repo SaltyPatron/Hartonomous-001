@@ -1,0 +1,3 @@
+CREATE TABLE substrate.entity_significance_p2
+    PARTITION OF substrate.entity_significance
+    FOR VALUES WITH (modulus 8, remainder 2);

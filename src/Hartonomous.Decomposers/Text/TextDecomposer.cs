@@ -79,16 +79,20 @@ public sealed partial class TextDecomposer : BaseDecomposer
         Log.FileRead(Logger, _sourcePath, utf8Bytes.Length);
 
         IIngestionBatch batch = pipeline.CreateBatch(ProvenanceCode);
-        // In-process via libhartonomous (no SQL roundtrip). Same UAX#29 +
-        // BLAKE3 + 4D centroid pipeline as the PG-extension text_decompose
-        // — same hashes, same physicality (Law #6).
+        // Pipeline-aware async overload — top-down O(tier) existence-check.
+        // Trunk hash compute via libhartonomous (NFC + UAX #29 + bottom-up
+        // Merkle, microseconds) → single-row BYTEA probe via
+        // pipeline.GetExistingEntityHashesAsync → if trunk exists, skip whole
+        // subtree; otherwise full walk. Practitioner re-ingest of identical
+        // content costs ~1ms instead of full decompose+emit storm.
         Hartonomous.Core.Text.TextDecomposeResult canonical =
-            Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStatic(
-                batch, utf8Bytes,
+            await Hartonomous.Core.Text.SubstrateTextDecomposer.EmitStaticAsync(
+                pipeline, batch, utf8Bytes,
                 new Hartonomous.Core.Text.TextDecomposeOptions(
                     ProvenanceCode: ProvenanceCode,
                     TopEntityType: "text_composition",
-                    TrustMu: SessionTrustMu));
+                    TrustMu: SessionTrustMu),
+                ct).ConfigureAwait(false);
         LastDocumentHandle = canonical.RootHandle;
 
         if (batch.EntityCount > 0 || batch.EdgeCount > 0)

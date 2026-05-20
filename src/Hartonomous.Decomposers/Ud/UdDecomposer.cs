@@ -160,6 +160,27 @@ public sealed partial class UdDecomposer : BaseDecomposer
 
         Log.ReferenceDataPopulated(Logger, deprelMap.Count, morphFeatMap.Count);
 
+        // Pre-emit pos + morph_feature reference-vocabulary entities ONCE,
+        // before the per-token loop. With millions of tokens each referencing
+        // the same ~17 pos rows and ~150 morph rows, re-emitting them via
+        // per-batch AddEntity hits transactionid lock contention. Single
+        // submit + drain primes the entities; the inner loop constructs
+        // EntityHandle directly.
+        {
+            IIngestionBatch primingBatch = pipeline.CreateBatch(ProvenanceCode);
+            foreach (string posCode in posMap.Keys)
+            {
+                primingBatch.AddEntity(ReferenceVocabularyHashes.PosEntityHash(posCode), "pos");
+            }
+            foreach ((string Key, string Value) k in morphFeatMap.Keys)
+            {
+                string morphCode = $"{k.Key}={k.Value}";
+                primingBatch.AddEntity(ReferenceVocabularyHashes.MorphFeatureEntityHash(morphCode), "morph_feature");
+            }
+            await pipeline.SubmitBatchAsync(primingBatch, ct);
+            await pipeline.DrainPendingAsync(ct);
+        }
+
         // ── Pass 2: serial file iteration, per-sentence inline emission.
         // Each batch carries entities + their edges + their junctions all in
         // the same flush — no phase-wide pipeline.ResolveEntityIdsAsync, no
@@ -291,7 +312,11 @@ public sealed partial class UdDecomposer : BaseDecomposer
                 posWritten++;
 
                 Hash32 posEntityHash = ReferenceVocabularyHashes.PosEntityHash(tok.Upos);
-                EntityHandle posHandle = batch.AddEntity(posEntityHash, "pos");
+                // POS entities are content-addressed and bounded (~17 rows).
+                // Pre-seeded by the first POS-emitting decomposer; constructing
+                // the handle directly avoids transactionid lock contention from
+                // per-token AddEntity attempts on hot rows.
+                EntityHandle posHandle = new(posEntityHash, "pos");
                 batch.AddEdge("has_pos", ProvenanceCode,
                 [
                     new EdgeMemberSpec(wfHandle, "source", 0),
@@ -318,7 +343,10 @@ public sealed partial class UdDecomposer : BaseDecomposer
                         // on each per-feature identity.
                         string morphCode = $"{f.Key}={f.Value}";
                         Hash32 morphEntityHash = ReferenceVocabularyHashes.MorphFeatureEntityHash(morphCode);
-                        EntityHandle morphHandle = batch.AddEntity(morphEntityHash, "morph_feature");
+                        // morph_feature entities are bounded reference
+                        // vocabulary; content-addressed via deterministic hash.
+                        // Construct handle directly to avoid hot-row contention.
+                        EntityHandle morphHandle = new(morphEntityHash, "morph_feature");
                         batch.AddEdge("has_morph_feature", ProvenanceCode,
                         [
                             new EdgeMemberSpec(wfHandle, "source", 0),
