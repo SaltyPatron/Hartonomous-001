@@ -1,0 +1,210 @@
+PROPRIETARY LICENSE — ALL RIGHTS RESERVED
+
+Copyright (c) 2026 Anthony Hart. All rights reserved.
+
+================================================================================
+SCOPE OF THIS LICENSE
+================================================================================
+
+This software, together with all source code, compiled artifacts, documentation,
+specifications, designs, architectural concepts, algorithmic descriptions, data
+schemas, native libraries, build infrastructure, test fixtures, configuration
+files, and any other materials contained in this repository or derived from it
+(collectively, "the Work"), is proprietary and confidential.
+
+The Work is the original creation of Anthony Hart ("the Author"). The Author
+retains exclusive ownership of all intellectual property rights in the Work,
+including but not limited to copyright, patent rights, trade secret rights,
+trademark rights, and rights in any architectural innovations, novel mechanisms,
+algorithmic designs, structural patterns, terminology, and product concepts
+disclosed herein.
+
+================================================================================
+NO LICENSE GRANTED
+================================================================================
+
+No license, express or implied, is granted by the mere existence of this
+repository, by source visibility (where extended), by repository access (where
+extended), or by any other circumstance not constituting an explicit written
+license signed by the Author.
+
+WITHOUT THE AUTHOR'S PRIOR EXPRESS WRITTEN AUTHORIZATION, you may not:
+
+  - Copy, reproduce, or duplicate the Work, in whole or in part
+  - Modify, adapt, translate, or create derivative works based on the Work
+  - Distribute, transmit, transfer, sublicense, lease, lend, or rent the Work
+  - Publicly display, publicly perform, or make the Work available to others
+  - Reverse engineer, decompile, disassemble, or attempt to derive the source
+    code, algorithms, or structure of any compiled or distributed portion of
+    the Work, except as expressly permitted by applicable mandatory law
+  - Use the Work, in whole or in part, for any commercial purpose
+  - Use the Work, in whole or in part, in any production system, research
+    output, publication, or work product
+  - Train, fine-tune, or otherwise use the Work as input to any machine learning
+    system, AI model, or automated content generation pipeline
+  - Use the Work's name, branding, terminology, or distinctive nomenclature to
+    market, promote, or describe products or services not authored by the
+    Author
+  - Imitate, reimplement, or substantially recreate the architectural designs,
+    mechanisms, data schemas, or algorithmic structures disclosed in the Work,
+    whether or not such reimplementation uses different source code
+
+================================================================================
+RESERVED INVENTIONS AND DESIGNS
+================================================================================
+
+The following architectural innovations and designs disclosed in the Work are
+the original creations of the Author and are reserved without limitation. This
+list is non-exhaustive; the Author's reservation of rights extends to all novel
+contributions whether or not enumerated here.
+
+  - Content-addressed substrate combining cross-source Glicko-2 consensus,
+    geometric placement on a closed 4-ball coordinate space, and per-arena
+    attestation accumulation across multi-source ingestion
+
+  - Per-vertex semantic encoding via mantissa packing of float64 IEEE 754
+    representations to carry content-addressed identity, ordinal position,
+    run-length compression, and per-vertex metadata simultaneously in a single
+    PostGIS geometry column
+
+  - Recipe-driven substrate synthesis for arbitrary user-authored AI model
+    target architectures, including per-layer arena cognitive function
+    decomposition, substrate-derived layer normalization parameters, substrate-
+    derived position embeddings, FFN-as-edge-slot synthesis, attention
+    reconstruction via E·M·E^T = S least-squares with sign discrimination,
+    and embedding synthesis via Belkin & Niyogi 2003 Laplacian eigenmap of
+    substrate adjacency
+
+  - The Substrate Synthesis SaaS product surface — customer-authored recipe
+    configuration including hardware-target-aware feasibility envelopes,
+    deterministic pre-flight pricing via recipe-cost estimation, opt-in
+    cross-customer content sharing with per-attestation revenue share, and
+    conversational mode powered by substrate-native AI agents
+
+  - The Gödel engine three-scale OODA loop on substrate (Micro per-traversal-
+    step annotation, Meso per-query Observe-Orient-Decide-Act with Reflexion
+    retry and Self-Consistency voting, Macro background frayed-edge survey and
+    curiosity-driven gap-prediction)
+
+  - Cross-model consensus surface via firefly POINTZM physicalities, with
+    Voronoi-tessellation centroid + dispersion + agreement scoring, and
+    pairwise cross-model divergence measurement
+
+  - Tree-sitter grammar bidirectional content codec wherein Tree-sitter
+    grammars serve as both parsers and generators for any formally-specified
+    structural domain, with substrate accumulating cross-grammar attested
+    patterns to drive grammar-conformant generation of arbitrary structured
+    content
+
+  - The substrate-as-Merkle-DAG-as-AST unification, wherein the substrate's
+    typed-composition structure is structurally identical to the abstract
+    syntax tree representation Tree-sitter and similar parsing systems produce
+
+  - The architectural insight that the substrate is the universal infrastructure
+    for all formally-structured digital knowledge, replacing rather than
+    competing with AI training systems, knowledge graphs, vector databases,
+    model deployment platforms, custom-tuning SaaS, mechanistic interpretability
+    research tooling, AI auditing infrastructure, and domain-specific knowledge
+    engines
+
+  - The anti-pattern numbering discipline (AP-N), the substrate's law-based
+    architectural constraint system, and the vocabulary-as-architecture-
+    discipline doctrine
+
+  - The cross-mechanism consensus principle whereby embedding cosine, attention
+    pair-score, and FFN co-activation independently attest the same substrate
+    edge identity, accumulating per-arena Glicko-weighted consensus across
+    mechanisms and across models
+
+  - The three-tier data model (seed / app / user) with arena-scoped privacy,
+    asymptotic per-customer cost reduction via content-addressed cross-customer
+    deduplication, and the customer-content marketplace mechanism
+
+  - The substrate as scientific instrument — empirical apparatus for the
+    Finite Universe Theorem cardinality measurement, the Lottery Ticket
+    Hypothesis (substrate variant) validation, and Mendeleev-aspect
+    gap-prediction via void detection
+
+Independent recreation, reimplementation, or imitation of these inventions
+does not transfer rights to the imitator. Prior art assertions challenging
+the Author's claims of original invention are addressed on the merits; the
+Author reserves all rights to pursue assertion of original authorship.
+
+================================================================================
+PATENT RIGHTS
+================================================================================
+
+This license does not grant any patent rights. The Author reserves the right
+to pursue patent protection for any of the inventions disclosed herein. The
+Author makes no representation that the Work is free from patent claims by
+third parties; users assume their own risk in any unauthorized use.
+
+================================================================================
+TRADEMARK
+================================================================================
+
+"Hartonomous" and any associated logos, branding, or distinctive terminology
+introduced by the Author in the Work are trademarks of the Author. No license
+to use any trademarks is granted by this license.
+
+================================================================================
+DISCLAIMER OF WARRANTY
+================================================================================
+
+THE WORK IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, OR ABSENCE OF
+ERRORS. THE AUTHOR DISCLAIMS ALL WARRANTIES TO THE FULLEST EXTENT PERMITTED BY
+APPLICABLE LAW.
+
+================================================================================
+LIMITATION OF LIABILITY
+================================================================================
+
+TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, THE AUTHOR SHALL NOT BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, OR
+EXEMPLARY DAMAGES ARISING FROM OR RELATED TO THE USE OF, INABILITY TO USE, OR
+RELIANCE ON THE WORK, EVEN IF THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY
+OF SUCH DAMAGES.
+
+================================================================================
+SEVERABILITY
+================================================================================
+
+If any provision of this license is held to be unenforceable or invalid by a
+court of competent jurisdiction, the remaining provisions shall continue in
+full force and effect.
+
+================================================================================
+GOVERNING LAW
+================================================================================
+
+This license shall be governed by the laws of the jurisdiction in which the
+Author resides, without regard to conflict-of-law principles.
+
+================================================================================
+RESERVATION OF RIGHTS
+================================================================================
+
+ALL RIGHTS NOT EXPRESSLY GRANTED HEREIN ARE RESERVED BY THE AUTHOR. The Author
+reserves the right to modify, supplement, or replace the terms of this license
+at any time. The Author reserves the right to relicense the Work, in whole or
+in part, under different terms at the Author's sole discretion, including but
+not limited to open-source terms, dual-licensing arrangements, or commercial
+licensing programs. Such relicensing, if and when it occurs, does not affect
+the terms applicable to prior unauthorized use.
+
+================================================================================
+CONTACT FOR LICENSING INQUIRIES
+================================================================================
+
+Anthony Hart
+aharttn@gmail.com
+
+For commercial licensing, evaluation arrangements, research collaboration
+proposals, or other inquiries regarding the Work, please contact the Author
+directly.
+
+================================================================================
+
+End of license.
